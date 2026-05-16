@@ -11,6 +11,8 @@ from pathlib import Path
 TEST_PDF = Path(r"C:\Users\Rowdy Payton\Desktop\PDFTest Files\1015 - Rev 0.pdf")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GUI_PY = REPO_ROOT / "gui.py"
+CORE_CONFIG_PY = REPO_ROOT / "pdfcadcore" / "import_config.py"
+PACKAGE_CONFIG_PY = REPO_ROOT / "librecad_pdf_importer" / "core" / "PDFImportConfig.py"
 
 
 def _run_cli(*args: str) -> subprocess.CompletedProcess:
@@ -105,6 +107,31 @@ class TestRule5GuiCheckboxesRemoved(unittest.TestCase):
                 lbl, self.source,
                 f"GUI still has quality-tier checkbox label {lbl!r} (BCS-ARCH-001 Rule 5).",
             )
+
+    def test_no_legacy_preset_labels(self) -> None:
+        for label in (
+            "Fast", "Balanced", "Full", "Max Fidelity", "Raster Image",
+            "Custom...", "Shop Drawing", "Technical Drawing",
+        ):
+            self.assertNotIn(
+                f'"{label}"', self.source,
+                f"GUI still references legacy preset label {label!r}.",
+            )
+
+    def test_text_default_is_scale_stable(self) -> None:
+        self.assertIn('tk.StringVar(value="3D Text")', self.source)
+        self.assertNotIn('tk.StringVar(value="Labels")', self.source)
+        self.assertIn('TEXT_MODES.get(self._var_text_mode.get(), "3d_text")', self.source)
+
+
+class TestTextDefaults(unittest.TestCase):
+    """Core config defaults must not silently return to Labels."""
+
+    def test_embedded_configs_default_to_3d_text(self) -> None:
+        for path in (CORE_CONFIG_PY, PACKAGE_CONFIG_PY):
+            source = path.read_text(encoding="utf-8")
+            self.assertIn('text_mode: str = "3d_text"', source)
+            self.assertNotIn('text_mode: str = "labels"', source)
 
 
 if __name__ == "__main__":

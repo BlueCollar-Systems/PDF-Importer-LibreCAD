@@ -12,7 +12,7 @@ powershell -ExecutionPolicy Bypass -File .\plugin\build_install_lcpdf_menu.ps1
 2. Restart LibreCAD
 3. Use `Plugins > PDF Importer (BlueCollar)...`
 
-### Option 2: Command Line (fastest)
+### Option 2: Command Line
 ```bash
 python pdf2dxf.py "C:\path\to\drawing.pdf" "C:\output\drawing.dxf"
 ```
@@ -53,7 +53,7 @@ only in extraction strategy, not in quality tier.
 
 ### Text Rendering (orthogonal)
 
-Labels (default) · 3D Text · Glyphs · Geometry · plus an Import text toggle.
+Labels · 3D Text (default) · Glyphs · Geometry · plus an Import text toggle.
 
 ## Requirements
 
@@ -66,8 +66,8 @@ Labels (default) · 3D Text · Glyphs · Geometry · plus an Import text toggle.
 **Black screen when opening DXF?** The importer auto-inverts white lines to black for visibility. If you still see a blank screen, try View > Auto Zoom in LibreCAD.
 
 **Missing text?** Auto mode should handle text well. If text is missing, try
-explicitly `--mode vector` and check the text-rendering setting (Labels is the
-default; try Glyphs for symbol-heavy PDFs).
+explicitly `--mode vector` and check the text-rendering setting. `3d_text` is
+the default; try `glyphs` for symbol-heavy PDFs.
 
 **Geometry looks wrong?** Auto mode should pick the right strategy. If not, try
 `--mode vector` for CAD drawings or `--mode hybrid` for PDFs with embedded raster.

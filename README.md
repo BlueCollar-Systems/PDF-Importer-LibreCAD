@@ -85,7 +85,7 @@ python pdf2dxf.py input.pdf [output.dxf] [options]
 Options:
   --pages 1,2,3          Pages to convert (default: all)
   --mode MODE            auto | vector | raster | hybrid  (default: auto)
-  --text-mode MODE       labels | 3d_text | glyphs | geometry  (default: labels)
+  --text-mode MODE       labels | 3d_text | glyphs | geometry  (default: 3d_text)
   --import-text / --no-import-text  Whether to import text at all (default: on)
   --scale 1.0            Scale factor
   --dxf-version VER      R12 | R2000 | R2004 | R2007 | R2010 | R2013 | R2018

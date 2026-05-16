@@ -129,7 +129,7 @@ class Pdf2DxfApp(tk.Tk):
 
         # ---- Text mode (BCS-ARCH-001, orthogonal to import mode) ----
         ttk.Label(frame, text="Text Mode:").grid(row=7, column=0, sticky=tk.W, **pad)
-        self._var_text_mode = tk.StringVar(value="Labels")
+        self._var_text_mode = tk.StringVar(value="3D Text")
         ttk.Combobox(
             frame,
             textvariable=self._var_text_mode,
@@ -273,7 +273,7 @@ class Pdf2DxfApp(tk.Tk):
                 config.user_scale = 1.0
 
             config.import_text = self._var_import_text.get()
-            config.text_mode = TEXT_MODES.get(self._var_text_mode.get(), "labels")
+            config.text_mode = TEXT_MODES.get(self._var_text_mode.get(), "3d_text")
             config.verbose = True
 
             # Parse pages

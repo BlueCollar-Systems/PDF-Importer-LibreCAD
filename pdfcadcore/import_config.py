@@ -65,7 +65,7 @@ class ImportConfig:
     #   "3d_text"  -- extruded geometric text (host support varies)
     #   "glyphs"   -- text rendered as per-character vector glyphs
     #   "geometry" -- text fully converted to non-editable geometry
-    text_mode: str = "labels"
+    text_mode: str = "3d_text"
 
     strict_text_fidelity: bool = True
     group_by_color: bool = True
