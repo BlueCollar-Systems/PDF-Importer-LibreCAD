@@ -14,6 +14,8 @@ from typing import Dict, List, Tuple
 
 import ezdxf
 from ezdxf import colors as ezdxf_colors
+from ezdxf import bbox as ezdxf_bbox
+from ezdxf.units import MM
 
 from dataclasses import replace as _dc_replace
 
@@ -163,9 +165,10 @@ def _make_attribs(
     """Build the ``dxfattribs`` dict for an ezdxf entity."""
     attribs: dict = {"layer": layer_name}
 
-    # Color
-    if config.group_by_color and prim.stroke_color:
-        r, g, b = prim.stroke_color
+    # Color — prefer fill for fill-only shapes (stroke may be absent/None).
+    rgb = prim.fill_color or prim.stroke_color
+    if config.group_by_color and rgb:
+        r, g, b = rgb
         if is_r12:
             attribs["color"] = _rgb_to_aci(r, g, b)
         else:
@@ -299,6 +302,68 @@ _WRITERS = {
 
 
 # ---------------------------------------------------------------------------
+# DXF framing (LibreCAD / QCAD auto-zoom on open)
+# ---------------------------------------------------------------------------
+def _apply_dxf_framing(
+    doc: ezdxf.document.Drawing,
+    pages_data: List[PageData],
+    stack_multiplier: float = 1.2,
+) -> None:
+    """Set $EXTMIN/$EXTMAX, limits, and modelspace VPORT for host auto-fit."""
+    min_x = float("inf")
+    min_y = float("inf")
+    max_x = float("-inf")
+    max_y = float("-inf")
+
+    def _track(x: float, y: float) -> None:
+        nonlocal min_x, min_y, max_x, max_y
+        min_x = min(min_x, float(x))
+        min_y = min(min_y, float(y))
+        max_x = max(max_x, float(x))
+        max_y = max(max_y, float(y))
+
+    stack_y = 0.0
+    for page in pages_data:
+        dy = stack_y
+        _track(0.0, dy)
+        _track(float(page.width), float(page.height) + dy)
+        for ti in page.text_items:
+            _track(ti.insertion[0], ti.insertion[1] + dy)
+            if ti.bbox:
+                x0, y0, x1, y1 = ti.bbox
+                _track(x0, y0 + dy)
+                _track(x1, y1 + dy)
+        stack_y -= float(page.height) * stack_multiplier
+
+    msp = doc.modelspace()
+    ext = ezdxf_bbox.extents(msp)
+    if ext.has_data:
+        _track(ext.extmin.x, ext.extmin.y)
+        _track(ext.extmax.x, ext.extmax.y)
+
+    if min_x > max_x or min_y > max_y:
+        return
+
+    extmin = (float(min_x), float(min_y), 0.0)
+    extmax = (float(max_x), float(max_y), 0.0)
+    msp.dxf.extmin = extmin
+    msp.dxf.extmax = extmax
+    msp.dxf.limmin = (float(min_x), float(min_y))
+    msp.dxf.limmax = (float(max_x), float(max_y))
+    doc.header["$EXTMIN"] = extmin
+    doc.header["$EXTMAX"] = extmax
+    doc.header["$LIMMIN"] = (float(min_x), float(min_y))
+    doc.header["$LIMMAX"] = (float(max_x), float(max_y))
+    center = (
+        (float(min_x) + float(max_x)) * 0.5,
+        (float(min_y) + float(max_y)) * 0.5,
+    )
+    height = max(1.0, float(max_y) - float(min_y))
+    width = max(1.0, float(max_x) - float(min_x))
+    doc.set_modelspace_vport(max(height, width) * 1.1, center=center)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 def build_dxf(
@@ -326,6 +391,8 @@ def build_dxf(
     is_r12 = ver == "R12"
 
     doc = ezdxf.new(dxfversion=ver)
+    doc.units = MM
+    doc.header["$INSUNITS"] = 4  # millimeters
     msp = doc.modelspace()
 
     # Register standard linetypes (skip for R12 -- limited support)
@@ -406,10 +473,19 @@ def build_dxf(
                         insertion=(ti.insertion[0], ti.insertion[1] + dy),
                     )
                 layer = page_layer
-                build_text(ti, msp, layer, config, is_r12, dxf_version=dxf_version)
+                build_text(
+                    ti,
+                    msp,
+                    layer,
+                    config,
+                    is_r12,
+                    target_app="librecad",
+                    dxf_version=dxf_version,
+                )
                 text_count += 1
 
         # Advance stacking offset for the next page
         _stack_offset_y -= page.height * _STACK_MULTIPLIER
 
+    _apply_dxf_framing(doc, pages_data, stack_multiplier=_STACK_MULTIPLIER)
     return doc, entity_count, text_count

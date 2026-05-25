@@ -116,15 +116,20 @@ def convert(
             raw_drawings = fitz_page.get_drawings()
             text_blocks = fitz_page.get_text("blocks") or []
             text_words = fitz_page.get_text("words") or []
+            mbox = fitz_page.mediabox
+            page_area = float(mbox.width) * float(mbox.height)
             classification = classify_page_content(
                 raw_drawings,
                 text_blocks_count=len(text_blocks),
                 text_words_count=len(text_words),
+                page_area=page_area,
             )
             if classification["type"] in ("glyph_flood", "fill_art"):
-                _log(f"Auto-mode: {classification['reason']} — "
-                     f"skipping vector import for page {page_num + 1}")
-                continue
+                _log(
+                    f"Auto-mode: {classification['reason']} — "
+                    f"decorative page; vector extraction may be sparse "
+                    f"(page {page_num + 1})"
+                )
 
         # 3b. Extract primitives
         page_data = extract_page(

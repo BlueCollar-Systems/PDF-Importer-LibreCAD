@@ -16,6 +16,10 @@ except ImportError:
 
 from ..core.document import DocumentExtraction
 
+from pdfcadcore.import_config import ImportConfig
+
+from dxf_text_builder import build_text, reset_text_styles
+
 
 @dataclass
 class DxfExportOptions:
@@ -48,8 +52,10 @@ def export_to_dxf(extraction: DocumentExtraction, output_path: str,
     opts = options or DxfExportOptions()
     dxf_ver = _normalize_dxf_version(opts.dxf_version)
     is_r12 = dxf_ver == "R12"
+    reset_text_styles()
     doc = ezdxf.new(dxf_ver)
     doc.units = MM
+    doc.header["$INSUNITS"] = 4
     msp = doc.modelspace()
 
     entity_count = 0
@@ -145,34 +151,40 @@ def export_to_dxf(extraction: DocumentExtraction, output_path: str,
             for text in page.page_data.text_items:
                 layer = _layer_name(page.page_data.page_number, "TEXT", None, opts)
                 _ensure_layer(doc, layer, None)
-                text_attribs = {
-                    "layer": layer,
-                    "height": max(float(text.font_size), 0.1),
-                    "rotation": float(text.rotation or 0.0),
-                    "insert": (float(text.insertion[0]), float(text.insertion[1]) + dy),
-                }
-                # Apply source text color when available (R12 lacks true_color)
-                if not is_r12:
-                    text_color = text.color
-                    if text_color is not None:
-                        ri = round(text_color[0] * 255)
-                        gi = round(text_color[1] * 255)
-                        bi = round(text_color[2] * 255)
-                        text_attribs["true_color"] = rgb2int((ri, gi, bi))
-                txt = msp.add_text(
-                    text.text,
-                    dxfattribs=text_attribs,
+                ti = text
+                if dy != 0.0:
+                    from dataclasses import replace as _dc_replace
+                    ti = _dc_replace(
+                        text,
+                        insertion=(
+                            float(text.insertion[0]),
+                            float(text.insertion[1]) + dy,
+                        ),
+                        bbox=(
+                            (
+                                float(text.bbox[0]),
+                                float(text.bbox[1]) + dy,
+                                float(text.bbox[2]),
+                                float(text.bbox[3]) + dy,
+                            )
+                            if text.bbox
+                            else None
+                        ),
+                    )
+                build_text(
+                    ti,
+                    msp,
+                    layer,
+                    ImportConfig.auto(),
+                    is_r12=is_r12,
+                    target_app="librecad",
+                    dxf_version=dxf_ver,
                 )
-                _track_xy(float(text_attribs["insert"][0]), float(text_attribs["insert"][1]))
-                if text.bbox:
-                    x0, y0, x1, y1 = text.bbox
-                    _track_xy(float(x0), float(y0) + dy)
-                    _track_xy(float(x1), float(y1) + dy)
-                if opts.attach_metadata:
-                    txt.set_xdata("BC_PDF", [
-                        (1000, f"text_id={text.id}"),
-                        (1000, f"page={text.page_number}"),
-                    ])
+                _track_xy(float(ti.insertion[0]), float(ti.insertion[1]))
+                if ti.bbox:
+                    x0, y0, x1, y1 = ti.bbox
+                    _track_xy(float(x0), float(y0))
+                    _track_xy(float(x1), float(y1))
                 entity_count += 1
 
         if opts.include_images:
@@ -222,7 +234,8 @@ def export_to_dxf(extraction: DocumentExtraction, output_path: str,
         doc.header["$LIMMAX"] = (float(max_x), float(max_y))
         center = ((float(min_x) + float(max_x)) * 0.5, (float(min_y) + float(max_y)) * 0.5)
         height = max(1.0, float(max_y) - float(min_y))
-        doc.set_modelspace_vport(height * 1.1, center=center)
+        width = max(1.0, float(max_x) - float(min_x))
+        doc.set_modelspace_vport(max(height, width) * 1.1, center=center)
         active = doc.viewports.get("*Active")
         if active:
             vp = active[0]
