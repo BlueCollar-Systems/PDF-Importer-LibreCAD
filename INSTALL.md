@@ -39,7 +39,12 @@ python -m librecad_pdf_importer.batch_cli "C:\folder\with\pdfs"
 2. Click `Convert`
 3. LibreCAD opens automatically with the generated DXF
 
-## Modes (BCS-ARCH-001)
+## GUI (professional import)
+
+The graphical interface uses **Auto** import only (vector/raster/hybrid chosen per page).
+Text options: **Labels (editable TEXT)** or **Outlines** — LibreCAD does not support true 3D text.
+
+## Modes (BCS-ARCH-001, CLI/batch)
 
 Every mode targets **indistinguishable-from-source** fidelity. Modes differ
 only in extraction strategy, not in quality tier.
@@ -53,7 +58,7 @@ only in extraction strategy, not in quality tier.
 
 ### Text Rendering (orthogonal)
 
-Labels · 3D Text (default) · Glyphs · Geometry · plus an Import text toggle.
+GUI: Labels (default) · Outlines · plus Import text toggle. CLI also accepts 3d_text and glyphs (mapped to DXF TEXT).
 
 ## Requirements
 

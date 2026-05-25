@@ -81,6 +81,8 @@ Text rendering remains a separate user control, unchanged by this decision. The 
 
 These choices are legitimate user preferences driven by downstream workflow. The importer does not decide; the user does.
 
+**LibreCAD host adapter (2D):** LibreCAD is 2D-only. The GUI exposes **Labels** and **Outlines** only; import always uses **Auto** mode internally. CLI retains all four text modes for parity, but `3d_text` and `glyphs` export as DXF `TEXT` (same as Labels). See `COMPATIBILITY.md`.
+
 ### 2.3 Quality target (invariant)
 
 **Every mode in every importer targets the same quality:**

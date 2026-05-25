@@ -11,8 +11,9 @@ DraftSight, QCAD, and any DXF-compatible CAD software.
 - Preserves stroke colors, line widths, and dash patterns
 - Imports text with font size and rotation
 - Text rendering always at maximum fidelity (no quality dials)
-- **4 Import Modes** (BCS-ARCH-001): Auto (default, picks strategy per page), Vector, Raster, Hybrid
-- **4 Text Rendering Options**: Labels, 3D Text, Glyphs, Geometry (orthogonal to mode; 3D Text falls back to Labels in DXF)
+- **Professional import (GUI)**: Auto mode only — picks vector/raster/hybrid per page internally
+- **CLI/batch modes** (BCS-ARCH-001): Auto, Vector, Raster, Hybrid for scripting
+- **2D text (GUI)**: Labels (editable DXF TEXT) or Outlines (skip editable text). LibreCAD has no true 3D text; see [COMPATIBILITY.md](COMPATIBILITY.md)
 - **Maximum fidelity by default** -- no quality tiers, no fast-mode compromises
 - Organizes geometry into DXF layers (per-page and per-OCG)
 - Outputs DXF versions from R12 through R2018
@@ -23,15 +24,7 @@ DraftSight, QCAD, and any DXF-compatible CAD software.
 
 ## Compatibility
 
-| LibreCAD Version | Python | ezdxf | PyMuPDF | Status |
-|-----------------|--------|-------|---------|--------|
-| 2.1.x+ | 3.10+ | 1.0+ | >=1.24,<2.0 | ⚠️ Expected |
-| 2.0.x | 3.8+ | 1.0+ | >=1.24,<2.0 | ⚠️ Expected |
-
-Evidence levels:
-- `✅ Verified`: host-run validation evidence captured.
-- `⚠️ Expected`: syntax/runtime compatible but no host-run evidence yet.
-- `❌ Not supported`: outside maintained/tested compatibility scope.
+See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the full host version matrix (LibreCAD 2.2+, Python 3.10+, DXF consumers).
 
 ## Requirements
 
@@ -119,9 +112,10 @@ Or run the GUI directly:
 python gui.py
 ```
 
-The GUI provides file pickers, mode selection (Auto / Vector / Raster / Hybrid),
-text-rendering selection (Labels / 3D Text / Glyphs / Geometry), page range input,
+The GUI provides file pickers, **professional single-flow import** (Auto strategy per page),
+text choice (**Labels** or **Outlines** — LibreCAD is 2D-only), page range input,
 option checkboxes, a progress bar, a status log, and optional auto-open in LibreCAD.
+Advanced users can still use CLI `--mode` and `--text-mode` (including `3d_text` / `glyphs`).
 
 Windows no-console options:
 ```
@@ -176,12 +170,14 @@ capabilities. Modes differ only in extraction *strategy*, not quality tier.
 
 ### Text Rendering (orthogonal to mode)
 
-| Option | Behavior in DXF |
-|--------|-----------------|
-| **labels** *(default)* | MTEXT/TEXT entities, editable as text |
-| **3d_text** | Falls back to `labels` (DXF has no 3D text primitive) |
-| **glyphs** | Per-character vector glyphs via pdftocairo |
-| **geometry** | Text converted to lines/polylines |
+LibreCAD is **2D CAD** — there is no true 3D text in DXF or LibreCAD.
+
+| Option | GUI | Behavior in DXF export |
+|--------|-----|------------------------|
+| **labels** | ✅ Default | DXF `TEXT` entities (MTEXT avoided for LibreCAD) |
+| **geometry** | ✅ Outlines | Skips editable TEXT (outline-only workflow) |
+| **3d_text** | CLI only | Same as `labels` in this exporter |
+| **glyphs** | CLI only | Same as `labels` until vector-glyph DXF path exists |
 
 Plus `--import-text` / `--no-import-text` to skip text entirely.
 

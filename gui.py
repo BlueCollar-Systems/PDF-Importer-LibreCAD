@@ -24,20 +24,15 @@ if _PROJECT_ROOT not in sys.path:
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-MODES = {
-    "Auto":   "auto",
-    "Vector": "vector",
-    "Raster": "raster",
-    "Hybrid": "hybrid",
-}
+# BCS-ARCH-001: LC GUI uses Auto-only (strategy picked per page internally).
+# CLI/batch retain vector | raster | hybrid for power users.
+IMPORT_MODE_AUTO = "auto"
 
-# BCS-ARCH-001: text rendering is orthogonal to mode. Four text options
-# (Labels, 3D Text, Glyphs, Geometry) plus a separate "Import text" toggle.
+# LibreCAD is 2D CAD. Expose only modes that map to DXF reality; 3d_text and
+# glyphs remain available on CLI (--text-mode) for scripting parity.
 TEXT_MODES = {
-    "Labels":   "labels",
-    "3D Text":  "3d_text",
-    "Glyphs":   "glyphs",
-    "Geometry": "geometry",
+    "Labels (editable TEXT)": "labels",
+    "Outlines (no editable text)": "geometry",
 }
 
 DXF_VERSIONS = ("R12", "R2000", "R2004", "R2007", "R2010", "R2013", "R2018")
@@ -53,10 +48,10 @@ class Pdf2DxfApp(tk.Tk):
         super().__init__()
         self.title("PDF to DXF Converter - BlueCollar Systems")
         self.resizable(True, True)
-        self.minsize(560, 520)
+        self.minsize(560, 500)
 
         # Try to set a reasonable starting size
-        self.geometry("620x620")
+        self.geometry("620x580")
 
         self._build_ui()
         self._converting = False
@@ -82,8 +77,9 @@ class Pdf2DxfApp(tk.Tk):
         ).grid(row=1, column=0, columnspan=3, sticky=tk.W, padx=8)
         ttk.Label(
             frame,
-            text="Maximum fidelity in every import mode (Auto, Vector, Raster, Hybrid).",
+            text="Professional import — maximum fidelity; Auto picks vector, raster, or hybrid per page.",
             font=("Segoe UI", 9),
+            wraplength=560,
         ).grid(row=2, column=0, columnspan=3, sticky=tk.W, padx=8, pady=(0, 4))
 
         # ---- Input file ----
@@ -104,44 +100,39 @@ class Pdf2DxfApp(tk.Tk):
             row=4, column=2, **pad,
         )
 
-        # ---- Mode (BCS-ARCH-001) ----
-        ttk.Label(frame, text="Mode:").grid(row=5, column=0, sticky=tk.W, **pad)
-        self._var_mode = tk.StringVar(value="Auto")
-        ttk.Combobox(
-            frame,
-            textvariable=self._var_mode,
-            values=list(MODES.keys()),
-            state="readonly",
-            width=20,
-        ).grid(row=5, column=1, sticky=tk.W, **pad)
-
         # ---- Page range ----
-        ttk.Label(frame, text="Pages:").grid(row=6, column=0, sticky=tk.W, **pad)
+        ttk.Label(frame, text="Pages:").grid(row=5, column=0, sticky=tk.W, **pad)
         self._var_pages = tk.StringVar()
         ttk.Entry(frame, textvariable=self._var_pages, width=20).grid(
-            row=6, column=1, sticky=tk.W, **pad,
+            row=5, column=1, sticky=tk.W, **pad,
         )
         ttk.Label(frame, text="(e.g. 1,2,5  or blank for all)").grid(
-            row=6, column=2, sticky=tk.W, **pad,
+            row=5, column=2, sticky=tk.W, **pad,
         )
 
         # ---- Scale ----
-        ttk.Label(frame, text="Scale:").grid(row=7, column=0, sticky=tk.W, **pad)
+        ttk.Label(frame, text="Scale:").grid(row=6, column=0, sticky=tk.W, **pad)
         self._var_scale = tk.StringVar(value="1.0")
         ttk.Entry(frame, textvariable=self._var_scale, width=10).grid(
-            row=7, column=1, sticky=tk.W, **pad,
+            row=6, column=1, sticky=tk.W, **pad,
         )
 
-        # ---- Text mode (BCS-ARCH-001, orthogonal to import mode) ----
-        ttk.Label(frame, text="Text Mode:").grid(row=8, column=0, sticky=tk.W, **pad)
-        self._var_text_mode = tk.StringVar(value="3D Text")
-        ttk.Combobox(
+        # ---- Text mode (2D LibreCAD: labels vs outline-only) ----
+        ttk.Label(frame, text="Text:").grid(row=7, column=0, sticky=tk.W, **pad)
+        self._var_text_mode = tk.StringVar(value="Labels (editable TEXT)")
+        text_combo = ttk.Combobox(
             frame,
             textvariable=self._var_text_mode,
             values=list(TEXT_MODES.keys()),
             state="readonly",
-            width=20,
-        ).grid(row=8, column=1, sticky=tk.W, **pad)
+            width=28,
+        )
+        text_combo.grid(row=7, column=1, sticky=tk.W, **pad)
+        ttk.Label(
+            frame,
+            text="LibreCAD is 2D — no true 3D text; exports DXF TEXT entities.",
+            font=("Segoe UI", 8),
+        ).grid(row=8, column=1, columnspan=2, sticky=tk.W, padx=8)
 
         # ---- DXF version ----
         ttk.Label(frame, text="DXF Version:").grid(row=9, column=0, sticky=tk.W, **pad)
@@ -267,9 +258,8 @@ class Pdf2DxfApp(tk.Tk):
             from pdfcadcore.import_config import ImportConfig
             from dxf_import_engine import convert
 
-            # BCS-ARCH-001: direct mode -> classmethod dispatch. No preset map.
-            mode_key = MODES.get(self._var_mode.get(), "auto")
-            config: ImportConfig = getattr(ImportConfig, mode_key)()
+            # BCS-ARCH-001: GUI always uses Auto (strategy per page).
+            config: ImportConfig = ImportConfig.auto()
 
             # Apply GUI overrides
             try:
@@ -278,7 +268,7 @@ class Pdf2DxfApp(tk.Tk):
                 config.user_scale = 1.0
 
             config.import_text = self._var_import_text.get()
-            config.text_mode = TEXT_MODES.get(self._var_text_mode.get(), "3d_text")
+            config.text_mode = TEXT_MODES.get(self._var_text_mode.get(), "labels")
             config.verbose = True
 
             # Parse pages
@@ -298,6 +288,7 @@ class Pdf2DxfApp(tk.Tk):
 
             t0 = time.perf_counter()
             self._log(f"Starting conversion: {os.path.basename(input_path)}")
+            self._log("Import mode: Auto (per-page strategy)")
 
             stats = convert(
                 input_path=input_path,

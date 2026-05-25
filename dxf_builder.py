@@ -396,8 +396,8 @@ def build_dxf(
             writer = _WRITERS.get(prim.type, _add_polyline)
             entity_count += writer(msp, prim, attribs)
 
-        # Text entities — add for "labels" and "geometry" modes; skip for "none"
-        if config.import_text and config.text_mode != "none":
+        # Text entities — editable TEXT for labels/3d_text; geometry mode skips TEXT
+        if config.import_text and config.text_mode not in ("none", "geometry"):
             for ti in page.text_items:
                 # Apply page stacking offset to text insertion point
                 if dy != 0.0:

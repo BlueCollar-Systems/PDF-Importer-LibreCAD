@@ -90,21 +90,19 @@ jobs:
           doc.save(tmp.name)
           doc.close()
 
-          presets = ['fast', 'general', 'technical', 'shop', 'max']
-          modes = ['auto', 'vectors', 'raster', 'hybrid']
+          modes = ['auto', 'vector', 'raster', 'hybrid']
           errors = []
-          for preset in presets:
-              for mode in modes:
-                  try:
-                      r = run_import(tmp.name, preset=preset,
-                                     overrides={'pages': 'all', 'import_mode': mode})
-                      s = r.extraction.summary()
-                  except Exception as e:
-                      errors.append(f'{preset}/{mode}: {e}')
+          for mode in modes:
+              try:
+                  r = run_import(tmp.name, mode=mode,
+                                 overrides={'pages': 'all'})
+                  s = r.extraction.summary()
+              except Exception as e:
+                  errors.append(f'{mode}: {e}')
 
           os.unlink(tmp.name)
           if errors:
               for e in errors: print(f'FAIL: {e}')
               sys.exit(1)
-          print(f'PASS: {len(presets)*len(modes)} preset/mode combos verified')
+          print(f'PASS: {len(modes)} BCS-ARCH-001 modes verified')
           "

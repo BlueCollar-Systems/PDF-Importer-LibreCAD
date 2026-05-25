@@ -118,10 +118,13 @@ class TestRule5GuiCheckboxesRemoved(unittest.TestCase):
                 f"GUI still references legacy preset label {label!r}.",
             )
 
-    def test_text_default_is_scale_stable(self) -> None:
-        self.assertIn('tk.StringVar(value="3D Text")', self.source)
-        self.assertNotIn('tk.StringVar(value="Labels")', self.source)
-        self.assertIn('TEXT_MODES.get(self._var_text_mode.get(), "3d_text")', self.source)
+    def test_gui_does_not_expose_strategy_mode_picker(self) -> None:
+        self.assertNotIn("_var_mode", self.source)
+        self.assertNotIn('text="Mode:"', self.source)
+
+    def test_gui_text_default_is_labels_for_2d_lc(self) -> None:
+        self.assertIn('tk.StringVar(value="Labels (editable TEXT)")', self.source)
+        self.assertIn('TEXT_MODES.get(self._var_text_mode.get(), "labels")', self.source)
 
 
 class TestTextDefaults(unittest.TestCase):
