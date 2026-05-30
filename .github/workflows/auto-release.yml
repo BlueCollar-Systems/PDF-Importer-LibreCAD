@@ -97,7 +97,9 @@ jobs:
             echo "No version bump changes to commit."
           else
             git commit -m "chore: bump version to ${VERSION}"
-            git push origin "HEAD:${GITHUB_REF_NAME}"
+            if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              echo "::warning::Could not push version bump to '${GITHUB_REF_NAME}' (likely branch protection). Continuing to publish the release; tag-based versioning keeps releases unique."
+            fi
           fi
 
       - name: Build release
