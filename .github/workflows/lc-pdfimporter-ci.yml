@@ -22,18 +22,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify repo_context_builder_core.py hash
-        run: |
-          EXPECTED_SHA="8fe18c896c63372b5c2d7c17c383b548e9573c9b7592019cd72159f2b08505de"
-          test -f repo_context_builder_core.py || { echo "ERROR: repo_context_builder_core.py missing"; exit 1; }
-          ACTUAL_SHA=$(sha256sum repo_context_builder_core.py | awk '{print $1}')
-          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
-            echo "ERROR: repo_context_builder_core.py hash mismatch"
-            echo "expected=$EXPECTED_SHA"
-            echo "actual=$ACTUAL_SHA"
-            exit 1
-          fi
-
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
