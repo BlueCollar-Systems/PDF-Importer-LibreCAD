@@ -36,6 +36,7 @@ def classify_page_content(
     drawings: List[Dict[str, Any]],
     text_blocks_count: int = 0,
     text_words_count: int = 0,
+    page_area: float = 0.0,
 ) -> Dict[str, Any]:
     """Classify page content type from raw PyMuPDF drawings.
 
@@ -51,6 +52,9 @@ def classify_page_content(
         Number of text blocks on the page (from ``page.get_text("blocks")``).
     text_words_count:
         Number of words on the page (from ``page.get_text("words")``).
+    page_area:
+        Media-box area in PDF points squared (width * height). Used for
+        large-rectangle heuristics on pure-fill decorative pages.
 
     Returns
     -------
@@ -76,9 +80,12 @@ def classify_page_content(
     has_stroke = 0
     fill_only = 0
     tiny_rects = 0
+    total_item_count = 0
+    max_rect_ratio = 0.0
 
     for d in drawings:
         items = d.get("items", [])
+        total_item_count += len(items)
         f = d.get("fill")
         s = d.get("color") or d.get("stroke")
 
@@ -102,6 +109,10 @@ def classify_page_content(
                         h = abs(rect[3] - rect[1])
                     if w < 2.0 and h < 2.0:
                         tiny_rects += 1
+                    if page_area > 0.0:
+                        ratio = (w * h) / page_area
+                        if ratio > max_rect_ratio:
+                            max_rect_ratio = ratio
                 except (TypeError, IndexError):
                     tiny_rects += 1
             else:
@@ -111,6 +122,7 @@ def classify_page_content(
     stroke_ratio = has_stroke / total if total > 0 else 0
     fill_only_ratio = fill_only / total if total > 0 else 0
     tiny_rect_ratio = tiny_rects / total if total > 0 else 0
+    avg_items = total_item_count / float(total) if total > 0 else 0.0
 
     stats = {
         "total": total,
@@ -122,6 +134,9 @@ def classify_page_content(
         "stroke_ratio": stroke_ratio,
         "fill_only_ratio": fill_only_ratio,
         "tiny_rect_ratio": tiny_rect_ratio,
+        "total_item_count": total_item_count,
+        "avg_items_per_group": avg_items,
+        "max_rect_ratio": max_rect_ratio,
     }
 
     # ── Glyph flood detection ──────────────────────────────────────
@@ -166,30 +181,40 @@ def classify_page_content(
         }
 
     # ── Fill-art flood detection ───────────────────────────────────
+    # Decorative/map art uses simple 1–3 item groups; real CAD plans have
+    # many path items per drawing group (avg_items >> 5).
+    pure_fill = (
+        fill_only_ratio >= AUTO_FILL_PURE_RATIO
+        and stroke_ratio <= AUTO_FILL_PURE_STROKE_MAX
+        and avg_items <= 5.0
+    )
+    if pure_fill and total >= AUTO_FILL_PURE_MIN_GROUPS:
+        if (
+            total_item_count >= AUTO_FILL_PURE_MIN_ITEMS
+            or max_rect_ratio >= AUTO_FILL_PURE_LARGE_RECT_RATIO
+        ):
+            return {
+                "type": "fill_art",
+                "reason": (
+                    f"Pure fill art ({fill_only_ratio:.0%} fill-only, "
+                    f"avg {avg_items:.1f} items/group) in {total} drawings"
+                ),
+                "drawing_count": total,
+                "stats": stats,
+            }
+
     if total >= AUTO_FILL_DRAWING_THRESHOLD:
         if (
             fill_only_ratio >= AUTO_FILL_HEAVY_RATIO
             and stroke_ratio <= AUTO_FILL_STROKE_MAX
+            and avg_items <= 5.0
         ):
             return {
                 "type": "fill_art",
                 "reason": (
                     f"{fill_only_ratio:.0%} fill-only, "
-                    f"{stroke_ratio:.0%} strokes in {total} drawings"
-                ),
-                "drawing_count": total,
-                "stats": stats,
-            }
-        if (
-            fill_only_ratio >= AUTO_FILL_PURE_RATIO
-            and stroke_ratio <= AUTO_FILL_PURE_STROKE_MAX
-            and total >= AUTO_FILL_PURE_MIN_GROUPS
-        ):
-            return {
-                "type": "fill_art",
-                "reason": (
-                    f"Pure fill art ({fill_only_ratio:.0%} fill-only) "
-                    f"in {total} drawings"
+                    f"{stroke_ratio:.0%} strokes, "
+                    f"avg {avg_items:.1f} items/group in {total} drawings"
                 ),
                 "drawing_count": total,
                 "stats": stats,

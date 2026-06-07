@@ -25,9 +25,9 @@ def _xy(obj) -> Tuple[float, float]:
     return 0.0, 0.0
 
 
-def _norm_color(col) -> Tuple[float, float, float]:
+def _norm_color(col) -> Optional[Tuple[float, float, float]]:
     if col is None:
-        return (0.0, 0.0, 0.0)
+        return None
     try:
         if isinstance(col, (int, float)):
             g = max(0.0, min(1.0, float(col)))
@@ -47,7 +47,7 @@ def _norm_color(col) -> Tuple[float, float, float]:
             vals.append(vals[-1] if vals else 0.0)
         return (vals[0], vals[1], vals[2])
     except (TypeError, ValueError, AttributeError):
-        return (0.0, 0.0, 0.0)
+        return None
 
 
 def _parse_dashes(raw) -> Tuple[Optional[list], float]:
@@ -150,12 +150,28 @@ def _quad_to_points(
     return out
 
 
+def _page_mediabox_height(page) -> float:
+    """Media-box height for Y-flip (PDF user space, not crop-relative)."""
+    try:
+        mbox = page.mediabox
+        return float(mbox.height)
+    except AttributeError:
+        return float(page.rect.height)
+
+
 def extract_page(page, page_num: int, scale: float = 1.0,
                  flip_y: bool = True) -> PageData:
     """Extract normalized primitives from a PyMuPDF page."""
-    page_h = page.rect.height
-    page_w_mm = page.rect.width * MM_PER_PT * scale
-    page_h_mm = page.rect.height * MM_PER_PT * scale
+    try:
+        mbox = page.mediabox
+        page_w_pts = float(mbox.width)
+        page_h_pts = float(mbox.height)
+    except AttributeError:
+        page_w_pts = float(page.rect.width)
+        page_h_pts = float(page.rect.height)
+    page_h = page_h_pts
+    page_w_mm = page_w_pts * MM_PER_PT * scale
+    page_h_mm = page_h_pts * MM_PER_PT * scale
 
     primitives = []
     drawings = page.get_drawings()
@@ -289,7 +305,7 @@ def extract_page(page, page_num: int, scale: float = 1.0,
                 area=area, page_number=page_num
             ))
 
-    text_items = _extract_text(page, page_h, page_num, flip_y, scale)
+    text_items = _extract_text(page, page_h_pts, page_num, flip_y, scale)
 
     return PageData(
         page_number=page_num,
@@ -300,7 +316,12 @@ def extract_page(page, page_num: int, scale: float = 1.0,
 
 
 def _span_baseline_pdf(span: dict, line: dict) -> Tuple[float, float]:
-    """Return PDF user-space (x, baseline_y) for one span."""
+    """Return PDF user-space (x, baseline_y) for one span.
+
+    PyMuPDF ``origin`` is usually the baseline anchor.  When it is missing or
+    an outlier, fall back to bbox bottom minus descender — same approach as the
+    FreeCAD host importer so DXF/CAD text does not sit on dimension geometry.
+    """
     origin = span.get("origin")
     ox = oy = None
     if origin and len(origin) >= 2:
@@ -605,7 +626,9 @@ def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText
                         replacements[si] = merged_item
                         continue
 
-            # Pattern C: horizontal fraction (e.g. "3" + "/" + "4")
+            # ----------------------------------------------------------
+            # Pattern C: Horizontal fraction (e.g. "3" + "/" + "4" on one line)
+            # ----------------------------------------------------------
             horiz_digits = []
             for ci in indices:
                 if ci == si or ci in merged_indices:
