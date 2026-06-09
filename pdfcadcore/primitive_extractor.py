@@ -13,6 +13,7 @@ from typing import List, Optional, Tuple
 from .primitives import (
     Primitive, NormalizedText, PageData, next_id
 )
+from .geometry_cleanup import promote_circular_primitives
 
 MM_PER_PT = 25.4 / 72.0
 
@@ -159,8 +160,15 @@ def _page_mediabox_height(page) -> float:
         return float(page.rect.height)
 
 
-def extract_page(page, page_num: int, scale: float = 1.0,
-                 flip_y: bool = True) -> PageData:
+def extract_page(
+    page,
+    page_num: int,
+    scale: float = 1.0,
+    flip_y: bool = True,
+    detect_arcs: bool = True,
+    arc_fit_tol_mm: float = 0.05,
+    min_arc_angle_deg: float = 5.0,
+) -> PageData:
     """Extract normalized primitives from a PyMuPDF page."""
     try:
         mbox = page.mediabox
@@ -304,6 +312,13 @@ def extract_page(page, page_num: int, scale: float = 1.0,
                 layer_name=layer_name, closed=is_closed,
                 area=area, page_number=page_num
             ))
+
+    if detect_arcs:
+        promote_circular_primitives(
+            primitives,
+            arc_fit_tol_mm=arc_fit_tol_mm,
+            min_arc_angle_deg=min_arc_angle_deg,
+        )
 
     text_items = _extract_text(page, page_h_pts, page_num, flip_y, scale)
 

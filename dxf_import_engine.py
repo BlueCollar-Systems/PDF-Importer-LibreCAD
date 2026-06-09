@@ -137,6 +137,9 @@ def convert(
             page_num=page_num + 1,   # 1-based for display / layer names
             scale=config.user_scale,
             flip_y=config.flip_y,
+            detect_arcs=config.detect_arcs,
+            arc_fit_tol_mm=config.arc_fit_tol_mm,
+            min_arc_angle_deg=config.min_arc_angle_deg,
         )
 
         # 3c. Geometry cleanup (remove micro-segments)

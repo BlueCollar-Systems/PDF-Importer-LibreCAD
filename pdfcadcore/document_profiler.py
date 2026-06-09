@@ -23,8 +23,10 @@ def profile(page_data: PageData) -> PageProfile:
     total_text = len(texts)
     has_layers = bool(page_data.layers)
 
-    circles = 0
+    circles = sum(1 for p in prims if p.type == "circle")
     for p in prims:
+        if p.type == "circle":
+            continue
         if p.type == "closed_loop" and p.points and len(p.points) >= 8:
             fit = circle_fit(p.points)
             if fit and fit[3] < 0.5:

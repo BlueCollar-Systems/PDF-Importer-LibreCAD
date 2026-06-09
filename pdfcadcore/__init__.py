@@ -22,7 +22,10 @@ from .import_config import ImportConfig as ImportConfig, CLEANUP_PRESETS as CLEA
 from .primitive_extractor import extract_page as extract_page
 from .auto_mode import classify_page_content as classify_page_content
 from .hatch_detector import tag_hatch_primitives as tag_hatch_primitives
-from .geometry_cleanup import cleanup_primitives as cleanup_primitives
+from .geometry_cleanup import (
+    cleanup_primitives as cleanup_primitives,
+    promote_circular_primitives as promote_circular_primitives,
+)
 from .qa_report import QAReport as QAReport, compute_counts_delta as compute_counts_delta
 from .import_bounds import (
     ImportBounds as ImportBounds,

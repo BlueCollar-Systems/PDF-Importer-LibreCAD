@@ -31,6 +31,14 @@ def analyze(page_data: PageData, config: RecognitionConfig = None) -> GenericRes
 
     circles = []
     for p in page_data.primitives:
+        if p.type == "circle" and p.center and p.radius:
+            circles.append({
+                "center": p.center,
+                "radius": p.radius,
+                "prim_id": p.id,
+                "rms": 0.0,
+            })
+            continue
         if p.type == "closed_loop" and p.closed and p.points and len(p.points) >= 6:
             fit = circle_fit(p.points)
             if fit and fit[3] < config.circle_fit_tol:
