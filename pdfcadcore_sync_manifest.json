@@ -17,5 +17,6 @@
   "regions.py": "7d34300ece54e9a3bf50ae54a76e34addc6b41299c6777929f8ccac4b3958f64",
   "streaming.py": "32c55e07a08ca8016d40806947f4302678d82b73b50c96ea40c0bc78b58fe6fe",
   "validation.py": "0510e4367e8fd4214e2ea3d42e933e60e8b33961eeb1ecda5125728e80fd7142",
-  "repo_context_builder_core.py": "8fe18c896c63372b5c2d7c17c383b548e9573c9b7592019cd72159f2b08505de"
+  "repo_context_builder_core.py": "8fe18c896c63372b5c2d7c17c383b548e9573c9b7592019cd72159f2b08505de",
+  "pdfcadcore_sync_check.py": "93bb09feed2bfca217ee6b5f352a01cb1e250911a990fd5f26fd91d8aede3184"
 }

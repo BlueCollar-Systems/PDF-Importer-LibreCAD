@@ -33,6 +33,17 @@ REPO_CONTEXT_BUILDER_PATHS: Tuple[Path, ...] = (
     Path(r"C:\1LC-PDFimporter") / "repo_context_builder_core.py",
 )
 
+# The checker itself ships as three byte-identical copies (FC canonical +
+# BL/LC) and drifted twice on 2026-06-09 under concurrent edits, so it is in
+# its own manifest exactly like repo_context_builder_core.py (board Q-09-c).
+# Workflow: edit FC's copy, Copy-Item to BL/LC, then --write-manifest.
+SELF_NAME = "pdfcadcore_sync_check.py"
+SELF_COPY_PATHS: Tuple[Path, ...] = (
+    Path(r"C:\1FC-PDFimporter") / SELF_NAME,
+    Path(r"C:\1BL-PDFimporter") / SELF_NAME,
+    Path(r"C:\1LC-PDFimporter") / SELF_NAME,
+)
+
 # No intentional divergences: all repos must match the canonical manifest exactly.
 # A real per-repo difference must be recorded with its own expected hash, never a blind skip.
 KNOWN_DIVERGENCES: Dict[str, Tuple[str, ...]] = {}
@@ -114,7 +125,7 @@ def check_repo_core(
     # A manifest file absent from the embedded copy is drift too — without
     # this, a newly added core module can silently never ship to a host.
     present = {p.name for p in iter_core_files(core_dir)}
-    for name in sorted(set(manifest) - present - {"repo_context_builder_core.py"}):
+    for name in sorted(set(manifest) - present - {"repo_context_builder_core.py", SELF_NAME}):
         errors.append(f"{repo}: missing core file listed in manifest: {name}")
         if fix and repo != "FC":
             src = canonical_dir / name
@@ -156,6 +167,35 @@ def check_repo_context_builder(manifest: Dict[str, str]) -> List[str]:
     return errors
 
 
+def check_self_copies(manifest: Dict[str, str]) -> List[str]:
+    """The checker guards its own copies (board Q-09-c).
+
+    In a single-repo CI checkout only the local copy exists; comparing it
+    against the manifest still catches a copy that was edited without
+    re-propagating from FC and regenerating the manifest.
+    """
+    if SELF_NAME not in manifest:
+        return [f"manifest missing {SELF_NAME} (rerun --write-manifest)"]
+    expected = manifest[SELF_NAME]
+    candidates = {Path(__file__).resolve()}
+    candidates.update(p.resolve() for p in SELF_COPY_PATHS if p.is_file())
+    errors: List[str] = []
+    seen = 0
+    for path in sorted(candidates):
+        if not path.is_file():
+            continue
+        seen += 1
+        digest = sha256_file(path)
+        if digest != expected:
+            errors.append(
+                f"{path}: sync-check copy drift "
+                f"(expected {expected[:12]}..., got {digest[:12]}...)"
+            )
+    if not errors:
+        print(f"OK: {SELF_NAME} in sync across {seen} {'copy' if seen == 1 else 'copies'}")
+    return errors
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -183,6 +223,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         rcb = SCRIPT_DIR / "repo_context_builder_core.py"
         if rcb.is_file():
             manifest["repo_context_builder_core.py"] = sha256_file(rcb)
+        manifest[SELF_NAME] = sha256_file(Path(__file__).resolve())
         MANIFEST_PATH.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         print(f"Wrote manifest: {MANIFEST_PATH}")
         for repo, core_dir in REPO_CORE_DIRS.items():
@@ -221,6 +262,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 errors.extend(check_repo_core(repo, core_dir, manifest, args.fix, canonical_dir))
 
     errors.extend(check_repo_context_builder(manifest))
+    errors.extend(check_self_copies(manifest))
 
     if errors:
         print("DRIFT DETECTED:")
