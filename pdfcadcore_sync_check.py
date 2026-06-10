@@ -39,11 +39,15 @@ KNOWN_DIVERGENCES: Dict[str, Tuple[str, ...]] = {}
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest().lower()
+    """Hash file content with line endings normalized (CRLF -> LF).
+
+    The repos store LF via .gitattributes, but local tools sometimes leave
+    CRLF working copies while CI checkouts are LF. Hashing normalized bytes
+    keeps the manifest stable across both, so EOL churn can never read as
+    core drift (same lesson as the corpus-level checker, 2026-06-08).
+    """
+    data = path.read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest().lower()
 
 
 def load_manifest() -> Dict[str, str]:
@@ -106,6 +110,17 @@ def check_repo_core(
             if src.is_file():
                 shutil.copy2(src, path)
                 print(f"FIXED: copied canonical {name} -> {path}")
+
+    # A manifest file absent from the embedded copy is drift too — without
+    # this, a newly added core module can silently never ship to a host.
+    present = {p.name for p in iter_core_files(core_dir)}
+    for name in sorted(set(manifest) - present - {"repo_context_builder_core.py"}):
+        errors.append(f"{repo}: missing core file listed in manifest: {name}")
+        if fix and repo != "FC":
+            src = canonical_dir / name
+            if src.is_file():
+                shutil.copy2(src, core_dir / name)
+                print(f"FIXED: copied canonical {name} -> {core_dir / name}")
 
     return errors
 
