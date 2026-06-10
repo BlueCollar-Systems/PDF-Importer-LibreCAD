@@ -14,6 +14,8 @@ build/
 .pytest_cache/
 .ruff_cache/
 dev_logs/
+benchmarks/
+librecad_pdf_importer/_archived/
 generated/
 plugin/lcpdf_menu/Makefile*
 plugin/lcpdf_menu/*.vcxproj*
