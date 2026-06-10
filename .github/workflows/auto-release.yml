@@ -3,6 +3,14 @@ name: auto-release
 on:
   push:
     branches: [main, master]
+    # Docs/CI-only pushes do not mint a release (board Q-08-a / ANS-09-1).
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - ".github/**"
+      - "_archived/**"
+      - "dist/_archived/**"
+      - "dev_logs/**"
   workflow_dispatch:
 
 env:
@@ -14,7 +22,7 @@ permissions:
 
 jobs:
   release:
-    if: "!startsWith(github.event.head_commit.message, 'chore: bump version to') && !contains(github.event.head_commit.message, 'automation/version-bump')"
+    if: "!startsWith(github.event.head_commit.message, 'chore: bump version to') && !contains(github.event.head_commit.message, 'automation/version-bump') && !contains(github.event.head_commit.message, '[skip release]')"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
