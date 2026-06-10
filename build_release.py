@@ -33,6 +33,9 @@ def _should_include(rel_path: str) -> bool:
     """Return True if *rel_path* should be included in the release zip."""
     parts = rel_path.replace("\\", "/").split("/")
 
+    if "_archived" in parts:
+        return False
+
     # Exclude hidden directories
     if any(p.startswith(".") for p in parts):
         return False

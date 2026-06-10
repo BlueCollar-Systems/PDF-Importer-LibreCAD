@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from .core.PDFImportConfig import ImportConfig
+from pdfcadcore.import_config import ImportConfig
 from .core.document import DocumentExtraction, ExtractionOptions, extract_document
 
 

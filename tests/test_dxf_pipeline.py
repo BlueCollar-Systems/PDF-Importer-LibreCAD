@@ -11,11 +11,8 @@ try:
 except ImportError:
     import fitz  # Legacy fallback
 
-from librecad_pdf_importer.core.PDFPrimitiveExtractor import (
-    _merge_stacked_fractions,
-    extract_page,
-)
-from librecad_pdf_importer.core.PDFPrimitives import NormalizedText
+from pdfcadcore.primitive_extractor import _merge_stacked_fractions, extract_page
+from pdfcadcore.primitives import NormalizedText
 from librecad_pdf_importer.core.document import ExtractionOptions, extract_document
 from librecad_pdf_importer.exporters.dxf_exporter import DxfExportOptions, export_to_dxf
 from librecad_pdf_importer.importer import run_import

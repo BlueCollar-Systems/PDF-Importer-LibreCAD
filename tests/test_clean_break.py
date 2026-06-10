@@ -131,10 +131,9 @@ class TestTextDefaults(unittest.TestCase):
     """Core config defaults must not silently return to Labels."""
 
     def test_embedded_configs_default_to_3d_text(self) -> None:
-        for path in (CORE_CONFIG_PY, PACKAGE_CONFIG_PY):
-            source = path.read_text(encoding="utf-8")
-            self.assertIn('text_mode: str = "3d_text"', source)
-            self.assertNotIn('text_mode: str = "labels"', source)
+        source = CORE_CONFIG_PY.read_text(encoding="utf-8")
+        self.assertIn('text_mode: str = "3d_text"', source)
+        self.assertNotIn('text_mode: str = "labels"', source)
 
 
 if __name__ == "__main__":
