@@ -77,6 +77,13 @@
     fidelity. If a contribution appears to violate this, reject it and
     cite BCS-ARCH-001.
 
+14. **RELEASE ARTIFACT NAMING IS LOCKED.** Primary download filenames use
+    `{Host}-PDF-Importer_vX.Y.Z.{ext}` (underscore before version, never
+    `-v`). Examples: `SketchUp-PDF-Importer_v3.7.9.rbz`,
+    `FreeCAD-PDF-Importer-Setup_v4.0.21.exe`. Do NOT use repo-slug order
+    (`PDF-Importer-{Host}_v*`), hyphen-version (`-v`), or `BlueCollar-`
+    in artifact names. Internal package IDs remain frozen legacy names.
+
 ## THIS SESSION'S SCOPE
 
 - Target importer: ____________ (BL / FC / LC / SU)
