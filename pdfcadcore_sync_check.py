@@ -20,17 +20,17 @@ MANIFEST_PATH = SCRIPT_DIR / "pdfcadcore_sync_manifest.json"
 
 REPO_CORE_DIRS: Dict[str, Path] = {
     "FC": SCRIPT_DIR / "PDFVectorImporter" / "pdfcadcore",
-    "BL": Path(r"C:\1BL-PDFimporter") / "pdf_vector_importer" / "pdfcadcore",
-    "LC": Path(r"C:\1LC-PDFimporter") / "pdfcadcore",
+    "BL": Path(r"C:\1PDF-Importer-Blender") / "pdf_vector_importer" / "pdfcadcore",
+    "LC": Path(r"C:\1PDF-Importer-LibreCAD") / "pdfcadcore",
 }
 
 REPO_CONTEXT_BUILDER_PATHS: Tuple[Path, ...] = (
     Path(r"C:\1 Structural_Steel_Shapes_App") / "repo_context_builder_core.py",
     Path(r"C:\1BlueCollar-Website") / "repo_context_builder_core.py",
-    Path(r"C:\1SU-PDFimporter") / "repo_context_builder_core.py",
-    Path(r"C:\1BL-PDFimporter") / "repo_context_builder_core.py",
-    Path(r"C:\1FC-PDFimporter") / "repo_context_builder_core.py",
-    Path(r"C:\1LC-PDFimporter") / "repo_context_builder_core.py",
+    Path(r"C:\1PDF-Importer-SketchUp") / "repo_context_builder_core.py",
+    Path(r"C:\1PDF-Importer-Blender") / "repo_context_builder_core.py",
+    Path(r"C:\1PDF-Importer-FreeCAD") / "repo_context_builder_core.py",
+    Path(r"C:\1PDF-Importer-LibreCAD") / "repo_context_builder_core.py",
 )
 
 # The checker itself ships as three byte-identical copies (FC canonical +
@@ -39,9 +39,9 @@ REPO_CONTEXT_BUILDER_PATHS: Tuple[Path, ...] = (
 # Workflow: edit FC's copy, Copy-Item to BL/LC, then --write-manifest.
 SELF_NAME = "pdfcadcore_sync_check.py"
 SELF_COPY_PATHS: Tuple[Path, ...] = (
-    Path(r"C:\1FC-PDFimporter") / SELF_NAME,
-    Path(r"C:\1BL-PDFimporter") / SELF_NAME,
-    Path(r"C:\1LC-PDFimporter") / SELF_NAME,
+    Path(r"C:\1PDF-Importer-FreeCAD") / SELF_NAME,
+    Path(r"C:\1PDF-Importer-Blender") / SELF_NAME,
+    Path(r"C:\1PDF-Importer-LibreCAD") / SELF_NAME,
 )
 
 # No intentional divergences: all repos must match the canonical manifest exactly.

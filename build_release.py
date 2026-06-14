@@ -4,6 +4,7 @@
 # Licensed under the MIT License. See LICENSE for details.
 """
 Packages the PDF-to-DXF converter into a distributable zip file.
+Output: LibreCAD-PDF-Importer_vX.Y.Z.zip.
 Includes all Python source files and the pdfcadcore library.
 Excludes ``__pycache__``, ``.pyc``, and ``tests/``.
 """
@@ -81,7 +82,7 @@ def _should_include(rel_path: str) -> bool:
 def build(output_dir: str | None = None) -> Path:
     """Create the release zip and return its path."""
     version = _read_version()
-    zip_name = f"pdf2dxf-{version}.zip"
+    zip_name = f"LibreCAD-PDF-Importer_v{version}.zip"
 
     if output_dir is None:
         dist_dir = _PROJECT_ROOT / "dist"

@@ -24,13 +24,13 @@ QStringList candidateScripts() {
     }
 
     candidates
-        << QStringLiteral("C:/1LC-PDFimporter/launch_lcpdf_gui.pyw")
-        << QStringLiteral("C:/1LC-PDFimporter/gui.py");
+        << QStringLiteral("C:/1PDF-Importer-LibreCAD/launch_lcpdf_gui.pyw")
+        << QStringLiteral("C:/1PDF-Importer-LibreCAD/gui.py");
 
     const QString appDir = QCoreApplication::applicationDirPath();
     candidates
-        << QDir::cleanPath(appDir + "/../1LC-PDFimporter/launch_lcpdf_gui.pyw")
-        << QDir::cleanPath(appDir + "/../1LC-PDFimporter/gui.py");
+        << QDir::cleanPath(appDir + "/../1PDF-Importer-LibreCAD/launch_lcpdf_gui.pyw")
+        << QDir::cleanPath(appDir + "/../1PDF-Importer-LibreCAD/gui.py");
 
     return candidates;
 }
@@ -53,7 +53,7 @@ QString resolveScriptPath(const QSettings &settings) {
 
 QString chooseScript(QWidget *parent, const QString &currentPath) {
     const QString startPath = currentPath.isEmpty()
-                                  ? QStringLiteral("C:/1LC-PDFimporter")
+                                  ? QStringLiteral("C:/1PDF-Importer-LibreCAD")
                                   : currentPath;
     return QFileDialog::getOpenFileName(
         parent,
@@ -194,7 +194,7 @@ void LC_BcLCPdfMenuPlugin::execComm(Document_Interface *doc, QWidget *parent, QS
             tr("Importer launcher script was not found automatically.\n"
                "Please locate `launch_lcpdf_gui.pyw` or `gui.py`.")
         );
-        scriptPath = chooseScript(parent, QStringLiteral("C:/1LC-PDFimporter"));
+        scriptPath = chooseScript(parent, QStringLiteral("C:/1PDF-Importer-LibreCAD"));
         if (scriptPath.isEmpty()) {
             return;
         }

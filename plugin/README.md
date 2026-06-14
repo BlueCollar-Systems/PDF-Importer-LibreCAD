@@ -29,8 +29,8 @@ LibreCAD loads plugins from this user folder, so admin rights are not required.
 
 - Script path auto-detection checks:
   - `BC_LC_IMPORTER_SCRIPT` env var
-  - `C:/1LC-PDFimporter/launch_lcpdf_gui.pyw`
-  - `C:/1LC-PDFimporter/gui.py`
+  - `C:/1PDF-Importer-LibreCAD/launch_lcpdf_gui.pyw`
+  - `C:/1PDF-Importer-LibreCAD/gui.py`
 - Python executable auto-detection checks:
   - `BC_LC_IMPORTER_PYTHON` env var
   - `pythonw`, `python`, `py -3`

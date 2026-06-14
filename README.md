@@ -34,6 +34,14 @@ See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the full host version matrix (L
 
 ## Installation
 
+### From release (recommended)
+
+Download the latest `LibreCAD-PDF-Importer_vX.Y.Z.zip` from
+[Releases](https://github.com/BlueCollar-Systems/PDF-Importer-LibreCAD/releases),
+extract, and run `pip install -r requirements.txt` in the extracted folder.
+
+### From source
+
 ```
 pip install -r requirements.txt
 pip install -e .

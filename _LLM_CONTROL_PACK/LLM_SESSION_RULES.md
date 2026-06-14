@@ -6,8 +6,8 @@
 
 ## IDENTITY
 - Project: BlueCollar Systems PDF Vector Importers
-- Repos: 1BL-PDFimporter (Blender), 1FC-PDFimporter (FreeCAD),
-         1LC-PDFimporter (LibreCAD), 1SU-PDFimporter (SketchUp)
+- Repos: 1PDF-Importer-Blender (Blender), 1PDF-Importer-FreeCAD (FreeCAD),
+         1PDF-Importer-LibreCAD (LibreCAD), 1PDF-Importer-SketchUp (SketchUp)
 - Shared core: pdfcadcore (standalone at 1pdfcadcore, embedded in BL/FC/LC)
 - SketchUp: independent Ruby implementation, same logic
 - Test corpus: 1pdf-test-corpus

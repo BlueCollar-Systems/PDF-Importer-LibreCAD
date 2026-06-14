@@ -119,7 +119,7 @@ jobs:
         run: |
           set -e
           TAG="v${{ steps.version.outputs.version }}"
-          TITLE="PDF to DXF Converter v${{ steps.version.outputs.version }}"
+          TITLE="v${{ steps.version.outputs.version }} — PDF to DXF Converter for LibreCAD"
 
           git fetch --tags --force
           if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then

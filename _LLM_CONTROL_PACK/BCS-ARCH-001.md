@@ -241,7 +241,7 @@ The following must be updated or marked SUPERSEDED:
 
 | Document / Artifact | Location | Action |
 |---------------------|----------|--------|
-| Each importer's README.md | 1SU-/1FC-/1BL-/1LC-PDFimporter | Update mode names |
+| Each importer's README.md | 1PDF-Importer-{SketchUp,FreeCAD,Blender,LibreCAD} | Update mode names |
 | Each importer's CLI help text | batch_cli.py / cli.py | Update --preset → --mode |
 | pdfcadcore import_config.py | 1pdfcadcore + 3 embedded copies | Remove preset branching |
 | LLM_INSTRUCTIONS.md (PDF) | _LLM_CONTROL_PACK folder | Update preset references |

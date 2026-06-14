@@ -38,10 +38,10 @@ To prevent catastrophic forgetting and the sycophantic acceptance of broken code
 
 Four PDF importers:
 
-- **Blender** (1BL-PDFimporter) — Python, pdfcadcore + Blender adapter
-- **FreeCAD** (1FC-PDFimporter) — Python, pdfcadcore + FreeCAD adapter
-- **LibreCAD** (1LC-PDFimporter) — Python, pdfcadcore + DXF exporter
-- **SketchUp** (1SU-PDFimporter) — Ruby, independent implementation
+- **Blender** (1PDF-Importer-Blender) — Python, pdfcadcore + Blender adapter
+- **FreeCAD** (1PDF-Importer-FreeCAD) — Python, pdfcadcore + FreeCAD adapter
+- **LibreCAD** (1PDF-Importer-LibreCAD) — Python, pdfcadcore + DXF exporter
+- **SketchUp** (1PDF-Importer-SketchUp) — Ruby, independent implementation
 
 Shared extraction core: `pdfcadcore` (standalone at `1pdfcadcore`, embedded copies in BL/FC/LC). Test corpus: `1pdf-test-corpus`.
 
