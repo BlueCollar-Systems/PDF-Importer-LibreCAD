@@ -335,12 +335,18 @@ def extract_page(
     text_items = _extract_text(page, page_h_pts, page_num, flip_y, scale)
     layers = _collect_page_layers(primitives)
 
-    return PageData(
+    page_data = PageData(
         page_number=page_num,
         width=page_w_mm, height=page_h_mm,
         primitives=primitives, text_items=text_items,
         layers=layers, xobject_names=[]
     )
+    from .generic_classifier import classify_text
+    from .resolved_scale import resolve_page_scale
+
+    classify_text(page_data)
+    page_data.resolved_scale = resolve_page_scale(page_data)
+    return page_data
 
 
 def _span_baseline_pdf(span: dict, line: dict) -> Tuple[float, float]:

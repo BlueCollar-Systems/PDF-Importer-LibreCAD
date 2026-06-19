@@ -20,6 +20,13 @@ def classify_text(page_data: PageData):
             tags.append("revision_like")
         if re.search(r"\b(DETAIL|SECTION|VIEW|ELEVATION)\s+[A-Z]", tu):
             tags.append("detail_reference")
+        if re.search(r"\b(SCALE|SC\.?|SCL\.?)\b", tu) or re.search(r"\d+\s*:\s*\d+", tu):
+            tags.append("scale_like")
+        if re.search(r"\b(DRAWN|CHECKED|APPROVED|PROJECT|JOB|DATE|SHEET)\b", tu):
+            tags.append("titleblock_like")
+        if re.search(r'\d+(?:\.\d+)?(?:\s*/\s*\d+)?\s*["\u2033]?\s*=\s*\d', tu) or \
+           re.search(r"\b\d+(?:\.\d+)?\s*(MM|CM|IN|FT|M)\b", tu):
+            tags.append("dimension_like")
         txt.generic_tags = tags
 
 

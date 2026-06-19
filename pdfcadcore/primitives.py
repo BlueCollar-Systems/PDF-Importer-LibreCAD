@@ -75,6 +75,15 @@ class NormalizedText:
 
 
 @dataclass
+class ResolvedScale:
+    factor: float = 1.0
+    notation: str = "1:1"
+    source: str = "default"   # titleblock | page_text | user | default
+    confidence: float = 0.0
+    fallback_reason: str = ""
+
+
+@dataclass
 class PageData:
     page_number: int
     width: float           # mm
@@ -83,6 +92,7 @@ class PageData:
     text_items: List[NormalizedText] = field(default_factory=list)
     layers: List[str] = field(default_factory=list)
     xobject_names: List[str] = field(default_factory=list)
+    resolved_scale: Optional["ResolvedScale"] = None
 
 
 @dataclass

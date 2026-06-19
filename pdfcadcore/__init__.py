@@ -15,9 +15,12 @@ from .primitives import (
     Region as Region,
     PageProfile as PageProfile,
     RecognitionConfig as RecognitionConfig,
+    ResolvedScale as ResolvedScale,
     next_id as next_id,
     reset_ids as reset_ids,
 )
+from .import_report import ImportReport as ImportReport, build_import_report as build_import_report
+from .resolved_scale import resolve_page_scale as resolve_page_scale
 from .import_config import ImportConfig as ImportConfig, CLEANUP_PRESETS as CLEANUP_PRESETS
 from .primitive_extractor import extract_page as extract_page
 from .auto_mode import classify_page_content as classify_page_content
