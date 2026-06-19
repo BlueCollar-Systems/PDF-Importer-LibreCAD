@@ -160,6 +160,18 @@ def _page_mediabox_height(page) -> float:
         return float(page.rect.height)
 
 
+def _collect_page_layers(primitives: List[Primitive]) -> List[str]:
+    """Return sorted unique OCG/layer names present on a page."""
+    names: set[str] = set()
+    for prim in primitives:
+        layer = prim.layer_name
+        if layer is not None:
+            name = str(layer).strip()
+            if name:
+                names.add(name)
+    return sorted(names)
+
+
 def extract_page(
     page,
     page_num: int,
@@ -321,12 +333,13 @@ def extract_page(
         )
 
     text_items = _extract_text(page, page_h_pts, page_num, flip_y, scale)
+    layers = _collect_page_layers(primitives)
 
     return PageData(
         page_number=page_num,
         width=page_w_mm, height=page_h_mm,
         primitives=primitives, text_items=text_items,
-        layers=[], xobject_names=[]
+        layers=layers, xobject_names=[]
     )
 
 
