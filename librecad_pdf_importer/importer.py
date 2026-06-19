@@ -28,11 +28,20 @@ def _pymupdf_version() -> str:
     return str(getattr(fitz, "__version__", "") or "")
 
 
+def _importer_version() -> str:
+    try:
+        from pdf2dxf import __version__
+
+        return str(__version__ or "")
+    except (ImportError, AttributeError):
+        return ""
+
+
 def write_import_report(
     run: ImportRun,
     output_path: str,
     *,
-    importer_version: str = "1.0.14",
+    importer_version: Optional[str] = None,
     host_version: str = "",
     elapsed_ms: float = 0.0,
 ) -> str:
@@ -75,7 +84,7 @@ def write_import_report(
         host_version=host_version,
         runtime_lang="python",
         runtime_version=f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
-        importer_version=importer_version,
+        importer_version=importer_version or _importer_version(),
         pdf_path=extraction.pdf_path,
         mode=run.config.import_mode,
         pages=len(pages),
