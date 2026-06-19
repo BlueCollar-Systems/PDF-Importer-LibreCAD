@@ -142,7 +142,7 @@ def run_import(pdf_path: str, mode: str = "auto",
 
     report_path = (overrides or {}).get("import_report_path")
     if report_path:
-        write_import_report(run, str(report_path), elapsed_ms=0.0)
+        run.import_report_path = write_import_report(run, str(report_path), elapsed_ms=0.0)
 
     return run
 
