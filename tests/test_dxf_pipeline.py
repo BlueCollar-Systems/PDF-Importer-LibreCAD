@@ -86,6 +86,26 @@ class TestDxfPipeline(unittest.TestCase):
         types = {entity.dxftype() for entity in dxf.modelspace()}
         self.assertIn("IMAGE", types)
 
+    def test_geometry_text_mode_outputs_noneditable_outlines(self) -> None:
+        run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
+        export = export_to_dxf(
+            run.extraction,
+            str(self.dxf_path),
+            DxfExportOptions(include_images=False, text_mode="geometry"),
+        )
+
+        self.assertGreater(export.entity_count, 0)
+        dxf = ezdxf.readfile(export.output_path)
+        text_layer_entities = [
+            entity for entity in dxf.modelspace()
+            if str(entity.dxf.layer or "") == "P001_TEXT"
+        ]
+        self.assertGreater(len(text_layer_entities), 0)
+        text_layer_types = {entity.dxftype() for entity in text_layer_entities}
+        self.assertNotIn("TEXT", text_layer_types)
+        self.assertNotIn("MTEXT", text_layer_types)
+        self.assertTrue({"LWPOLYLINE", "POLYLINE"}.intersection(text_layer_types))
+
     def test_dxf_version_override(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
         export = export_to_dxf(
