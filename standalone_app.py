@@ -12,14 +12,36 @@ system Python and no pip installs. See build_standalone.py.
 from __future__ import annotations
 
 import multiprocessing
+import sys
 
 
-def main() -> None:
+def self_test() -> int:
+    """Verify the frozen app can load its bundled runtime dependencies."""
+    try:
+        import ezdxf  # noqa: F401
+        import pdfcadcore  # noqa: F401
+        import librecad_pdf_importer  # noqa: F401
+        try:
+            import pymupdf as fitz  # noqa: F401
+        except ImportError:
+            import fitz  # noqa: F401
+    except Exception as exc:
+        print(f"LibreCAD PDF Importer self-test FAILED: {exc}")
+        return 1
+    print("LibreCAD PDF Importer self-test OK")
+    return 0
+
+
+def main() -> int:
+    if "--self-test" in sys.argv:
+        return self_test()
+
     # Required so frozen builds don't re-launch the GUI in worker processes.
     multiprocessing.freeze_support()
     from gui import launch_gui
     launch_gui()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

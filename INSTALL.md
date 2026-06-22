@@ -97,6 +97,12 @@ python preflight_check.py --install
 
 The `--install` flag downloads PyMuPDF and ezdxf into `./lib` with no admin rights required.
 
+Standalone app self-test after install:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\BlueCollar Systems\LibreCAD PDF Importer\LibreCAD-PDF-Importer.exe" --self-test
+```
+
 ## Troubleshooting
 
 **Black screen when opening DXF?** The importer auto-inverts white lines to black for visibility. If you still see a blank screen, try View > Auto Zoom in LibreCAD.
