@@ -5,6 +5,8 @@ __pycache__/
 dist/
 build/
 *.zip
+*.log
+*.spec
 .env
 .env.local
 .vscode/
@@ -13,6 +15,7 @@ build/
 *.dxf
 .pytest_cache/
 .ruff_cache/
+.build-venv/
 dev_logs/
 benchmarks/
 librecad_pdf_importer/_archived/
@@ -25,3 +28,7 @@ plugin/lcpdf_menu/*.dll
 plugin/lcpdf_menu/*_resource.rc
 plugin/lcpdf_menu/release/
 plugin/lcpdf_menu/debug/
+dist/windows/
+dist/pyinstaller_work/
+dist/pyinstaller_specs/
+installer/Output/

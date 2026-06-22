@@ -28,17 +28,22 @@ See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the full host version matrix (L
 
 ## Requirements
 
-- Python 3.10+
-- PyMuPDF >=1.24,<2.0
-- ezdxf >= 1.0
+- Windows release installer or portable ZIP: no separate Python or pip packages.
+- Source/dev install: Python 3.10+, PyMuPDF >=1.24,<2.0, ezdxf >=1.0.
 
 ## Installation
 
 ### From release (recommended)
 
-Download the latest `LibreCAD-PDF-Importer_vX.Y.Z.zip` from
-[Releases](https://github.com/BlueCollar-Systems/PDF-Importer-LibreCAD/releases),
-extract, and run `pip install -r requirements.txt` in the extracted folder.
+Download `LibreCAD-PDF-Importer-Setup_vX.Y.Z.exe` from
+[Releases](https://github.com/BlueCollar-Systems/PDF-Importer-LibreCAD/releases)
+and run it. The installer bundles CPython, PyMuPDF, ezdxf, Tkinter, pdfcadcore,
+and the GUI app, so a clean Windows PC does not need system Python, pip, or
+administrator rights.
+
+Advanced users can also download
+`LibreCAD-PDF-Importer-Windows-Portable_vX.Y.Z.zip`, extract it anywhere, and
+run `lcpdf-gui.exe` or the command-line tools inside the folder.
 
 ### From source
 
@@ -46,6 +51,11 @@ extract, and run `pip install -r requirements.txt` in the extracted folder.
 pip install -r requirements.txt
 pip install -e .
 ```
+
+Source installs are intended for development. Use `python preflight_check.py`
+to check dependencies, or `python preflight_check.py --install` to install
+PyMuPDF and ezdxf into this checkout's private `lib/` folder without admin
+rights.
 
 Optional: install the native LibreCAD menu plugin (Windows):
 ```

@@ -102,7 +102,7 @@ def build(output_dir: str | None = None) -> Path:
                 files_to_add.append((item, rel))
 
     # Walk package and auxiliary directories
-    for package_dir_name in ("pdfcadcore", "librecad_pdf_importer", "plugin"):
+    for package_dir_name in ("pdfcadcore", "librecad_pdf_importer", "plugin", "lib"):
         package_dir = _PROJECT_ROOT / package_dir_name
         if not package_dir.is_dir():
             continue
