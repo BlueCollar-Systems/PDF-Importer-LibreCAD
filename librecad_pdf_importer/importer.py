@@ -79,6 +79,8 @@ def write_import_report(
         None,
     )
 
+    from pdfcadcore.fitz_loader import sample_process_mb
+
     report = build_import_report(
         host_app="librecad",
         host_version=host_version,
@@ -93,6 +95,7 @@ def write_import_report(
         layer_count=len(layer_names),
         bbox=bounds,
         elapsed_ms=elapsed_ms,
+        peak_mb=sample_process_mb(),
         fallback_used=fallback_used,
         fallback_reason=fallback_reason,
         pdf_engine_version=_pymupdf_version(),

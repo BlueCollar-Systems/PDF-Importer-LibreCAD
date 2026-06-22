@@ -52,9 +52,8 @@ def _open_source(source: Any) -> Tuple[Any, bool]:
     """Return ``(document, owns_document)`` for a path or open Document."""
     if hasattr(source, "load_page") or hasattr(source, "page_count"):
         return source, False
-    from .fitz_loader import import_fitz
-    fitz = import_fitz()
-    return fitz.open(str(source)), True
+    from .fitz_loader import safe_open
+    return safe_open(str(source)), True
 
 
 def _normalize_pages(requested: Optional[Sequence[int]], total: int) -> List[int]:

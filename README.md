@@ -35,15 +35,23 @@ See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the full host version matrix (L
 
 ### From release (recommended)
 
-Download `LibreCAD-PDF-Importer-Setup_vX.Y.Z.exe` from
-[Releases](https://github.com/BlueCollar-Systems/PDF-Importer-LibreCAD/releases)
-and run it. The installer bundles CPython, PyMuPDF, ezdxf, Tkinter, pdfcadcore,
-and the GUI app, so a clean Windows PC does not need system Python, pip, or
-administrator rights.
+Download `LibreCAD-PDF-Importer_vX.Y.Z.zip` from
+[Releases](https://github.com/BlueCollar-Systems/PDF-Importer-LibreCAD/releases),
+extract it anywhere you can write files, then run:
 
-Advanced users can also download
-`LibreCAD-PDF-Importer-Windows-Portable_vX.Y.Z.zip`, extract it anywhere, and
-run `lcpdf-gui.exe` or the command-line tools inside the folder.
+```powershell
+python preflight_check.py --install
+python pdf2dxf.py --gui
+```
+
+The release ZIP is a **source + pdfcadcore bundle** (not a frozen EXE). On a
+clean PC you need **Python 3.10+** once; `preflight_check.py --install`
+downloads PyMuPDF and ezdxf into a private `./lib` folder with no admin rights.
+
+> **Future builds:** `build_standalone.py` / `build_windows_portable.py` can
+> produce `LibreCAD-PDF-Importer-Setup_vX.Y.Z.exe` and
+> `LibreCAD-PDF-Importer-Windows-Portable_vX.Y.Z.zip` when those assets are
+> published. Until then, use the release ZIP above.
 
 ### From source
 

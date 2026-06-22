@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 import sys
+import time
+from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 # Ensure project root is importable
@@ -31,6 +33,11 @@ from dxf_builder import build_dxf
 from dxf_text_builder import reset_text_styles
 
 
+def _default_import_report_path(output_path: str) -> str:
+    stem = Path(output_path).with_suffix("")
+    return str(stem) + "_import_report.json"
+
+
 def _convert_via_package(
     input_path: str,
     output_path: str,
@@ -40,12 +47,13 @@ def _convert_via_package(
 ) -> Dict[str, int]:
     """Full BCS-ARCH-001 pipeline (auto/raster/hybrid + raster pages)."""
     from librecad_pdf_importer.exporters.dxf_exporter import DxfExportOptions, export_to_dxf
-    from librecad_pdf_importer.importer import run_import
+    from librecad_pdf_importer.importer import run_import, write_import_report
 
     def _log(msg: str) -> None:
         if progress_callback:
             progress_callback(msg)
 
+    report_path = _default_import_report_path(output_path)
     overrides = {
         "user_scale": config.user_scale,
         "import_text": config.import_text,
@@ -57,7 +65,9 @@ def _convert_via_package(
         "detect_arcs": config.detect_arcs,
         "arc_fit_tol_mm": config.arc_fit_tol_mm,
         "map_dashes": config.map_dashes,
+        "import_report_path": report_path,
     }
+    t0 = time.perf_counter()
     _log(f"Using package pipeline for mode={config.import_mode}...")
     run = run_import(input_path, mode=config.import_mode, overrides=overrides)
     export = export_to_dxf(
@@ -74,11 +84,14 @@ def _convert_via_package(
             map_dashes=bool(config.map_dashes),
         ),
     )
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    write_import_report(run, report_path, elapsed_ms=elapsed_ms)
     text_count = run.extraction.text_count if config.import_text else 0
     return {
         "pages": len(run.extraction.pages),
         "entities": export.entity_count,
         "text_items": text_count,
+        "import_report_path": report_path,
     }
 
 
@@ -112,7 +125,7 @@ def convert(
     if config is None:
         config = ImportConfig.auto()
 
-    if config.import_mode in ("auto", "raster", "hybrid"):
+    if config.import_mode in ("auto", "vector", "raster", "hybrid"):
         return _convert_via_package(
             input_path, output_path, config, dxf_version, progress_callback
         )
@@ -131,17 +144,9 @@ def convert(
     # 2. Open PDF with PyMuPDF
     # ------------------------------------------------------------------
     _log("Opening PDF...")
-    try:
-        import pymupdf as fitz  # PyMuPDF >= 1.24 preferred name
-    except ImportError:
-        try:
-            import fitz  # Legacy fallback
-        except ImportError as exc:
-            raise ImportError(
-                "PyMuPDF (fitz) is required.  Install with:  pip install PyMuPDF"
-            ) from exc
+    from pdfcadcore.fitz_loader import safe_open
 
-    pdf_doc = fitz.open(input_path)
+    pdf_doc = safe_open(input_path)
     total_pages = pdf_doc.page_count
 
     # Determine which pages to convert

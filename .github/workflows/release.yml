@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   build-and-publish:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
 
     steps:
       - name: Checkout source
@@ -34,8 +34,14 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Build release zip
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Build source release zip
         run: python build_release.py
+
+      - name: Build Windows portable app zip
+        run: python build_windows_portable.py
 
       - name: Upload build artifacts (workflow run)
         uses: actions/upload-artifact@v4

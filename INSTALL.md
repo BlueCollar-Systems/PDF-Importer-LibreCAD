@@ -4,26 +4,29 @@ This tool converts PDF drawings to DXF files that you can open in LibreCAD, Auto
 
 ## Quick Start
 
-### Option 0: Standalone installer - no Python needed (recommended for most users)
-1. Download `LibreCAD-PDF-Importer-Setup_vX.Y.Z.exe` from [Releases](https://github.com/BlueCollar-Systems/PDF-Importer-LibreCAD/releases).
-2. Double-click it (no admin required) and follow the prompts.
-3. Launch **LibreCAD PDF Importer** from the Start menu or desktop.
-
-This build bundles Python, PyMuPDF, ezdxf, pdfcadcore, and the GUI, so you do
-**not** need to install Python or any pip packages. It runs on a clean PC,
-offline.
-
-> Build it yourself: `python build_standalone.py` (needs PyInstaller), then compile
-> `installer\librecad-pdf-importer.iss` with [Inno Setup 6](https://jrsoftware.org/isinfo.php).
-
-### Option 0b: Portable ZIP - no install and no Python needed
-1. Download `LibreCAD-PDF-Importer-Windows-Portable_vX.Y.Z.zip`.
+### Option 0: Release ZIP — recommended today
+1. Download `LibreCAD-PDF-Importer_vX.Y.Z.zip` from [Releases](https://github.com/BlueCollar-Systems/PDF-Importer-LibreCAD/releases).
 2. Extract it anywhere you can write files.
-3. Double-click `lcpdf-gui.exe`, or run `pdf2dxf.exe` from a terminal.
+3. From that folder:
+   ```powershell
+   python preflight_check.py --install
+   python pdf2dxf.py --gui
+   ```
+4. `preflight_check.py --install` vendors PyMuPDF and ezdxf into `./lib` (no admin).
 
-The portable ZIP bundles CPython, PyMuPDF, ezdxf, and Tkinter into the
-executables. It is the simplest fallback for locked-down PCs where installers
-are blocked.
+Each successful conversion also writes `<output>_import_report.json` beside the DXF
+with `text_mode`, `resolved_scale`, `peak_mb`, and raster fallback telemetry.
+
+### Option 0b: Standalone installer — when published
+When `LibreCAD-PDF-Importer-Setup_vX.Y.Z.exe` appears on Releases, double-click it
+(no admin required) and launch **LibreCAD PDF Importer** from the Start menu.
+
+> Build locally: `python build_standalone.py` (PyInstaller) + Inno Setup for
+> `installer\librecad-pdf-importer.iss`.
+
+### Option 0c: Portable ZIP — when published
+When `LibreCAD-PDF-Importer-Windows-Portable_vX.Y.Z.zip` is published, extract and
+run `lcpdf-gui.exe` or `pdf2dxf.exe` with no Python install.
 
 ### Option 1: LibreCAD Plugins menu
 1. Build/install plugin:
@@ -108,8 +111,8 @@ Standalone app self-test after install:
 **Black screen when opening DXF?** The importer auto-inverts white lines to black for visibility. If you still see a blank screen, try View > Auto Zoom in LibreCAD.
 
 **Missing text?** Auto mode should handle text well. If text is missing, try
-explicitly `--mode vector` and check the text-rendering setting. `3d_text` is
-the default; try `glyphs` for symbol-heavy PDFs.
+explicitly `--mode vector` and check the text-rendering setting. GUI default is
+**Labels**; CLI default is `labels` (try `glyphs` for symbol-heavy PDFs).
 
 **Geometry looks wrong?** Auto mode should pick the right strategy. If not, try
 `--mode vector` for CAD drawings or `--mode hybrid` for PDFs with embedded raster.

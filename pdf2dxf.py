@@ -13,7 +13,7 @@ import os
 import sys
 import time
 
-__version__ = "1.0.31"
+__version__ = "1.0.32"
 
 # ---------------------------------------------------------------------------
 # Ensure project root is on sys.path so ``import pdfcadcore`` resolves
@@ -104,6 +104,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: input file not found: {args.input}", file=sys.stderr)
         return 1
 
+    # Open-time gate: reject encrypted/empty/non-PDF cleanly (no traceback).
+    from pdf_open_guard import precheck_pdf, PdfOpenError
+    try:
+        precheck_pdf(args.input)
+    except PdfOpenError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
     # Derive output path
     output = args.output
     if output is None:
@@ -127,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Run conversion
     from dxf_import_engine import convert
+    from pdfcadcore.fitz_loader import PdfOpenError
 
     if args.verbose:
         print(f"pdf2dxf {__version__} -- BlueCollar Systems")
@@ -142,13 +151,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.verbose:
             print(f"  [{time.perf_counter() - t0:.1f}s] {msg}")
 
-    stats = convert(
-        input_path=args.input,
-        output_path=output,
-        config=config,
-        dxf_version=args.dxf_version,
-        progress_callback=_progress if args.verbose else None,
-    )
+    try:
+        stats = convert(
+            input_path=args.input,
+            output_path=output,
+            config=config,
+            dxf_version=args.dxf_version,
+            progress_callback=_progress if args.verbose else None,
+        )
+    except PdfOpenError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
 
     elapsed = time.perf_counter() - t0
 
@@ -160,6 +173,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  Text items:      {stats.get('text_items', 0)}")
     print(f"  Output:          {output}")
     print(f"  Time:            {elapsed:.2f}s")
+    report_path = stats.get("import_report_path")
+    if report_path:
+        print(f"  import_report:   {report_path}")
     return 0
 
 

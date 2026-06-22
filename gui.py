@@ -290,6 +290,9 @@ class Pdf2DxfApp(tk.Tk):
             self._log(f"Starting conversion: {os.path.basename(input_path)}")
             self._log("Import mode: Auto (per-page strategy)")
 
+            from pdf_open_guard import precheck_pdf
+            precheck_pdf(input_path)  # clean reject for encrypted/empty/non-PDF (caught below)
+
             stats = convert(
                 input_path=input_path,
                 output_path=output_path,
@@ -328,10 +331,16 @@ class Pdf2DxfApp(tk.Tk):
             ))
 
         except Exception as exc:  # noqa: BLE001
-            self._log(f"\nERROR: {exc}")
-            self.after(0, lambda e=exc: messagebox.showerror(
-                "Conversion failed", str(e),
-            ))
+            from pdfcadcore.fitz_loader import PdfOpenError
+
+            if isinstance(exc, PdfOpenError):
+                self._log(f"\nERROR: {exc}")
+                self.after(0, lambda e=exc: messagebox.showerror("Conversion failed", str(e)))
+            else:
+                self._log(f"\nERROR: {exc}")
+                self.after(0, lambda e=exc: messagebox.showerror(
+                    "Conversion failed", str(e),
+                ))
 
         finally:
             self.after(0, self._finish_conversion)
