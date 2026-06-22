@@ -10,7 +10,7 @@
   "hatch_detector.py": "621e1649d35b423af716db14c222235aad2c6218eff64821e4e84927510a2bda",
   "import_bounds.py": "f89e69995581bee6bf19d3d5db249e12d1025559ef93bfb778511863816b1324",
   "import_config.py": "89ef00d6b3fbae5faf91e02649d75845bea9d8b6bb7c3bd06a33c4a4037d8f9b",
-  "import_report.py": "aaf47d8311a7b3bb292840f54fda8cfe04dea20f3aa81191f7bd91cf7d368360",
+  "import_report.py": "696ad397c7f008c38f8b0ef43142f41ac0dc94f381846fa931167c035cc3714c",
   "primitive_extractor.py": "d0750b92a5e2cc4e26b51b40f91ac9a30b52658f8caa84cb22e239456b515bf3",
   "primitives.py": "eec8be4e6cce2b9d55b8bc848448c02a068502b79d36139c35262a8d2757eabe",
   "qa_report.py": "cf8ad8ae8f21e344c4f4ada726fb4f3dc1803459ab31d4485cd8654b37f1bd61",

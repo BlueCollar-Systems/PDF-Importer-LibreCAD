@@ -24,6 +24,7 @@ from dxf_text_builder import build_text, reset_text_styles
 @dataclass
 class DxfExportOptions:
     include_text: bool = True
+    text_mode: str = "labels"
     include_images: bool = True
     group_by_page: bool = True
     prefer_source_layers: bool = True
@@ -147,7 +148,7 @@ def export_to_dxf(extraction: DocumentExtraction, output_path: str,
                     _track_xy(float(px), float(py))
                 entity_count += 1
 
-        if opts.include_text:
+        if opts.include_text and opts.text_mode not in ("none", "geometry"):
             for text in page.page_data.text_items:
                 layer = _layer_name(page.page_data.page_number, "TEXT", None, opts)
                 _ensure_layer(doc, layer, None)

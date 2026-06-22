@@ -31,6 +31,57 @@ from dxf_builder import build_dxf
 from dxf_text_builder import reset_text_styles
 
 
+def _convert_via_package(
+    input_path: str,
+    output_path: str,
+    config: ImportConfig,
+    dxf_version: str,
+    progress_callback: Optional[Callable[[str], None]] = None,
+) -> Dict[str, int]:
+    """Full BCS-ARCH-001 pipeline (auto/raster/hybrid + raster pages)."""
+    from librecad_pdf_importer.exporters.dxf_exporter import DxfExportOptions, export_to_dxf
+    from librecad_pdf_importer.importer import run_import
+
+    def _log(msg: str) -> None:
+        if progress_callback:
+            progress_callback(msg)
+
+    overrides = {
+        "user_scale": config.user_scale,
+        "import_text": config.import_text,
+        "text_mode": config.text_mode,
+        "pages": config.pages,
+        "ignore_images": config.ignore_images,
+        "raster_fallback": config.raster_fallback,
+        "raster_dpi": config.raster_dpi,
+        "detect_arcs": config.detect_arcs,
+        "arc_fit_tol_mm": config.arc_fit_tol_mm,
+        "map_dashes": config.map_dashes,
+    }
+    _log(f"Using package pipeline for mode={config.import_mode}...")
+    run = run_import(input_path, mode=config.import_mode, overrides=overrides)
+    export = export_to_dxf(
+        run.extraction,
+        output_path,
+        DxfExportOptions(
+            include_text=bool(config.import_text) and config.text_mode != "geometry",
+            text_mode=str(config.text_mode or "labels"),
+            include_images=not config.ignore_images,
+            group_by_page=True,
+            prefer_source_layers=True,
+            attach_metadata=True,
+            dxf_version=dxf_version,
+            map_dashes=bool(config.map_dashes),
+        ),
+    )
+    text_count = run.extraction.text_count if config.import_text else 0
+    return {
+        "pages": len(run.extraction.pages),
+        "entities": export.entity_count,
+        "text_items": text_count,
+    }
+
+
 def convert(
     input_path: str,
     output_path: str,
@@ -60,6 +111,11 @@ def convert(
     """
     if config is None:
         config = ImportConfig.auto()
+
+    if config.import_mode in ("auto", "raster", "hybrid"):
+        return _convert_via_package(
+            input_path, output_path, config, dxf_version, progress_callback
+        )
 
     def _log(msg: str) -> None:
         if progress_callback:

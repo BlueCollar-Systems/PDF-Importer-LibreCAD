@@ -96,6 +96,8 @@ def write_import_report(
         fallback_used=fallback_used,
         fallback_reason=fallback_reason,
         pdf_engine_version=_pymupdf_version(),
+        import_text=bool(run.config.import_text),
+        text_mode=str(run.config.text_mode or "labels"),
         extra={
             "resolved_scale": resolved_scale,
             "auto_mode": extraction.summary().get("auto_mode"),

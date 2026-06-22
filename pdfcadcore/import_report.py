@@ -90,6 +90,8 @@ def build_import_report(
     pdf_engine_name: str = "pymupdf",
     pdf_engine_version: str = "",
     pdf_engine_wheel_tag: str = "",
+    import_text: Optional[bool] = None,
+    text_mode: Optional[str] = None,
     extra: Optional[Dict[str, Any]] = None,
 ) -> ImportReport:
     input_block: Dict[str, Any] = {
@@ -101,6 +103,12 @@ def build_import_report(
             input_block["sha256"] = _sha256_file(pdf_path)
     except OSError:
         pass
+
+    extra_block = dict(extra or {})
+    if import_text is not None:
+        extra_block.setdefault("import_text", bool(import_text))
+    if text_mode is not None:
+        extra_block.setdefault("text_mode", str(text_mode))
 
     return ImportReport(
         host={"app": host_app, "version": host_version},
@@ -122,7 +130,7 @@ def build_import_report(
         performance={"elapsed_ms": float(elapsed_ms), "peak_mb": float(peak_mb)},
         fallback={"used": bool(fallback_used), "reason": fallback_reason},
         mode=mode,
-        extra=dict(extra or {}),
+        extra=extra_block,
     )
 
 
