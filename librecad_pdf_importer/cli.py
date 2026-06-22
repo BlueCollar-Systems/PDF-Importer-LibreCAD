@@ -90,7 +90,7 @@ def main() -> int:
         DxfExportOptions(
             # Text export reflects effective config — driven by --import-text
             # (already applied to run.config.import_text via overrides).
-            include_text=bool(run.config.import_text) and (run.config.text_mode != "geometry"),
+            include_text=bool(run.config.import_text) and (run.config.text_mode != "none"),
             text_mode=str(run.config.text_mode or "labels"),
             include_images=not args.no_images,
             group_by_page=True,

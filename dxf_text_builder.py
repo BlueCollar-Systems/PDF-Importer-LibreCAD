@@ -11,6 +11,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import ezdxf
+from ezdxf import path as ezdxf_path
+from ezdxf.addons import text2path
 
 if TYPE_CHECKING:
     from ezdxf.layouts import BaseLayout
@@ -70,7 +72,7 @@ def build_text(
     is_r12: bool = False,
     target_app: str = "generic",
     dxf_version: str = "R2010",
-) -> None:
+) -> int:
     """Add a TEXT or MTEXT entity to *msp* for the given *text_item*.
 
     Parameters
@@ -96,7 +98,7 @@ def build_text(
     """
     content = text_item.text
     if not content or not content.strip():
-        return
+        return 0
 
     # Font size: NormalizedText.font_size is already in mm.
     height = max(0.5, text_item.font_size)
@@ -129,6 +131,41 @@ def build_text(
         style = _ensure_text_style(doc, text_item.font_name)
         attribs["style"] = style
 
+    geometry_text = (config.text_mode or "").strip().lower() in {"geometry", "glyphs"}
+    if geometry_text:
+        attribs["height"] = height
+        attribs["insert"] = insert
+        source = msp.add_text(content, dxfattribs=attribs)
+        outline_attribs = {
+            key: value
+            for key, value in attribs.items()
+            if key in {"layer", "color", "true_color", "lineweight", "linetype"}
+        }
+        try:
+            paths = text2path.make_paths_from_entity(source)
+            if is_r12:
+                outlines = list(
+                    ezdxf_path.to_polylines2d(paths, dxfattribs=outline_attribs)
+                )
+            else:
+                outlines = list(
+                    ezdxf_path.to_lwpolylines(paths, dxfattribs=outline_attribs)
+                )
+            if outlines:
+                try:
+                    msp.delete_entity(source)
+                except Exception:
+                    try:
+                        source.destroy()
+                    except Exception:
+                        pass
+                for entity in outlines:
+                    msp.add_entity(entity)
+                return len(outlines)
+        except Exception:
+            pass
+        return 1
+
     # Determine whether MTEXT is allowed.  Force TEXT-only when:
     #   - targeting DXF R12 (no MTEXT support at all)
     #   - target_app is "librecad" (MTEXT bounding-box issues)
@@ -143,6 +180,7 @@ def build_text(
             content,
             dxfattribs=attribs,
         ).set_location(insert, attachment_point=1)  # TOP_LEFT
+        return 1
     else:
         # Single-line TEXT
         attribs["height"] = height
@@ -151,6 +189,7 @@ def build_text(
             content,
             dxfattribs=attribs,
         )
+        return 1
 
 
 def reset_text_styles() -> None:

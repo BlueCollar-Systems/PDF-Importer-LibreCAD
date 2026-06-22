@@ -62,7 +62,7 @@ def main() -> int:
                 str(out_dxf),
                 DxfExportOptions(
                     dxf_version=args.dxf_version,
-                    include_text=run.config.text_mode != "geometry",
+                    include_text=run.config.text_mode != "none",
                     include_images=True,
                     map_dashes=bool(run.config.map_dashes),
                     page_arrangement=args.page_arrangement,
@@ -94,4 +94,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

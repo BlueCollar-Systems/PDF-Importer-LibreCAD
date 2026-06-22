@@ -148,7 +148,9 @@ def export_to_dxf(extraction: DocumentExtraction, output_path: str,
                     _track_xy(float(px), float(py))
                 entity_count += 1
 
-        if opts.include_text and opts.text_mode not in ("none", "geometry"):
+        if opts.include_text and opts.text_mode != "none":
+            text_cfg = ImportConfig.auto()
+            text_cfg.text_mode = opts.text_mode
             for text in page.page_data.text_items:
                 layer = _layer_name(page.page_data.page_number, "TEXT", None, opts)
                 _ensure_layer(doc, layer, None)
@@ -172,11 +174,11 @@ def export_to_dxf(extraction: DocumentExtraction, output_path: str,
                             else None
                         ),
                     )
-                build_text(
+                created = build_text(
                     ti,
                     msp,
                     layer,
-                    ImportConfig.auto(),
+                    text_cfg,
                     is_r12=is_r12,
                     target_app="librecad",
                     dxf_version=dxf_ver,
@@ -186,7 +188,7 @@ def export_to_dxf(extraction: DocumentExtraction, output_path: str,
                     x0, y0, x1, y1 = ti.bbox
                     _track_xy(float(x0), float(y0))
                     _track_xy(float(x1), float(y1))
-                entity_count += 1
+                entity_count += created
 
         if opts.include_images:
             for placement in page.images:

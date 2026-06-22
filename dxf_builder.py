@@ -481,8 +481,9 @@ def build_dxf(
             writer = _WRITERS.get(prim.type, _add_polyline)
             entity_count += writer(msp, prim, attribs)
 
-        # Text entities — editable TEXT for labels/3d_text; geometry mode skips TEXT
-        if config.import_text and config.text_mode not in ("none", "geometry"):
+        # Text entities. LibreCAD gets editable TEXT for labels/3d_text and
+        # non-editable outline polylines for glyphs/geometry.
+        if config.import_text and config.text_mode != "none":
             for ti in page.text_items:
                 # Apply page stacking offset to text insertion point
                 if dy != 0.0:
@@ -491,7 +492,7 @@ def build_dxf(
                         insertion=(ti.insertion[0], ti.insertion[1] + dy),
                     )
                 layer = page_layer
-                build_text(
+                text_count += build_text(
                     ti,
                     msp,
                     layer,
@@ -500,7 +501,6 @@ def build_dxf(
                     target_app="librecad",
                     dxf_version=dxf_version,
                 )
-                text_count += 1
 
         # Advance stacking offset for the next page
         _stack_offset_y -= page.height * _STACK_MULTIPLIER

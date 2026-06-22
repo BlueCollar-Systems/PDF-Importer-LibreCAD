@@ -70,6 +70,20 @@ class TestDxfFraming(unittest.TestCase):
         self.assertTrue(active)
         self.assertGreater(float(active[0].dxf.height), 0.0)
 
+    def test_geometry_text_exports_outlines_not_text(self) -> None:
+        config = ImportConfig.auto()
+        config.text_mode = "geometry"
+
+        doc, _, text_count = build_dxf([self._sample_page()], config)
+        doc.saveas(str(self.out))
+
+        self.assertGreater(text_count, 0)
+        loaded = ezdxf.readfile(str(self.out))
+        types = {entity.dxftype() for entity in loaded.modelspace()}
+        self.assertNotIn("TEXT", types)
+        self.assertNotIn("MTEXT", types)
+        self.assertTrue({"LWPOLYLINE", "POLYLINE"}.intersection(types))
+
     def test_horizontal_fraction_merge(self) -> None:
         merged = _merge_stacked_fractions([
             NormalizedText(
