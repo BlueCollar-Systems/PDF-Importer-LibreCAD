@@ -1,6 +1,6 @@
 # Q&A Index
 
-Updated: 2026-06-23 (Round 3 scan)
+Updated: 2026-06-23 (Round 3 — Q5 ruled)
 
 ## Source Instructions
 
@@ -10,7 +10,7 @@ Updated: 2026-06-23 (Round 3 scan)
 
 ## Round 3 — Full-repo scan (2026-06-23) — **CURRENT — implementation follow-up in progress**
 
-**Status:** User authorized proceed/commit/push. Reviewer C's website/app objections are being resolved directly, then validation and repo mirror sync will close the loop.
+**Status:** Partial feedback received. **Q5 resolved** (no Q&A gate on auto-release). **Q1–Q4 still open** — full Round 3 agreement and commit plan remain blocked.
 
 | File | Role |
 |------|------|
@@ -19,7 +19,8 @@ Updated: 2026-06-23 (Round 3 scan)
 | `QA-2026-06-23_round3-reviewer-C-cross-repo.md` | pdfcadcore sync, parity, CI across repos |
 | `QA-2026-06-23_round3-reviewer-D-app-website.md` | Steel Logic app + BlueCollar website |
 | `QA-2026-06-23_round3-synthesis.md` | **Start here** — consolidated findings, disagreements, commit plan, blockers |
-| `QA-2026-06-23_round3-awaiting-feedback.md` | Explicit gate: no commits until agreement |
+| `QA-2026-06-23_round3-awaiting-feedback.md` | Feedback status; Q5 closed, Q1–Q4 open |
+| `QA-2026-06-23_round3-user-rulings.md` | User rulings log (Q5: no auto-release Q&A gate) |
 
 **Round-3 headline:** Automated tests and pdfcadcore sync are green; Round-2 **R2-3 strict timing** remains the main sign-off gap. All six repos have **clean** working trees.
 

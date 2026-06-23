@@ -1,7 +1,11 @@
 # Round 3 — Awaiting Feedback
 
 **Date:** 2026-06-23  
-**Status:** **FEEDBACK PHASE — DO NOT COMMIT OR PUSH**
+**Status:** **FEEDBACK PHASE — partial rulings received**
+
+**Resolved:** Q5 (R2-9 / R3-12) — auto-release does **not** wait for Q&A rounds to close (`QA-2026-06-23_round3-user-rulings.md`).
+
+**Still open:** Q1–Q4 (R2-3 strict timing, R2-2 SU phases, open-gate policy, Steel Logic version). Full agreement and commit plan execution remain blocked until those are answered.
 
 ---
 
@@ -25,6 +29,7 @@ This scan was **read-only**. No importer code was modified. No git commits or pu
 | `QA-2026-06-23_round3-reviewer-D-app-website.md` | Steel Logic app + website |
 | `QA-2026-06-23_round3-synthesis.md` | Consolidated list, disagreements, commit plan |
 | `Q&A_INDEX.md` | Index (updated) |
+| `QA-2026-06-23_round3-user-rulings.md` | User rulings log (Q5 resolved) |
 
 ---
 

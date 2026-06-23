@@ -35,7 +35,7 @@
 | R3-9 | P2 | FC pytest Windows `.pytest_tmp` PermissionError on cleanup | FC local pytest | A |
 | R3-10 | P2 | Steel app `1.0.7+8` vs GitHub Steel-Shapes `v1.0.8` | `pubspec.yaml`, metadata | D |
 | R3-11 | P2 | Dead junction workspace paths | `C:\1SU-PDFimporter` etc. | B, C |
-| R3-12 | P2 | Auto-release not gated on open QA (R2-9) | all `auto-release.yml` | B |
+| R3-12 | P2 | Auto-release not gated on open QA (R2-9) — **user ruled: no gate** | all `auto-release.yml` | B |
 
 **No P0 crashes** identified in automated scans.
 
@@ -94,7 +94,7 @@
 2. **R2-2:** Should SketchUp adopt **granular `performance.phases`** keys to match Python hosts, or is total elapsed enough for SU?
 3. **Open gate:** Should SketchUp **fail-closed** on gate errors to match Python, or remain fail-open with explicit COMPATIBILITY docs?
 4. **Steel Logic version:** Is `pubspec.yaml` `1.0.7+8` intentional ahead of Play `1.0.8`, or should we bump and release?
-5. **Release gate (R2-9):** Adopt a hard **no auto-release while Desktop Q&A round open** rule?
+5. **Release gate (R2-9):** Adopt a hard **no auto-release while Desktop Q&A round open** rule? — **RESOLVED (2026-06-23):** **No gate.** Auto-release does **not** wait for Desktop Q&A rounds to close; ship on green CI/tests as today. See `QA-2026-06-23_round3-user-rulings.md`.
 
 ---
 
@@ -116,7 +116,7 @@
 | Blocker | Decision needed |
 |---------|-----------------|
 | **R2-3 performance proof** | Manual benchmark attached vs CI enforcement |
-| **R2-9 release gating** | Process change for auto-release workflows |
+| ~~**R2-9 release gating**~~ | **RESOLVED** — no Q&A gate on auto-release (user ruling 2026-06-23) |
 | **SU open-gate policy** | Document only vs code alignment |
 | **Steel app version** | Bump to 1.0.8+ or document divergence |
 | **Junction paths R2-10** | Recreate `C:\1SU-PDFimporter` style paths or update dev docs |
