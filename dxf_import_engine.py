@@ -69,7 +69,10 @@ def _convert_via_package(
     }
     t0 = time.perf_counter()
     _log(f"Using package pipeline for mode={config.import_mode}...")
+    t_phase = time.perf_counter()
     run = run_import(input_path, mode=config.import_mode, overrides=overrides)
+    run_import_ms = (time.perf_counter() - t_phase) * 1000.0
+    t_phase = time.perf_counter()
     export = export_to_dxf(
         run.extraction,
         output_path,
@@ -84,8 +87,18 @@ def _convert_via_package(
             map_dashes=bool(config.map_dashes),
         ),
     )
+    export_dxf_ms = (time.perf_counter() - t_phase) * 1000.0
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
-    write_import_report(run, report_path, elapsed_ms=elapsed_ms)
+    write_import_report(
+        run,
+        report_path,
+        elapsed_ms=elapsed_ms,
+        performance_phases={
+            "run_import_ms": run_import_ms,
+            "export_dxf_ms": export_dxf_ms,
+            "total_ms": elapsed_ms,
+        },
+    )
     text_count = run.extraction.text_count if config.import_text else 0
     return {
         "pages": len(run.extraction.pages),

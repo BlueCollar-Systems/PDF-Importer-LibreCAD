@@ -4,7 +4,15 @@ This tool converts PDF drawings to DXF files that you can open in LibreCAD, Auto
 
 ## Quick Start
 
-### Option 0: Release ZIP — recommended today
+### Option 0: Portable ZIP — recommended for Windows users
+1. Download `LibreCAD-PDF-Importer-Windows-Portable_vX.Y.Z.zip` from [Releases](https://github.com/BlueCollar-Systems/PDF-Importer-LibreCAD/releases).
+2. Extract it anywhere you can write files.
+3. Run `lcpdf-gui.exe`, or use `pdf2dxf.exe` / `lcpdf-batch.exe` for command-line and batch conversion.
+
+The portable ZIP bundles Python, PyMuPDF, ezdxf, pdfcadcore, the GUI, and the
+CLI launchers. No system Python, pip, or administrator rights are required.
+
+### Option 0a: Source ZIP fallback
 1. Download `LibreCAD-PDF-Importer_vX.Y.Z.zip` from [Releases](https://github.com/BlueCollar-Systems/PDF-Importer-LibreCAD/releases).
 2. Extract it anywhere you can write files.
 3. From that folder:
@@ -17,16 +25,19 @@ This tool converts PDF drawings to DXF files that you can open in LibreCAD, Auto
 Each successful conversion also writes `<output>_import_report.json` beside the DXF
 with `text_mode`, `resolved_scale`, `peak_mb`, and raster fallback telemetry.
 
+**Scale trust:** use `extra.resolved_scale.factor` only when `confidence >= 0.70` and
+`fallback_reason` is not `no_scale_detected`; otherwise set scale manually in your CAD app.
+
+**Bad-PDF gate:** LibreCAD converter refuses encrypted/non-PDF/truncated files at open
+(**fail closed**). SketchUp shows the same messages but may proceed on rare gate errors
+(**fail open**).
+
 ### Option 0b: Standalone installer — when published
 When `LibreCAD-PDF-Importer-Setup_vX.Y.Z.exe` appears on Releases, double-click it
 (no admin required) and launch **LibreCAD PDF Importer** from the Start menu.
 
 > Build locally: `python build_standalone.py` (PyInstaller) + Inno Setup for
 > `installer\librecad-pdf-importer.iss`.
-
-### Option 0c: Portable ZIP — when published
-When `LibreCAD-PDF-Importer-Windows-Portable_vX.Y.Z.zip` is published, extract and
-run `lcpdf-gui.exe` or `pdf2dxf.exe` with no Python install.
 
 ### Option 1: LibreCAD Plugins menu
 1. Build/install plugin:

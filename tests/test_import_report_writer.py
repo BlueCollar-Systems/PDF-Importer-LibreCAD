@@ -27,7 +27,15 @@ class TestImportReportWriter(unittest.TestCase):
             doc.save(str(pdf_path))
 
             run = run_import(str(pdf_path), mode="vector", overrides={"pages": "1"})
-            result = write_import_report(run, str(report_path))
+            result = write_import_report(
+                run,
+                str(report_path),
+                elapsed_ms=15.0,
+                performance_phases={
+                    "run_import_ms": 11.0,
+                    "export_dxf_ms": 4.0,
+                },
+            )
 
             self.assertEqual(result, str(report_path))
             data = json.loads(report_path.read_text(encoding="utf-8"))
@@ -35,6 +43,11 @@ class TestImportReportWriter(unittest.TestCase):
             self.assertEqual(data["host"]["app"], "librecad")
             self.assertEqual(data["importer"]["version"], __version__)
             self.assertGreaterEqual(data["result"]["primitives"], 1)
+            self.assertEqual(data["performance"]["phases"]["run_import_ms"], 11.0)
+            self.assertEqual(data["performance"]["phases"]["export_dxf_ms"], 4.0)
+            self.assertEqual(data["performance"]["phases"]["total_ms"], 15.0)
+            self.assertIn("text_source_spans", data["extra"])
+            self.assertIn("text_glyph_estimate", data["extra"])
 
 
 if __name__ == "__main__":

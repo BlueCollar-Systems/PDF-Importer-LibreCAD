@@ -44,6 +44,8 @@ def write_import_report(
     importer_version: Optional[str] = None,
     host_version: str = "",
     elapsed_ms: float = 0.0,
+    performance_phases: Optional[Dict[str, float]] = None,
+    helper_timings_ms: Optional[Dict[str, float]] = None,
 ) -> str:
     """Emit bcs.import_report/1.1 JSON for one import run."""
     extraction = run.extraction
@@ -71,6 +73,14 @@ def write_import_report(
         if bounds_obj is not None:
             bounds = [round(v, 1) for v in bounds_obj.as_tuple()]
 
+    text_items = [
+        txt
+        for page in pages
+        for txt in (page.page_data.text_items or [])
+    ]
+    text_source_spans = len(text_items)
+    text_glyph_estimate = sum(len(str(getattr(txt, "text", "") or "")) for txt in text_items)
+
     fallback_used = any(
         (p.resolved_mode or "") == "raster" for p in pages
     )
@@ -80,6 +90,10 @@ def write_import_report(
     )
 
     from pdfcadcore.fitz_loader import sample_process_mb
+
+    phases = dict(performance_phases or {})
+    if elapsed_ms > 0 and "total_ms" not in phases:
+        phases["total_ms"] = float(elapsed_ms)
 
     report = build_import_report(
         host_app="librecad",
@@ -95,12 +109,16 @@ def write_import_report(
         layer_count=len(layer_names),
         bbox=bounds,
         elapsed_ms=elapsed_ms,
+        performance_phases=phases or None,
+        helper_timings_ms=helper_timings_ms,
         peak_mb=sample_process_mb(),
         fallback_used=fallback_used,
         fallback_reason=fallback_reason,
         pdf_engine_version=_pymupdf_version(),
         import_text=bool(run.config.import_text),
         text_mode=str(run.config.text_mode or "labels"),
+        text_source_spans=text_source_spans,
+        text_glyph_estimate=text_glyph_estimate,
         extra={
             "resolved_scale": resolved_scale,
             "auto_mode": extraction.summary().get("auto_mode"),

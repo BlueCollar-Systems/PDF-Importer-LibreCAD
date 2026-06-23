@@ -35,3 +35,23 @@ def test_geometry_mode_skips_import_text_flag_still_recorded():
     extra = report.to_dict()["extra"]
     assert extra["text_mode"] == "geometry"
     assert extra["import_text"] is False
+
+
+def test_performance_phases_optional():
+    report = build_import_report(
+        host_app="librecad",
+        pdf_path="plan.pdf",
+        elapsed_ms=1200.0,
+        performance_phases={"parse_ms": 400.0, "total_ms": 1200.0},
+        helper_timings_ms={"ezdxf_save_ms": 20.0},
+        text_source_spans=3,
+        text_glyph_estimate=14,
+    )
+    data = report.to_dict()
+    perf = data["performance"]
+    assert perf["elapsed_ms"] == 1200.0
+    assert perf["phases"]["parse_ms"] == 400.0
+    assert perf["phases"]["total_ms"] == 1200.0
+    assert perf["helpers_ms"]["ezdxf_save_ms"] == 20.0
+    assert data["extra"]["text_source_spans"] == 3
+    assert data["extra"]["text_glyph_estimate"] == 14

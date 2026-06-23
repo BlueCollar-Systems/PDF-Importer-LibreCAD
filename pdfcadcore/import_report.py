@@ -85,6 +85,8 @@ def build_import_report(
     warnings: int = 0,
     elapsed_ms: float = 0.0,
     peak_mb: float = 0.0,
+    performance_phases: Optional[Dict[str, float]] = None,
+    helper_timings_ms: Optional[Dict[str, float]] = None,
     fallback_used: bool = False,
     fallback_reason: Optional[str] = None,
     pdf_engine_name: str = "pymupdf",
@@ -92,6 +94,8 @@ def build_import_report(
     pdf_engine_wheel_tag: str = "",
     import_text: Optional[bool] = None,
     text_mode: Optional[str] = None,
+    text_source_spans: Optional[int] = None,
+    text_glyph_estimate: Optional[int] = None,
     extra: Optional[Dict[str, Any]] = None,
 ) -> ImportReport:
     input_block: Dict[str, Any] = {
@@ -109,6 +113,31 @@ def build_import_report(
         extra_block.setdefault("import_text", bool(import_text))
     if text_mode is not None:
         extra_block.setdefault("text_mode", str(text_mode))
+    if text_source_spans is not None:
+        extra_block.setdefault("text_source_spans", int(text_source_spans))
+    if text_glyph_estimate is not None:
+        extra_block.setdefault("text_glyph_estimate", int(text_glyph_estimate))
+
+    performance_block: Dict[str, Any] = {
+        "elapsed_ms": float(elapsed_ms),
+        "peak_mb": float(peak_mb),
+    }
+    if performance_phases:
+        phases = {
+            str(k): float(v)
+            for k, v in performance_phases.items()
+            if v is not None
+        }
+        if phases:
+            performance_block["phases"] = phases
+    if helper_timings_ms:
+        helpers = {
+            str(k): float(v)
+            for k, v in helper_timings_ms.items()
+            if v is not None
+        }
+        if helpers:
+            performance_block["helpers_ms"] = helpers
 
     return ImportReport(
         host={"app": host_app, "version": host_version},
@@ -127,7 +156,7 @@ def build_import_report(
             "bbox": bbox,
             "warnings": int(warnings),
         },
-        performance={"elapsed_ms": float(elapsed_ms), "peak_mb": float(peak_mb)},
+        performance=performance_block,
         fallback={"used": bool(fallback_used), "reason": fallback_reason},
         mode=mode,
         extra=extra_block,

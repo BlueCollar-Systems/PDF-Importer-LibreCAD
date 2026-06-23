@@ -43,6 +43,9 @@ class QAReport:
     finished_at: str = ""
     runtime_seconds: float = 0.0
     memory_peak_mb: float = 0.0
+    # Optional per-phase wall-clock timings, e.g. {"parse": 0.4, "vector": 1.1,
+    # "text": 0.6, "build": 2.3}. Additive; absent runs stay schema-compatible.
+    phase_timings: Dict[str, float] = field(default_factory=dict)
     fallback_reason: str = ""
     counts_before: Dict[str, int] = field(default_factory=dict)
     counts_after: Dict[str, int] = field(default_factory=dict)
@@ -88,6 +91,10 @@ class QAReport:
             finished_at=str(data.get("finished_at", "")),
             runtime_seconds=float(data.get("runtime_seconds", 0.0) or 0.0),
             memory_peak_mb=float(data.get("memory_peak_mb", 0.0) or 0.0),
+            phase_timings={
+                str(k): float(v)
+                for k, v in (data.get("phase_timings", {}) or {}).items()
+            },
             fallback_reason=str(data.get("fallback_reason", "")),
             counts_before=dict(data.get("counts_before", {}) or {}),
             counts_after=dict(data.get("counts_after", {}) or {}),

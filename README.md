@@ -22,6 +22,13 @@ DraftSight, QCAD, and any DXF-compatible CAD software.
 - Optional auto-open in LibreCAD after conversion
 - Built on pdfcadcore shared extraction engine
 
+## Import report / scale trust
+
+Conversions write `<output>_import_report.json` with optional `extra.resolved_scale`.
+
+- Use `factor` only when `confidence >= 0.70` and `fallback_reason` is not `no_scale_detected`.
+- Otherwise treat scale as unknown in your CAD workflow.
+
 ## Compatibility
 
 See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the full host version matrix (LibreCAD 2.2+, Python 3.10+, DXF consumers).
@@ -33,25 +40,34 @@ See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the full host version matrix (L
 
 ## Installation
 
-### From release (recommended)
+### Windows portable release (recommended)
 
-Download `LibreCAD-PDF-Importer_vX.Y.Z.zip` from
+Download `LibreCAD-PDF-Importer-Windows-Portable_vX.Y.Z.zip` from
 [Releases](https://github.com/BlueCollar-Systems/PDF-Importer-LibreCAD/releases),
-extract it anywhere you can write files, then run:
+extract it anywhere you can write files, then run `lcpdf-gui.exe`.
+
+The portable ZIP bundles Python, PyMuPDF, ezdxf, pdfcadcore, the GUI, and the
+CLI launchers. No system Python, pip, or administrator rights are required.
+
+Bundled command-line entrypoints:
+
+```powershell
+.\pdf2dxf.exe drawing.pdf output.dxf
+.\lcpdf-batch.exe "C:\path\to\pdfs" "C:\path\to\out_dxf" --recursive
+```
+
+### Source ZIP fallback
+
+Download `LibreCAD-PDF-Importer_vX.Y.Z.zip`, extract it anywhere you can write
+files, then run:
 
 ```powershell
 python preflight_check.py --install
 python pdf2dxf.py --gui
 ```
 
-The release ZIP is a **source + pdfcadcore bundle** (not a frozen EXE). On a
-clean PC you need **Python 3.10+** once; `preflight_check.py --install`
+The source ZIP requires **Python 3.10+** once; `preflight_check.py --install`
 downloads PyMuPDF and ezdxf into a private `./lib` folder with no admin rights.
-
-> **Future builds:** `build_standalone.py` / `build_windows_portable.py` can
-> produce `LibreCAD-PDF-Importer-Setup_vX.Y.Z.exe` and
-> `LibreCAD-PDF-Importer-Windows-Portable_vX.Y.Z.zip` when those assets are
-> published. Until then, use the release ZIP above.
 
 ### From source
 

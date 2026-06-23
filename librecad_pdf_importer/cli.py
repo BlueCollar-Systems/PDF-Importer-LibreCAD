@@ -3,11 +3,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 
 from .exporters.dxf_exporter import DxfExportOptions, export_to_dxf
-from .importer import apply_uniform_scale, run_import
+from .importer import apply_uniform_scale, run_import, write_import_report
 from .launchers.librecad_launcher import launch_librecad
+
+
+def _default_import_report_path(output_path: Path) -> Path:
+    return output_path.with_suffix("").with_name(f"{output_path.stem}_import_report.json")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -76,7 +81,9 @@ def main() -> int:
     if args.no_images:
         overrides["ignore_images"] = True
 
+    t0 = time.perf_counter()
     run = run_import(str(pdf_path), mode=args.mode, overrides=overrides)
+    run_import_ms = (time.perf_counter() - t0) * 1000.0
 
     if args.reference_detected_mm and args.reference_real_mm:
         if args.reference_detected_mm <= 0:
@@ -84,6 +91,7 @@ def main() -> int:
         scale_factor = args.reference_real_mm / args.reference_detected_mm
         apply_uniform_scale(run.extraction, scale_factor)
 
+    t_export = time.perf_counter()
     export = export_to_dxf(
         run.extraction,
         str(out_path),
@@ -102,6 +110,19 @@ def main() -> int:
             page_gap_ratio=max(0.0, float(args.page_gap_ratio or 0.0)),
         ),
     )
+    export_dxf_ms = (time.perf_counter() - t_export) * 1000.0
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    import_report_path = _default_import_report_path(out_path)
+    write_import_report(
+        run,
+        str(import_report_path),
+        elapsed_ms=elapsed_ms,
+        performance_phases={
+            "run_import_ms": run_import_ms,
+            "export_dxf_ms": export_dxf_ms,
+            "total_ms": elapsed_ms,
+        },
+    )
 
     summary = {
         "import": run.extraction.summary(),
@@ -110,6 +131,7 @@ def main() -> int:
             "entity_count": export.entity_count,
             "layer_count": export.layer_count,
             "image_count": export.image_count,
+            "import_report_path": str(import_report_path),
         },
     }
 

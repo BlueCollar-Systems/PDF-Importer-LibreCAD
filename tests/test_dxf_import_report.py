@@ -45,6 +45,9 @@ class TestDxfImportReport(unittest.TestCase):
             self.assertEqual(data["schema"], "bcs.import_report/1.1")
             self.assertEqual(data["host"]["app"], "librecad")
             self.assertIn("text_mode", data["extra"])
+            self.assertIn("phases", data["performance"])
+            self.assertIn("total_ms", data["performance"]["phases"])
+            self.assertIn("text_source_spans", data["extra"])
 
 
 if __name__ == "__main__":
