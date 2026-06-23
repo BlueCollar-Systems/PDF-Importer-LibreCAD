@@ -13,10 +13,10 @@
 | **Automated test health** | **GREEN** — all executed suites passed (see §4) |
 | **pdfcadcore sync** | **GREEN** — `ALL IN SYNC` on FC, LC, BL |
 | **Release / version alignment** | **GREEN** — pyproject/metadata match GitHub tags for current wave |
-| **Round-2 sign-off blockers** | **YELLOW** — R2-3 strict timing still not CI-proven; manual retest on dense PDF still required |
+| **Round-2 sign-off blockers** | **RESOLVED** — R2-3: manual strict-timing run sufficient; CI job P2 deferred (Q1) |
 | **Uncommitted local work** | **NONE** — all six repos clean (§5) |
 
-**Round-3 recommendation:** **CONDITIONAL GO for documentation/website fixes**; **HOLD code release claims** until R2-3 evidence (strict timing run or documented manual benchmark) is attached to this thread.
+**Round-3 recommendation:** **GO** — all Q1–Q5 resolved (2026-06-23). See `QA-2026-06-23_round3-resolution.md`.
 
 ---
 
@@ -90,15 +90,15 @@
 
 ## 6. Questions for team feedback
 
-1. **R2-3:** Will sign-off require a **CI strict-timing job** or is a **logged manual run** (`CORPUS_STRICT_TIMING=1`, PDF `1017`, budget 60s) sufficient for this wave?
-2. **R2-2:** Should SketchUp adopt **granular `performance.phases`** keys to match Python hosts, or is total elapsed enough for SU?
-3. **Open gate:** Should SketchUp **fail-closed** on gate errors to match Python, or remain fail-open with explicit COMPATIBILITY docs?
-4. **Steel Logic version:** Is `pubspec.yaml` `1.0.7+8` intentional ahead of Play `1.0.8`, or should we bump and release?
-5. **Release gate (R2-9):** Adopt a hard **no auto-release while Desktop Q&A round open** rule? — **RESOLVED (2026-06-23):** **No gate.** Auto-release does **not** wait for Desktop Q&A rounds to close; ship on green CI/tests as today. See `QA-2026-06-23_round3-user-rulings.md`.
+1. **R2-3:** — **RESOLVED (2026-06-23):** Manual proof sufficient (`CORPUS_STRICT_TIMING=1`, PDF `1017`, after SU restart). CI strict job **P2 deferred**.
+2. **R2-2:** — **RESOLVED (2026-06-23):** `total_ms` sufficient for SU; granular phases **P2 deferred**.
+3. **Open gate:** — **RESOLVED (2026-06-23):** Keep SU fail-open; INSTALL documents parity gap. No behavior change.
+4. **Steel Logic version:** — **RESOLVED (2026-06-23):** `pubspec.yaml` `1.0.8+9` aligns with `v1.0.8`; no bump needed.
+5. **Release gate (R2-9):** — **RESOLVED (2026-06-23):** **No gate.** Auto-release does **not** wait for Desktop Q&A rounds to close. See `QA-2026-06-23_round3-user-rulings.md`.
 
 ---
 
-## 7. Proposed commit plan (AFTER team agreement — do not execute yet)
+## 7. Proposed commit plan (authorized — Round 3 closed 2026-06-23)
 
 | Order | Repo | Suggested scope | Suggested message |
 |-------|------|---------------|-------------------|
@@ -111,16 +111,16 @@
 
 ---
 
-## 8. Blockers requiring human decision before commit
+## 8. Blockers (all resolved 2026-06-23)
 
-| Blocker | Decision needed |
-|---------|-----------------|
-| **R2-3 performance proof** | Manual benchmark attached vs CI enforcement |
-| ~~**R2-9 release gating**~~ | **RESOLVED** — no Q&A gate on auto-release (user ruling 2026-06-23) |
-| **SU open-gate policy** | Document only vs code alignment |
-| **Steel app version** | Bump to 1.0.8+ or document divergence |
-| **Junction paths R2-10** | Recreate `C:\1SU-PDFimporter` style paths or update dev docs |
+| Blocker | Decision |
+|---------|----------|
+| **R2-3 performance proof** | **RESOLVED** — manual strict-timing run sufficient; CI P2 deferred |
+| **R2-9 release gating** | **RESOLVED** — no Q&A gate on auto-release |
+| **SU open-gate policy** | **RESOLVED** — keep fail-open; documented in INSTALL |
+| **Steel app version** | **RESOLVED** — `1.0.8+9` aligned with `v1.0.8` |
+| **Junction paths R2-10** | **P2 deferred** — update dev docs when convenient |
 
 ---
 
-*Round 3 synthesis — anonymous. Awaiting feedback in Q&A folder or chat.*
+*Round 3 synthesis — closed. See `QA-2026-06-23_round3-resolution.md`.*

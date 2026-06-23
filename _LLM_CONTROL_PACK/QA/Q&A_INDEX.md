@@ -1,6 +1,6 @@
 # Q&A Index
 
-Updated: 2026-06-23 (Round 3 — Q5 ruled)
+Updated: 2026-06-23 (Round 3 — **CLOSED**)
 
 ## Source Instructions
 
@@ -8,9 +8,9 @@ Updated: 2026-06-23 (Round 3 — Q5 ruled)
 
 ---
 
-## Round 3 — Full-repo scan (2026-06-23) — **CURRENT — implementation follow-up in progress**
+## Round 3 — Full-repo scan (2026-06-23) — **CLOSED**
 
-**Status:** Partial feedback received. **Q5 resolved** (no Q&A gate on auto-release). **Q1–Q4 still open** — full Round 3 agreement and commit plan remain blocked.
+**Status:** All questions **RESOLVED** (Q1–Q5). **GO** to push — see `QA-2026-06-23_round3-resolution.md`.
 
 | File | Role |
 |------|------|
@@ -18,13 +18,12 @@ Updated: 2026-06-23 (Round 3 — Q5 ruled)
 | `QA-2026-06-23_round3-reviewer-B-improvements.md` | Improvement opportunities, Round-2 deferred items |
 | `QA-2026-06-23_round3-reviewer-C-cross-repo.md` | pdfcadcore sync, parity, CI across repos |
 | `QA-2026-06-23_round3-reviewer-D-app-website.md` | Steel Logic app + BlueCollar website |
-| `QA-2026-06-23_round3-synthesis.md` | **Start here** — consolidated findings, disagreements, commit plan, blockers |
-| `QA-2026-06-23_round3-awaiting-feedback.md` | Feedback status; Q5 closed, Q1–Q4 open |
-| `QA-2026-06-23_round3-user-rulings.md` | User rulings log (Q5: no auto-release Q&A gate) |
+| `QA-2026-06-23_round3-synthesis.md` | Consolidated findings, disagreements, commit plan |
+| `QA-2026-06-23_round3-resolution.md` | **Final agreement** — all disagreements closed, GO to push |
+| `QA-2026-06-23_round3-awaiting-feedback.md` | Feedback phase (**CLOSED**) |
+| `QA-2026-06-23_round3-user-rulings.md` | User rulings log (Q1–Q5) |
 
-**Round-3 headline:** Automated tests and pdfcadcore sync are green; Round-2 **R2-3 strict timing** remains the main sign-off gap. All six repos have **clean** working trees.
-
-**Follow-up resolution note:** `QA-2026-06-23_repo-scan-and-commit-status.md` now records the accepted website/app fixes: Steel Logic PR #8 merged, app release skip markers added, redundant docs-only app release cancelled, website copy drift fixed, app release docs corrected, and current desktop Q&A files copied into all six repo QA folders as additive archive snapshots.
+**Round-3 headline:** Automated tests and pdfcadcore sync green; Q1–Q5 ruled via Round 2 defaults; QA mirrors committed to all six repos.
 
 ---
 
@@ -52,7 +51,7 @@ See `_LLM_CONTROL_PACK/QA/` in repos for:
 
 ## Mirror note
 
-Desktop folder (`PDFTest Files\Q&A`) is the **anonymous reviewer drop zone**. In-repo copies live under `_LLM_CONTROL_PACK/QA/` — sync after Round 3 agreement (proposed commit plan item 6).
+Desktop folder (`PDFTest Files\Q&A`) is the **anonymous reviewer drop zone**. In-repo copies live under `_LLM_CONTROL_PACK/QA/` — synced after Round 3 closure (2026-06-23).
 
 ---
 
