@@ -39,14 +39,14 @@ Windows artifact verification.
 
 ## Validation
 
-- FreeCAD focused telemetry/report suite: `python -m pytest tests/test_import_report_text_mode.py tests/test_import_report_writer.py tests/test_qa_report_v11.py` -> 14 passed.
-- LibreCAD focused telemetry/CLI suite: `python -m pytest tests/test_import_report_text_mode.py tests/test_import_report_writer.py tests/test_dxf_import_report.py tests/test_mode_cli.py` -> 7 passed.
-- Blender focused telemetry/CLI/core suite: `python -m pytest tests/test_import_report_writer.py tests/test_mode_cli.py tests/test_text_mode_builder.py tests/test_core_pipeline.py` -> 19 passed.
+- FreeCAD full suite: `python -m pytest -q` -> 60 passed, 1 deprecation warning; pytest still prints a Windows `.pytest_tmp` cleanup permission warning after success.
+- LibreCAD full suite: `python -m pytest -q` -> 39 passed, 11 subtests passed.
+- Blender full suite: `python -m pytest -q` -> 36 passed, 10 subtests passed.
 - SketchUp: `ruby -c` on touched Ruby files -> syntax OK; `ruby test/corpus_strict_timing_test.rb` -> default opt-in skip OK; `ruby test/qa_report_test.rb` -> 4 runs / 20 assertions; `ruby test/corpus_harness_test.rb` -> 2 runs / 3 assertions; `ruby test/corpus_paths_test.rb` -> 3 runs / 6 assertions; `ruby test/smoke_test.rb` -> 59 checks passed.
 - Website: `python tools\validate_static_metadata.py` -> passed, 8 labels.
 - Shared core: `python pdfcadcore_sync_check.py` -> ALL IN SYNC.
 - Steel Logic Windows artifact verifier: `powershell -ExecutionPolicy Bypass -File .\tools\verify_windows_release_artifacts.ps1 -Version 1.0.3` -> OK after replacing stale extracted folder from verified ZIP.
-- Steel Logic app: `flutter test` -> 153 passed.
+- Steel Logic app: `flutter analyze` -> no issues; `flutter test` -> 153 passed.
 
 ## Residual Risk
 
