@@ -59,7 +59,8 @@ powershell -ExecutionPolicy Bypass -File .\plugin\build_install_lcpdf_menu.ps1
 
 The plugin auto-detects `launch_lcpdf_gui.pyw`, `gui.py`, or portable
 `lcpdf-gui.exe` beside LibreCAD or in common install folders. Pin paths via
-`Plugins > PDF Importer Settings...` or set `BC_LC_IMPORTER_SCRIPT`.
+`Plugins > PDF Importer Settings...`, set `BC_LC_IMPORTER_EXE` for the installed
+app, or set `BC_LC_IMPORTER_SCRIPT` for source launches.
 
 ### Option 2: Command Line
 ```bash
@@ -145,8 +146,8 @@ on dense BOM tables; Labels export native DXF TEXT with correct rotation.
 
 **Plugin menu says launcher not found?** Install the portable ZIP or source
 package, then use `Plugins > PDF Importer Settings...` to point at
-`launch_lcpdf_gui.pyw` or `lcpdf-gui.exe`. Set `BC_LC_IMPORTER_SCRIPT` for
-custom paths.
+`LibreCAD-PDF-Importer.exe`, `lcpdf-gui.exe`, or `launch_lcpdf_gui.pyw`. Set
+`BC_LC_IMPORTER_EXE` / `BC_LC_IMPORTER_SCRIPT` for custom paths.
 
 **Geometry looks wrong?** Auto mode should pick the right strategy. If not, try
 `--mode vector` for CAD drawings or `--mode hybrid` for PDFs with embedded raster.

@@ -218,8 +218,8 @@ LibreCAD is **2D CAD** — there is no true 3D text in DXF or LibreCAD.
 |--------|-----|------------------------|
 | **labels** | ✅ Default | DXF `TEXT` entities (MTEXT avoided for LibreCAD) |
 | **geometry** | ✅ Outlines | Skips editable TEXT (outline-only workflow) |
-| **3d_text** | CLI only | Same as `labels` in this exporter |
-| **glyphs** | CLI only | Same as `labels` until vector-glyph DXF path exists |
+| **3d_text** | CLI only | Same as `labels` in this 2D exporter |
+| **glyphs** | CLI only | Non-editable vector outlines, same export family as `geometry` |
 
 Plus `--import-text` / `--no-import-text` to skip text entirely.
 

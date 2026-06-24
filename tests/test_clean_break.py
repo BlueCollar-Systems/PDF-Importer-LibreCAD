@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 GUI_PY = REPO_ROOT / "gui.py"
 CORE_CONFIG_PY = REPO_ROOT / "pdfcadcore" / "import_config.py"
 PACKAGE_CONFIG_PY = REPO_ROOT / "librecad_pdf_importer" / "core" / "PDFImportConfig.py"
+PLUGIN_MENU_CPP = REPO_ROOT / "plugin" / "lcpdf_menu" / "lcpdf_menu.cpp"
 
 
 def _run_cli(*args: str) -> subprocess.CompletedProcess:
@@ -139,6 +140,16 @@ class TestTextDefaults(unittest.TestCase):
         source = CORE_CONFIG_PY.read_text(encoding="utf-8")
         self.assertIn('text_mode: str = "3d_text"', source)
         self.assertNotIn('text_mode: str = "labels"', source)
+
+
+class TestLibreCadPluginLauncher(unittest.TestCase):
+    """Menu plugin must resolve installed Windows launcher apps, not only source scripts."""
+
+    def test_installed_importer_exe_is_discoverable(self) -> None:
+        source = PLUGIN_MENU_CPP.read_text(encoding="utf-8")
+        self.assertIn("BC_LC_IMPORTER_EXE", source)
+        self.assertIn("LibreCAD-PDF-Importer.exe", source)
+        self.assertIn("Importer Apps (*.exe *.py *.pyw)", source)
 
 
 if __name__ == "__main__":
