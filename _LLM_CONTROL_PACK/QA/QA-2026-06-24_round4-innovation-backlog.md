@@ -68,3 +68,21 @@
 ---
 
 *Backlog maintained for Round 4 creative QA.*
+
+---
+
+## Addendum — net-new ideas (post-resolution, 2026-06-24)
+
+Source: `QA-2026-06-24_round4-blue-sky-ideation.md` (reconciled fork). Deduped against all items above — these are additive, not duplicates.
+
+| ID | Item | Tier | Why net-new |
+|----|------|------|-------------|
+| R4-27 | WASM zero-dependency extraction core | P2 (high ceiling) | Eliminates system pip / Ghostscript / PyMuPDF-ABI field failures |
+| R4-28 | Browser "drop a PDF → DXF/SVG" tool | P1 (after R4-27) | Zero-install trial + host-independent oracle |
+| R4-29 | Multi-renderer consensus (Poppler/MuPDF/mutool) | P1 | Flags silent renderer disagreement; complements R4-02/R4-13 |
+| R4-30 | Confidence % line inside `human_summary` | P0 candidate | Cheap bridge from shipped R4-S1 to deferred heatmap R4-13 |
+| R4-31 | Plain-language import intent (LLM→config + offline fallback) | P1 | New control surface over mature import config |
+| R4-32 | Part-mark cross-reference graph | P1 | Navigation graph; distinct from parser R4-24 / CSV R4-26 |
+| R4-33 | Opt-in self-learning correction loop → golden corpus | P2 | Heuristics sharpen on real corrections; feeds R4-02 |
+
+**Suggested first spike:** R4-27 (WASM core) — highest ceiling and directly retires the recurring dependency-failure class.

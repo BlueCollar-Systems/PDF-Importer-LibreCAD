@@ -92,6 +92,14 @@ python -m librecad_pdf_importer.batch_cli "C:\folder\with\pdfs"
 ## GUI (professional import)
 
 The graphical interface uses **Auto** import only (vector/raster/hybrid chosen per page).
+
+### Before you import (text modes)
+
+- **Labels (editable TEXT)** — change text in LibreCAD after import.
+- **Outlines** — vector stroke fidelity; not editable as TEXT.
+- **LibreCAD has no true 3D text** — do not expect SketchUp/FreeCAD 3D-text parity.
+- Scale warnings appear in `import_report.json` (`extra.scale_crosscheck` / `human_summary`) when title-block scale is uncertain.
+
 Text options: **Labels (editable TEXT)** or **Outlines** — LibreCAD does not support true 3D text.
 
 ## Modes (BCS-ARCH-001, CLI/batch)

@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 SCHEMA = "bcs.import_report/1.1"
+SCALE_TRUST_CONFIDENCE = 0.70
+SCALE_DIMENSION_TENSION_CONFIDENCE = 0.85
+SCALE_FACTOR_DISAGREE_RATIO = 0.15
 
 
 def _sha256_file(path: str) -> str:
@@ -125,6 +128,107 @@ def _basename(path: str) -> str:
     return name or "the PDF"
 
 
+def build_scale_crosscheck(extra: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Non-blocking scale warning when detection is weak or sources disagree."""
+
+    scale = extra.get("resolved_scale") or {}
+    if not isinstance(scale, dict):
+        scale = {}
+
+    hints = extra.get("scale_hints") or {}
+    if not isinstance(hints, dict):
+        hints = {}
+
+    title_block = bool(hints.get("title_block_detected"))
+    dimension_count = int(hints.get("dimension_count") or 0)
+    alternate_factors = hints.get("alternate_scale_factors") or []
+    if not isinstance(alternate_factors, list):
+        alternate_factors = []
+
+    warnings: List[str] = []
+    reasons: List[str] = []
+
+    conf: Optional[float] = None
+    raw_conf = scale.get("confidence")
+    if raw_conf is not None:
+        try:
+            conf = float(raw_conf)
+        except (TypeError, ValueError):
+            conf = None
+
+    factor = scale.get("factor")
+    fallback = str(scale.get("fallback_reason") or "").strip()
+    source = str(scale.get("source") or "").strip()
+
+    if fallback == "no_scale_detected" or not factor:
+        warnings.append(
+            "No drawing scale was detected in the title block or page text — verify manually before takeoff."
+        )
+        reasons.append("no_scale_detected")
+    elif conf is not None and conf < SCALE_TRUST_CONFIDENCE:
+        warnings.append(
+            f"Scale detection confidence is low ({conf * 100:.0f}%) — verify with manual scale tools before takeoff."
+        )
+        reasons.append("low_confidence")
+
+    if title_block and source and source != "titleblock" and factor:
+        warnings.append(
+            "A title block was detected but scale came from other page text — compare the title-block notation."
+        )
+        reasons.append("titleblock_source_mismatch")
+
+    if (
+        title_block
+        and dimension_count >= 3
+        and conf is not None
+        and conf < SCALE_DIMENSION_TENSION_CONFIDENCE
+        and factor
+    ):
+        warnings.append(
+            f"Title-block scale may disagree with {dimension_count} detected dimension strings — spot-check one known dimension."
+        )
+        reasons.append("titleblock_dimension_tension")
+
+    try:
+        primary = float(factor) if factor else None
+    except (TypeError, ValueError):
+        primary = None
+
+    if primary and primary > 0 and alternate_factors:
+        for alt in alternate_factors:
+            try:
+                alt_factor = float(alt)
+            except (TypeError, ValueError):
+                continue
+            if alt_factor <= 0:
+                continue
+            if abs(alt_factor - primary) / max(primary, alt_factor) > SCALE_FACTOR_DISAGREE_RATIO:
+                warnings.append(
+                    "Multiple scale notations on the sheet disagree — confirm which scale applies to this view."
+                )
+                reasons.append("conflicting_scale_notations")
+                break
+
+    if not warnings:
+        return None
+
+    return {
+        "level": "warn",
+        "reasons": _unique_strings(reasons),
+        "messages": _unique_strings(warnings),
+        "banner": warnings[0],
+    }
+
+
+def enrich_import_report_extras(report: "ImportReport") -> None:
+    """Attach scale cross-check and refresh human_summary on a report."""
+
+    crosscheck = build_scale_crosscheck(report.extra)
+    if crosscheck:
+        report.extra["scale_crosscheck"] = crosscheck
+    report.extra["human_summary"] = build_human_summary(report)
+
+
 def _format_text_mode(mode: str) -> str:
     key = str(mode or "").strip().lower()
     labels = {
@@ -219,6 +323,12 @@ def build_human_summary(report: ImportReport | Dict[str, Any]) -> str:
         parts.append(
             f"{warnings} warning{'s' if warnings != 1 else ''} recorded — review the import log before production use"
         )
+
+    crosscheck = extra.get("scale_crosscheck") or {}
+    if isinstance(crosscheck, dict):
+        banner = str(crosscheck.get("banner") or "").strip()
+        if banner:
+            parts.append(f"Scale note: {banner.rstrip('.')}")
 
     paragraph = ". ".join(part.rstrip(".") for part in parts if part).strip()
     if paragraph and not paragraph.endswith("."):
@@ -382,14 +492,17 @@ def build_import_report(
         mode=mode,
         extra=extra_block,
     )
-    report.extra.setdefault("human_summary", build_human_summary(report))
+    enrich_import_report_extras(report)
     return report
 
 
 __all__ = [
     "SCHEMA",
+    "SCALE_TRUST_CONFIDENCE",
     "ImportReport",
     "build_fidelity_diagnostics",
     "build_human_summary",
+    "build_scale_crosscheck",
+    "enrich_import_report_extras",
     "build_import_report",
 ]

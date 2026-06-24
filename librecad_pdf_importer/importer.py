@@ -52,6 +52,12 @@ def write_import_report(
     pages = extraction.pages
     layer_names: set[str] = set()
     resolved_scale = None
+    scale_hints = {
+        "title_block_detected": False,
+        "dimension_count": 0,
+        "alternate_scale_factors": [],
+    }
+    alternate_factors: set[float] = set()
     for page in pages:
         layer_names.update(page.page_data.layers or [])
         rs = page.page_data.resolved_scale
@@ -65,6 +71,11 @@ def write_import_report(
                 "confidence": rs.confidence,
                 "fallback_reason": rs.fallback_reason,
             }
+        if rs and rs.factor and rs.confidence > 0:
+            alternate_factors.add(float(rs.factor))
+        profile = getattr(page, "profile", None)
+        if profile and getattr(profile, "titleblock_likely", False):
+            scale_hints["title_block_detected"] = True
 
     bounds = None
     page_data = [p.page_data for p in pages]
@@ -121,6 +132,10 @@ def write_import_report(
         text_glyph_estimate=text_glyph_estimate,
         extra={
             "resolved_scale": resolved_scale,
+            "scale_hints": {
+                **scale_hints,
+                "alternate_scale_factors": sorted(alternate_factors),
+            },
             "auto_mode": extraction.summary().get("auto_mode"),
         },
     )
