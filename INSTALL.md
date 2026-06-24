@@ -40,12 +40,26 @@ When `LibreCAD-PDF-Importer-Setup_vX.Y.Z.exe` appears on Releases, double-click 
 > `installer\librecad-pdf-importer.iss`.
 
 ### Option 1: LibreCAD Plugins menu
+
+> **Important:** The native `pdfimporter1.dll` / `bc_lcpdf_menu` plugin is **not**
+> recommended on most Windows installs. LibreCAD builds ship with their own Qt
+> runtime; a plugin compiled against a different Qt kit (debug vs release, or
+> another MSVC version) fails to load with opaque DLL errors. **Use the portable
+> ZIP (`lcpdf-gui.exe`) instead** — it bundles Python, PyMuPDF, and the GUI with
+> no Qt mismatch.
+
+If you still want the menu plugin after installing the portable/source package:
+
 1. Build/install plugin:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\plugin\build_install_lcpdf_menu.ps1
 ```
 2. Restart LibreCAD
 3. Use `Plugins > PDF Importer (BlueCollar)...`
+
+The plugin auto-detects `launch_lcpdf_gui.pyw`, `gui.py`, or portable
+`lcpdf-gui.exe` beside LibreCAD or in common install folders. Pin paths via
+`Plugins > PDF Importer Settings...` or set `BC_LC_IMPORTER_SCRIPT`.
 
 ### Option 2: Command Line
 ```bash
@@ -124,6 +138,15 @@ Standalone app self-test after install:
 **Missing text?** Auto mode should handle text well. If text is missing, try
 explicitly `--mode vector` and check the text-rendering setting. GUI default is
 **Labels**; CLI default is `labels` (try `glyphs` for symbol-heavy PDFs).
+
+**Garbled/jumbled text outlines?** Switch GUI text mode from **Outlines** to
+**Labels (editable TEXT)**. Outline mode vectorizes font strokes and can overlap
+on dense BOM tables; Labels export native DXF TEXT with correct rotation.
+
+**Plugin menu says launcher not found?** Install the portable ZIP or source
+package, then use `Plugins > PDF Importer Settings...` to point at
+`launch_lcpdf_gui.pyw` or `lcpdf-gui.exe`. Set `BC_LC_IMPORTER_SCRIPT` for
+custom paths.
 
 **Geometry looks wrong?** Auto mode should pick the right strategy. If not, try
 `--mode vector` for CAD drawings or `--mode hybrid` for PDFs with embedded raster.

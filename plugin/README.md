@@ -6,8 +6,14 @@ This folder contains a native LibreCAD plugin that adds menu entries under
 - `PDF Importer (BlueCollar)...`
 - `PDF Importer Settings...`
 
-The plugin launches the LC importer GUI (`launch_lcpdf_gui.pyw` / `gui.py`)
-without opening a terminal window.
+The plugin launches the LC importer GUI (`launch_lcpdf_gui.pyw` / `gui.py`) or
+portable `lcpdf-gui.exe` without opening a terminal window.
+
+## Recommended workflow
+
+**Use the Windows portable ZIP (`lcpdf-gui.exe`)** for field installs. The
+native plugin depends on matching LibreCAD's Qt/MSVC runtime; mismatched builds
+(debug vs release, wrong Qt kit) fail to load with DLL errors.
 
 ## Build + Install (Windows)
 
@@ -27,12 +33,12 @@ LibreCAD loads plugins from this user folder, so admin rights are not required.
 
 ## Runtime Notes
 
-- Script path auto-detection checks:
+- Script/exe auto-detection checks (in order):
   - `BC_LC_IMPORTER_SCRIPT` env var
-  - `C:/1PDF-Importer-LibreCAD/launch_lcpdf_gui.pyw`
-  - `C:/1PDF-Importer-LibreCAD/gui.py`
+  - Beside `librecad.exe` (`launch_lcpdf_gui.pyw`, `gui.py`, `lcpdf-gui.exe`)
+  - Portable folders (`LibreCAD-PDF-Importer`, Desktop, `%LOCALAPPDATA%\BlueCollar\...`)
+  - Dev clone default `C:/1PDF-Importer-LibreCAD/launch_lcpdf_gui.pyw`
 - Python executable auto-detection checks:
   - `BC_LC_IMPORTER_PYTHON` env var
   - `pythonw`, `python`, `py -3`
 - Use `PDF Importer Settings...` to pin explicit script/python paths.
-

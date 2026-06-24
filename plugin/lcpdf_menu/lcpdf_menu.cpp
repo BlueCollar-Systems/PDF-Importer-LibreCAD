@@ -23,14 +23,103 @@ QStringList candidateScripts() {
         candidates << QDir::fromNativeSeparators(envScript);
     }
 
+    const QString appDir = QCoreApplication::applicationDirPath();
+    candidates
+        << QDir::cleanPath(appDir + "/launch_lcpdf_gui.pyw")
+        << QDir::cleanPath(appDir + "/gui.py")
+        << QDir::cleanPath(appDir + "/../launch_lcpdf_gui.pyw")
+        << QDir::cleanPath(appDir + "/../gui.py")
+        << QDir::cleanPath(appDir + "/../LibreCAD-PDF-Importer/launch_lcpdf_gui.pyw")
+        << QDir::cleanPath(appDir + "/../LibreCAD-PDF-Importer/gui.py");
+
     candidates
         << QStringLiteral("C:/1PDF-Importer-LibreCAD/launch_lcpdf_gui.pyw")
         << QStringLiteral("C:/1PDF-Importer-LibreCAD/gui.py");
 
-    const QString appDir = QCoreApplication::applicationDirPath();
     candidates
         << QDir::cleanPath(appDir + "/../1PDF-Importer-LibreCAD/launch_lcpdf_gui.pyw")
         << QDir::cleanPath(appDir + "/../1PDF-Importer-LibreCAD/gui.py");
+
+    const QString home = QDir::homePath();
+    candidates
+        << QDir::cleanPath(home + "/LibreCAD-PDF-Importer/launch_lcpdf_gui.pyw")
+        << QDir::cleanPath(home + "/LibreCAD-PDF-Importer/gui.py")
+        << QDir::cleanPath(home + "/Desktop/LibreCAD-PDF-Importer/launch_lcpdf_gui.pyw")
+        << QDir::cleanPath(home + "/Desktop/LibreCAD-PDF-Importer/gui.py");
+
+    const QString localApp = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    if (!localApp.isEmpty()) {
+        candidates
+            << QDir::cleanPath(localApp + "/BlueCollar/LibreCAD-PDF-Importer/launch_lcpdf_gui.pyw")
+            << QDir::cleanPath(localApp + "/BlueCollar/LibreCAD-PDF-Importer/gui.py");
+    }
+
+    return candidates;
+}
+
+QStringList candidatePortableExes() {
+    QStringList candidates;
+
+    const QString envExe = qEnvironmentVariable("BC_LC_IMPORTER_EXE").trimmed();
+    if (!envExe.isEmpty()) {
+        candidates << QDir::fromNativeSeparators(envExe);
+    }
+
+    const QString appDir = QCoreApplication::applicationDirPath();
+    candidates
+        << QDir::cleanPath(appDir + "/LibreCAD-PDF-Importer.exe")
+        << QDir::cleanPath(appDir + "/lcpdf-gui.exe")
+        << QDir::cleanPath(appDir + "/../LibreCAD-PDF-Importer.exe")
+        << QDir::cleanPath(appDir + "/../lcpdf-gui.exe")
+        << QDir::cleanPath(appDir + "/../LibreCAD-PDF-Importer/LibreCAD-PDF-Importer.exe")
+        << QDir::cleanPath(appDir + "/../LibreCAD-PDF-Importer/lcpdf-gui.exe")
+        << QDir::cleanPath(appDir + "/../LibreCAD-PDF-Importer-Portable/LibreCAD-PDF-Importer.exe")
+        << QDir::cleanPath(appDir + "/../LibreCAD-PDF-Importer-Portable/lcpdf-gui.exe");
+
+    const QString home = QDir::homePath();
+    candidates
+        << QDir::cleanPath(home + "/LibreCAD-PDF-Importer/LibreCAD-PDF-Importer.exe")
+        << QDir::cleanPath(home + "/LibreCAD-PDF-Importer/lcpdf-gui.exe")
+        << QDir::cleanPath(home + "/Desktop/LibreCAD-PDF-Importer/LibreCAD-PDF-Importer.exe")
+        << QDir::cleanPath(home + "/Desktop/LibreCAD-PDF-Importer/lcpdf-gui.exe");
+
+    const QString localAppData = qEnvironmentVariable("LOCALAPPDATA");
+    if (!localAppData.isEmpty()) {
+        const QString localPrograms =
+            localAppData + "/Programs/BlueCollar Systems/LibreCAD PDF Importer";
+        candidates
+            << QDir::cleanPath(localPrograms + "/LibreCAD-PDF-Importer.exe")
+            << QDir::cleanPath(localPrograms + "/lcpdf-gui.exe");
+    }
+
+    const QString programFiles = qEnvironmentVariable("ProgramFiles");
+    if (!programFiles.isEmpty()) {
+        const QString installDir = programFiles + "/BlueCollar Systems/LibreCAD PDF Importer";
+        candidates
+            << QDir::cleanPath(installDir + "/LibreCAD-PDF-Importer.exe")
+            << QDir::cleanPath(installDir + "/lcpdf-gui.exe");
+    }
+
+    const QString programFilesX86 = qEnvironmentVariable("ProgramFiles(x86)");
+    if (!programFilesX86.isEmpty()) {
+        const QString installDir = programFilesX86 + "/BlueCollar Systems/LibreCAD PDF Importer";
+        candidates
+            << QDir::cleanPath(installDir + "/LibreCAD-PDF-Importer.exe")
+            << QDir::cleanPath(installDir + "/lcpdf-gui.exe");
+    }
+
+    const QString roamingData = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    if (!roamingData.isEmpty()) {
+        const QString roamingPrograms =
+            roamingData + "/Programs/BlueCollar Systems/LibreCAD PDF Importer";
+        candidates
+            << QDir::cleanPath(roamingPrograms + "/LibreCAD-PDF-Importer.exe")
+            << QDir::cleanPath(roamingPrograms + "/lcpdf-gui.exe");
+    }
+
+    candidates
+        << QStringLiteral("C:/1PDF-Importer-LibreCAD/dist/LibreCAD-PDF-Importer/LibreCAD-PDF-Importer.exe")
+        << QStringLiteral("C:/1PDF-Importer-LibreCAD/dist/windows-portable/lcpdf-gui.exe");
 
     return candidates;
 }
@@ -48,6 +137,12 @@ QString resolveScriptPath(const QSettings &settings) {
         }
     }
 
+    for (const QString &candidate : candidatePortableExes()) {
+        if (QFileInfo::exists(candidate)) {
+            return candidate;
+        }
+    }
+
     return QString();
 }
 
@@ -59,7 +154,7 @@ QString chooseScript(QWidget *parent, const QString &currentPath) {
         parent,
         QObject::tr("Locate LC Importer Launcher"),
         startPath,
-        QObject::tr("Python Launchers (*.py *.pyw);;All Files (*.*)")
+        QObject::tr("Importer Apps (*.exe *.py *.pyw);;All Files (*.*)")
     );
 }
 
@@ -78,6 +173,20 @@ QString choosePythonExecutable(QWidget *parent, const QString &currentPath) {
 bool launchImporterProcess(const QString &scriptPath, const QString &pythonPath, QString *errorOut) {
     const QString normalizedScript = QDir::fromNativeSeparators(scriptPath);
     const QString scriptDir = QFileInfo(normalizedScript).absolutePath();
+
+    if (normalizedScript.endsWith(".exe", Qt::CaseInsensitive)) {
+        const bool ok = QProcess::startDetached(normalizedScript, QStringList(), scriptDir);
+        if (ok) {
+            if (errorOut) {
+                errorOut->clear();
+            }
+            return true;
+        }
+        if (errorOut) {
+            *errorOut = QObject::tr("Could not launch importer application: %1").arg(normalizedScript);
+        }
+        return false;
+    }
 
     QStringList pythonCandidates;
     if (!pythonPath.trimmed().isEmpty()) {
@@ -191,8 +300,9 @@ void LC_BcLCPdfMenuPlugin::execComm(Document_Interface *doc, QWidget *parent, QS
         QMessageBox::information(
             parent,
             tr("LC PDF Importer"),
-            tr("Importer launcher script was not found automatically.\n"
-               "Please locate `launch_lcpdf_gui.pyw` or `gui.py`.")
+            tr("Importer launcher was not found automatically.\n"
+               "Please locate `LibreCAD-PDF-Importer.exe`, `lcpdf-gui.exe`, "
+               "`launch_lcpdf_gui.pyw`, or `gui.py`.")
         );
         scriptPath = chooseScript(parent, QStringLiteral("C:/1PDF-Importer-LibreCAD"));
         if (scriptPath.isEmpty()) {
@@ -212,4 +322,3 @@ void LC_BcLCPdfMenuPlugin::execComm(Document_Interface *doc, QWidget *parent, QS
         );
     }
 }
-

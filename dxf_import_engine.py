@@ -77,7 +77,7 @@ def _convert_via_package(
         run.extraction,
         output_path,
         DxfExportOptions(
-            include_text=bool(config.import_text) and config.text_mode != "geometry",
+            include_text=bool(config.import_text),
             text_mode=str(config.text_mode or "labels"),
             include_images=not config.ignore_images,
             group_by_page=True,
