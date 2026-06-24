@@ -1,10 +1,28 @@
 # Q&A Index
 
-Updated: 2026-06-24 (Field screenshot review — validation/commit in progress)
+Updated: 2026-06-24 (Round 4 creative QA — **GO**, three wins shipped)
 
 ## Source Instructions
 
 - `Instructions 0607202613216.txt`
+
+---
+
+## Round 4 — Creative QA (2026-06-24) — **CLOSED / SHIPPED**
+
+Anonymous reviewers asked: *Have we gone outside the box?* Debated, ranked, shipped top 3 low-risk wins.
+
+| File | Role |
+|------|------|
+| `QA-2026-06-24_round4-reviewer-A-vision.md` | SketchUp / 3D CAD — preview, scale, layers, Import Health |
+| `QA-2026-06-24_round4-reviewer-B-vision.md` | pdfcadcore — heatmaps, span quality, human_summary |
+| `QA-2026-06-24_round4-reviewer-C-vision.md` | UX / shop floor — preflight, plain errors, capability matrix |
+| `QA-2026-06-24_round4-reviewer-D-vision.md` | Steel Logic ecosystem — PDF→steel workflow |
+| `QA-2026-06-24_round4-debate.md` | Cross-review debate + impact/effort ranking |
+| `QA-2026-06-24_round4-innovation-backlog.md` | P0 / P1 / moonshot backlog |
+| `QA-2026-06-24_round4-resolution.md` | **Build now vs defer — GO** |
+
+**Round-4 headline:** `extra.human_summary` in import_report (all Python hosts + SketchUp); **Import Health…** menu (SU v3.7.61); website install-help capability matrix (v1.0.56).
 
 ---
 
@@ -78,21 +96,18 @@ See `_LLM_CONTROL_PACK/QA/` in repos for:
 
 ## Mirror note
 
-Desktop folder (`PDFTest Files\Q&A`) is the **anonymous reviewer drop zone**. In-repo copies live under `_LLM_CONTROL_PACK/QA/` — synced after Round 3 closure (2026-06-23).
+Desktop folder (`PDFTest Files\Q&A`) is the **anonymous reviewer drop zone**. In-repo copies live under `_LLM_CONTROL_PACK/QA/` — synced after Round 4 closure (2026-06-24).
 
 ---
 
-## Test evidence (Round 3 session)
+## Test evidence (Round 4 session)
 
 | Check | Result |
 |-------|--------|
-| SU `qa_report_test.rb` | 4/4 pass |
+| SU `qa_report_test.rb` | run at commit |
+| FC `test_import_report_human_summary.py` | run at commit |
 | FC/LC/BL `pdfcadcore_sync_check.py` | ALL IN SYNC |
-| FC pytest (subset) | 60 pass |
-| LC pytest | 39 pass |
-| BL pytest | 36 pass |
-| Website `validate_static_metadata.py` | pass |
-| Steel `flutter analyze` / `flutter test` | clean / 153 pass |
+| Website capability matrix | manual / metadata validate |
 
 ---
 
