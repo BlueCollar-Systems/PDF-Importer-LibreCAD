@@ -1,7 +1,7 @@
 # Round 4 — Resolution
 
 **Session:** 2026-06-24  
-**Status:** **GO** — three shippable wins implemented, tested, ready to commit/push  
+**Status:** **GO for the initial build slate** — three shippable wins implemented, tested, ready to commit/push. The broader outside-box QA session remains **ACTIVE** while reviewers and follow-up work continue.
 **Mood:** Inspiring but honest. We did not pretend host parity.
 
 ---
@@ -77,6 +77,8 @@
 
 ---
 
-**Round 4 creative QA: CLOSED with GO.**
+**Round 4 initial build slate: SHIPPED with GO.**
+
+**Status correction:** This note does not close the overall Round 4 / outside-box QA session. It closes only the first agreed implementation bundle. The full session remains open until all active reviewer work, disagreements, validation, commits, and pushes are complete.
 
 *Resolution — 2026-06-24*

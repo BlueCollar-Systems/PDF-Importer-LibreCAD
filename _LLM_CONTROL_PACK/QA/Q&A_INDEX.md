@@ -1,6 +1,6 @@
 # Q&A Index
 
-Updated: 2026-06-24 (Round 4 creative QA — **GO**, three wins shipped)
+Updated: 2026-06-24 (Round 4 creative QA — **ACTIVE**, initial build slate shipped)
 
 ## Source Instructions
 
@@ -8,9 +8,9 @@ Updated: 2026-06-24 (Round 4 creative QA — **GO**, three wins shipped)
 
 ---
 
-## Round 4 — Creative QA (2026-06-24) — **CLOSED / SHIPPED**
+## Round 4 — Creative QA (2026-06-24) — **INITIAL BUILD SLATE SHIPPED / QA STILL ACTIVE**
 
-Anonymous reviewers asked: *Have we gone outside the box?* Debated, ranked, shipped top 3 low-risk wins.
+Anonymous reviewers asked: *Have we gone outside the box?* Debated, ranked, and shipped the first low-risk build slate. The wider outside-box QA session remains active until all reviewers are finished, disagreements are resolved, implementation is complete, validation is green, and commits/pushes are confirmed.
 
 | File | Role |
 |------|------|
@@ -96,7 +96,7 @@ See `_LLM_CONTROL_PACK/QA/` in repos for:
 
 ## Mirror note
 
-Desktop folder (`PDFTest Files\Q&A`) is the **anonymous reviewer drop zone**. In-repo copies live under `_LLM_CONTROL_PACK/QA/` — synced after Round 4 closure (2026-06-24).
+Desktop folder (`PDFTest Files\Q&A`) is the **anonymous reviewer drop zone**. In-repo copies live under `_LLM_CONTROL_PACK/QA/` and are synced as implementation passes finish.
 
 ---
 
