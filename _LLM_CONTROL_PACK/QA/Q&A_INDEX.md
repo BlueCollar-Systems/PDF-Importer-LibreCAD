@@ -1,6 +1,22 @@
 # Q&A Index
 
-Updated: 2026-06-24 (Round 4 Phase 1 complete · Phase 2 open · Round 5 P0 started)
+Updated: 2026-06-24 (Coordination hub live · Round 4 Phase 2 open · Round 5 partial ship)
+
+---
+
+## Coordination Hub — **READ THIS FIRST**
+
+All agents, reviewers, and human testers communicate through the hub — not in isolation.
+
+| File | Role |
+|------|------|
+| **`QA-2026-06-24_COORDINATION-HUB.md`** | **Single source of truth** — active workstreams, blockers, handoffs, agreement state |
+| `QA-2026-06-24_worker-status-log.md` | Append-only status log (start / update / blocked / done) |
+| `QA-2026-06-24_open-threads.md` | Unresolved questions; reply in `QA-*-reply-*.md` |
+
+Mirrors: `_LLM_CONTROL_PACK/QA/` in each of the six repos.
+
+---
 
 ## Source Instructions
 

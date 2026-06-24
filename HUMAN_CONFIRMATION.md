@@ -1,5 +1,7 @@
 # Human Confirmation — PDF to DXF (LibreCAD)
 
+**Coordination:** see Desktop Q&A COORDINATION-HUB or `_LLM_CONTROL_PACK/QA/QA-2026-06-24_COORDINATION-HUB.md`
+
 **Prep:** 2026-06-24 · See `Desktop/PDFTest Files/Q&A/QA-2026-06-24_human-confirmation-script.md`
 
 ## Setup
