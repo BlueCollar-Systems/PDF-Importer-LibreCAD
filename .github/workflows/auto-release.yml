@@ -16,6 +16,10 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+defaults:
+  run:
+    shell: bash
+
 permissions:
   contents: write
   pull-requests: write
@@ -23,7 +27,7 @@ permissions:
 jobs:
   release:
     if: "!startsWith(github.event.head_commit.message, 'chore: bump version to') && !contains(github.event.head_commit.message, 'automation/version-bump') && !contains(github.event.head_commit.message, '[skip release]')"
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -110,8 +114,22 @@ jobs:
             fi
           fi
 
-      - name: Build release
+      - name: Run release gate tests
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+          python pdfcadcore_sync_check.py --skip-cross-repo
+          python preflight_check.py
+          python -m pytest tests/ -q --basetemp "$RUNNER_TEMP/pytest-librecad"
+
+      - name: Build source zip
         run: python build_release.py
+
+      - name: Build Windows portable zip
+        run: python build_windows_portable.py
+
+      - name: Smoke Windows portable zip
+        run: python scripts/smoke_portable_zip.py "dist/LibreCAD-PDF-Importer-Windows-Portable_v*.zip"
 
       - name: Create or update release
         env:
@@ -120,6 +138,9 @@ jobs:
           set -e
           TAG="v${{ steps.version.outputs.version }}"
           TITLE="v${{ steps.version.outputs.version }} — PDF to DXF Converter for LibreCAD"
+          VERSION="${{ steps.version.outputs.version }}"
+          PORTABLE="dist/LibreCAD-PDF-Importer-Windows-Portable_v${VERSION}.zip"
+          SOURCE="dist/LibreCAD-PDF-Importer_v${VERSION}.zip"
 
           git fetch --tags --force
           if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
@@ -128,9 +149,9 @@ jobs:
           fi
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/*.zip --clobber
+            gh release upload "$TAG" "$PORTABLE" "$SOURCE" --clobber
           else
-            gh release create "$TAG" --title "$TITLE" --generate-notes --latest dist/*.zip
+            gh release create "$TAG" --title "$TITLE" --generate-notes --latest "$PORTABLE" "$SOURCE"
           fi
 
       - name: Check website dispatch token secret
@@ -175,4 +196,3 @@ jobs:
         run: |
           echo "::warning::Skipping website dispatch because no valid dispatch token secret is configured."
           echo "Set WEBSITE_DISPATCH_TOKEN (or BLUECOLLAR_WEBSITE_DISPATCH_TOKEN / REPO_DISPATCH_TOKEN) to enable cross-repo dispatch."
-
