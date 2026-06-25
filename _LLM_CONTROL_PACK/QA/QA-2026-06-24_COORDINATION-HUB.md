@@ -89,6 +89,7 @@ Read this file **before** starting work. Update it when you **start**, **finish*
 | Round 6 text-only auto mode | [Active work reply](QA-2026-06-24_active-work-reply.md) | Text-only pages preserve editable text instead of routing to raster |
 | Round 6 app slice | [App shape lookup](QA-2026-06-24_round6-app-shape-lookup-implementation.md) | PDF Callout Lookup accepted as first app/importer bridge; larger BOM bridge remains open |
 | Four-reviewer commit gate | [Agreement synthesis](QA-2026-06-24_agreement-synthesis.md) | **4/4 AGREE — GO** to commit/push Q&A mirrors (2026-06-25); not field-release sign-off |
+| Blender glyph semantics | [T-06 reply](QA-2026-06-25_reply-t06-blender-glyph-truth.md) | **CLOSED** — UI/docs now describe text-run outline meshes; true per-character objects deferred |
 
 ### Still open
 
@@ -98,7 +99,6 @@ Read this file **before** starting work. Update it when you **start**, **finish*
 | Round 4 P1 / moonshots | [Innovation backlog](QA-2026-06-24_round4-innovation-backlog.md) | Layers→Tags, heatmaps, WASM core (R4-27), etc. |
 | Field screenshot sign-off | WS-FIELD | Patches landed; user eyes required |
 | LC install canonical path | WS-LC | **CLOSED** — portable ZIP canonical; native plugin unsupported (INSTALL.md v1.0.40) |
-| Blender glyph semantics | Reviewer C | UI promises per-char glyphs; builder meshifies whole object |
 | Steel Logic PDF-BOM bridge | Round 6 app | P0 callout lookup shipped; full CSV/import-report ingestion remains open |
 
 ---

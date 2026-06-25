@@ -265,7 +265,7 @@ Website Report Doctor, metadata guard (no private Steel-Shapes assets in public 
 | **Root cause** | Endless range `text[-69..]` in `import_health.rb` (Ruby 2.6+); `.positive?` in `qa_report.rb` (Ruby 2.3+) |
 | **Fix** | v3.7.66 — `text[-69, 69]` and `> 0` comparisons |
 | **Prevention** | v3.7.67/68 — `tools/ruby22_syntax_check.rb`, `test/ruby22_compat_test.rb`, CI workflow on Ruby 2.2 Docker |
-| **Customer impact** | **v3.7.65 and earlier may fail on SketchUp 2017.** Use **v3.7.67+** (latest **v3.7.68**). |
+| **Customer impact** | **v3.7.65 and earlier may fail on SketchUp 2017.** Use **v3.7.67+** (latest **v3.7.69**). |
 
 ---
 
@@ -275,10 +275,10 @@ Verified from **GitHub Releases** and **git tags** on `origin/main` as of **2026
 
 | Component | Latest release tag | GitHub repo | Notes |
 |-----------|-------------------|-------------|-------|
-| **SketchUp** | **v3.7.68** | PDF-Importer-SketchUp | Supersedes v3.7.65 for SU 2017; includes Ruby 2.2 CI gate |
-| **FreeCAD** | **v4.0.48** | PDF-Importer-FreeCAD | pdfcadcore canonical |
-| **LibreCAD** | **v1.0.41** | PDF-Importer-LibreCAD | Portable ZIP canonical |
-| **Blender** | **v1.0.44** | PDF-Importer-Blender | Blender 5.x cp310-abi3 |
+| **SketchUp** | **v3.7.69** | PDF-Importer-SketchUp | Supersedes v3.7.65 for SU 2017; includes Ruby 2.2 CI gate |
+| **FreeCAD** | **v4.0.50** | PDF-Importer-FreeCAD | pdfcadcore canonical |
+| **LibreCAD** | **v1.0.43** | PDF-Importer-LibreCAD | Portable ZIP canonical |
+| **Blender** | **v1.0.46** | PDF-Importer-Blender | Blender 5.x cp310-abi3 |
 | **Website** | **v1.0.62** | BlueCollar-Website | Report Doctor, capability matrix, preflight copy |
 | **Steel Logic** | **v1.0.10** (tag) | Steel-Shapes | `pubspec.yaml` reports `1.0.9+11` build counter |
 
@@ -384,17 +384,17 @@ Access to the private corpus repo requires org invitation from the project owner
 
 | Host | Latest artifact | Install |
 |------|-----------------|---------|
-| SketchUp | `SketchUp-PDF-Importer_v3.7.68.rbz` | Extension Manager → Install Extension |
-| FreeCAD | v4.0.48 release bundle | Workbench install per INSTALL.md |
-| LibreCAD | v1.0.41 portable ZIP | Extract; run `LibreCAD-PDF-Importer.exe` |
-| Blender | v1.0.44 add-on ZIP | Preferences → Add-ons → Install |
+| SketchUp | `SketchUp-PDF-Importer_v3.7.69.rbz` | Extension Manager → Install Extension |
+| FreeCAD | v4.0.50 release bundle | Workbench install per INSTALL.md |
+| LibreCAD | v1.0.43 portable ZIP | Extract; run `LibreCAD-PDF-Importer.exe` |
+| Blender | v1.0.46 add-on ZIP | Preferences → Add-ons → Install |
 | Website | v1.0.62 snapshot | Deployed to bluecollar-systems.com |
 | Steel Logic | v1.0.10 | App store / sideload per repo README |
 
 ### 8.2 Version supersession notes
 
 - **User-verified Downloads builds at v3.7.65** (and matching FC/LC/BL versions) were validated in deploy artifact verification — functional for modern SketchUp hosts.
-- **For SketchUp 2017 (Ruby 2.2):** v3.7.65 **fails to load**. Minimum **v3.7.66** (hotfix); recommended **v3.7.67** or **v3.7.68** (includes CI prevention gate).
+- **For SketchUp 2017 (Ruby 2.2):** v3.7.65 **fails to load**. Minimum **v3.7.66** (hotfix); recommended **v3.7.67** or **v3.7.69** (includes CI prevention gate).
 - Always prefer **latest tag** from GitHub Releases unless regression testing a specific version.
 
 ### 8.3 Automated verification commands

@@ -19,10 +19,10 @@ Field testers should use the current public releases from the website or GitHub 
 
 | Host / product | Use this version for current field testing | Artifact type |
 |----------------|--------------------------------------------|---------------|
-| SketchUp PDF Vector Importer | v3.7.68 or later | `.rbz` |
-| FreeCAD PDF Vector Importer | v4.0.48 or later | Windows installer |
-| LibreCAD PDF Importer | v1.0.41 or later | Windows portable ZIP |
-| Blender PDF Importer | v1.0.44 or later | Blender add-on ZIP |
+| SketchUp PDF Vector Importer | v3.7.69 or later | `.rbz` |
+| FreeCAD PDF Vector Importer | v4.0.50 or later | Windows installer |
+| LibreCAD PDF Importer | v1.0.43 or later | Windows portable ZIP |
+| Blender PDF Importer | v1.0.46 or later | Blender add-on ZIP |
 | Blue Collar Systems website | live metadata serving current releases | website |
 | Steel Logic app | current pushed app build | app package / local build |
 | PDF test corpus | current `C:\1pdf-test-corpus` | local corpus repo |
@@ -30,7 +30,7 @@ Field testers should use the current public releases from the website or GitHub 
 SketchUp 2017 warning:
 
 - Do not test SketchUp 2017 with SketchUp importer v3.7.65.
-- Use v3.7.68 or later.
+- Use v3.7.69 or later.
 - The specific failure being retested is whether the extension loads without Ruby syntax errors in SketchUp 2017.
 
 ---
@@ -61,8 +61,8 @@ Invoke-WebRequest -UseBasicParsing https://bluecollar-systems.com/repo-metadata.
 Expected SketchUp metadata:
 
 ```text
-tag: v3.7.68
-asset: SketchUp-PDF-Importer_v3.7.68.rbz
+tag: v3.7.69
+asset: SketchUp-PDF-Importer_v3.7.69.rbz
 ```
 
 ---
@@ -86,7 +86,7 @@ asset: SketchUp-PDF-Importer_v3.7.68.rbz
 
 ## SketchUp 2017 Specific Retest
 
-1. Install `SketchUp-PDF-Importer_v3.7.68.rbz`.
+1. Install `SketchUp-PDF-Importer_v3.7.69.rbz`.
 2. Start SketchUp 2017.
 3. Confirm no Ruby Console load error.
 4. Open PDF Vector Importer menu.

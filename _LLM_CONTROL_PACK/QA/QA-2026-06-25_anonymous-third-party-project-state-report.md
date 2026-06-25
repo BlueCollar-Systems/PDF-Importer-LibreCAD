@@ -62,9 +62,9 @@ Latest confirmed heads at time of report:
 
 ### SketchUp
 
-Current public release: `v3.7.68`  
-Download asset: `SketchUp-PDF-Importer_v3.7.68.rbz`  
-Published asset SHA256: `C110972B655831EAA05B2715E82C71A025C83204D0561ABB57FA3FFCE126E396`
+Current public release: `v3.7.69`  
+Download asset: `SketchUp-PDF-Importer_v3.7.69.rbz`  
+Published asset SHA256: `B9C02F29AA4CC2CA26175CE490CA8CDABDBD79A7A7A1AC346FE453F22FD5D153`
 
 Important support target: SketchUp Make 2017 and newer SketchUp versions. SketchUp 2017 embeds Ruby 2.2, which is substantially older than modern desktop Ruby. The project must treat Ruby 2.2 compatibility as a hard release gate for the SketchUp importer.
 
@@ -73,7 +73,7 @@ Recent incident:
 - A field install failed to load in SketchUp 2017.
 - Root cause: `import_health.rb` used `text[-69..]`, an endless range syntax added after Ruby 2.2.
 - Secondary risk found and fixed: `.positive?` usage, also unavailable in Ruby 2.2.
-- Fix shipped in the 3.7.66+ release line; current public release is 3.7.68.
+- Fix shipped in the 3.7.66+ release line; current public release is 3.7.69.
 - Prevention now includes compatibility scanners and tests:
   - `tools/check_su2017_ruby_compat.py`
   - `tools/ruby22_syntax_check.rb`
@@ -86,7 +86,7 @@ This is the correct direction: failures caused by runtime mismatch must be block
 
 ### FreeCAD
 
-Current recently verified release line: `v4.0.48`  
+Current recently verified release line: `v4.0.50`  
 Artifact type: Windows installer EXE
 
 Confirmed behavior from recent verification:
@@ -103,7 +103,7 @@ Known deployment caveat:
 
 ### LibreCAD
 
-Current recently verified release line: `v1.0.41`  
+Current recently verified release line: `v1.0.43`  
 Artifact type: Windows portable ZIP
 
 Confirmed behavior from recent verification:
@@ -119,7 +119,7 @@ Known behavior:
 
 ### Blender
 
-Current recently verified release line: `v1.0.44`  
+Current recently verified release line: `v1.0.46`  
 Artifact type: Blender add-on ZIP
 
 Confirmed behavior from recent verification:
@@ -135,7 +135,7 @@ Historical concern:
 
 ### Website
 
-The website is expected to publish current download metadata and labels. It currently references the SketchUp `v3.7.68` release and the correct RBZ download URL.
+The website is expected to publish current download metadata and labels. It currently references the SketchUp `v3.7.69` release and the correct RBZ download URL.
 
 Website responsibilities:
 
@@ -262,5 +262,5 @@ The SketchUp 2017 Ruby failure is the main recent example of why the release pro
 ## Bottom Line
 
 Current status: ready for review and real-world confirmation testing, not ready to stop improving.  
-Highest-priority retest: SketchUp `v3.7.68` on SketchUp Make 2017, followed by all text modes across all hosts.  
+Highest-priority retest: SketchUp `v3.7.69` on SketchUp Make 2017, followed by all text modes across all hosts.  
 Highest-priority process rule: no release should ship unless the packaged artifact passes host/runtime compatibility checks and dependency checks appropriate to its oldest supported environment.

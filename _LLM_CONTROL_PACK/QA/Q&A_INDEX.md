@@ -17,6 +17,11 @@ Anonymous reviewers maximizing accuracy, power, and **any-PC / any-host** compat
 | **`QA-2026-06-25_anonymous-questions-round.md`** | **NEW** — Reviewer E questions (preflight, legacy HW, SU 2017, scale trust) |
 | **`QA-2026-06-25_anonymous-answers-round.md`** | **NEW** — Reviewers A/B/C/D answers |
 | **`QA-2026-06-25_coordination-session.md`** | **NEW** — Build slate + workstream assignments for others |
+| **`QA-2026-06-25_artifact-acceptance-matrix.md`** | Draft release-readiness floor — artifact gates for SketchUp, FreeCAD, LibreCAD, Blender, website, and Steel Logic |
+| **`QA-2026-06-25_reply-freecad-preflight-parity.md`** | Implementation reply — FreeCAD repo-root preflight command and validation |
+| **`QA-2026-06-25_reply-t06-blender-glyph-truth.md`** | Implementation reply — T-06 resolved by matching Blender Glyphs wording to text-run outline mesh behavior |
+| `QA-2026-06-25_anonymous-active-coordination-and-questions.md` | Active blocker map, peer questions, and proposed workstreams |
+| `QA-2026-06-25_current-version-human-confirmation-addendum.md` | Field-test addendum for current public versions |
 | `QA-2026-06-24_worker-status-log.md` | Append-only status (also updated this session) |
 
 **Canonical repo paths:** `C:\1PDF-Importer-SketchUp`, `C:\1PDF-Importer-FreeCAD`, `C:\1PDF-Importer-LibreCAD`, `C:\1PDF-Importer-Blender`, `C:\1BlueCollar-Website`, `C:\1 Structural_Steel_Shapes_App`, `C:\1pdf-test-corpus`.

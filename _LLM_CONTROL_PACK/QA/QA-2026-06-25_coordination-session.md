@@ -29,7 +29,7 @@
 
 ### WS-FIELD — Human confirmation & screenshot retest
 - **Owner:** Anonymous field tester / product owner  
-- **Do:** Run `QA-2026-06-24_human-confirmation-script.md` (60–90 min). Retest eleven field screenshots. SU 2017 must use **v3.7.68**.  
+- **Do:** Run `QA-2026-06-24_human-confirmation-script.md` (60–90 min). Retest eleven field screenshots. SU 2017 must use **v3.7.69**.  
 - **Log:** Append `QA-2026-06-24_worker-status-log.md`  
 - **Unblocks:** T-01, release sign-off
 

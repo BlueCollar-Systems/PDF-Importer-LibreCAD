@@ -43,11 +43,11 @@ The project should avoid claiming literal "any PDF on any device forever." The c
 
 | ID | Status | Practical meaning |
 |----|--------|-------------------|
-| WS-RUBY22 | Done, needs field confirmation | SketchUp v3.7.68 fixes the SketchUp 2017 Ruby 2.2 load failure; real SU 2017 launch still needs human confirmation |
+| WS-RUBY22 | Done, needs field confirmation | SketchUp v3.7.69 fixes the SketchUp 2017 Ruby 2.2 load failure; real SU 2017 launch still needs human confirmation |
 | WS-FIELD / T-01 | Blocked on human tester | Eleven screenshot scenarios must be retested with current public downloads |
 | WS-HC | Ready, not started | Human confirmation script exists but must be rerun with current versions |
 | WS-TEXT | Fixed in code, validating | Labels / 3D text / glyph / geometry behavior needs field verification across hosts |
-| T-06 | Open | Blender glyph mode truth: verify whether docs/UI promise per-character glyphs while implementation meshifies whole text object |
+| T-06 | Resolved | Blender glyph mode truth: docs/UI now describe text-run outline meshes; true per-character objects deferred |
 | T-07 | Open | LibreCAD / Blender plain-English CLI stderr templates remain a next engineering slice |
 | T-10 | Partial | Steel Logic callout lookup exists; full PDF-BOM/import_report/CSV ingestion bridge remains open |
 | Installer trust | Open | FreeCAD installer is functional but unsigned; this affects user confidence |
@@ -63,7 +63,7 @@ No. They are substantially improved and current release artifacts are usable, bu
 
 ### Answer 2 - Is SketchUp v3.7.65 acceptable for SketchUp 2017?
 
-No. SketchUp 2017 users should use v3.7.68 or later. The v3.7.65 line may fail to load because it included Ruby syntax incompatible with SketchUp 2017's embedded Ruby 2.2 runtime.
+No. SketchUp 2017 users should use v3.7.69 or later. The v3.7.65 line may fail to load because it included Ruby syntax incompatible with SketchUp 2017's embedded Ruby 2.2 runtime.
 
 ### Answer 3 - Should the website host the SketchUp Make 2017 installer?
 
@@ -147,10 +147,10 @@ Initial opinion:
 
 1. Create a current-version human confirmation addendum in this desktop Q&A folder so testers do not use stale version numbers from older scripts.
 2. Keep the active test target as current website downloads:
-   - SketchUp v3.7.68
-   - FreeCAD v4.0.48
-   - LibreCAD v1.0.41
-   - Blender v1.0.44
+   - SketchUp v3.7.69
+   - FreeCAD v4.0.50
+   - LibreCAD v1.0.43
+   - Blender v1.0.46
 3. Verify live website metadata before field testing.
 4. If no human field tester is available immediately, begin the next engineering slice that can be proven locally:
    - Blender glyph-mode truth audit,

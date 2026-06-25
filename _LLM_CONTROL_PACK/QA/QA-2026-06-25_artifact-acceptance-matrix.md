@@ -34,8 +34,8 @@ These gates apply to every product:
 
 ## SketchUp Importer
 
-Current accepted public release: `v3.7.68`  
-Artifact: `SketchUp-PDF-Importer_v3.7.68.rbz`  
+Current accepted public release: `v3.7.69`  
+Artifact: `SketchUp-PDF-Importer_v3.7.69.rbz`  
 Critical oldest runtime: SketchUp Make 2017 / Ruby 2.2
 
 | Gate | Command or verification | Status |
@@ -54,7 +54,7 @@ Minimum refusal rule: do not recommend `v3.7.65` or earlier for SketchUp 2017.
 
 ## FreeCAD Importer
 
-Current accepted release line: `v4.0.48`  
+Current accepted release line: `v4.0.50`  
 Artifact: Windows installer EXE plus release ZIP/workbench payload  
 Critical runtime: FreeCAD embedded Python compatible with bundled PyMuPDF
 
@@ -73,8 +73,8 @@ Minimum refusal rule: if bundled PyMuPDF cannot import from the installed path, 
 
 ## LibreCAD Importer
 
-Current accepted release line: `v1.0.41`  
-Artifact: `LibreCAD-PDF-Importer-Windows-Portable_v1.0.41.zip`  
+Current accepted release line: `v1.0.43`  
+Artifact: `LibreCAD-PDF-Importer-Windows-Portable_v1.0.43.zip`  
 Critical runtime: portable EXEs on target Windows baseline
 
 | Gate | Command or verification | Status |
@@ -92,8 +92,8 @@ Minimum refusal rule: no-argument preflight failure is not a blocker; preflight 
 
 ## Blender Importer
 
-Current accepted release line: `v1.0.44`  
-Artifact: `Blender-PDF-Importer_v1.0.44.zip`  
+Current accepted release line: `v1.0.46`  
+Artifact: `Blender-PDF-Importer_v1.0.46.zip`  
 Critical runtime: Blender Python ABI compatible with vendored PyMuPDF
 
 | Gate | Command or verification | Status |

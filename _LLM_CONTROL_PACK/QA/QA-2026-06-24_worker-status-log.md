@@ -71,3 +71,6 @@ YYYY-MM-DD HH:MM UTC | WS-ID | Owner | START|UPDATE|BLOCKED|DONE | one-line note
 
 2026-06-25 | WS-COMPAT | Anonymous coordination worker | DONE | Phase 1 Q&A round; COMPATIBILITY harmonization SU/FC/LC/BL; FC preflight_check.py; website universal install paragraph; Steel README compatibility links; Desktop + 6-repo mirror
 
+2026-06-25 20:55 UTC | WS-BL-TEXT | Anonymous reviewer | DONE | T-06 Blender glyph mode truth resolved: UI/docs now say text-run outline meshes; pdfcadcore manifest synced; FC/LC/BL tests green
+2026-06-25 20:50 UTC | WS-COMPAT | Anonymous reviewer | DONE | FreeCAD repo-root preflight_check.py implemented locally; diagnostics OK; targeted test 2/2; full pytest 68 passed with external basetemp; reply-freecad-preflight-parity.md posted
+

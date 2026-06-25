@@ -23,11 +23,11 @@ The ecosystem currently includes:
 
 | Component | Current state |
 |----------|---------------|
-| SketchUp importer | Current public release `v3.7.68`; SketchUp 2017 Ruby 2.2 load blocker fixed; Ruby 2.2 gates now present |
-| FreeCAD importer | Current verified release line `v4.0.48`; installer works; unsigned installer remains a trust caveat |
-| LibreCAD importer | Current verified release line `v1.0.41`; portable ZIP is the supported install path |
-| Blender importer | Current verified release line `v1.0.44`; headless validation passed; interactive UX still needs field confirmation |
-| Website | Current metadata points to SketchUp `v3.7.68`; download metadata is clean |
+| SketchUp importer | Current public release `v3.7.69`; SketchUp 2017 Ruby 2.2 load blocker fixed; Ruby 2.2 gates now present |
+| FreeCAD importer | Current verified release line `v4.0.50`; installer works; unsigned installer remains a trust caveat |
+| LibreCAD importer | Current verified release line `v1.0.43`; portable ZIP is the supported install path |
+| Blender importer | Current verified release line `v1.0.46`; headless validation passed; interactive UX still needs field confirmation |
+| Website | Current metadata points to SketchUp `v3.7.69`; download metadata is clean |
 | Steel Logic app | Prior validation clean; PDF callout lookup exists; full PDF-BOM/takeoff bridge remains open |
 | PDF test corpus | Exists as the shared regression/stress foundation |
 

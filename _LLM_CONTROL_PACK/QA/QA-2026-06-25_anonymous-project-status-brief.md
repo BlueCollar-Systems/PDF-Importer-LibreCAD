@@ -15,11 +15,11 @@ The ecosystem currently has working release artifacts for:
 
 | Product | Current public release | Current status |
 |---------|------------------------|----------------|
-| SketchUp PDF Vector Importer | v3.7.68 | Released; SketchUp 2017 Ruby 2.2 load failure fixed; website points to v3.7.68 |
-| FreeCAD PDF Vector Importer | v4.0.48 | Release artifact verified; installer works; unsigned installer warning remains expected |
-| LibreCAD PDF Importer | v1.0.41 | Portable Windows ZIP verified; portable path is the supported install path |
-| Blender PDF Importer | v1.0.44 | ZIP verified; bundled PyMuPDF path/import smoke passed |
-| Blue Collar Systems Website | current main | Live metadata serves SketchUp v3.7.68 and current importer downloads |
+| SketchUp PDF Vector Importer | v3.7.69 | Released; SketchUp 2017 Ruby 2.2 load failure fixed; website points to v3.7.69 |
+| FreeCAD PDF Vector Importer | v4.0.50 | Release artifact verified; installer works; unsigned installer warning remains expected |
+| LibreCAD PDF Importer | v1.0.43 | Portable Windows ZIP verified; portable path is the supported install path |
+| Blender PDF Importer | v1.0.46 | ZIP verified; bundled PyMuPDF path/import smoke passed |
+| Blue Collar Systems Website | current main | Live metadata serves SketchUp v3.7.69 and current importer downloads |
 | Structural Steel Shapes app | current main | Validated in prior pass; PDF callout lookup/shape lookup work is present |
 | PDF test corpus | current main | Public and synthetic corpus exists for regression/stress validation |
 
@@ -118,13 +118,13 @@ C:\Users\Rowdy Payton\Documents\PDF Importers
 
 ### SketchUp
 
-Current release: v3.7.68  
+Current release: v3.7.69  
 Current repo head: `ebb47bc`  
-GitHub release asset: `SketchUp-PDF-Importer_v3.7.68.rbz`  
+GitHub release asset: `SketchUp-PDF-Importer_v3.7.69.rbz`  
 Release asset SHA256:
 
 ```text
-C110972B655831EAA05B2715E82C71A025C83204D0561ABB57FA3FFCE126E396
+B9C02F29AA4CC2CA26175CE490CA8CDABDBD79A7A7A1AC346FE453F22FD5D153
 ```
 
 Critical incident resolved:
@@ -139,24 +139,24 @@ Critical incident resolved:
 Important reviewer note:
 
 - v3.7.65 should not be used for SketchUp 2017 field testing.
-- Field testers should install v3.7.68 or later.
+- Field testers should install v3.7.69 or later.
 
 ### FreeCAD
 
-Current release: v4.0.48  
+Current release: v4.0.50  
 Current repo head: `893d55e`
 
 Verified facts from prior deploy check:
 
 - Installer runs successfully.
-- Package version is 4.0.48.
+- Package version is 4.0.50.
 - Python files compile.
 - Bundled PyMuPDF import works.
 - Caveat: installer is not code-signed, so Windows trust warnings may appear.
 
 ### LibreCAD
 
-Current release: v1.0.41  
+Current release: v1.0.43  
 Current repo head: `ee5cc12`
 
 Verified facts from prior deploy check:
@@ -168,7 +168,7 @@ Verified facts from prior deploy check:
 
 ### Blender
 
-Current release: v1.0.44  
+Current release: v1.0.46  
 Current repo head: `35632e4`
 
 Verified facts from prior deploy check:
@@ -183,8 +183,8 @@ Verified facts from prior deploy check:
 Current repo head: `4e2218a`  
 Live metadata status:
 
-- `https://bluecollar-systems.com/repo-metadata.json` serves SketchUp `v3.7.68`.
-- Website direct download metadata points to `SketchUp-PDF-Importer_v3.7.68.rbz`.
+- `https://bluecollar-systems.com/repo-metadata.json` serves SketchUp `v3.7.69`.
+- Website direct download metadata points to `SketchUp-PDF-Importer_v3.7.69.rbz`.
 - Static metadata validation passes.
 - `nav.js` syntax check passes.
 
@@ -259,7 +259,7 @@ ruby test/text_label_placement_test.rb
 python build_release.py
 ```
 
-Release asset verification for SketchUp v3.7.68:
+Release asset verification for SketchUp v3.7.69:
 
 - GitHub release exists.
 - Direct asset URL returns HTTP 200.
@@ -296,7 +296,7 @@ Repository status at last sweep:
 The project should not be represented as fully field-signed-off until these are done:
 
 1. SketchUp 2017 field retest:
-   - Install `SketchUp-PDF-Importer_v3.7.68.rbz`.
+   - Install `SketchUp-PDF-Importer_v3.7.69.rbz`.
    - Confirm extension loads without Ruby Console syntax error.
    - Import a PDF.
    - Open Import Health and confirm long paths truncate cleanly.
@@ -332,7 +332,7 @@ The next reviewer should focus on confirming behavior on actual host installatio
 
 1. Download current packages from the website, not stale local files.
 2. Install each importer on a clean or representative PC.
-3. For SketchUp 2017, specifically use v3.7.68 or later.
+3. For SketchUp 2017, specifically use v3.7.69 or later.
 4. Import a small known-good PDF in each text mode.
 5. Import one complex construction/fabrication PDF page-by-page.
 6. Verify:
