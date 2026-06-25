@@ -1,0 +1,1 @@
+What should the cross-importer recovery contract be when an import is cancelled, crashes, times out, or runs out of memory on older hardware, so that the parent document is left unchanged or safely quarantines partial results, temporary files are cleaned up, diagnostics remain available, and the user can retry without manual repair?

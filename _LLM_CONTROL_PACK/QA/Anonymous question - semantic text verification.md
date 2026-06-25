@@ -1,0 +1,1 @@
+How can we prove, automatically and repeatedly, that each importer creates the correct parent-software entity type for every text mode, such as SketchUp labels as labels, SketchUp 3D text as 3D text or documented geometry where the API requires it, glyph mode as vector outlines, and geometry mode as raw geometry, instead of only trusting screenshots or visual inspection?
