@@ -2,7 +2,7 @@
 
 **Inputs:** `QA-2026-06-25_reply-ecosystem-audit-and-cross-round.md` §1 (P0-A/B/C)  
 **Author:** Anonymous cross-review worker (release-pipeline lane)  
-**Status:** **SHIPPED** — CI/workflow fixes committed; field release still blocked on T-01
+**Status:** **SHIPPED** — CI/workflow fixes committed for auto-release and tag/manual release paths; field release still blocked on T-01
 
 ---
 
@@ -12,7 +12,7 @@
 |----|-------|------------|-------------|
 | **P0-A** | FreeCAD `--latest` bundles Linux PyMuPDF | `auto-release.yml` ran on `ubuntu-latest`; `build_release.py` pip-targeted host OS wheel | **FC `auto-release.yml` → `windows-latest`**; post-build `scripts/smoke_release_zip.py` verifies Windows `.pyd` import and rejects `.so`/manylinux payload |
 | **P0-B** | LibreCAD `--latest` was source-only zip | Auto-release only ran `build_release.py`; portable built only on tag `release.yml` | **LC `auto-release.yml` → `windows-latest`**; builds **both** source + `build_windows_portable.py`; publishes portable **first** as `--latest` asset; `scripts/smoke_portable_zip.py` runs `pdf2dxf.exe --help` |
-| **P0-C** | Auto-release had no test/smoke gate | Four `auto-release.yml` workflows published without inline tests | **All four hosts:** `Run release gate tests` step (sync check + pytest / Ruby smoke) **before** build; artifact smoke **before** `gh release create` (FC zip, LC portable, SU RBZ structure, BL zip) |
+| **P0-C** | Release workflows had no enforced test/smoke gate | Auto-release workflows published without inline tests; tag/manual release workflows for FC/LC/BL could also publish artifacts without the same gate | **All release paths:** `Run release gate tests` step (sync/compile/preflight + pytest or Ruby smoke) before build/publish; artifact smoke before upload/create (FC zip, LC portable, SU RBZ structure, BL zip) |
 
 ---
 
@@ -25,6 +25,7 @@
 | `check_su2017_ruby_compat.py` | n/a | n/a | PASS | n/a |
 | `ruby22_compat_test.rb` + smoke | n/a | n/a | PASS | n/a |
 | `build_release.py` + artifact smoke | PASS (v4.0.51 zip) | not run† | n/a | PASS (v1.0.47 zip) |
+| tag/manual release workflow gate inspection | PASS (`windows-release.yml`) | PASS (`release.yml`) | n/a | PASS (`release.yml`) |
 
 \* FC pytest hit a Windows `.pytest_tmp` permission teardown warning; tests completed 100%.  
 † LC portable PyInstaller build deferred locally (slow); workflow step validated by script review + LC unit tests green.
@@ -48,8 +49,8 @@
 
 - **T-01** — human field screenshot sign-off (product owner)
 - **WS-RUBY22** — Joe Campbell SU 2017 field confirm on next published RBZ
-- **P1 backlog** from audit (#4 SmartScreen copy, #9 BL off-Windows wheel, #11 FC Setup.exe gate) — not in this P0 slice
-- **First green auto-release on GitHub** — fixes land in repo; `--latest` assets update only after next non-`[skip release]` push to each host
+- **P1 backlog** from audit (#4 SmartScreen copy, #9 BL off-Windows wheel) — not in this P0 slice
+- **First green GitHub release runs** — fixes land in repo; `--latest` and tag/manual assets update only after the next eligible release workflow run
 
 ---
 
