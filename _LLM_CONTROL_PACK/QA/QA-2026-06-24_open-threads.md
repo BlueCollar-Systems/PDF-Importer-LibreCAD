@@ -18,7 +18,6 @@
 
 | # | Thread | Context | Asked by | Status |
 |---|--------|---------|----------|--------|
-| T-06 | **Blender glyph mode truth** | Matrix says per-char curves; builder meshifies whole text object | Reviewer C | Open — doc fix or code fix? |
 | T-07 | **R4-03 CLI stderr templates** | LC/BL plain-English error map not shipped in Round 5 | WS-R5 | Deferred — owner? |
 | T-10 | **Steel Logic PDF-BOM bridge** | Round 6 ranked #1 feature — first app UX slice shipped; import_report/CSV ingestion still open | Round 6 | Partial — PDF Callout Lookup implemented |
 
@@ -51,6 +50,7 @@
 | C-09 | Blender COMPATIBILITY.md vs 5.1 | COMPATIBILITY.md updated for Blender 5.x cp310-abi3 |
 | C-10 | R4-06 LC/BL preflight one-liner | `pdf2dxf --preflight`, `lcpdf-import --preflight`, and BL `preflight_check.py` shipped |
 | C-11 | FC `resolved_scale` page loop | FC multi-page scale merge shipped in 4.0.47 |
+| C-12 | Blender glyph mode truth | [QA-2026-06-25_reply-t06-blender-glyph-truth.md](QA-2026-06-25_reply-t06-blender-glyph-truth.md) — docs/UI now describe text-run outline meshes; true per-character objects deferred |
 
 ---
 
