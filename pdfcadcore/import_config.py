@@ -63,7 +63,7 @@ class ImportConfig:
     # Text rendering (orthogonal to mode). One of:
     #   "labels"   -- host-native text objects, editable as text
     #   "3d_text"  -- extruded geometric text (host support varies)
-    #   "glyphs"   -- text rendered as per-character vector glyphs
+    #   "glyphs"   -- non-editable outline geometry for visual fidelity
     #   "geometry" -- text fully converted to non-editable geometry
     text_mode: str = "3d_text"
 

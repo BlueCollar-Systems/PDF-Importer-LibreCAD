@@ -76,7 +76,7 @@ Text rendering remains a separate user control, unchanged by this decision. The 
 
 - **Labels** — host-native text objects, editable as text
 - **3D Text** — extruded geometric text (where host supports)
-- **Glyphs** — text rendered as individual character glyphs
+- **Glyphs** — text converted to non-editable outline geometry; host adapters may group outlines by character, span, or text run
 - **Geometry** — text fully converted to non-editable geometry
 
 These choices are legitimate user preferences driven by downstream workflow. The importer does not decide; the user does.

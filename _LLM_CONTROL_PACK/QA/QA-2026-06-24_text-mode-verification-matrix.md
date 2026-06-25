@@ -12,7 +12,7 @@
 | **Geometry** | `geometry` | Text becomes linework (edges/outlines); not editable |
 | **Labels** | `labels` | Native editable text annotations |
 | **3D Text** | `3d_text` | Host 3D/extruded text where supported |
-| **Glyphs** | `glyphs` | Per-character vector glyphs (SVG/component or curve outlines) |
+| **Glyphs** | `glyphs` | Non-editable text outline geometry (SVG/component, curve, mesh, or DXF outlines; grouping is host-specific) |
 
 `import_text=false` → no text regardless of mode.
 
@@ -24,7 +24,7 @@
 |------|----------|--------|---------|--------|-------------|
 | **SketchUp** | SVG path edges via Poppler/MuPDF; no Text group | Native `add_text` when \|angle\| ≤ ~12°; mesh fallback when rotated | `add_3d_text` + rotation transform; shared anchor with Labels | SVG/component glyph path (`svg_text_renderer`) | `1017 - Rev 0.pdf`; `ruby test/text_mode_placement_test.rb`; inspect QUAN column + SECTION dims |
 | **FreeCAD** | Draft geometry / wires | `Draft` text objects | ShapeString geometry sized by `Size`/`ScaleToSize`, not view font size | Glyph curves | pytest subset; import report `text_mode`; inspect 3D Text scale |
-| **Blender** | Mesh/curve outlines | Font curve objects | Extruded text objects | Per-char curves | pytest; preferences PyMuPDF OK; import small PDF; dependency repair handles missing `pymupdf/extra.py` |
+| **Blender** | Mesh/curve outlines | Font curve objects | Extruded text objects | Text-run outline meshes | pytest; preferences PyMuPDF OK; import small PDF; dependency repair handles missing `pymupdf/extra.py` |
 | **LibreCAD** | DXF polylines (outline mode) | DXF **TEXT** entities (GUI default) | 2D alias of Labels (`TEXT`) | Same as geometry outlines | GUI **Labels**; open DXF — TEXT not POLYLINE soup |
 
 ---

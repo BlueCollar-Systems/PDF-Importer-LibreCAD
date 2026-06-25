@@ -9,7 +9,7 @@
   "geometry_cleanup.py": "e8a2ad96aea1186e719aa248fea09f79b52fe65b8369c63287272a86457e4708",
   "hatch_detector.py": "621e1649d35b423af716db14c222235aad2c6218eff64821e4e84927510a2bda",
   "import_bounds.py": "f89e69995581bee6bf19d3d5db249e12d1025559ef93bfb778511863816b1324",
-  "import_config.py": "89ef00d6b3fbae5faf91e02649d75845bea9d8b6bb7c3bd06a33c4a4037d8f9b",
+  "import_config.py": "e8e7605c73656459e18b8cb89c07aa2d7dd2f20fe25a57c0771de496fcc0d413",
   "import_report.py": "ea32d41b53d35115565fa69b6441eab1561c818fe317ec15f861d58f14554185",
   "preflight_copy.py": "c5966dec967263b5a1ee64ebff0feb9b904de040f5ab2da7ba7b192d030dfd2b",
   "primitive_extractor.py": "d0750b92a5e2cc4e26b51b40f91ac9a30b52658f8caa84cb22e239456b515bf3",
