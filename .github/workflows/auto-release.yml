@@ -143,15 +143,14 @@ jobs:
           SOURCE="dist/LibreCAD-PDF-Importer_v${VERSION}.zip"
 
           git fetch --tags --force
-          if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            git tag "${TAG}"
-            git push origin "${TAG}"
-          fi
-
+          # Create the tag via gh (GITHUB_TOKEN), NOT `git push origin <tag>`: the
+          # checkout PAT lacks `workflow` scope, so pushing a tag whose commit
+          # touches .github/workflows/ is rejected. gh creates the tag through the
+          # releases API, which is not subject to that restriction.
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$PORTABLE" "$SOURCE" --clobber
           else
-            gh release create "$TAG" --title "$TITLE" --generate-notes --latest "$PORTABLE" "$SOURCE"
+            gh release create "$TAG" --target "$(git rev-parse HEAD)" --title "$TITLE" --generate-notes --latest "$PORTABLE" "$SOURCE"
           fi
 
       - name: Check website dispatch token secret
