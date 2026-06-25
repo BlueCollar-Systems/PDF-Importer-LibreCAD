@@ -40,6 +40,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Run release gate tests
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+          python pdfcadcore_sync_check.py --skip-cross-repo
+          python preflight_check.py
+          python -m pytest tests/ -q --basetemp "$RUNNER_TEMP/pytest-librecad"
+
       - name: Read and bump version
         id: version
         run: |
@@ -113,14 +121,6 @@ jobs:
               echo "::warning::Could not push version bump to '${GITHUB_REF_NAME}' (likely branch protection). Continuing to publish the release; tag-based versioning keeps releases unique."
             fi
           fi
-
-      - name: Run release gate tests
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pytest
-          python pdfcadcore_sync_check.py --skip-cross-repo
-          python preflight_check.py
-          python -m pytest tests/ -q --basetemp "$RUNNER_TEMP/pytest-librecad"
 
       - name: Build source zip
         run: python build_release.py
