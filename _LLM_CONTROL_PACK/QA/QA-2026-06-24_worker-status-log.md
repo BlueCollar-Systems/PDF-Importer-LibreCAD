@@ -64,3 +64,7 @@ YYYY-MM-DD HH:MM UTC | WS-ID | Owner | START|UPDATE|BLOCKED|DONE | one-line note
 
 2026-06-25 00:32 UTC | WS-R6 | corpus/oracle agent | DONE | Independent commit-readiness verification on Windows fs: SYNTAX 0/11 bad, pdfcadcore ALL IN SYNC, manifest valid JSON, R6-A confirmed fixed in committed LC code (02 text-only 0->9 text items), all 6 repos main==origin (clean+pushed). AGREE: good to go. Sign-off: round6-commit-readiness-signoff.md
 - **2026-06-25** WS-CORPUS: Created https://github.com/BlueCollar-Systems/pdf-test-corpus (private), pushed main (manifest + tools + tier1/2 web PDFs); web-acquired gitignored.
+
+2026-06-25 01:17 UTC | WS-SYNC | Cursor ecosystem worker | DONE | Desktop Q&A mirrored to 6 repos; health: pdfcadcore_sync_check ALL IN SYNC, SU qa_report_test 6/6 green; corpus acquire_tier1 -MirrorDesktop mirrored=0 (29 shop PDFs on Desktop; manifest user-desktop entries already satisfied or name mismatch)
+2026-06-25 01:17 UTC | WS-SYNC | Cursor ecosystem worker | NOTE | C:\ path hygiene: `C:\1SU-PDFimporter` is empty (not a git repo) — canonical SU clone is `C:\1PDF-Importer-SketchUp`; legacy `C:\1pdfcadcore`, `C:\1FC-PDFimporter`, `C:\1LC-PDFimporter`, `C:\1BL-PDFimporter` absent
+2026-06-25 01:17 UTC | WS-CORPUS | Cursor ecosystem worker | DONE | `C:\1pdf-test-corpus` origin/main clean; README documents `BCS_CORPUS_ROOT`; QA corpus-repo-created.md committed with importers push

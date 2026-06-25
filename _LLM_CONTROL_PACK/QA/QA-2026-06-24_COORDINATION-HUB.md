@@ -103,6 +103,22 @@ Read this file **before** starting work. Update it when you **start**, **finish*
 
 ---
 
+## C:\ path hygiene (2026-06-25)
+
+| Path | Status |
+|------|--------|
+| `C:\1PDF-Importer-SketchUp` | **Canonical** SketchUp importer (origin/main) |
+| `C:\1PDF-Importer-FreeCAD` | **Canonical** FreeCAD importer |
+| `C:\1PDF-Importer-LibreCAD` | **Canonical** LibreCAD importer |
+| `C:\1PDF-Importer-Blender` | **Canonical** Blender importer |
+| `C:\1pdf-test-corpus` | **Canonical** test corpus (`BCS_CORPUS_ROOT`) |
+| `C:\1SU-PDFimporter` | **Stale** — empty directory, not a git clone; safe to remove or repoint junction |
+| `C:\1pdfcadcore`, `C:\1FC-PDFimporter`, `C:\1LC-PDFimporter`, `C:\1BL-PDFimporter` | **Absent** on this machine (use `1PDF-Importer-*` names) |
+
+**WS-CORPUS:** closed — private repo live, README + `tools/acquire_tier1.ps1` documented; importer QA mirrors include `QA-2026-06-24_corpus-repo-created.md`.
+
+---
+
 ## Version snapshot (human confirmation prep)
 
 | Host | Version (script) |
