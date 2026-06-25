@@ -46,7 +46,7 @@ The project **does not** claim 100% on every PDF class (encrypted, corrupt, pure
 | Mode | SketchUp | FreeCAD | LibreCAD | Blender |
 |------|----------|---------|----------|---------|
 | **Labels** | Editable labels | ShapeString (editable) | DXF TEXT | Text object |
-| **Glyphs** | Per-char glyph geometry | Vector outlines | Outlines (CLI) | Mesh curves |
+| **Glyphs** | Glyph outline geometry | Vector outlines | Outlines (CLI) | Text-run outline meshes |
 | **Geometry** | Full stroke geometry | Vector outlines | Outlines | Mesh curves |
 | **3D Text** | Extruded display text | ShapeString 3D | **Not supported (2D host)** | 2D only |
 
@@ -138,7 +138,7 @@ The project **does not** claim:
 2. **Pixel parity across hosts** — same PDF may look slightly different in SU vs FC vs LC vs BL due to text engines, mesh vs NURBS, and DXF TEXT limitations.
 3. **CI green = field sign-off** — automated tests are necessary but not sufficient; human confirmation script must be executed.
 4. **Per-span OCG on geometry text** — Round 3 ruling: geometry text uses layer grouping; not per-span OCG tags.
-5. **Blender per-char glyph semantics in all code paths** — UI may promise per-char glyphs; builder sometimes meshifies whole text object (open thread T-06).
+5. **Blender separate per-character glyph objects** — current releases do not claim this; T-06 resolved by documenting Glyphs as text-run outline meshes.
 
 ---
 
@@ -315,7 +315,7 @@ Verified from **GitHub Releases** and **git tags** on `origin/main` as of **2026
 | Human confirmation session | WS-HC — script ready, not started |
 | Round 5 P1 remainder | R4-03 CLI stderr, R4-05 span_quality, R4-30 confidence % |
 | Steel Logic PDF-BOM bridge | T-10 — callout lookup only so far |
-| Blender glyph semantics | T-06 — doc vs builder gap |
+| Blender glyph semantics | T-06 resolved — docs/UI now describe text-run outline meshes |
 
 ### 6.3 BLOCKED
 
