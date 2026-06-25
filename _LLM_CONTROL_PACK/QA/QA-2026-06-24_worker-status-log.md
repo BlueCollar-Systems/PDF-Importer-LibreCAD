@@ -68,3 +68,6 @@ YYYY-MM-DD HH:MM UTC | WS-ID | Owner | START|UPDATE|BLOCKED|DONE | one-line note
 2026-06-25 01:17 UTC | WS-SYNC | Cursor ecosystem worker | DONE | Desktop Q&A mirrored to 6 repos; health: pdfcadcore_sync_check ALL IN SYNC, SU qa_report_test 6/6 green; corpus acquire_tier1 -MirrorDesktop mirrored=0 (29 shop PDFs on Desktop; manifest user-desktop entries already satisfied or name mismatch)
 2026-06-25 01:17 UTC | WS-SYNC | Cursor ecosystem worker | NOTE | C:\ path hygiene: `C:\1SU-PDFimporter` is empty (not a git repo) — canonical SU clone is `C:\1PDF-Importer-SketchUp`; legacy `C:\1pdfcadcore`, `C:\1FC-PDFimporter`, `C:\1LC-PDFimporter`, `C:\1BL-PDFimporter` absent
 2026-06-25 01:17 UTC | WS-CORPUS | Cursor ecosystem worker | DONE | `C:\1pdf-test-corpus` origin/main clean; README documents `BCS_CORPUS_ROOT`; QA corpus-repo-created.md committed with importers push
+
+2026-06-25 | WS-COMPAT | Anonymous coordination worker | DONE | Phase 1 Q&A round; COMPATIBILITY harmonization SU/FC/LC/BL; FC preflight_check.py; website universal install paragraph; Steel README compatibility links; Desktop + 6-repo mirror
+
