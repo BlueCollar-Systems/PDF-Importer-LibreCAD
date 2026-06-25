@@ -88,6 +88,7 @@ Read this file **before** starting work. Update it when you **start**, **finish*
 | Corpus licensing | [Corpus research](QA-2026-06-24_test-corpus-web-research.md) | User shop PDFs **manifest-only**; web tier acquired under Apache-2.0 / OpenPreserve |
 | Round 6 text-only auto mode | [Active work reply](QA-2026-06-24_active-work-reply.md) | Text-only pages preserve editable text instead of routing to raster |
 | Round 6 app slice | [App shape lookup](QA-2026-06-24_round6-app-shape-lookup-implementation.md) | PDF Callout Lookup accepted as first app/importer bridge; larger BOM bridge remains open |
+| Four-reviewer commit gate | [Agreement synthesis](QA-2026-06-24_agreement-synthesis.md) | **4/4 AGREE — GO** to commit/push Q&A mirrors (2026-06-25); not field-release sign-off |
 
 ### Still open
 
