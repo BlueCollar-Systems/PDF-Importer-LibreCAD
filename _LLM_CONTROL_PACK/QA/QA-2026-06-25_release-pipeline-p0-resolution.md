@@ -4,6 +4,8 @@
 **Author:** Anonymous cross-review worker (release-pipeline lane)  
 **Status:** **SHIPPED** — CI/workflow fixes committed for auto-release and tag/manual release paths; field release still blocked on T-01
 
+**2026-06-25 follow-up:** auto-release test gates now fail before any version-bump commit in FC/LC/SU/BL. Artifact smoke still runs after build and before release upload/create.
+
 ---
 
 ## P0 items addressed
@@ -12,7 +14,7 @@
 |----|-------|------------|-------------|
 | **P0-A** | FreeCAD `--latest` bundles Linux PyMuPDF | `auto-release.yml` ran on `ubuntu-latest`; `build_release.py` pip-targeted host OS wheel | **FC `auto-release.yml` → `windows-latest`**; post-build `scripts/smoke_release_zip.py` verifies Windows `.pyd` import and rejects `.so`/manylinux payload |
 | **P0-B** | LibreCAD `--latest` was source-only zip | Auto-release only ran `build_release.py`; portable built only on tag `release.yml` | **LC `auto-release.yml` → `windows-latest`**; builds **both** source + `build_windows_portable.py`; publishes portable **first** as `--latest` asset; `scripts/smoke_portable_zip.py` runs `pdf2dxf.exe --help` |
-| **P0-C** | Release workflows had no enforced test/smoke gate | Auto-release workflows published without inline tests; tag/manual release workflows for FC/LC/BL could also publish artifacts without the same gate | **All release paths:** `Run release gate tests` step (sync/compile/preflight + pytest or Ruby smoke) before build/publish; artifact smoke before upload/create (FC zip, LC portable, SU RBZ structure, BL zip) |
+| **P0-C** | Release workflows had no enforced test/smoke gate | Auto-release workflows published without inline tests; tag/manual release workflows for FC/LC/BL could also publish artifacts without the same gate | **All release paths:** `Run release gate tests` step (sync/compile/preflight + pytest or Ruby smoke) before build/publish; auto-release tests now run before version-bump commits; artifact smoke runs before upload/create (FC zip, LC portable, SU RBZ structure, BL zip) |
 
 ---
 
@@ -24,11 +26,10 @@
 | pytest / unit tests | PASS* | 45 passed | n/a | 43 passed |
 | `check_su2017_ruby_compat.py` | n/a | n/a | PASS | n/a |
 | `ruby22_compat_test.rb` + smoke | n/a | n/a | PASS | n/a |
-| `build_release.py` + artifact smoke | PASS (v4.0.51 zip) | not run† | n/a | PASS (v1.0.47 zip) |
+| `build_release.py` + artifact smoke | PASS (v4.0.51 zip) | PASS (source + portable v1.0.46 zip) | PASS (RBZ v3.7.71) | PASS (v1.0.47 zip) |
 | tag/manual release workflow gate inspection | PASS (`windows-release.yml`) | PASS (`release.yml`) | n/a | PASS (`release.yml`) |
 
 \* FC pytest hit a Windows `.pytest_tmp` permission teardown warning; tests completed 100%.  
-† LC portable PyInstaller build deferred locally (slow); workflow step validated by script review + LC unit tests green.
 
 ---
 

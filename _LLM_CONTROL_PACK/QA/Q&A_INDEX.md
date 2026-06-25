@@ -26,7 +26,7 @@ Anonymous reviewers maximizing accuracy, power, and **any-PC / any-host** compat
 
 > 🔴 **P0 ALERT (audit, 2026-06-25):** the FreeCAD and LibreCAD **default `--latest` downloads do not run on a clean Windows PC** — FC's auto-release vendors a *Linux* PyMuPDF on its ubuntu runner; LC's `--latest` is a source-only zip (portable not published); and **no auto-release runs tests before publishing**. This **contradicts R2-1's "offline install — SHIPPED"** below: R2-1 holds only for the *tag-built* installer/portable artifacts, not the auto-release `--latest` ones. See `QA-2026-06-25_reply-ecosystem-audit-and-cross-round.md` §1. CI fixes need `windows-latest` verification — not pushed blind.
 
-> ✅ **P0 RESOLVED (2026-06-25):** release-pipeline fixes shipped in `QA-2026-06-25_release-pipeline-p0-resolution.md` — FC/LC auto-release on `windows-latest`, LC portable published as `--latest`, all four hosts gate publish on tests + artifact smoke. Next auto-release run will refresh live `--latest` assets.
+> ✅ **P0 RESOLVED (2026-06-25):** release-pipeline fixes shipped in `QA-2026-06-25_release-pipeline-p0-resolution.md` — FC/LC auto-release on `windows-latest`, LC portable published as `--latest`, all four hosts gate before version bump/publish on tests + artifact smoke. Next auto-release run will refresh live `--latest` assets.
 
 **Canonical repo paths:** `C:\1PDF-Importer-SketchUp`, `C:\1PDF-Importer-FreeCAD`, `C:\1PDF-Importer-LibreCAD`, `C:\1PDF-Importer-Blender`, `C:\1BlueCollar-Website`, `C:\1 Structural_Steel_Shapes_App`, `C:\1pdf-test-corpus`.
 
