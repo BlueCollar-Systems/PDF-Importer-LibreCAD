@@ -144,4 +144,23 @@ def resolve_page_scale(page_data: PageData) -> ResolvedScale:
     )
 
 
-__all__ = ["resolve_page_scale"]
+def probe_page_scale(page, page_num: int = 1) -> ResolvedScale:
+    """Detect scale from page text only (no vector primitive extraction)."""
+    from .generic_classifier import classify_text
+    from .primitive_extractor import _extract_text
+    from .primitives import PageData
+
+    page_h = float(page.rect.height)
+    page_w = float(page.rect.width)
+    text_items = _extract_text(page, page_h, page_num, flip_y=True, scale=1.0)
+    page_data = PageData(
+        page_number=page_num,
+        width=page_w,
+        height=page_h,
+        text_items=text_items,
+    )
+    classify_text(page_data)
+    return resolve_page_scale(page_data)
+
+
+__all__ = ["resolve_page_scale", "probe_page_scale"]

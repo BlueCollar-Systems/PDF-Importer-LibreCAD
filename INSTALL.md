@@ -2,6 +2,12 @@
 
 This tool converts PDF drawings to DXF files that you can open in LibreCAD, AutoCAD, DraftSight, QCAD, or any DXF-compatible CAD program.
 
+## Canonical install (field testers)
+
+**Use the portable ZIP** (`LibreCAD-PDF-Importer-Windows-Portable_vX.Y.Z.zip`) as the single supported path for human confirmation and shop-floor testing. It bundles Python, PyMuPDF, ezdxf, pdfcadcore, `lcpdf-gui.exe`, and CLI tools with no Qt or system-Python dependencies.
+
+The native **`pdfimporter1.dll` menu plugin is not supported** on most Windows installs — LibreCAD ships its own Qt runtime and a plugin built against a different Qt kit fails with opaque DLL errors. Do not use the native plugin for release sign-off.
+
 ## Quick Start
 
 ### Option 0: Portable ZIP — recommended for Windows users
@@ -130,9 +136,10 @@ GUI: Labels (default) · Outlines · plus Import text toggle. CLI also accepts 3
 ```powershell
 python preflight_check.py
 python preflight_check.py --install
+python pdf2dxf.py --preflight
 ```
 
-The `--install` flag downloads PyMuPDF and ezdxf into `./lib` with no admin rights required.
+The `--install` flag downloads PyMuPDF and ezdxf into `./lib` with no admin rights required. `--preflight` prints pre-import text-mode and scale-trust guidance without converting a PDF.
 
 Standalone app self-test after install:
 

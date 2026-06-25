@@ -102,8 +102,8 @@ def suggest_import_mode(
 
     Args:
         classification: result dict from auto_mode.classify_page_content()
-            with key "type" in {"vectors", "glyph_flood", "fill_art",
-            "raster_candidate"}.
+            with key "type" in {"vectors", "text_only", "glyph_flood",
+            "fill_art", "raster_candidate"}.
         page_drawing_count: number of vector drawings on the page.
         page_text_count: number of text items on the page.
         page_has_images: True if page has embedded raster imagery.
@@ -117,9 +117,14 @@ def suggest_import_mode(
     """
     ctype = classification.get("type", "") if isinstance(classification, dict) else ""
 
-    # No vector content and no text at all -> must be raster
+    # No vector content and no text at all -> must be raster.
     if page_drawing_count == 0 and page_text_count == 0:
         return ("raster", "No vector content on page -- rendered image")
+
+    if ctype == "text_only" or (page_drawing_count == 0 and page_text_count > 0):
+        if page_has_images and not user_ignore_images:
+            return ("hybrid", "Text with embedded raster imagery")
+        return ("vector", "Text-only page -- preserving editable text")
 
     if ctype == "vectors":
         if page_has_images and not user_ignore_images:

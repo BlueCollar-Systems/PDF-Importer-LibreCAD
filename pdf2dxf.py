@@ -13,7 +13,7 @@ import os
 import sys
 import time
 
-__version__ = "1.0.39"
+__version__ = "1.0.40"
 
 # ---------------------------------------------------------------------------
 # Ensure project root is on sys.path so ``import pdfcadcore`` resolves
@@ -61,6 +61,11 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Launch the GUI instead of CLI conversion")
     p.add_argument("--verbose", action="store_true",
                    help="Print progress information")
+    p.add_argument(
+        "--preflight",
+        action="store_true",
+        help="Print pre-import guidance (text modes, scale trust) and exit",
+    )
     p.add_argument("--version", action="version",
                    version=f"%(prog)s {__version__}")
     return p
@@ -85,6 +90,12 @@ def _parse_pages(raw: str | None) -> list[int] | None:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    if args.preflight:
+        from pdfcadcore.preflight_copy import preflight_paragraph
+
+        print(preflight_paragraph("librecad"))
+        return 0
 
     # --gui: hand off to tkinter frontend
     if args.gui:

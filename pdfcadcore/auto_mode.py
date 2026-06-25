@@ -5,6 +5,7 @@
 Classifies PDF page content to prevent garbage output on certain PDF types:
 - Glyph floods (OCR-like PDFs with thousands of tiny vector glyphs)
 - Fill-art floods (decorative/map PDFs with mostly fills)
+- Text-only PDFs that should keep editable text instead of raster fallback
 
 Heuristics ported from the FreeCAD importer's _looks_like_vector_glyph_flood()
 and _looks_like_fill_art_flood() functions.
@@ -59,13 +60,23 @@ def classify_page_content(
     Returns
     -------
     dict
-        ``type``  -- ``'vectors'`` | ``'glyph_flood'`` | ``'fill_art'``
-                     | ``'raster_candidate'``
+        ``type``  -- ``'vectors'`` | ``'text_only'`` | ``'glyph_flood'``
+                     | ``'fill_art'`` | ``'raster_candidate'``
         ``reason`` -- human-readable explanation
         ``drawing_count`` -- total drawing groups
         ``stats`` -- detailed numeric statistics
     """
     if not drawings:
+        if text_blocks_count > 0 or text_words_count > 0:
+            return {
+                "type": "text_only",
+                "reason": "No vector content; preserving extractable text",
+                "drawing_count": 0,
+                "stats": {
+                    "text_blocks": text_blocks_count,
+                    "text_words": text_words_count,
+                },
+            }
         return {
             "type": "raster_candidate",
             "reason": "No vector content",

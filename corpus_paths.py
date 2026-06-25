@@ -36,7 +36,7 @@ def resolve_corpus_pdf(relative_name: str, *, subdir: str = "") -> Optional[Path
     search_dirs = [root]
     if subdir:
         search_dirs.insert(0, root / subdir)
-    for folder_name in ("PDFTest Files", "pdfs", "New folder (2)"):
+    for folder_name in ("PDFTest Files", "web-acquired", "pdfs", "New folder (2)"):
         candidate = root / folder_name
         if candidate.is_dir():
             search_dirs.append(candidate)

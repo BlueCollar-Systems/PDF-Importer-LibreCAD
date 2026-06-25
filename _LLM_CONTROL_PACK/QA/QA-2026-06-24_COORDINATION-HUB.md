@@ -23,16 +23,16 @@ Read this file **before** starting work. Update it when you **start**, **finish*
 | ID | Owner | Repo / scope | Status | Last update | Detail |
 |----|-------|--------------|--------|-------------|--------|
 | **WS-R4P2** | Round 4 vision | All importers + website | **blocked** — awaiting user | 2026-06-24 | [Round 4 resolution](QA-2026-06-24_round4-resolution.md) · Phase 2 P0/P1 backlog open; closes on ship **or** user field sign-off |
-| **WS-R5** | P0 engineering | pdfcadcore + SU + website | **active** — partial ship | 2026-06-24 | [Round 5 resolution](QA-2026-06-24_round5-resolution.md) · R4-01/02/04 shipped; R4-03/05/06/30 deferred |
-| **WS-HC** | Human tester | All hosts + app | **ready** — not started | 2026-06-24 | [Human confirmation script](QA-2026-06-24_human-confirmation-script.md) · per-repo `HUMAN_CONFIRMATION.md` |
+| **WS-R5** | P0 engineering | pdfcadcore + SU + website | **active** — slice 2 shipped | 2026-06-24 | [Round 5 resolution](QA-2026-06-24_round5-resolution.md) · FC scale page merge + LC/BL `--preflight`; R4-03/05/30 still open |
+| **WS-HC** | Human tester | All hosts + app | **ready** — tooling improved | 2026-06-24 | [Human confirmation script](QA-2026-06-24_human-confirmation-script.md) · `list_tier1.py` + SU `run_golden_oracle_test.rb` wired |
 | **WS-CORPUS** | Corpus maintainer | `C:\1pdf-test-corpus` | **active** — local only | 2026-06-24 | [Web research](QA-2026-06-24_test-corpus-web-research.md) · **no remote** — desktop + local dir only |
 | **WS-R6** | Corpus + app slate | Corpus + Steel Logic | **active** — oracle done, import deferred | 2026-06-24 | [Round 6 doc](QA-2026-06-24_round6-corpus-and-features.md) · stress corpus 9/9; LC CLI blocked on dirty FC tree |
 | **WS-FIELD** | Field validation | SU / FC / LC / BL | **blocked** — awaiting user retest | 2026-06-24 | Eleven screenshot fixes patched locally; see Q&A_INDEX field section |
 | **WS-TEXT** | Text / leaders | SketchUp (+ hosts) | **active** — fixed, validating | 2026-06-23→24 | Round 3 text-leader alignment fixed SU v3.7.58+; BOM vertical qty SU v3.7.59+; human retest pending |
-| **WS-BL51** | Reviewer C | Blender | **active** — smoke green, docs stale | 2026-06-24 | [Outside-box C](QA-2026-06-24_outside-box-reviewer-C-blender.md) · PyMuPDF path repair v1.0.38+; Blender **5.1.2** smoke passed; `COMPATIBILITY.md` cp311 wording needs update |
-| **WS-LC** | Reviewer B | LibreCAD | **open** — decision needed | 2026-06-24 | Portable vs native plugin: both exist; docs say portable-first; no single canonical install story for field testers |
-| **WS-OB** | Outside-box pass | Website (+ trust) | **done** — website slice | 2026-06-24 | [Outside-box resolution](QA-2026-06-24_outside-box-resolution-and-actions.md) · Report Doctor, metadata guard, privacy copy |
-| **WS-SYNC** | Core gate | pdfcadcore FC→LC/BL | **blocked** — manifest red | 2026-06-24 | Reviewer B: `import_report.py` hash drift vs manifest; FC/LC aligned but sync check fails until manifest updated |
+| **WS-BL51** | Reviewer C | Blender | **done** — docs + preflight | 2026-06-24 | [Outside-box C](QA-2026-06-24_outside-box-reviewer-C-blender.md) · COMPATIBILITY.md cp310-abi3 v1.0.43; `preflight_check.py` |
+| **WS-LC** | Reviewer B | LibreCAD | **done** — canonical install doc | 2026-06-24 | Portable ZIP canonical; native plugin unsupported; `--preflight` CLI v1.0.40 |
+| **WS-OB** | Outside-box pass | Website (+ trust) | **done** — website slice | 2026-06-24 | [Outside-box resolution](QA-2026-06-24_outside-box-resolution-and-actions.md) · Report Doctor, metadata guard, privacy copy, corpus README link |
+| **WS-SYNC** | Core gate | pdfcadcore FC→LC/BL | **done** — green | 2026-06-24 | Manifest regenerated; `pdfcadcore_sync_check.py` ALL IN SYNC |
 
 **Repo mirror paths**
 
@@ -54,9 +54,9 @@ Read this file **before** starting work. Update it when you **start**, **finish*
 | **WS-R4P2** | User retest sign-off on eleven field screenshots | Human tester | **P0** |
 | **WS-HC** | Quiet repos (no `.git/index.lock`, no mid-edit f-strings) | Agent on FC/pdfcadcore | **P0** |
 | **WS-R6** | Clean FC tree + LC `pdf2dxf` run against stress corpus | Agent finishing FC commit | **P0** |
-| **WS-SYNC** | Manifest hash update after Round 5 `import_report.py` lands | pdfcadcore owner (FC canonical) | **P0** |
-| **WS-BL51** | `COMPATIBILITY.md` cp311→cp310-abi3 wording | Blender doc owner | **P1** |
-| **WS-LC** | Single field-test install path (portable ZIP vs native plugin) | Product / Reviewer B + D | **P1** |
+| **WS-SYNC** | Manifest hash update after Round 5 `import_report.py` lands | pdfcadcore owner (FC canonical) | ~~**P0**~~ **done** |
+| **WS-BL51** | `COMPATIBILITY.md` cp311→cp310-abi3 wording | Blender doc owner | ~~**P1**~~ **done** |
+| **WS-LC** | Single field-test install path (portable ZIP vs native plugin) | Product / Reviewer B + D | ~~**P1**~~ **done** — portable ZIP canonical |
 | **WS-R5** | R4-03 CLI stderr templates | LC/BL CLI owner | **P1** |
 | **Round 6 app #1** | PDF-BOM → takeoff bridge design | App + importer report schema | **P1** |
 
@@ -97,9 +97,9 @@ Read this file **before** starting work. Update it when you **start**, **finish*
 | Round 4 Phase 2 P0 remainder | [Round 4 resolution](QA-2026-06-24_round4-resolution.md) | R4-03, R4-05, R4-06, FC `resolved_scale` page loop |
 | Round 4 P1 / moonshots | [Innovation backlog](QA-2026-06-24_round4-innovation-backlog.md) | Layers→Tags, heatmaps, WASM core (R4-27), etc. |
 | Field screenshot sign-off | WS-FIELD | Patches landed; user eyes required |
-| LC install canonical path | WS-LC | Portable-first docs vs native plugin discovery |
+| LC install canonical path | WS-LC | **CLOSED** — portable ZIP canonical; native plugin unsupported (INSTALL.md v1.0.40) |
 | Blender glyph semantics | Reviewer C | UI promises per-char glyphs; builder meshifies whole object |
-| pdfcadcore sync manifest | WS-SYNC | Gate red until manifest matches post-R5 hashes |
+| pdfcadcore sync manifest | WS-SYNC | **CLOSED** — manifest green; ALL IN SYNC (2026-06-24) |
 
 ---
 
@@ -108,9 +108,9 @@ Read this file **before** starting work. Update it when you **start**, **finish*
 | Host | Version (script) |
 |------|------------------|
 | SketchUp | 3.7.63 |
-| FreeCAD | 4.0.45 |
-| LibreCAD | 1.0.39 |
-| Blender | 1.0.42 |
+| FreeCAD | 4.0.47 |
+| LibreCAD | 1.0.40 |
+| Blender | 1.0.43 |
 | Website | 1.0.60 |
 | Steel Logic | 1.0.9+10 |
 

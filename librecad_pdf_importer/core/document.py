@@ -201,7 +201,7 @@ def extract_document(pdf_path: str, options: Optional[ExtractionOptions] = None)
                     resolved_reason = f"{auto_type}: {auto_decision.get('reason','')}"
                 else:
                     effective_mode = "vector"
-                    resolved_reason = "Standard vector content"
+                    resolved_reason = auto_decision.get("reason") or "Standard vector content"
             elif mode == "vector":
                 resolved_reason = "User forced vector mode"
             elif mode == "raster":
@@ -247,7 +247,9 @@ def extract_document(pdf_path: str, options: Optional[ExtractionOptions] = None)
                         images.append(rendered)
                 elif effective_mode == "vector":
                     images = _extract_images(doc, page, page_number, opts, image_dir)
-                    if opts.raster_fallback and (not page_data.primitives or _looks_like_page_frame_only(page_data)) and not images:
+                    has_text = bool(page_data.text_items)
+                    vector_empty = not page_data.primitives and not has_text
+                    if opts.raster_fallback and (vector_empty or _looks_like_page_frame_only(page_data)) and not images:
                         rendered = _render_page_raster(page, page_number, opts, image_dir)
                         if rendered is not None:
                             images.append(rendered)
@@ -375,6 +377,8 @@ def _classify_auto_page(
     page_area: float,
 ) -> dict:
     if not drawings:
+        if text_blocks_count > 0 or text_words_count > 0:
+            return {"type": "text_only", "reason": "No vector drawings; preserving extractable text."}
         return {"type": "raster_candidate", "reason": "No vector drawings."}
 
     total = len(drawings)
@@ -454,6 +458,8 @@ def _classify_auto_page(
 
 
 def _looks_like_text_cloud_page(primitives_count: int, text_count: int) -> bool:
+    if primitives_count == 0:
+        return False
     if text_count < 180:
         return False
     return (text_count / float(max(primitives_count, 1))) >= 2.5
@@ -581,4 +587,3 @@ def _render_page_raster(page: fitz.Page, page_number: int, options: ExtractionOp
         path=str(img_path),
         xref=-1,
     )
-

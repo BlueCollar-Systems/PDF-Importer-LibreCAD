@@ -301,7 +301,8 @@ void LC_BcLCPdfMenuPlugin::execComm(Document_Interface *doc, QWidget *parent, QS
             parent,
             tr("LC PDF Importer"),
             tr("Importer launcher was not found automatically.\n"
-               "Please locate `LibreCAD-PDF-Importer.exe`, `lcpdf-gui.exe`, "
+               "Install the portable ZIP and run lcpdf-gui.exe — that is the canonical path.\n"
+               "Alternatively locate `LibreCAD-PDF-Importer.exe`, `lcpdf-gui.exe`, "
                "`launch_lcpdf_gui.pyw`, or `gui.py`.")
         );
         scriptPath = chooseScript(parent, QStringLiteral("C:/1PDF-Importer-LibreCAD"));

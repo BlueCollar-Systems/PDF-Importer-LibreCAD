@@ -59,11 +59,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--librecad-exe", help="Explicit LibreCAD executable path")
     parser.add_argument("--verbose", action="store_true",
                         help="Print verbose progress")
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="Print pre-import guidance (text modes, scale trust) and exit",
+    )
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
+
+    if args.preflight:
+        from pdfcadcore.preflight_copy import preflight_paragraph
+
+        print(preflight_paragraph("librecad"))
+        return 0
 
     pdf_path = Path(args.pdf).expanduser().resolve()
     out_path = Path(args.out).expanduser().resolve() if args.out else pdf_path.with_suffix(".dxf")
