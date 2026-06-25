@@ -1,10 +1,18 @@
 # Q&A Index
 
-Updated: 2026-06-25 (Four-reviewer agreement GO · Round 4 Phase 2 open · field retest pending)
+Updated: 2026-06-25 (Third-party briefing added · Four-reviewer agreement GO · Round 4 Phase 2 open · field retest pending)
 
 ---
 
-## Coordination Hub — **READ THIS FIRST**
+## New reviewers — **START HERE**
+
+| File | Role |
+|------|------|
+| **`QA-2026-06-24_third-party-project-briefing.md`** | **Anonymous project briefing** — mission, architecture, versions, QA timeline, DONE/IN PROGRESS/BLOCKED, FAQ (read before any other doc) |
+
+---
+
+## Coordination Hub — **READ THIS SECOND**
 
 All agents, reviewers, and human testers communicate through the hub — not in isolation.
 
