@@ -61,3 +61,6 @@ YYYY-MM-DD HH:MM UTC | WS-ID | Owner | START|UPDATE|BLOCKED|DONE | one-line note
 2026-06-25 01:00 UTC | HUB | Agreement round | DONE | Four anonymous reviewers A/B/C/D all AGREE — GO; synthesis in agreement-synthesis.md; verification re-run (sync, SU/LC/BL/FC tests)
 
 2026-06-25 01:05 UTC | HUB | Agreement round | UPDATE | Mirroring agreement docs + hub/log/index to six repos; commit `docs(qa): four-reviewer agreement — GO to push`
+
+2026-06-25 00:32 UTC | WS-R6 | corpus/oracle agent | DONE | Independent commit-readiness verification on Windows fs: SYNTAX 0/11 bad, pdfcadcore ALL IN SYNC, manifest valid JSON, R6-A confirmed fixed in committed LC code (02 text-only 0->9 text items), all 6 repos main==origin (clean+pushed). AGREE: good to go. Sign-off: round6-commit-readiness-signoff.md
+- **2026-06-25** WS-CORPUS: Created https://github.com/BlueCollar-Systems/pdf-test-corpus (private), pushed main (manifest + tools + tier1/2 web PDFs); web-acquired gitignored.
