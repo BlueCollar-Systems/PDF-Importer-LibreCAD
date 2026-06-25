@@ -18,23 +18,35 @@
 | Corpus tier1 | `python tools/list_tier1.py --host SU --resolved` | 10 entries resolved |
 | Conflict markers | `git grep ^<<<<<<<` | none in tracked files |
 
-## Git hygiene (pre-commit)
+## Git hygiene (pre-commit baseline)
 
 | Repo | Pre-commit SHA | Notes |
 |------|----------------|-------|
-| 1PDF-Importer-SketchUp | 167bd13 | QA/docs uncommitted (prior workers) |
-| 1PDF-Importer-FreeCAD | 9575424 | QA/docs uncommitted |
-| 1PDF-Importer-LibreCAD | ec9f49b | QA/docs uncommitted |
-| 1PDF-Importer-Blender | ea326e2 | QA/docs uncommitted |
-| 1BlueCollar-Website | e9b5c83 | behind origin/main by 1; QA uncommitted |
-| 1 Structural_Steel_Shapes_App | 53d30a6 | QA/docs uncommitted |
-| 1pdf-test-corpus | d9567d9 | clean / in sync |
+| 1PDF-Importer-SketchUp | 167bd13 | QA already on origin before this pass |
+| 1PDF-Importer-FreeCAD | 9575424 | QA already on origin before this pass |
+| 1PDF-Importer-LibreCAD | ec9f49b | committed + pushed 9e1f251 |
+| 1PDF-Importer-Blender | ea326e2 | committed + pushed f64b585 |
+| 1BlueCollar-Website | e9b5c83 | rebased; pushed e19dd7a |
+| 1 Structural_Steel_Shapes_App | 53d30a6 | synced on origin c9f0376 (parallel worker) |
+| 1pdf-test-corpus | d9567d9 | committed + pushed 9324c88 |
 
 ## Prior worker 250043f7
 
-No separate artifact found for id `250043f7`; uncommitted work is QA mirrors under `_LLM_CONTROL_PACK/QA/` across importer, website, and steel app repos (included in this commit).
+No separate artifact for id `250043f7`; remaining work was QA under `_LLM_CONTROL_PACK/QA/` (committed by ecosystem sync / this pass).
 
-## Post-push SHAs
+## Post-push SHAs (origin/main)
 
-*(filled after push)*
+| Repo | SHA | Push |
+|------|-----|------|
+| 1PDF-Importer-SketchUp | 03ade5c | already on origin |
+| 1PDF-Importer-FreeCAD | 1872a12 | already on origin |
+| 1PDF-Importer-LibreCAD | 9e1f251 | pushed OK |
+| 1PDF-Importer-Blender | f64b585 | pushed OK |
+| 1BlueCollar-Website | e19dd7a | pushed OK |
+| 1 Structural_Steel_Shapes_App | c9f0376 | already on origin |
+| 1pdf-test-corpus | 9324c88 | pushed OK |
+
+## Desktop coordination
+
+Copied `QA-2026-06-24_COORDINATION-HUB.md` to Desktop alongside this report.
 
