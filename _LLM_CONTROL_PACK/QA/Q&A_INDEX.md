@@ -1,10 +1,10 @@
 # Q&A Index
 
-Updated: 2026-06-25 (Anonymous Q&A round · COMPATIBILITY harmonization · active session)
+Updated: 2026-06-25 (Round 2 anonymous Q&A · field-test prep · **active session**)
 
 ---
 
-## Active session — **START HERE (2026-06-25)**
+## Active session — **START HERE (2026-06-25 Round 2)**
 
 Anonymous reviewers maximizing accuracy, power, and **any-PC / any-host** compatibility per `Instructions 0607202613216.txt`.
 
@@ -12,80 +12,41 @@ Anonymous reviewers maximizing accuracy, power, and **any-PC / any-host** compat
 |------|------|
 | **`Instructions 0607202613216.txt`** | Source rules — 4+ questions, 3+ answers, no self-answers, anonymous |
 | **`QA-2026-06-24_third-party-project-briefing.md`** | Authoritative onboarding — mission, architecture, versions, FAQ |
-| **`QA-2026-06-25_anonymous-project-status-brief.md`** | Current release state + validation evidence |
-| **`QA-2026-06-25_anonymous-third-party-project-state-report.md`** | Independent state report for new reviewers |
-| **`QA-2026-06-25_anonymous-questions-round.md`** | **NEW** — Reviewer E questions (preflight, legacy HW, SU 2017, scale trust) |
-| **`QA-2026-06-25_anonymous-answers-round.md`** | **NEW** — Reviewers A/B/C/D answers |
-| **`QA-2026-06-25_coordination-session.md`** | **NEW** — Build slate + workstream assignments for others |
-| **`QA-2026-06-25_artifact-acceptance-matrix.md`** | Draft release-readiness floor — artifact gates for SketchUp, FreeCAD, LibreCAD, Blender, website, and Steel Logic |
-| **`QA-2026-06-25_reply-freecad-preflight-parity.md`** | Implementation reply — FreeCAD repo-root preflight command and validation |
-| **`QA-2026-06-25_reply-t06-blender-glyph-truth.md`** | Implementation reply — T-06 resolved by matching Blender Glyphs wording to text-run outline mesh behavior |
-| `QA-2026-06-25_anonymous-active-coordination-and-questions.md` | Active blocker map, peer questions, and proposed workstreams |
-| `QA-2026-06-25_current-version-human-confirmation-addendum.md` | Field-test addendum for current public versions |
-| `QA-2026-06-24_worker-status-log.md` | Append-only status (also updated this session) |
+| **`QA-2026-06-25_round2-anonymous-questions.md`** | **NEW Round 2** — Reviewers F/G/H/I (offline, fonts, roam, PDF JS) |
+| **`QA-2026-06-25_round2-anonymous-answers.md`** | **NEW Round 2** — Full cross-matrix answers |
+| **`QA-2026-06-25_round2-resolution.md`** | **NEW Round 2** — Agreements R2-1…R2-8 + GO gate |
+| **`QA-2026-06-25_round2-coordination-addendum.md`** | **NEW** — Shipped slice + open threads |
+| **`QA-2026-06-25_anonymous-questions-round.md`** | Round 1 — Reviewer E (preflight, legacy HW, SU 2017, scale) |
+| **`QA-2026-06-25_anonymous-answers-round.md`** | Round 1 — Reviewers A/B/C/D answers |
+| **`QA-2026-06-25_coordination-session.md`** | Round 1 build slate |
+| **`QA-2026-06-24_worker-status-log.md`** | Append-only status |
 
 **Canonical repo paths:** `C:\1PDF-Importer-SketchUp`, `C:\1PDF-Importer-FreeCAD`, `C:\1PDF-Importer-LibreCAD`, `C:\1PDF-Importer-Blender`, `C:\1BlueCollar-Website`, `C:\1 Structural_Steel_Shapes_App`, `C:\1pdf-test-corpus`.
 
-**Stale paths (do not use):** `C:\1SU-PDFimporter` (empty), `C:\1pdfcadcore`, `C:\1FC-PDFimporter`, `C:\1LC-PDFimporter`, `C:\1BL-PDFimporter` (absent).
+**Stale paths (do not use):** `C:\1SU-PDFimporter`, `C:\1pdfcadcore`, `C:\1FC-PDFimporter`, `C:\1LC-PDFimporter`, `C:\1BL-PDFimporter`.
+
+---
+
+## Round 2 agreements (summary)
+
+| ID | Topic | Status |
+|----|-------|--------|
+| R2-1 | Offline install documented | SHIPPED |
+| R2-2 | Font substitution import_report note | SHIPPED |
+| R2-3 | SU skip-version update notice | SHIPPED v3.7.70 |
+| R2-4 | LC Outlines confirmation | SHIPPED v1.0.44 |
+| R2-5 | Unified scale banner | SHIPPED |
+| R2-6 | PDF JS — no execute; Python warn | SHIPPED / SU deferred |
+| R2-7 | Roaming Profile docs + SU path log | SHIPPED |
+| R2-8 | performance_hint in import_report | SHIPPED |
+
+**Field sign-off:** Still blocked on **T-01** human screenshot retest.
 
 ---
 
 ## Archived / historical docs — **in repo mirrors only**
 
-Many Round 1–6, agreement, and field-fix documents live under **`_LLM_CONTROL_PACK/QA/`** in each of the six repos. They are **not** duplicated on Desktop unless actively edited this session.
-
-| Need | Where |
-|------|-------|
-| Coordination hub, open threads, Round 4–6 backlog | `_LLM_CONTROL_PACK/QA/` in any importer or website repo |
-| Agreement 4/4 GO vote | `QA-2026-06-24_agreement-synthesis.md` (repo mirror) |
-| Human confirmation script | `QA-2026-06-24_human-confirmation-script.md` (repo mirror) |
-| Round 3 resolution | `QA-2026-06-23_round3-resolution.md` (repo mirror) |
-
-Desktop folder = **authoritative drop zone for new anonymous work**. Sync to repos after each pass.
-
----
-
-## New reviewers — reading order
-
-1. `Instructions 0607202613216.txt`
-2. `QA-2026-06-24_third-party-project-briefing.md`
-3. **Active session** files above
-4. `QA-2026-06-25_coordination-session.md` — what to build next
-5. Repo `_LLM_CONTROL_PACK/QA/QA-2026-06-24_COORDINATION-HUB.md` — live workstreams (archived mirror)
-
----
-
-## Round 6 — Corpus & app features (2026-06-24) — **PARTIAL / OPEN**
-
-Public corpus, synthetic stress, Steel Logic callout lookup shipped; PDF-BOM bridge open. Details in repo mirror: `QA-2026-06-24_round6-*.md`.
-
----
-
-## Round 5 — P0 backlog — **PARTIAL SHIP**
-
-Scale cross-check, golden oracles, preflight copy. Remainder: CLI stderr, span_quality. Repo mirror: `QA-2026-06-24_round5-*.md`.
-
----
-
-## Round 4 — Creative QA — **PHASE 1 COMPLETE · PHASE 2 OPEN**
-
-`human_summary`, Import Health, capability matrix, Report Doctor shipped. Phase 2 + field sign-off open. Repo mirror: `QA-2026-06-24_round4-*.md`.
-
----
-
-## Field screenshot review — **FIXED LOCALLY / VALIDATING**
-
-Eleven screenshots — awaiting human retest (T-01). Repo mirror: `QA-2026-06-24_screenshot-review-synthesis.md`.
-
----
-
-## Round 3 — Full-repo scan — **CLOSED**
-
-Q1–Q5 resolved, GO to push. Repo mirror: `QA-2026-06-23_round3-resolution.md`.
-
----
-
-## Mirror note
+Round 1–6, agreement, and field-fix documents live under **`_LLM_CONTROL_PACK/QA/`** in each repo.
 
 | Location | Role |
 |----------|------|

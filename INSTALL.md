@@ -31,6 +31,8 @@ CLI launchers. No system Python, pip, or administrator rights are required.
 Each successful conversion also writes `<output>_import_report.json` beside the DXF
 with `text_mode`, `resolved_scale`, `peak_mb`, and raster fallback telemetry.
 
+**Offline install:** The portable ZIP works without internet after download. Source ZIP dev installs may run `preflight_check.py --install` once if `lib/` is empty.
+
 **Scale trust:** use `extra.resolved_scale.factor` only when `confidence >= 0.70` and
 `fallback_reason` is not `no_scale_detected`; otherwise set scale manually in your CAD app.
 

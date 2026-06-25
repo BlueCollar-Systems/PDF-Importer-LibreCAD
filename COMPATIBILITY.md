@@ -40,8 +40,16 @@ Release portable ZIP bundles Python + PyMuPDF + ezdxf — no system Python requi
 ## Legacy hardware notes
 
 - **2D host only** — no 3D text; use Labels or Outlines in GUI.
-- Large PDFs: CLI page ranges (`--pages`) on older PCs.
+- Large PDFs: CLI page ranges (`--pages`) on older PCs; check `import_report.extra.performance_hint`.
 - DXF R2010 default; use `--dxf-version R12` for legacy DXF readers.
+
+## Offline install
+
+Release **portable ZIP** and installer artifacts work without internet after download. Source dev path may run `preflight_check.py --install` once if `lib/` is empty.
+
+## Enterprise / roaming
+
+Install portable ZIP per user profile with write access. Roaming `%APPDATA%` is untested — prefer per-machine extract paths documented in INSTALL.md.
 
 ## Preflight command
 

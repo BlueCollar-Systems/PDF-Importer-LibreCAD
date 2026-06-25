@@ -235,6 +235,18 @@ class Pdf2DxfApp(tk.Tk):
             output_path = os.path.splitext(input_path)[0] + ".dxf"
             self._var_output.set(output_path)
 
+        text_key = TEXT_MODES.get(self._var_text_mode.get(), "labels")
+        if text_key == "geometry":
+            proceed = messagebox.askokcancel(
+                "Outlines mode — not editable text",
+                "Outlines exports vector geometry only — part marks and BOM text "
+                "will NOT be editable in LibreCAD.\n\n"
+                "For shop drawings with many part marks, choose Labels (editable TEXT).\n\n"
+                "Continue with Outlines?",
+            )
+            if not proceed:
+                return
+
         self._converting = True
         self._btn_convert.configure(state=tk.DISABLED)
         self._progress.start(10)

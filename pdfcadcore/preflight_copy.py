@@ -23,6 +23,16 @@ PREFLIGHT_IMPORT_REPORT = (
     "and scale cross-check notes for support."
 )
 
+SCALE_CROSSCHECK_BANNER = (
+    "Scale may be wrong — measure one known dimension on the drawing before takeoff or ordering material."
+)
+
+PREFLIGHT_OFFLINE_INSTALL = (
+    "Release packages (Windows RBZ, installer EXE, portable ZIP, Blender add-on ZIP) "
+    "work without internet after download. Source installs may run preflight_check.py --install once "
+    "to vendor Python wheels if lib/ is empty."
+)
+
 
 def preflight_paragraph(host: str = "") -> str:
     """Return a short pre-import paragraph suitable for INSTALL docs and UI."""
@@ -45,5 +55,7 @@ __all__ = [
     "PREFLIGHT_TEXT_MODES",
     "PREFLIGHT_SCALE_NOTE",
     "PREFLIGHT_IMPORT_REPORT",
+    "PREFLIGHT_OFFLINE_INSTALL",
+    "SCALE_CROSSCHECK_BANNER",
     "preflight_paragraph",
 ]

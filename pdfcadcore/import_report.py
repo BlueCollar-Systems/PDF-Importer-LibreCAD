@@ -9,10 +9,14 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .preflight_copy import SCALE_CROSSCHECK_BANNER
+
 SCHEMA = "bcs.import_report/1.1"
 SCALE_TRUST_CONFIDENCE = 0.70
 SCALE_DIMENSION_TENSION_CONFIDENCE = 0.85
 SCALE_FACTOR_DISAGREE_RATIO = 0.15
+PERFORMANCE_HINT_ENTITY_THRESHOLD = 50_000
+PERFORMANCE_HINT_PEAK_MB = 1024.0
 
 
 def _sha256_file(path: str) -> str:
@@ -216,16 +220,177 @@ def build_scale_crosscheck(extra: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "level": "warn",
         "reasons": _unique_strings(reasons),
         "messages": _unique_strings(warnings),
-        "banner": warnings[0],
+        "banner": SCALE_CROSSCHECK_BANNER,
+        "user_message": SCALE_CROSSCHECK_BANNER,
     }
 
 
+def build_font_embedding_hints(doc: Any) -> Dict[str, Any]:
+    """Detect non-embedded PDF fonts that may substitute on the host OS."""
+
+    if doc is None:
+        return {}
+    non_embedded: List[str] = []
+    try:
+        page_count = len(doc)
+    except TypeError:
+        return {}
+    for page_index in range(page_count):
+        try:
+            page = doc[page_index]
+            fonts = page.get_fonts(full=True)
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            continue
+        for entry in fonts or []:
+            if len(entry) < 6:
+                continue
+            extension = str(entry[1] or "").strip().lower()
+            # PyMuPDF get_fonts(full=True) returns:
+            # xref, extension, type, basefont, resource name, encoding, referencer.
+            # extension == "n/a" is the practical signal for base/non-embedded fonts.
+            embedded = bool(extension and extension != "n/a")
+            if embedded:
+                continue
+            name = str(entry[3] or entry[4] or "unknown").strip()
+            if name and name not in non_embedded:
+                non_embedded.append(name)
+    if not non_embedded:
+        return {}
+    sample = ", ".join(non_embedded[:5])
+    if len(non_embedded) > 5:
+        sample += f" (+{len(non_embedded) - 5} more)"
+    note = (
+        f"Non-embedded PDF fonts detected ({sample}) — Labels mode may substitute "
+        "Windows or CAD fonts on this PC; use Outlines or Glyphs for exact appearance."
+    )
+    return {
+        "non_embedded_fonts": non_embedded,
+        "font_substitution_note": note,
+    }
+
+
+def build_pdf_interactive_note(doc: Any) -> Dict[str, Any]:
+    """Warn when PDF contains JavaScript or open actions (never executed by importers)."""
+
+    if doc is None:
+        return {}
+
+    def key_present(xref: int, key: str) -> bool:
+        try:
+            value = doc.xref_get_key(xref, key)
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return False
+        if not value:
+            return False
+        if isinstance(value, tuple):
+            kind = str(value[0] or "").strip().lower()
+            raw = str(value[1] or "").strip().lower()
+            return kind not in {"", "null"} and raw not in {"", "null"}
+        return str(value).strip().lower() not in {"", "null"}
+
+    flags: List[str] = []
+    try:
+        js = doc.get_js() if hasattr(doc, "get_js") else None
+        if js:
+            flags.append("JavaScript")
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        catalog = doc.pdf_catalog()
+        if catalog and key_present(catalog, "OpenAction"):
+            flags.append("OpenAction")
+        if catalog and key_present(catalog, "AA"):
+            flags.append("AdditionalActions")
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        for xref in range(1, int(doc.xref_length())):
+            if key_present(xref, "JS") or key_present(xref, "JavaScript"):
+                flags.append("JavaScript")
+                break
+            try:
+                subtype = doc.xref_get_key(xref, "S")
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                continue
+            raw = " ".join(str(part) for part in subtype) if isinstance(subtype, tuple) else str(subtype)
+            if "JavaScript" in raw:
+                flags.append("JavaScript")
+                break
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    if not flags:
+        return {}
+    flags = _unique_strings(flags)
+    joined = ", ".join(flags)
+    return {
+        "pdf_interactive_flags": flags,
+        "pdf_interactive_note": (
+            f"PDF contains document scripts or actions ({joined}) — import uses static "
+            "geometry only; scripts are not executed."
+        ),
+    }
+
+
+def build_performance_hint(
+    *,
+    primitive_count: int = 0,
+    text_count: int = 0,
+    peak_mb: float = 0.0,
+) -> Optional[str]:
+    """Plain-English hint for weak PCs on large imports."""
+
+    entities = int(primitive_count or 0) + int(text_count or 0)
+    peak = float(peak_mb or 0.0)
+    if entities >= PERFORMANCE_HINT_ENTITY_THRESHOLD or peak >= PERFORMANCE_HINT_PEAK_MB:
+        return (
+            "Large PDF — on PCs with less than 8 GB RAM, import one page at a time "
+            "using the Pages field."
+        )
+    return None
+
+
+def _pdf_audit_extras(pdf_path: str) -> Dict[str, Any]:
+    """Open PDF briefly for font/interactive audits (best-effort)."""
+
+    path = str(pdf_path or "").strip()
+    if not path or not Path(path).is_file():
+        return {}
+    try:
+        from .fitz_loader import safe_open
+    except ImportError:
+        return {}
+    doc = None
+    merged: Dict[str, Any] = {}
+    try:
+        doc = safe_open(path)
+        merged.update(build_font_embedding_hints(doc))
+        merged.update(build_pdf_interactive_note(doc))
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return merged
+    finally:
+        if doc is not None:
+            try:
+                doc.close()
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                pass
+    return merged
+
+
 def enrich_import_report_extras(report: "ImportReport") -> None:
-    """Attach scale cross-check and refresh human_summary on a report."""
+    """Attach scale cross-check, performance hint, and refresh human_summary."""
 
     crosscheck = build_scale_crosscheck(report.extra)
     if crosscheck:
         report.extra["scale_crosscheck"] = crosscheck
+    perf = report.performance if isinstance(report.performance, dict) else {}
+    result = report.result if isinstance(report.result, dict) else {}
+    hint = build_performance_hint(
+        primitive_count=int(result.get("primitives") or 0),
+        text_count=int(result.get("text_entities") or 0),
+        peak_mb=float(perf.get("peak_mb") or 0.0),
+    )
+    if hint:
+        report.extra["performance_hint"] = hint
     report.extra["human_summary"] = build_human_summary(report)
 
 
@@ -326,9 +491,21 @@ def build_human_summary(report: ImportReport | Dict[str, Any]) -> str:
 
     crosscheck = extra.get("scale_crosscheck") or {}
     if isinstance(crosscheck, dict):
-        banner = str(crosscheck.get("banner") or "").strip()
+        banner = str(crosscheck.get("banner") or crosscheck.get("user_message") or "").strip()
         if banner:
             parts.append(f"Scale note: {banner.rstrip('.')}")
+
+    font_note = str(extra.get("font_substitution_note") or "").strip()
+    if font_note:
+        parts.append(font_note.rstrip("."))
+
+    interactive_note = str(extra.get("pdf_interactive_note") or "").strip()
+    if interactive_note:
+        parts.append(interactive_note.rstrip("."))
+
+    perf_hint = str(extra.get("performance_hint") or "").strip()
+    if perf_hint:
+        parts.append(perf_hint.rstrip("."))
 
     paragraph = ". ".join(part.rstrip(".") for part in parts if part).strip()
     if paragraph and not paragraph.endswith("."):
@@ -433,6 +610,9 @@ def build_import_report(
         extra_block.setdefault("text_source_spans", int(text_source_spans))
     if text_glyph_estimate is not None:
         extra_block.setdefault("text_glyph_estimate", int(text_glyph_estimate))
+    if pdf_path:
+        extra_block.update(_pdf_audit_extras(pdf_path))
+
     extra_block.setdefault(
         "diagnostics",
         build_fidelity_diagnostics(
@@ -499,9 +679,14 @@ def build_import_report(
 __all__ = [
     "SCHEMA",
     "SCALE_TRUST_CONFIDENCE",
+    "PERFORMANCE_HINT_ENTITY_THRESHOLD",
+    "PERFORMANCE_HINT_PEAK_MB",
     "ImportReport",
     "build_fidelity_diagnostics",
+    "build_font_embedding_hints",
     "build_human_summary",
+    "build_pdf_interactive_note",
+    "build_performance_hint",
     "build_scale_crosscheck",
     "enrich_import_report_extras",
     "build_import_report",

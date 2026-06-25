@@ -49,6 +49,12 @@ extract it anywhere you can write files, then run `lcpdf-gui.exe`.
 The portable ZIP bundles Python, PyMuPDF, ezdxf, pdfcadcore, the GUI, and the
 CLI launchers. No system Python, pip, or administrator rights are required.
 
+**Offline install:** The portable ZIP and published installer work without internet after download. Source ZIP dev installs may run `preflight_check.py --install` once if `lib/` is empty (requires network for that step only).
+
+## Upgrading / skipping versions
+
+Extract a newer portable ZIP over your folder (or run the latest installer). Skipping versions (e.g. 1.0.40 → 1.0.44) is supported — run `preflight_check.py` and convert one Tier-1 PDF before shop use.
+
 Bundled command-line entrypoints:
 
 ```powershell
