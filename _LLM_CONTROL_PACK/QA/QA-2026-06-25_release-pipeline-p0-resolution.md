@@ -6,6 +6,8 @@
 
 **2026-06-25 follow-up:** auto-release test gates now fail before any version-bump commit in FC/LC/SU/BL. Artifact smoke still runs after build and before release upload/create.
 
+**2026-06-25 FreeCAD clean-runner follow-up:** FreeCAD auto-release vendors the bundled PyMuPDF runtime before pytest because `src/lib` is gitignored on a fresh runner; release creation now uses `gh release create --target` so a commit that touches `.github/workflows` does not block tag/release creation through a checkout token.
+
 ---
 
 ## P0 items addressed
