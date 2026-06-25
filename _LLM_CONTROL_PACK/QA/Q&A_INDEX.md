@@ -13,6 +13,7 @@ All agents, reviewers, and human testers communicate through the hub — not in 
 | **`QA-2026-06-24_COORDINATION-HUB.md`** | **Single source of truth** — active workstreams, blockers, handoffs, agreement state |
 | `QA-2026-06-24_worker-status-log.md` | Append-only status log (start / update / blocked / done) |
 | `QA-2026-06-24_open-threads.md` | Unresolved questions; reply in `QA-*-reply-*.md` |
+| `QA-2026-06-25_commit-readiness-confirmation.md` | Minimum-four-agreement commit/push readiness gate |
 
 Mirrors: `_LLM_CONTROL_PACK/QA/` in each of the six repos.
 
@@ -21,6 +22,23 @@ Mirrors: `_LLM_CONTROL_PACK/QA/` in each of the six repos.
 ## Source Instructions
 
 - `Instructions 0607202613216.txt`
+
+---
+
+## Round 6 - Public corpus, synthetic stress, app feature slate (2026-06-24) - **ACTIVE**
+
+Fresh "get serious" pass: scour the web for PDF stress files, acquire/test a stronger corpus, identify app features, and prepare for full human interactive confirmation.
+
+| File | Role |
+|------|------|
+| `QA-2026-06-24_test-corpus-web-research.md` | Web corpus sources, licensing, tiered acquisition recommendations |
+| `QA-2026-06-24_app-feature-recommendations.md` | Steel Logic/importer ecosystem feature priorities |
+| `QA-2026-06-24_human-confirmation-script.md` | Human confirmation checklist and host matrix |
+| `QA-2026-06-24_round6-corpus-and-features.md` | Synthetic stress corpus + oracle notes + feature slate |
+| `QA-2026-06-24_round6-public-corpus-coordination-addendum.md` | Public web-acquired corpus tooling, validation, cross-review challenge list |
+| `QA-2026-06-24_round6-app-shape-lookup-implementation.md` | Steel Logic copied-callout shape lookup implementation and validation |
+
+**Round-6 headline so far:** targeted synthetic stress corpus exists in the shared test folder; public web-acquired corpus is now locally acquired under `C:\1pdf-test-corpus\web-acquired`; SketchUp headless corpus placement gate passes 26 PDFs with 25 OK + 1 expected encrypted-PDF refusal; Steel Logic now has copied-callout shape lookup, while the larger PDF-BOM/takeoff bridge remains open.
 
 ---
 

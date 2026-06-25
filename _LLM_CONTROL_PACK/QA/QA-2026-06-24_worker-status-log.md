@@ -36,6 +36,12 @@ YYYY-MM-DD HH:MM UTC | WS-ID | Owner | START|UPDATE|BLOCKED|DONE | one-line note
 
 2026-06-24 12:00 UTC | HUB | Coordination | START | COORDINATION-HUB, worker log, open-threads created; mirrors to six repos pending
 
+2026-06-25 00:13 UTC | WS-SYNC | Codex | DONE | Manifest regenerated from FC canonical and verified ALL IN SYNC in FC/LC/BL
+
+2026-06-25 00:17 UTC | WS-R6 | Codex | DONE | Public corpus acquisition + SketchUp placement gate green: 25 OK + 1 expected encrypted-PDF refusal
+
+2026-06-25 00:18 UTC | WS-R6 | Codex | DONE | Steel Logic PDF Callout Lookup validated: flutter analyze, full flutter test, l10n key parity OK; version 1.0.9+11 ready
+
 2026-06-24 18:30 UTC | WS-SYNC | Active-work agent | START | Regenerating pdfcadcore manifest after preflight_copy + import_report drift
 
 2026-06-24 18:45 UTC | WS-SYNC | Active-work agent | DONE | pdfcadcore_sync_check ALL IN SYNC FC/BL/LC | manifest c1120b4+
@@ -49,3 +55,5 @@ YYYY-MM-DD HH:MM UTC | WS-ID | Owner | START|UPDATE|BLOCKED|DONE | one-line note
 2026-06-24 19:05 UTC | WS-HC | Active-work agent | DONE | list_tier1 verified; SU run_golden_oracle_test.rb; website corpus README link
 
 2026-06-24 19:10 UTC | HUB | Active-work agent | UPDATE | active-work-reply.md posted; hub statuses bumped; mirrors + push pending
+2026-06-25 00:19 UTC | WS-R6 | Codex app slice | DONE | Steel Logic PDF Callout Lookup exposed in Tools; parser/search tests, analyze, and full Flutter suite green | app commit 8b9c114
+2026-06-25 00:25 UTC | HUB | Codex | DONE | Commit readiness gate satisfied with 5 agreement signals; Q&A mirror commit/push authorized by current user instruction
