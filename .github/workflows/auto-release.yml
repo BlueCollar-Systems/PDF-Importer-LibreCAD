@@ -3,11 +3,13 @@ name: auto-release
 on:
   push:
     branches: [main, master]
-    # Docs/CI-only pushes do not mint a release (board Q-08-a / ANS-09-1).
+    # Docs-only pushes do not mint a release (board Q-08-a / ANS-09-1).
+    # Release-pipeline workflow edits under .github/ are NOT ignored: they must
+    # rebuild --latest assets. The job if: guard skips chore: bump version to
+    # commits, so there is no release loop.
     paths-ignore:
       - "**/*.md"
       - "docs/**"
-      - ".github/**"
       - "_archived/**"
       - "dist/_archived/**"
       - "dev_logs/**"
