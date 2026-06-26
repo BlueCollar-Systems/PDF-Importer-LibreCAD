@@ -33,6 +33,8 @@ Field report on 2026-06-26:
 - Added FreeCAD raster background scaling parity so hybrid/raster placements use the effective import scale instead of raw page millimeters.
 - Added Blender legacy adapter routing so the selected text mode reaches the object builder: Labels/3D Text remain font curves with distinct extrusion behavior, while Glyphs/Geometry convert through mesh evaluation when Blender can do it.
 - Added SketchUp BOM table context so QUAN-column single digit quantities stay vertical without forcing MARK-column labels vertical.
+- Fixed the auto-release branch-protection failure across the importer repos by making release workflows publish the already-committed, CI-verified version instead of trying to push a bot-generated version bump to protected `main`.
+- Aligned committed version files that were blocking CI: SketchUp `metadata.rb`/README now match loader `3.7.74`; FreeCAD README badges now match package/pyproject `4.0.54`; Blender version files now match the intended adapter-fix release `1.0.51`.
 
 ## Active Questions
 
@@ -67,6 +69,7 @@ Anonymous reviewer D - Cross-host validation:
 - FreeCAD: `python -m pytest tests --basetemp %TEMP%\pytest-fc-pdf-importer-20260626-final` - PASS, 81 tests / 1 deprecation warning.
 - LibreCAD: `python -m pytest tests --basetemp %TEMP%\pytest-lc-pdf-importer-20260626` - PASS, 45 tests.
 - Blender: `python -m pytest tests --basetemp %TEMP%\pytest-bl-pdf-importer-20260626-final` - PASS, 45 tests.
+- Release workflow/version recheck (2026-06-26): SketchUp targeted suite PASS; FreeCAD full suite PASS (81); LibreCAD full suite PASS (45); Blender full suite PASS (45). Version consistency checks pass locally for all four importers.
 
 ## Current Resolution State
 

@@ -56,84 +56,36 @@ jobs:
           python preflight_check.py
           python -m pytest tests/ -q --basetemp "$RUNNER_TEMP/pytest-librecad"
 
-      - name: Read and bump version
+      - name: Read committed version
         id: version
         run: |
           python - <<'PY'
           import os
           import pathlib
           import re
-          import subprocess
 
           cli = pathlib.Path("pdf2dxf.py")
           pyproject = pathlib.Path("pyproject.toml")
 
           cli_text = cli.read_text(encoding="utf-8")
-          match = re.search(r'(__version__\s*=\s*")(\d+)\.(\d+)\.(\d+)(")', cli_text)
+          match = re.search(r'__version__\s*=\s*"(\d+\.\d+\.\d+)"', cli_text)
           if not match:
               raise SystemExit("Could not parse __version__ from pdf2dxf.py")
-
-          major, minor, patch = map(int, match.groups()[1:4])
-          old_version = f"{major}.{minor}.{patch}"
-          tags = set(
-              t.strip()
-              for t in subprocess.check_output(
-                  ["git", "tag", "--list"],
-                  text=True,
-              ).splitlines()
-              if t.strip()
-          )
-          next_patch = patch + 1
-          while f"v{major}.{minor}.{next_patch}" in tags:
-              next_patch += 1
-          new_version = f"{major}.{minor}.{next_patch}"
-
-          cli_text = re.sub(
-              r'(__version__\s*=\s*")(\d+)\.(\d+)\.(\d+)(")',
-              rf'\g<1>{new_version}\5',
-              cli_text,
-              count=1,
-          )
-          cli.write_text(cli_text, encoding="utf-8")
+          version = match.group(1)
 
           pyproject_text = pyproject.read_text(encoding="utf-8")
-          pyproject_text = re.sub(
-              r'(^version\s*=\s*")(\d+\.\d+\.\d+)(")',
-              rf'\g<1>{new_version}\3',
-              pyproject_text,
-              count=1,
-              flags=re.MULTILINE,
-          )
-          pyproject.write_text(pyproject_text, encoding="utf-8")
+          pyproject_match = re.search(r'^version\s*=\s*"(\d+\.\d+\.\d+)"', pyproject_text, re.MULTILINE)
+          if not pyproject_match or pyproject_match.group(1) != version:
+              got = pyproject_match.group(1) if pyproject_match else "missing"
+              raise SystemExit(f"Version mismatch: cli={version} pyproject={got}")
 
           out = pathlib.Path(os.environ["GITHUB_OUTPUT"])
-          out.write_text(
-              f"old_version={old_version}\nversion={new_version}\n",
-              encoding="utf-8",
-          )
+          out.write_text(f"version={version}\n", encoding="utf-8")
           PY
 
-      - name: Commit and push version bump
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          GH_TOKEN: ${{ github.token }}
+      - name: Set release target
         run: |
-          set -e
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git add pdf2dxf.py pyproject.toml
-          if git diff --cached --quiet; then
-            echo "No version bump changes to commit."
-            echo "RELEASE_TARGET=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-          else
-            git commit -m "chore: bump version to ${VERSION}"
-            if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
-              echo "::error::Could not push version bump to '${GITHUB_REF_NAME}'. Refusing to publish a release whose tag does not match committed version files."
-              exit 1
-            fi
-            echo "RELEASE_TARGET=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-          fi
+          echo "RELEASE_TARGET=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Build source zip
         run: python build_release.py
