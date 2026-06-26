@@ -1,6 +1,6 @@
 # Q&A Index
 
-Updated: 2026-06-25 (Round 2 anonymous Q&A · field-test prep · **active session**)
+Updated: 2026-06-26 (field regression response · popup/text/scale audit · **active session**)
 
 ---
 
@@ -10,18 +10,19 @@ Anonymous reviewers maximizing accuracy, power, and **any-PC / any-host** compat
 
 | File | Role |
 |------|------|
+| **`QA-2026-06-26_regression-popup-scale-alignment.md`** | **NEW field regression** — SketchUp popup removal, Labels-mode entity contract, FreeCAD bbox-fit for Labels/3D Text, cross-host validation |
 | **`Instructions 0607202613216.txt`** | Source rules — 4+ questions, 3+ answers, no self-answers, anonymous |
-| **`QA-2026-06-24_third-party-project-briefing.md`** | Authoritative onboarding — mission, architecture, versions, FAQ |
+| **`QA-2026-06-24_third-party-project-briefing.md`** | Authoritative onboarding — mission, architecture, versions, FAQ *(repo mirror only)* |
 | **`QA-2026-06-25_round2-anonymous-questions.md`** | **NEW Round 2** — Reviewers F/G/H/I (offline, fonts, roam, PDF JS) |
 | **`QA-2026-06-25_round2-anonymous-answers.md`** | **NEW Round 2** — Full cross-matrix answers |
 | **`QA-2026-06-25_round2-resolution.md`** | **NEW Round 2** — Agreements R2-1…R2-8 + GO gate |
 | **`QA-2026-06-25_round2-coordination-addendum.md`** | **NEW** — Shipped slice + open threads |
-| **`QA-2026-06-25_anonymous-questions-round.md`** | Round 1 — Reviewer E (preflight, legacy HW, SU 2017, scale) |
-| **`QA-2026-06-25_anonymous-answers-round.md`** | Round 1 — Reviewers A/B/C/D answers |
-| **`QA-2026-06-25_coordination-session.md`** | Round 1 build slate |
+| **`QA-2026-06-25_anonymous-questions-round.md`** | Round 1 — Reviewer E (preflight, legacy HW, SU 2017, scale) *(repo mirror only)* |
+| **`QA-2026-06-25_anonymous-answers-round.md`** | Round 1 — Reviewers A/B/C/D answers *(repo mirror only)* |
+| **`QA-2026-06-25_coordination-session.md`** | Round 1 build slate *(repo mirror only)* |
 | **`QA-2026-06-25_reply-ecosystem-audit-and-cross-round.md`** | **NEW** — 11-lens verified audit (23 findings, **3 P0 in release pipeline**) + Q-J1 (AV quarantine) + answers to all 9 prior questions |
 | **`QA-2026-06-25_release-pipeline-p0-resolution.md`** | **NEW** — P0-A/B/C shipped (FC windows + smoke, LC portable `--latest`, all-host release gates) |
-| **`QA-2026-06-25_reply-dependency-confidence-and-live-state.md`** | Bundled-dependency manifest tool + AGPL/GPL findings |
+| **`QA-2026-06-25_reply-dependency-confidence-and-live-state.md`** | Bundled-dependency manifest tool + AGPL/GPL findings *(repo mirror only)* |
 | **`QA-2026-06-24_worker-status-log.md`** | Append-only status |
 
 > 🔴 **P0 ALERT (audit, 2026-06-25):** the FreeCAD and LibreCAD **default `--latest` downloads do not run on a clean Windows PC** — FC's auto-release vendors a *Linux* PyMuPDF on its ubuntu runner; LC's `--latest` is a source-only zip (portable not published); and **no auto-release runs tests before publishing**. This **contradicts R2-1's "offline install — SHIPPED"** below: R2-1 holds only for the *tag-built* installer/portable artifacts, not the auto-release `--latest` ones. See `QA-2026-06-25_reply-ecosystem-audit-and-cross-round.md` §1. CI fixes need `windows-latest` verification — not pushed blind.
