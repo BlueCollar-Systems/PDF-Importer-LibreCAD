@@ -40,8 +40,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-          # GITHUB_TOKEN always authenticates checkout; RELEASE_BUMP_TOKEN is used
-          # only when pushing the version-bump commit past branch protection.
+          # Default GITHUB_TOKEN authenticates checkout and tag fetch.
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
@@ -130,11 +129,10 @@ jobs:
           else
             git commit -m "chore: bump version to ${VERSION}"
             if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
-              echo "::warning::Could not push version bump to '${GITHUB_REF_NAME}' (likely branch protection). Continuing to publish the release; tag-based versioning keeps releases unique."
-              echo "RELEASE_TARGET=${GITHUB_SHA}" >> "$GITHUB_ENV"
-            else
-              echo "RELEASE_TARGET=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+              echo "::error::Could not push version bump to '${GITHUB_REF_NAME}'. Refusing to publish a release whose tag does not match committed version files."
+              exit 1
             fi
+            echo "RELEASE_TARGET=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           fi
 
       - name: Build source zip
