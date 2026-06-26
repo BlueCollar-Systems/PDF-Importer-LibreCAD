@@ -32,7 +32,7 @@ jobs:
 
       - name: Trigger BlueCollar-Website deployment
         if: steps.token_check.outputs.has_token == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.WEBSITE_DISPATCH_TOKEN || secrets.BLUECOLLAR_WEBSITE_DISPATCH_TOKEN || secrets.REPO_DISPATCH_TOKEN }}
           script: |
