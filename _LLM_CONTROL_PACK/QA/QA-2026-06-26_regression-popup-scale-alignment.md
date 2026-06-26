@@ -46,7 +46,7 @@ Field report on 2026-06-26:
 ## Discussion / Resolution
 
 Anonymous reviewer A - SketchUp UX:
-- The popup was a direct regression. A modal before every import is too much friction, and the LibreCAD sentence was a copy/paste leak into the SketchUp host. A show-once replacement was also rejected because the field requirement is no pre-import interruption. Resolution: remove the guidance module entirely and cover normal import plus Safe Mode with a source-level absence test.
+- The popup was a direct regression. A modal before every import is too much friction, and the LibreCAD sentence was a copy/paste leak into the SketchUp host. Resolution: remove the pre-import guidance module entirely from normal and Safe Mode import, keep mode guidance in the import dialog/report surfaces, and cover absence of the modal/LibreCAD copy with a source-level regression test.
 
 Anonymous reviewer B - SketchUp text entity contract:
 - A prior workaround routed rotated Labels-mode text into mesh text to avoid native leader behavior. That helped some alignment cases but violated the explicit contract that labels are labels. Resolution: keep Labels mode as native SketchUp labels, use zero vectors only for horizontal labels, use rotated direction vectors for rotated labels, and call `display_leader = false` / zero vectors where supported to reduce visible leader artifacts.
@@ -73,4 +73,4 @@ Anonymous reviewer D - Cross-host validation:
 
 ## Current Resolution State
 
-Implementation and validation are complete for this round. Remaining work is commit/push/release verification and then human interactive confirmation on real PDFs inside the host applications.
+Implementation, validation, commits, pushes, GitHub releases, and website metadata are complete for this round. Remaining work is human interactive confirmation on real PDFs inside the host applications.
