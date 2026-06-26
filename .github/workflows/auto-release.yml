@@ -39,6 +39,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          fetch-tags: true
           # GITHUB_TOKEN always authenticates checkout; RELEASE_BUMP_TOKEN is used
           # only when pushing the version-bump commit past branch protection.
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -125,10 +126,14 @@ jobs:
           git add pdf2dxf.py pyproject.toml
           if git diff --cached --quiet; then
             echo "No version bump changes to commit."
+            echo "RELEASE_TARGET=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           else
             git commit -m "chore: bump version to ${VERSION}"
             if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
               echo "::warning::Could not push version bump to '${GITHUB_REF_NAME}' (likely branch protection). Continuing to publish the release; tag-based versioning keeps releases unique."
+              echo "RELEASE_TARGET=${GITHUB_SHA}" >> "$GITHUB_ENV"
+            else
+              echo "RELEASE_TARGET=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
             fi
           fi
 
@@ -152,7 +157,6 @@ jobs:
           PORTABLE="dist/LibreCAD-PDF-Importer-Windows-Portable_v${VERSION}.zip"
           SOURCE="dist/LibreCAD-PDF-Importer_v${VERSION}.zip"
 
-          git fetch --tags --force
           # Create the tag via gh (GITHUB_TOKEN), NOT `git push origin <tag>`: the
           # checkout PAT lacks `workflow` scope, so pushing a tag whose commit
           # touches .github/workflows/ is rejected. gh creates the tag through the
@@ -160,7 +164,7 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$PORTABLE" "$SOURCE" --clobber
           else
-            gh release create "$TAG" --target "$(git rev-parse HEAD)" --title "$TITLE" --generate-notes --latest "$PORTABLE" "$SOURCE"
+            gh release create "$TAG" --target "${RELEASE_TARGET:-$GITHUB_SHA}" --title "$TITLE" --generate-notes --latest "$PORTABLE" "$SOURCE"
           fi
 
       - name: Check website dispatch token secret
