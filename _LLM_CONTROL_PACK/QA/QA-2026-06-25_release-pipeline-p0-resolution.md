@@ -8,7 +8,9 @@
 
 **2026-06-25 FreeCAD clean-runner follow-up:** FreeCAD auto-release vendors the bundled PyMuPDF runtime before pytest because `src/lib` is gitignored on a fresh runner; release creation now uses `gh release create --target` so a commit that touches `.github/workflows` does not block tag/release creation through a checkout token.
 
-**2026-06-25 final release verification:** manual auto-release dispatches passed after the fixes: FC v4.0.52, LC v1.0.47, SU v3.7.72, and BL v1.0.49. Each run completed its release gate, built the package, smoked the shipped artifact, created or updated the GitHub release, dispatched the website, and the website deployed successfully. SU/BL tag creation was also hardened to use `gh release create --target`; SU's dependency resolver gate now uses the correct bundled helper name on Linux and Windows runners.
+**2026-06-25 live-release follow-up:** manual auto-release dispatch refreshed SU/FC/BL public releases successfully. LC passed gates, source build, portable build, and portable smoke; Actions release publishing was corrected, then the consistent Windows-smoked `v1.0.48` release was manually published and set as latest. Later inconsistent `v1.0.49`/`v1.0.50` releases, created after version-bump commits failed to land on `main`, were removed. All importer workflows now stop if the version-bump commit cannot be pushed, preventing tags/assets from drifting away from committed version files.
+
+**2026-06-25 final release verification:** current stable public releases after the fixes are FC v4.0.53, LC v1.0.48, SU v3.7.73, and BL v1.0.50. Each current release path completed its release gate, built the package, smoked the shipped artifact, created or updated the GitHub release, dispatched the website, and the website deployed successfully. Release creation uses an explicit target commit, `.github/**` workflow edits no longer leave public `--latest` assets stale, and auto-release fails rather than publishing if the version-bump commit cannot be pushed.
 
 ---
 
@@ -30,8 +32,8 @@
 | pytest / unit tests | PASS* | 45 passed | n/a | 43 passed |
 | `check_su2017_ruby_compat.py` | n/a | n/a | PASS | n/a |
 | `ruby22_compat_test.rb` + smoke | n/a | n/a | PASS | n/a |
-| `build_release.py` + artifact smoke | PASS (v4.0.52 zip) | PASS (source + portable v1.0.47 zip) | PASS (RBZ v3.7.72) | PASS (v1.0.49 zip) |
-| GitHub auto-release dispatch | PASS (v4.0.52) | PASS (v1.0.47) | PASS (v3.7.72) | PASS (v1.0.49) |
+| `build_release.py` + artifact smoke | PASS (v4.0.53 zip) | PASS (source + portable v1.0.48 zip) | PASS (RBZ v3.7.73) | PASS (v1.0.50 zip) |
+| GitHub auto-release dispatch | PASS (v4.0.53) | PASS (v1.0.48) | PASS (v3.7.73) | PASS (v1.0.50) |
 | tag/manual release workflow gate inspection | PASS (`windows-release.yml`) | PASS (`release.yml`) | n/a | PASS (`release.yml`) |
 
 \* FC pytest hit a Windows `.pytest_tmp` permission teardown warning; tests completed 100%.  
