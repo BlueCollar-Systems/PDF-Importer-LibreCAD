@@ -280,7 +280,7 @@ python -m pytest tests/ -v
 | Field | Value |
 |-------|-------|
 | **GitHub** | https://github.com/BlueCollar-Systems/BlueCollar-Website |
-| **Branch / HEAD** | `main` @ `aa6b94423e463f808e71cd300db1221d9779566f` |
+| **Branch / HEAD** | `main` @ `d6b6a9855b820835ab8aac6694a0e70a24ac2152` |
 | **VERSION file** | **1.0.65** |
 | **Tech stack** | Static HTML/CSS/JS; Cloudflare Pages; no build step |
 | **Live site** | https://bluecollar-systems.com |
@@ -805,7 +805,7 @@ When blocked on field verification, document in open-threads and worker-status-l
 | PDF-Importer-FreeCAD | main | `f2d335bcfa59ca16edf1fbc3070d9a5cc79fbb96` |
 | PDF-Importer-LibreCAD | main | `643e069cc63b0d70333bea31bda88320e4f2f1fd` |
 | PDF-Importer-Blender | main | `1f2ea3598cdc872aa0deebcebe1489d2d8505cea` |
-| BlueCollar-Website | main | `aa6b94423e463f808e71cd300db1221d9779566f` |
+| BlueCollar-Website | main | `d6b6a9855b820835ab8aac6694a0e70a24ac2152` |
 | pdf-test-corpus | main | `d478dda1ea9cc03bf0734f2dae28ea1fb02f80fe` |
 | Steel-Shapes | main | `24ab835390f29432e96604815c0c044cc6da73db` |
 
