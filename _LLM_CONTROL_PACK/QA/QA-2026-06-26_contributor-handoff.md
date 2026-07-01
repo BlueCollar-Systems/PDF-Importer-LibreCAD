@@ -280,20 +280,20 @@ python -m pytest tests/ -v
 | Field | Value |
 |-------|-------|
 | **GitHub** | https://github.com/BlueCollar-Systems/BlueCollar-Website |
-| **Branch / HEAD** | `devin/1780145949-remove-broken-hash-gate` @ `3ae8bdf6487b68f44ce4e8b921ccca929579936f` ⚠️ |
-| **VERSION file** | **1.0.32** |
+| **Branch / HEAD** | `main` @ `aa6b94423e463f808e71cd300db1221d9779566f` |
+| **VERSION file** | **1.0.65** |
 | **Tech stack** | Static HTML/CSS/JS; Cloudflare Pages; no build step |
 | **Live site** | https://bluecollar-systems.com |
 
 **Key files:** `index.html`, `nav.js`, `repo-metadata.json`, `tools/sync_repo_metadata.py`, `docs/`
 
-**⚠️ Local checkout is on a feature branch, not `main`.** `repo-metadata.json` may reference **legacy repo names** (`SU-PDFimporter`, `FC-PDFimporter`) and stale versions. Run `python tools/sync_repo_metadata.py` after releases to refresh.
+**Metadata:** `repo-metadata.json` is refreshed by `website-ci.yml` via `tools/sync_repo_metadata.py` on deploy and after importer `product-release` dispatches. Re-run locally when validating download links offline.
 
 **CI workflows:** `website-ci.yml` (static checks → metadata sync → Cloudflare deploy), `auto-release.yml` (auto-bumps `VERSION` patch), `security-remediation.yml`
 
 **Auto-release:** Auto-increments patch in `VERSION` on each `main` push; creates snapshot ZIP release. **No product build gates** — static site only.
 
-**No `_LLM_CONTROL_PACK/QA/`** on disk — mirror handoff docs manually if website QA folder is created.
+**Handoff mirror:** Contributor handoff doc is mirrored in `_LLM_CONTROL_PACK/QA/` across ecosystem repos.
 
 **Policy:** Do **not** host SketchUp Make 2017 installer on the website (Trimble redistribution constraints).
 
@@ -805,7 +805,7 @@ When blocked on field verification, document in open-threads and worker-status-l
 | PDF-Importer-FreeCAD | main | `f2d335bcfa59ca16edf1fbc3070d9a5cc79fbb96` |
 | PDF-Importer-LibreCAD | main | `643e069cc63b0d70333bea31bda88320e4f2f1fd` |
 | PDF-Importer-Blender | main | `1f2ea3598cdc872aa0deebcebe1489d2d8505cea` |
-| BlueCollar-Website | feature branch | `3ae8bdf6487b68f44ce4e8b921ccca929579936f` |
+| BlueCollar-Website | main | `aa6b94423e463f808e71cd300db1221d9779566f` |
 | pdf-test-corpus | main | `d478dda1ea9cc03bf0734f2dae28ea1fb02f80fe` |
 | Steel-Shapes | main | `24ab835390f29432e96604815c0c044cc6da73db` |
 
