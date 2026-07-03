@@ -514,6 +514,86 @@ def build_human_summary(report: ImportReport | Dict[str, Any]) -> str:
 
 
 @dataclass
+class TextEntityVerification:
+    """Text entity type verification for cross-host consistency."""
+
+    entity_type: str = ""  # "label", "glyphs", "geometry", "3d_text"
+    count: int = 0
+    font_rendered: bool = False
+    examples: List[str] = field(default_factory=list)
+    native_label: int = 0
+    native_3d_text: int = 0
+    outline_curve_or_mesh: int = 0
+    raw_geometry_edges: int = 0
+    dxf_text: int = 0
+    fallback_geometry: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+def build_actual_text_entity_types(
+    *,
+    host_app: str,
+    text_mode: str,
+    count: int = 0,
+    font_rendered: Optional[bool] = None,
+    examples: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Return the shared actual_text_entity_types payload."""
+
+    host = str(host_app or "").strip().lower()
+    mode = str(text_mode or "").strip().lower()
+    total = max(0, int(count or 0))
+    rendered = font_rendered
+    if rendered is None:
+        rendered = mode in {"labels", "label", "3d_text", "text3d"}
+
+    info = TextEntityVerification(
+        entity_type=mode,
+        count=total,
+        font_rendered=bool(rendered),
+        examples=list(examples or [])[:3],
+    )
+    if total <= 0 or mode in {"", "none"}:
+        return info.to_dict()
+
+    if host == "librecad":
+        if mode in {"labels", "label", "3d_text", "text3d"}:
+            info.dxf_text = total
+        elif mode in {"glyphs", "geometry", "outlines"}:
+            info.raw_geometry_edges = total
+        else:
+            info.fallback_geometry = total
+    elif host == "blender":
+        if mode in {"labels", "label", "3d_text", "text3d"}:
+            info.native_3d_text = total
+        elif mode in {"glyphs", "geometry", "outlines"}:
+            info.outline_curve_or_mesh = total
+        else:
+            info.fallback_geometry = total
+    elif host == "freecad":
+        if mode in {"labels", "label"}:
+            info.native_label = total
+        elif mode in {"3d_text", "text3d"}:
+            info.native_3d_text = total
+        elif mode in {"glyphs", "geometry", "outlines"}:
+            info.outline_curve_or_mesh = total
+        else:
+            info.fallback_geometry = total
+    elif host == "sketchup":
+        if mode in {"labels", "label"}:
+            info.native_label = total
+        elif mode in {"3d_text", "text3d"}:
+            info.native_3d_text = total
+        elif mode in {"glyphs", "geometry", "outlines"}:
+            info.outline_curve_or_mesh = total
+        else:
+            info.fallback_geometry = total
+    return info.to_dict()
+
+
+@dataclass
 class ImportReport:
     """Cross-host import report aligned with board Q-03-a."""
 
@@ -683,6 +763,7 @@ __all__ = [
     "PERFORMANCE_HINT_PEAK_MB",
     "ImportReport",
     "build_fidelity_diagnostics",
+    "build_actual_text_entity_types",
     "build_font_embedding_hints",
     "build_human_summary",
     "build_pdf_interactive_note",

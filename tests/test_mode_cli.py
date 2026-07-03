@@ -15,12 +15,13 @@ except ImportError:
     import fitz
 
 
-TEST_PDF_CANDIDATES = (
-    Path(r"C:\Users\Rowdy Payton\Desktop\PDFTest Files\1015 - Rev 0.pdf"),
-    Path(r"C:\Users\Rowdy Payton\Desktop\PDFTest Files\1017 - Rev 0.pdf"),
-    Path(r"C:\Users\Rowdy Payton\Desktop\PDFTest Files\1021 - Rev 0.pdf"),
-)
-TEST_PDF = next((path for path in TEST_PDF_CANDIDATES if path.is_file()), TEST_PDF_CANDIDATES[0])
+def _write_sample_pdf(pdf_path: Path) -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=200, height=120)
+    page.draw_line((20, 20), (120, 20), color=(0, 0, 0), width=1.0)
+    page.insert_text((30, 60), "AISC W12x26", fontsize=10)
+    doc.save(str(pdf_path))
+    doc.close()
 
 
 class TestModeCli(unittest.TestCase):
@@ -33,12 +34,7 @@ class TestModeCli(unittest.TestCase):
             out_path = tmp_path / "summary.json"
             out_dxf = tmp_path / "out.dxf"
 
-            doc = fitz.open()
-            page = doc.new_page(width=200, height=120)
-            page.draw_line((20, 20), (120, 20), color=(0, 0, 0), width=1.0)
-            page.insert_text((30, 60), "AISC W12x26", fontsize=10)
-            doc.save(str(pdf_path))
-            doc.close()
+            _write_sample_pdf(pdf_path)
 
             cmd = [
                 sys.executable,
@@ -73,16 +69,17 @@ class TestModeCli(unittest.TestCase):
             self.assertIn("phases", report["performance"])
             self.assertIn("text_source_spans", report["extra"])
 
-    @unittest.skipUnless(TEST_PDF.is_file(), f"Test PDF not available: {TEST_PDF}")
     def test_auto_mode_produces_auto_mode_block(self) -> None:
         with tempfile.TemporaryDirectory(prefix="lc_mode_cli_") as tmp:
+            pdf_path = Path(tmp) / "sample.pdf"
             out_path = Path(tmp) / "summary.json"
             out_dxf = Path(tmp) / "out.dxf"
+            _write_sample_pdf(pdf_path)
             cmd = [
                 sys.executable,
                 "-m",
                 "librecad_pdf_importer.cli",
-                str(TEST_PDF),
+                str(pdf_path),
                 "--mode",
                 "auto",
                 "--out",

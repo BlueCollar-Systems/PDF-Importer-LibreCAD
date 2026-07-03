@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 
 from pdfcadcore.import_bounds import compute_import_bounds
 from pdfcadcore.import_config import ImportConfig
-from pdfcadcore.import_report import build_import_report
+from pdfcadcore.import_report import build_actual_text_entity_types, build_import_report
 
 from .core.document import DocumentExtraction, ExtractionOptions, extract_document
 
@@ -106,6 +106,26 @@ def write_import_report(
     if elapsed_ms > 0 and "total_ms" not in phases:
         phases["total_ms"] = float(elapsed_ms)
 
+    extra = {
+        "resolved_scale": resolved_scale,
+        "scale_hints": {
+            **scale_hints,
+            "alternate_scale_factors": sorted(alternate_factors),
+        },
+        "auto_mode": extraction.summary().get("auto_mode"),
+    }
+    if run.config.import_text and str(run.config.text_mode or "labels") != "none":
+        extra["actual_text_entity_types"] = build_actual_text_entity_types(
+            host_app="librecad",
+            text_mode=str(run.config.text_mode or "labels"),
+            count=extraction.text_count,
+            examples=[
+                str(getattr(txt, "text", "") or "")[:20]
+                for txt in text_items[:3]
+                if str(getattr(txt, "text", "") or "").strip()
+            ],
+        )
+
     report = build_import_report(
         host_app="librecad",
         host_version=host_version,
@@ -130,14 +150,7 @@ def write_import_report(
         text_mode=str(run.config.text_mode or "labels"),
         text_source_spans=text_source_spans,
         text_glyph_estimate=text_glyph_estimate,
-        extra={
-            "resolved_scale": resolved_scale,
-            "scale_hints": {
-                **scale_hints,
-                "alternate_scale_factors": sorted(alternate_factors),
-            },
-            "auto_mode": extraction.summary().get("auto_mode"),
-        },
+        extra=extra,
     )
     report.write_json(output_path)
     return output_path

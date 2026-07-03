@@ -81,6 +81,13 @@ def safe_open(path: str, *, prefer_lib_dir: Optional[str] = None) -> Any:
         raise PdfOpenError("empty_file", f"File not found: {pdf_path}")
     if os.path.getsize(pdf_path) == 0:
         raise PdfOpenError("empty_file", "File is empty — not a valid PDF.")
+    try:
+        with open(pdf_path, "rb") as handle:
+            header = handle.read(1024)
+    except OSError as exc:
+        raise _classify_open_failure(exc) from exc
+    if b"%PDF-" not in header:
+        raise PdfOpenError("not_a_pdf", "This file is not a valid PDF.")
 
     fitz = import_fitz(prefer_lib_dir=prefer_lib_dir)
     try:

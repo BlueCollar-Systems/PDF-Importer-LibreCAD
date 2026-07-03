@@ -4,16 +4,11 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 
-TEST_PDF_CANDIDATES = (
-    Path(r"C:\Users\Rowdy Payton\Desktop\PDFTest Files\1015 - Rev 0.pdf"),
-    Path(r"C:\Users\Rowdy Payton\Desktop\PDFTest Files\1017 - Rev 0.pdf"),
-    Path(r"C:\Users\Rowdy Payton\Desktop\PDFTest Files\1021 - Rev 0.pdf"),
-)
-TEST_PDF = next((path for path in TEST_PDF_CANDIDATES if path.is_file()), TEST_PDF_CANDIDATES[0])
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GUI_PY = REPO_ROOT / "gui.py"
 CORE_CONFIG_PY = REPO_ROOT / "pdfcadcore" / "import_config.py"
@@ -32,21 +27,27 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess:
     )
 
 
+def _write_argparse_pdf(tmp: str) -> Path:
+    path = Path(tmp) / "argparse-anchor.pdf"
+    path.write_bytes(b"%PDF-1.4\n% argparse-only portable fixture\n")
+    return path
+
+
 class TestCleanBreak(unittest.TestCase):
     """``--preset`` must have been deleted per BCS-ARCH-001 -- no shim."""
 
-    @unittest.skipUnless(TEST_PDF.is_file(), f"Test PDF not available: {TEST_PDF}")
     def test_old_preset_flag_errors_out(self) -> None:
-        result = _run_cli(str(TEST_PDF), "--preset", "shop")
-        self.assertNotEqual(
-            result.returncode, 0,
-            msg="--preset should be rejected; it was accepted instead",
-        )
-        combined = (result.stdout + result.stderr).lower()
-        self.assertTrue(
-            "unrecognized arguments" in combined or "--preset" in combined,
-            msg=f"Unexpected error output: {combined!r}",
-        )
+        with tempfile.TemporaryDirectory(prefix="lc_clean_break_") as tmp:
+            result = _run_cli(str(_write_argparse_pdf(tmp)), "--preset", "shop")
+            self.assertNotEqual(
+                result.returncode, 0,
+                msg="--preset should be rejected; it was accepted instead",
+            )
+            combined = (result.stdout + result.stderr).lower()
+            self.assertTrue(
+                "unrecognized arguments" in combined or "--preset" in combined,
+                msg=f"Unexpected error output: {combined!r}",
+            )
 
 
 class TestRule5FlagsRemoved(unittest.TestCase):
@@ -66,20 +67,21 @@ class TestRule5FlagsRemoved(unittest.TestCase):
         "--grouping-mode",
     )
 
-    @unittest.skipUnless(TEST_PDF.is_file(), f"Test PDF not available: {TEST_PDF}")
     def test_removed_flags_error_out(self) -> None:
-        for flag in self.REMOVED_FLAGS:
-            with self.subTest(flag=flag):
-                result = _run_cli(str(TEST_PDF), flag, "x")
-                self.assertNotEqual(
-                    result.returncode, 0,
-                    msg=f"{flag!r} should be rejected; it was accepted instead",
-                )
-                combined = (result.stdout + result.stderr).lower()
-                self.assertTrue(
-                    "unrecognized arguments" in combined or flag.lower() in combined,
-                    msg=f"Unexpected output for {flag}: {combined!r}",
-                )
+        with tempfile.TemporaryDirectory(prefix="lc_removed_flags_") as tmp:
+            pdf_path = _write_argparse_pdf(tmp)
+            for flag in self.REMOVED_FLAGS:
+                with self.subTest(flag=flag):
+                    result = _run_cli(str(pdf_path), flag, "x")
+                    self.assertNotEqual(
+                        result.returncode, 0,
+                        msg=f"{flag!r} should be rejected; it was accepted instead",
+                    )
+                    combined = (result.stdout + result.stderr).lower()
+                    self.assertTrue(
+                        "unrecognized arguments" in combined or flag.lower() in combined,
+                        msg=f"Unexpected output for {flag}: {combined!r}",
+                    )
 
 
 class TestRule5GuiCheckboxesRemoved(unittest.TestCase):

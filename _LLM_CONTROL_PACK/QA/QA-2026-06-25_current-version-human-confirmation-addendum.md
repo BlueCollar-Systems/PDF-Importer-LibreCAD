@@ -1,6 +1,6 @@
 # Current-Version Human Confirmation Addendum
 
-Date: 2026-06-25  
+Date: 2026-06-25 (versions updated 2026-07-03)  
 Status: Active field-test addendum  
 Author: Anonymous reviewer  
 Purpose: Prevent stale-version field tests and align human confirmation with the current public website downloads.
@@ -19,18 +19,20 @@ Field testers should use the current public releases from the website or GitHub 
 
 | Host / product | Use this version for current field testing | Artifact type |
 |----------------|--------------------------------------------|---------------|
-| SketchUp PDF Vector Importer | v3.7.69 or later | `.rbz` |
-| FreeCAD PDF Vector Importer | v4.0.50 or later | Windows installer |
-| LibreCAD PDF Importer | v1.0.43 or later | Windows portable ZIP |
-| Blender PDF Importer | v1.0.46 or later | Blender add-on ZIP |
+| SketchUp PDF Vector Importer | **v3.7.75** (or latest `--latest` release) | `.rbz` |
+| FreeCAD PDF Vector Importer | **v4.0.54** (or latest `--latest` release) | Windows installer + zip |
+| LibreCAD PDF Importer | **v1.0.48** (or latest `--latest` release) | Windows portable ZIP |
+| Blender PDF Importer | **v1.0.51** (or latest `--latest` release) | Blender add-on ZIP |
 | Blue Collar Systems website | live metadata serving current releases | website |
-| Steel Logic app | current pushed app build | app package / local build |
+| Steel Logic app | **1.0.9+11** (or current pushed build) | app package / local build |
 | PDF test corpus | current `C:\1pdf-test-corpus` | local corpus repo |
+
+> **Verify before testing:** run `gh release view --repo BlueCollar-Systems/<repo> --json tagName` or fetch `https://bluecollar-systems.com/repo-metadata.json`. The base human-confirmation script (`QA-2026-06-24_human-confirmation-script.md` §0) lists historical builds — **this addendum overrides §0 version numbers.**
 
 SketchUp 2017 warning:
 
-- Do not test SketchUp 2017 with SketchUp importer v3.7.65.
-- Use v3.7.69 or later.
+- Do not test SketchUp 2017 with SketchUp importer older than v3.7.69.
+- Use **v3.7.75** (current) or whatever `--latest` serves.
 - The specific failure being retested is whether the extension loads without Ruby syntax errors in SketchUp 2017.
 
 ---
@@ -58,12 +60,14 @@ Confirm website metadata:
 Invoke-WebRequest -UseBasicParsing https://bluecollar-systems.com/repo-metadata.json
 ```
 
-Expected SketchUp metadata:
+Expected SketchUp metadata (2026-07-03 verify):
 
 ```text
-tag: v3.7.69
-asset: SketchUp-PDF-Importer_v3.7.69.rbz
+tag: v3.7.75
+asset: SketchUp-PDF-Importer_v3.7.75.rbz
 ```
+
+Record **both** the downloaded artifact filename and the in-app reported version (R3-4 policy). If they disagree, file a bug before continuing the matrix.
 
 ---
 

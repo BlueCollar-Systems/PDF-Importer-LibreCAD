@@ -476,6 +476,30 @@ _VALID_DENOMS = (2, 4, 8, 16, 32, 64)
 # Thresholds (mm).  5 pt ≈ 1.76 mm, 6 pt ≈ 2.12 mm.
 _FRAC_X_OVERLAP_MM = 5.0   # max horizontal gap between items to consider co-located
 _FRAC_Y_SPREAD_MM = 4.5    # max total vertical spread for the whole group
+_FRAC_STACKED_SCALE = 0.6  # scale factor for stacked fractions to match original footprint
+
+
+def _prefer_fraction_digit_candidates(indices: List[int], items: List[NormalizedText]) -> List[int]:
+    """Drop nearby whole-number digits when smaller fraction digits are present."""
+    if len(indices) <= 2:
+        return indices
+
+    sizes = [max(float(items[i].font_size or 0.0), 0.0) for i in indices]
+    positive_sizes = [s for s in sizes if s > 0.0]
+    if len(positive_sizes) < 2:
+        return indices
+
+    min_size = min(positive_sizes)
+    max_size = max(positive_sizes)
+    if max_size <= min_size * 1.10:
+        return indices
+
+    small = [
+        idx
+        for idx in indices
+        if max(float(items[idx].font_size or 0.0), 0.0) <= min_size * 1.12
+    ]
+    return small if len(small) >= 2 else indices
 
 
 def _split_concatenated_fraction(digits: str):
@@ -508,6 +532,8 @@ def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText
        This is the most common pattern in CAD PDFs.
     2. Three items: separate numerator + "/" + denominator (e.g. "15", "/", "16")
        Only matched when neither digit item is itself a concatenated fraction.
+
+    NOTE: Merged fractions use reduced font_size (~0.6x) to match stacked footprint.
     """
     if len(items) < 2:
         return items
@@ -560,13 +586,15 @@ def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText
                 if max(sizes) <= 2.0 * min(sizes):
                     merged_text = f"{numer_s}/{denom_s}"
                     avg_size = sum(sizes) / 2.0
+                    # Apply stacked fraction scale to match original footprint
+                    stacked_size = avg_size * _FRAC_STACKED_SCALE
                     merged_item = NormalizedText(
                         id=next_id(),
                         text=merged_text,
                         normalized=merged_text.upper().strip(),
                         insertion=slash.insertion,
-                        bbox=_merged_bbox(cand.bbox, slash.bbox),
-                        font_size=avg_size,
+                        bbox=_merged_bbox(cand.bbox, slash.bbox, scale_width=_FRAC_STACKED_SCALE),
+                        font_size=stacked_size,
                         rotation=slash.rotation,
                         font_name=slash.font_name or cand.font_name,
                         color=slash.color or cand.color,
@@ -606,6 +634,7 @@ def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText
             if len(digit_candidates) >= 2:
                 # Try all pairs to find a valid numerator/denominator.
                 # Sort by closeness to slash Y so we prefer the tightest pair.
+                digit_candidates = _prefer_fraction_digit_candidates(digit_candidates, items)
                 digit_candidates.sort(key=lambda i: abs(items[i].insertion[1] - sy))
                 best_pair = None
                 best_spread = _FRAC_Y_SPREAD_MM + 1
@@ -643,13 +672,15 @@ def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText
                     if max(sizes) <= 2.0 * min(sizes):
                         merged_text = f"{numer.text.strip()}/{denom.text.strip()}"
                         avg_size = sum(sizes) / 3.0
+                        # Apply stacked fraction scale to match original footprint
+                        stacked_size = avg_size * _FRAC_STACKED_SCALE
                         merged_item = NormalizedText(
                             id=next_id(),
                             text=merged_text,
                             normalized=merged_text.upper().strip(),
                             insertion=slash.insertion,
-                            bbox=_merged_bbox(numer.bbox, slash.bbox, denom.bbox),
-                            font_size=avg_size,
+                            bbox=_merged_bbox(numer.bbox, slash.bbox, denom.bbox, scale_width=_FRAC_STACKED_SCALE),
+                            font_size=stacked_size,
                             rotation=slash.rotation,
                             font_name=slash.font_name or numer.font_name,
                             color=slash.color or numer.color,
@@ -698,13 +729,15 @@ def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText
                         if max(sizes) <= 2.0 * min(sizes):
                             merged_text = f"{numer.text.strip()}/{denom.text.strip()}"
                             avg_size = sum(sizes) / 3.0
+                            # Apply stacked fraction scale to match original footprint
+                            stacked_size = avg_size * _FRAC_STACKED_SCALE
                             merged_item = NormalizedText(
                                 id=next_id(),
                                 text=merged_text,
                                 normalized=merged_text.upper().strip(),
                                 insertion=slash.insertion,
-                                bbox=_merged_bbox(numer.bbox, slash.bbox, denom.bbox),
-                                font_size=avg_size,
+                                bbox=_merged_bbox(numer.bbox, slash.bbox, denom.bbox, scale_width=_FRAC_STACKED_SCALE),
+                                font_size=stacked_size,
                                 rotation=slash.rotation,
                                 font_name=slash.font_name or numer.font_name,
                                 color=slash.color or numer.color,
@@ -729,8 +762,13 @@ def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText
     return result
 
 
-def _merged_bbox(*boxes):
-    """Return the union bounding box of one or more (x0,y0,x1,y1) or None boxes."""
+def _merged_bbox(*boxes, scale_width=1.0):
+    """Return the union bounding box of one or more (x0,y0,x1,y1) or None boxes.
+
+    Args:
+        *boxes: Bounding boxes to merge
+        scale_width: Optional width scaling factor (e.g., for stacked fractions)
+    """
     vals = [b for b in boxes if b is not None]
     if not vals:
         return None
@@ -738,6 +776,14 @@ def _merged_bbox(*boxes):
     y0 = min(b[1] for b in vals)
     x1 = max(b[2] for b in vals)
     y1 = max(b[3] for b in vals)
+
+    # Apply width scaling if requested
+    if scale_width != 1.0:
+        center_x = (x0 + x1) / 2.0
+        width = (x1 - x0) * scale_width
+        x0 = center_x - width / 2.0
+        x1 = center_x + width / 2.0
+
     return (x0, y0, x1, y1)
 
 

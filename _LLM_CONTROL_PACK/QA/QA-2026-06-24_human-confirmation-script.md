@@ -15,7 +15,7 @@ python C:\1pdf-test-corpus\tools\list_tier1.py --host LC --resolved
 python C:\1pdf-test-corpus\tools\list_tier1.py --host BL --resolved
 ```
 
-Record build versions: SU **3.7.63**, FC **4.0.45**, LC **1.0.39**, BL **1.0.42**, Steel Logic **1.0.9+10**, Website **1.0.60**.
+Record build versions from **`QA-2026-06-25_current-version-human-confirmation-addendum.md`** (authoritative — updated 2026-07-03: SU **3.7.75**, FC **4.0.54**, LC **1.0.48**, BL **1.0.51**, Steel Logic **1.0.9+11**). Verify via `repo-metadata.json` or GitHub Releases before starting — do not use the historical numbers in this line on older mirrors.
 
 ---
 

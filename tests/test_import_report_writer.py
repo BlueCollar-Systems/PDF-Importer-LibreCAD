@@ -48,6 +48,8 @@ class TestImportReportWriter(unittest.TestCase):
             self.assertEqual(data["performance"]["phases"]["total_ms"], 15.0)
             self.assertIn("text_source_spans", data["extra"])
             self.assertIn("text_glyph_estimate", data["extra"])
+            self.assertIn("actual_text_entity_types", data["extra"])
+            self.assertIn("dxf_text", data["extra"]["actual_text_entity_types"])
 
 
 if __name__ == "__main__":
