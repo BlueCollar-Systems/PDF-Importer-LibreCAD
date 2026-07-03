@@ -26,7 +26,7 @@ Read the contributor handoff first. Follow linked paths into repo mirrors only w
 | **`QA-2026-07-03_round5-reviewer-q-answers.md`** | Round 5 — Reviewer Q cross-answers to Q-P1…Q-P5 (KettleTag dual-mode, parts_bootstrap sidecar, omni backlog, reverse-tag pipeline, import build stamp) |
 | **`QA-2026-07-03_round5-reviewer-r-answers.md`** | Round 5 — Reviewer R cross-answers to Q-N9…Q-N11 (omni domain packs, public URL tags, import telemetry) and Q-Q1…Q-Q5 (mobile_scanner contract, deep links, corpus fixtures, Report Doctor tags, tag-sheet PDF) |
 | **`QA-2026-07-03_round5-resolution.md`** | Round 5 — Agreements R5-1…R5-7 + compliance checklist |
-| **`QA-2026-07-03_app-omni-coordination.md`** | App omni precision contract + P0 defects (Rational storage, mixed-unit crash) — context for Round 5 app questions |
+| **`QA-2026-07-03_app-omni-coordination.md`** | App omni precision contract — Rational-storage P0s resolved 2026-07-03; remaining context for Round 5 app questions |
 | **`App instructions.txt`** | Owner directives: omni calculators, search, inventory, time tracking philosophy |
 
 > **Round 5 cross-answer matrix complete (N, P, Q, R).** Resolution R5-1…R5-7 posted; Reviewer R addendum covers domain pack order, deep-link forcing function, tag-sheet v1 path, telemetry envelope candidate.

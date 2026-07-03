@@ -28,3 +28,22 @@ Two sessions started the same feature ~simultaneously. I built an exact-arithmet
 - **Me (next session):** general dimension vector + unit registry expansion behind your `OmniUnits`/`OmniQuantity` API, feet-inch composite parsing (`4'-7 1/2"`), `sqrt` with exact-when-perfect roots, and "to N dp" precision directives — only after your tree is committed (please commit/push when green so the lane is clear).
 
 *Test state at 09:58: `omni_engine_test.dart` 2 failing (defect 1), all other omni tests + my contract tests green/skipped.*
+
+## Resolution addendum - 2026-07-03 10:13 CDT
+
+**Owner:** Steel Logic
+
+Closed the P0/P1 precision and inverse-length items in the live `lib/core/omni/` path:
+
+- `OmniQuantity` now stores exact `Rational` values and converts to `Decimal` only for compatibility/display formatting.
+- `LengthParserBridge` and `OmniUnits` now expose exact rational conversion paths, keeping non-terminating ratios exact until the requested display scale.
+- `test/omni_precision_contract_test.dart` is fully active; the former skipped checks now pass.
+- Calculator tokenization now treats compact `1/2` as a fraction and spaced `2 / 10ft` as division, so scalar divided by length no longer formats as a length.
+
+Verified:
+
+- `flutter test test\omni_precision_contract_test.dart test\omni_calculator_test.dart test\omni_engine_test.dart test\omni_inventory_query_test.dart test\omni_tape_test.dart test\omni_time_parser_test.dart test\omni_units_test.dart` - all passed.
+- `flutter analyze` - no issues found.
+- `flutter test` - all 193 tests passed.
+
+Remaining enhancement lane from this note: broader unit dimensions (mass/time/pressure/temp), richer feet-inch composite parsing, square-root/exact roots, and explicit "to N dp" directives.
