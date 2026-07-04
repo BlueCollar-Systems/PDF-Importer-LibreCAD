@@ -401,6 +401,29 @@ def _pdf_audit_extras(pdf_path: str) -> Dict[str, Any]:
     return merged
 
 
+def build_model_3d_extra(
+    host_app: str,
+    *,
+    enabled: bool = False,
+    stats: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Honest model_3d block for import_report.extra (R8-1)."""
+
+    if stats:
+        return dict(stats)
+    host = str(host_app or "").lower()
+    if host == "librecad":
+        return {
+            "supported": False,
+            "enabled": False,
+            "reason": "2D host — PDF import produces planar DXF only",
+        }
+    return {
+        "supported": host in ("freecad", "blender", "sketchup"),
+        "enabled": bool(enabled),
+    }
+
+
 def enrich_import_report_extras(report: "ImportReport") -> None:
     """Attach scale cross-check, performance hint, and refresh human_summary."""
 
@@ -416,6 +439,9 @@ def enrich_import_report_extras(report: "ImportReport") -> None:
     )
     if hint:
         report.extra["performance_hint"] = hint
+    if "model_3d" not in report.extra:
+        host = str((report.host or {}).get("app") or "")
+        report.extra["model_3d"] = build_model_3d_extra(host)
     report.extra["human_summary"] = build_human_summary(report)
 
 
@@ -804,6 +830,7 @@ __all__ = [
     "build_pdf_interactive_note",
     "build_performance_hint",
     "build_scale_crosscheck",
+    "build_model_3d_extra",
     "enrich_import_report_extras",
     "build_import_report",
 ]

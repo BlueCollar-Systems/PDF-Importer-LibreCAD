@@ -1,6 +1,32 @@
 # Q&A Index
 
-Updated: 2026-07-04 (Round 7 - SU v3.7.79 + Steel Logic v1.0.10; Reviewer O/P/Q)
+Updated: 2026-07-04 (Round 8 — PDF→3D optional extrusion + Q&A audit closure)
+
+---
+
+## Active session — Round 8 PDF→3D (2026-07-04)
+
+| File | Role |
+|------|------|
+| **`QA-2026-07-04_round8-pdf-to-3d-questions.md`** | Round 8 — Reviewer W: host scope, 3D semantics, eligibility, UI, report contract, Z-order research |
+| **`QA-2026-07-04_round8-pdf-to-3d-answers.md`** | Round 8 — Reviewer X answers W1–W7 + prior OPEN cross-answers |
+| **`QA-2026-07-04_round8-resolution.md`** | Round 8 — Agreements R8-1…R8-9 + phased implementation plan |
+| **`QA-2026-07-04_round8-sketchup-cli-images-app-pass/QA-2026-07-04_round8-sketchup-cli-images-app-pass.md`** | Round 8 earlier pass — CLI/images/app QA closure |
+| **`QA-2026-07-04_feature-parity-matrix.md`** | Updated parity audit incl. `model_3d`, `parts_bootstrap` stub |
+
+> **Round 8 PDF→3D status:** SU v3.7.80 ships optional extrude + `extra.model_3d`; LC honest 2D note; FC `parts_bootstrap` stub v4.0.59. FC/BL solid extrusion UI deferred Phase 2/3.
+
+---
+
+## Active session — Round 8 CLI/App pass (2026-07-04)
+
+| File | Role |
+|------|------|
+| **QA-2026-07-04_round8-sketchup-cli-images-app-pass/QA-2026-07-04_round8-sketchup-cli-images-app-pass.md** | Round 8 - implementation/QA closure: SketchUp direct CLI launch fix, embedded-image extraction verification, app import-report ingestion bridge, localization audit cleanup, website/corpus smoke QA |
+| **QA-2026-07-04_round8-sketchup-cli-images-app-pass/feature_matrix.md** | Cross-repo feature matrix regenerated after SketchUp CLI detection fix |
+| **QA-2026-07-04_round8-sketchup-cli-images-app-pass/feature_matrix.json** | Machine-readable feature matrix |
+
+> **Round 8 status:** tracked importer/app matrix coverage is 100%; automated tests are green. Remaining gates are host-app visual signoff and future Report Doctor UI integration.
 
 ---
 
@@ -12,9 +38,10 @@ Updated: 2026-07-04 (Round 7 - SU v3.7.79 + Steel Logic v1.0.10; Reviewer O/P/Q)
 | **QA-2026-07-04_round7-reviewer-p-answers.md** | Round 7 - Reviewer P answers to O-1..O-7 + prior OPEN cross-table |
 | **QA-2026-07-04_round7-reviewer-q-answers.md** | Round 7 - Reviewer Q cross-answers to O-1..O-7 (corpus T1-12, field test, Report Doctor) |
 | **QA-2026-07-04_round7-reviewer-n-questions.md** | Round 7 - Reviewer N questions (parallel lane) |
+| **QA-2026-07-04_round7-reviewer-r-answers.md** | Round 7 - Reviewer R cross-answers to N16-N19 + prior OPEN |
 | **QA-2026-07-04_round7-resolution.md** | Round 7 - Agreements R7-1..R7-11 + cross-answer matrix |
 
-> **Round 7 cross-answer matrix complete (O questions; P + Q answers).** R7-10 embedded-image corpus anchor **T1-12 SHIPPED**.
+> **Round 7 cross-answer matrix complete (O questions; P + Q + R answers).** R7-10 embedded-image corpus anchor **T1-12 SHIPPED**.
 
 ---
 
