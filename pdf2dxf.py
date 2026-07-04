@@ -13,7 +13,7 @@ import os
 import sys
 import time
 
-__version__ = "1.0.49"
+__version__ = "1.0.50"
 
 # ---------------------------------------------------------------------------
 # Ensure project root is on sys.path so ``import pdfcadcore`` resolves
@@ -107,12 +107,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"GUI unavailable: {exc}", file=sys.stderr)
             return 1
 
-    # Validate input (CLI mode only)
     if not args.input:
-        print("Error: input file path is required unless --gui is used.", file=sys.stderr)
+        from pdfcadcore.cli_error_copy import cli_error
+
+        print(cli_error("missing_input"), file=sys.stderr)
         return 1
     if not os.path.isfile(args.input):
-        print(f"Error: input file not found: {args.input}", file=sys.stderr)
+        from pdfcadcore.cli_error_copy import cli_error
+
+        print(cli_error("file_not_found", path=args.input), file=sys.stderr)
         return 1
 
     # Open-time gate: reject encrypted/empty/non-PDF cleanly (no traceback).
@@ -120,7 +123,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         precheck_pdf(args.input)
     except PdfOpenError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        from pdfcadcore.cli_error_copy import cli_error
+
+        print(cli_error("not_a_pdf", message=str(exc)), file=sys.stderr)
         return 1
 
     # Derive output path
@@ -171,7 +176,9 @@ def main(argv: list[str] | None = None) -> int:
             progress_callback=_progress if args.verbose else None,
         )
     except PdfOpenError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        from pdfcadcore.cli_error_copy import cli_error
+
+        print(cli_error("not_a_pdf", message=str(exc)), file=sys.stderr)
         return 2
 
     elapsed = time.perf_counter() - t0

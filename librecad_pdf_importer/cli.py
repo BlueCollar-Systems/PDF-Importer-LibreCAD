@@ -77,6 +77,22 @@ def main() -> int:
         return 0
 
     pdf_path = Path(args.pdf).expanduser().resolve()
+    if not pdf_path.is_file():
+        from pdfcadcore.cli_error_copy import cli_error
+
+        print(cli_error("file_not_found", path=str(pdf_path)), file=sys.stderr)
+        return 1
+
+    from pdf_open_guard import precheck_pdf, PdfOpenError
+
+    try:
+        precheck_pdf(str(pdf_path))
+    except PdfOpenError as exc:
+        from pdfcadcore.cli_error_copy import cli_error
+
+        print(cli_error("not_a_pdf", message=str(exc)), file=sys.stderr)
+        return 1
+
     out_path = Path(args.out).expanduser().resolve() if args.out else pdf_path.with_suffix(".dxf")
 
     overrides = {}
@@ -98,7 +114,10 @@ def main() -> int:
 
     if args.reference_detected_mm and args.reference_real_mm:
         if args.reference_detected_mm <= 0:
-            raise SystemExit("--reference-detected-mm must be > 0")
+            from pdfcadcore.cli_error_copy import cli_error
+
+            print(cli_error("reference_detected_invalid"), file=sys.stderr)
+            return 1
         scale_factor = args.reference_real_mm / args.reference_detected_mm
         apply_uniform_scale(run.extraction, scale_factor)
 

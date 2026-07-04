@@ -1,6 +1,7 @@
 {
   "__init__.py": "e62e7b0b6abbfbfb8d140ace57e141dbc8c3c6216e16f655c5801e73c2a23a67",
   "auto_mode.py": "7dd108bde0a020c2ae164135ace354a666e749453238a2ebeaf714baa0b88418",
+  "cli_error_copy.py": "cc656dbe2518bd267204513a30580af8f8332e889921f97a757c898585bedb28",
   "dimension_parser.py": "a8a5b53d5a10a07b3fafe6683d832f7d0bfbbff74e11ba7d31b9fb3581066989",
   "document_profiler.py": "d423c6a2c980a712e91cb698e7a1fe199b883ec38f93dc87b01d87a2b8b4e877",
   "fitz_loader.py": "190241667080e0d06d5c62e3587531a38ee6a73e8a3ec08c5e529d546cadf34a",
@@ -10,7 +11,7 @@
   "hatch_detector.py": "621e1649d35b423af716db14c222235aad2c6218eff64821e4e84927510a2bda",
   "import_bounds.py": "f89e69995581bee6bf19d3d5db249e12d1025559ef93bfb778511863816b1324",
   "import_config.py": "e8e7605c73656459e18b8cb89c07aa2d7dd2f20fe25a57c0771de496fcc0d413",
-  "import_report.py": "7d171f868f4cf5e97c6a200e3c9af91a74516821f95490fd1d174e1416666ad3",
+  "import_report.py": "a4b34868e330ed0320dee4622ee48e6c12c855e7b8428cb658274db0b35d9446",
   "preflight_copy.py": "aea5ff87dc95c614fb9a49006928c86d73bc2f2160980769848036b78b2a9458",
   "primitive_extractor.py": "dedc83eb580946f846ecf76f04c4b3e31ed654c8f6c67ad2538bcba35dbda7f4",
   "primitives.py": "eec8be4e6cce2b9d55b8bc848448c02a068502b79d36139c35262a8d2757eabe",

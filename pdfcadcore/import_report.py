@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -331,6 +332,30 @@ def build_pdf_interactive_note(doc: Any) -> Dict[str, Any]:
     }
 
 
+def build_report_meta(
+    *,
+    host_app: str,
+    importer_version: str,
+    report_sha256: str = "",
+    imported_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Return report_meta block with build_stamp for support and T-01 checks."""
+
+    host = str(host_app or "").strip().lower()
+    semver = str(importer_version or "").strip()
+    sha = str(report_sha256 or "").strip().lower()
+    stamp_parts = [part for part in (host, semver) if part]
+    if sha:
+        stamp_parts.append(f"report {sha[:12]}")
+    return {
+        "build_stamp": " · ".join(stamp_parts),
+        "host": host,
+        "semver": semver,
+        "report_sha256": sha,
+        "imported_at": imported_at or datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def build_performance_hint(
     *,
     primitive_count: int = 0,
@@ -607,6 +632,7 @@ class ImportReport:
     performance: Dict[str, Any] = field(default_factory=dict)
     fallback: Dict[str, Any] = field(default_factory=lambda: {"used": False, "reason": None})
     mode: str = "auto"
+    report_meta: Dict[str, Any] = field(default_factory=dict)
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -633,6 +659,7 @@ class ImportReport:
             performance=dict(data.get("performance", {}) or {}),
             fallback=dict(data.get("fallback", {}) or {"used": False, "reason": None}),
             mode=str(data.get("mode", "auto")),
+            report_meta=dict(data.get("report_meta", {}) or {}),
             extra=dict(data.get("extra", {}) or {}),
         )
 
@@ -675,9 +702,11 @@ def build_import_report(
         "file": str(pdf_path),
         "pages": int(pages),
     }
+    report_sha256 = ""
     try:
         if pdf_path and Path(pdf_path).is_file():
-            input_block["sha256"] = _sha256_file(pdf_path)
+            report_sha256 = _sha256_file(pdf_path)
+            input_block["sha256"] = report_sha256
     except OSError:
         pass
 
@@ -750,6 +779,11 @@ def build_import_report(
         performance=performance_block,
         fallback={"used": bool(fallback_used), "reason": fallback_reason},
         mode=mode,
+        report_meta=build_report_meta(
+            host_app=host_app,
+            importer_version=importer_version,
+            report_sha256=report_sha256,
+        ),
         extra=extra_block,
     )
     enrich_import_report_extras(report)
@@ -764,6 +798,7 @@ __all__ = [
     "ImportReport",
     "build_fidelity_diagnostics",
     "build_actual_text_entity_types",
+    "build_report_meta",
     "build_font_embedding_hints",
     "build_human_summary",
     "build_pdf_interactive_note",

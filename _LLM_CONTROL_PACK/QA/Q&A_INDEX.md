@@ -1,10 +1,22 @@
 # Q&A Index
 
-Updated: 2026-07-03 (Round 5 active — Reviewers N + P + Q + R; resolution posted; cross-answer matrix complete)
+Updated: 2026-07-04 (Round 6 — importer contract gate; Reviewer S + T)
 
 ---
 
-## **START HERE for new contributors**
+## Active session — Round 6 (2026-07-04)
+
+| File | Role |
+|------|------|
+| **`QA-2026-07-04_round6-reviewer-s-questions.md`** | Round 6 — Reviewer S: R4/R5 carry-forward, feature matrix, accuracy gaps, advanced-feature gate, **outside-the-box** `import_contract_ready` |
+| **`QA-2026-07-04_round6-reviewer-s-answers.md`** | Round 6 — Reviewer S cross-answers to N1, N3, N5, P2, Q3 |
+| **`QA-2026-07-04_round6-reviewer-t-answers.md`** | Round 6 — Reviewer T answers to all S questions |
+| **`QA-2026-07-04_round6-resolution.md`** | Round 6 — Agreements R6-1…R6-10 + implementation backlog |
+| **`QA-2026-07-04_feature-parity-matrix.md`** | Code-level cross-host parity audit |
+
+---
+
+## Prior session — Round 5 (2026-07-03)
 
 | File | Role |
 |------|------|
