@@ -1,0 +1,362 @@
+## Remaining Automatable Work
+
+### SketchUp Importer
+
+- **R7-9 — CLI contract merge** *(P1)*
+  `su_pdf_cli.rb` and `cli.rb` have overlapping flag sets. The agreement was to consolidate them under a single unified contract (flags + output fields) with a compatibility test as the bar. Currently two separate entry points with diverging options.
+
+- **`extrude_depth` dialog HTML field** *(P1)*
+  `extrude_depth` is fully wired in [ImportConfig](cci:2://file:///C:/1PDF-Importer-SketchUp/extracted/sketchup_ext/bc_pdf_vector_importer/import_config.rb:17:4-209:7), `ImportDialog#build_opts`, and the pipeline, and is already usable via CLI (`--extrude-depth=N`). The advanced dialog HTML has **no UI control** for it yet — the field needs to be added to [basic_html](cci:1://file:///C:/1PDF-Importer-SketchUp/extracted/sketchup_ext/bc_pdf_vector_importer/import_dialog.rb:230:6-294:9) / [show_html_advanced](cci:1://file:///C:/1PDF-Importer-SketchUp/extracted/sketchup_ext/bc_pdf_vector_importer/import_dialog.rb:144:6-200:9) and wired through the JS callback.
+
+- **`parts_bootstrap` sidecar** *(deferred)*
+  All four importers have `extra.parts_bootstrap` as `✗` except FreeCAD (empty stub). The contract field exists but no importer populates it with real data.
+
+- **Cross-product corpus CI** *(P2)*
+  Corpus baselines exist for SketchUp. FreeCAD has its schema CI wired. LibreCAD and Blender have no corpus CI gate — conformance vectors only cover Python and SketchUp.
+
+- **Corpus baselines for 8 new PDFs**
+  The corpus placement gate logs `Missing baseline` warnings for: `embedded_images_regression.pdf`, `stacked_fraction_spacing.pdf`, `alvord-2009.pdf`, `alvord-2013.pdf`, `Alvord-Zoning-Map.pdf`, `CMJ Report 3306-25-01 Geotech.pdf`, `TX_Alvord_20160309_TM_geo.pdf` (7 PDFs). Requires running `tools/generate_corpus_baselines.rb --update`.
+
+### Steel Logic App
+
+- **Report Doctor / drawing trust UI surface**
+  `ImportReportIngestion` now fully parses `model_3d`, `model_3d_intent`, source provenance, contract-ready, and fallback state. The parsed data is not yet surfaced anywhere in the UI — it's held in memory only. The next step is building the Report Doctor screen/widget that renders it to the user.
+
+- **Part Tracking full loop** *(deferred — R7-11)*
+  Scan → sidecar lookup → highlight in host. The scanning half exists (`mobile_scanner`), deep links exist (`steellogic://shape/W10x22`), but the sidecar lookup and host highlight feedback loop has not been implemented.
+
+- **`parts_bootstrap` parsing**
+  The app has an empty stub for `bcs.parts_bootstrap/1.0`. No importer produces the real payload yet (blocked on the importer side above), so this is waiting on that.
+
+### All Importers (shared gap)
+
+- **Semantic steel solids** *(next major feature)*
+  Current 3D generation is closed-region extrusion (`v1`). The stated next step is connecting AISC mark callouts (from `model_3d_intent.plates/members`), BOM row lengths from the drawing, and AISC profile dimensions to create **named structural solid geometry** — e.g. a W12×30 beam at its actual flange/web dimensions extruded to its mark length. None of the four importers do this yet.
+
+---
+
+## Summary Count
+
+| Category | Items |
+|----------|-------|
+| SketchUp automatable | 5 |
+| App automatable | 3 |
+| Cross-importer shared | 1 |
+| **Total (short list)** | **9** |
+
+> **2026-07-04 session progress:** see `Remaining Tasks - PROGRESS.md` — 8 completed, 6 partial, 12+ blocked/skipped.
+
+The only items that are blocked on a human are T-01 visual fidelity and the Part Tracking field test. Everything else above is pure code.
+
+Based on the current QA docs, excluding T-01 human visual verification, the remaining work is:
+
+1. **Semantic AISC/member modeler**
+   Build real structural solids from drawing semantics: mark + BOM length + AISC profile + source spans. Current 3D is v1 closed-region extrusion; this is the next real “make a beam/plate/member” feature.
+
+2. **Leader/mark association vectors**
+   Add corpus tests for connecting callouts/leaders/marks to the correct geometry before trusting semantic model generation.
+
+3. **`parts_bootstrap` real row extraction**
+   FreeCAD has the stub sidecar. Still needed: extract BOM/table rows into structured `parts_bootstrap.tables[]`, with marks, quantities, descriptions, lengths, profiles, and provenance.
+
+4. **Large-PDF performance tuning**
+   Especially batching/merge strategies, page-range UX, progress/cancel flow, and host object creation reduction. Blender BL-2 batching is specifically still called out.
+
+5. **SketchUp CLI merge**
+   Consolidate `su_pdf_cli.rb`, `su_batch_cli.rb`, and in-extension `cli.rb` behind one contract-compatible lane before deleting legacy paths.
+
+6. **SketchUp headless geometry limitation**
+   CLI can analyze/report, but real SketchUp geometry requires SketchUp runtime. Remaining decision/work: build a host-launched automation runner, or keep this as a documented hard limit.
+
+7. **Scale-by-Reference parity**
+   FreeCAD has it. SketchUp, LibreCAD, and Blender still do not.
+
+8. **Import Health/support snapshot parity**
+   SketchUp has the richer Import Health/support snapshot. FreeCAD, LibreCAD, and Blender still need equivalent in-host diagnostics.
+
+9. **GUI parity for advanced options**
+   Some capabilities exist in CLI/report paths but are not uniformly exposed in GUIs: lineweight mode, batch/folder import UX, page-range controls, and health/preflight surfaces.
+
+10. **Automated visual regression tooling**
+   Not the human signoff itself, but the machinery to reduce future manual review: golden rasters/overlays for color, lineweight, dimension spacing, rotation, and alignment.
+
+11. **Part Tracking full loop**
+   App-side multi-sprint work: load/import source-provenance sidecars, reverse-highlight PDF callouts, connect scanned tags/QR/deep links to part records, and complete the digital thread.
+
+12. **Release/CI hardening**
+   Cross-product corpus CI, dependency manifest release assets, stronger contract gates across all importers, and PE/binary signing remain open hardening work.
+
+13. **Publish/package current verified changes**
+   The latest local verified work still needs the normal commit/push/release path when you want it distributed, especially where QA notes mention pending release/push state.
+
+Source of truth I used: [final verification sweep](<C:/Users/Rowdy Payton/Desktop/PDFTest Files/Q&A/QA-2026-07-04_final-verification-sweep.md>), [Round 8 closure addendum](<C:/Users/Rowdy Payton/Desktop/PDFTest Files/Q&A/QA-2026-07-04_round8-closure-addendum.md>), and [feature parity matrix](<C:/Users/Rowdy Payton/Desktop/PDFTest Files/Q&A/QA-2026-07-04_feature-parity-matrix.md>).
+
+Quick state check so the list reflects the last hour's swarm activity, then the full inventory:
+
+Here's the complete remaining-work inventory, verified against the ledgers and disk as of right now (excluding your T-01 visual sign-offs):
+
+## 3D feature — finishing your idea (the active chain)
+1. **R8-A — Semantic member generation in FreeCAD**: read `aisc_v16_profiles.json` (shipped an hour ago), draw the true W/L/C/HSS cross-section, extrude along BOM length, name by piece mark, group by assembly. *Unblocked, unclaimed — the single highest-value item on the board.*
+2. **R8-B v2 — Plate outline association**: extrude the *actual* traced plate profile (holes included) by matching the callout/leader to its closed path, replacing v1's rectangle. Needs its corpus vector locked first.
+3. **R8-C / R8-D — Port semantic members to Blender, then SketchUp** (SketchUp can reuse its bundled steel-shape component packs).
+4. **R8-F — Corpus 3D regression anchor**: redistributable `model3d_regression.pdf` generator + expected-solids oracle (confirmed absent from `tier1/web`).
+5. **Assembly grouping v2**: nest generated parts under assembly marks (`1017FR1`) using BOM structure.
+
+## Importer quality & performance
+6. **FC-1 dense-dimension spacing placement fix** (the `313 16` collision class) — corpus anchor shipped; the FreeCAD placement change itself needs confirming/finishing.
+7. **BL-2 — Blender large-file batching**: merge thousands of per-curve objects into per-page/color/width buckets (the real slow-load cause).
+8. **Parallel per-page extraction** (FC/LC/BL) — the big honest speed lever, never claimed.
+9. **Per-phase timing instrumentation in all hosts** (FreeCAD has it; LC/BL/SU partial) — prerequisite for optimizing the measured hotspot.
+10. **R7-9 — SketchUp CLI merge**: consolidate my `tools/su_pdf_cli.rb` and the in-extension `cli.rb` into one flag contract.
+11. **SU Poppler prune**: ~8 MB of likely-unused OpenSSL/libcurl/libssh2 in the RBZ (verify with a dependency walk first).
+
+## Contracts & release pipeline
+12. **R3-4 — Artifact version stamp**: build workflows stamp the release tag into the artifact so embedded version always equals the tag (needs a release cycle to verify).
+13. **Dependency manifest as release asset**: run `dependency_audit.py` at build time, attach the JSON beside every zip/RBZ.
+14. **SU `source_provenance` completion** (marked "partial" at R6-8) + **`import_contract_ready`** in the other three hosts with Report Doctor recompute.
+15. **`bcs.part/1.0` schema** — the digital-thread part record (confirmed still absent from corpus schemas) + `parts_bootstrap` sidecar in all hosts (deferred at R7).
+16. **Cross-product corpus CI** (P2): one pipeline exercising importer output → app ingestion → Report Doctor.
+17. **CI skip-visibility hardening**: fail when P0-tagged corpus anchors skip.
+
+## App (Steel Logic)
+18. **Part Tracking full loop**: scan → provenance-sidecar lookup → highlight the callout region (scanner UI and report parsing shipped; the connective tissue remains).
+19. **Omni engine expansion**: dimensions beyond length (mass/pressure/temperature/time), feet-inch composites, `sqrt`, "to N dp" directives — the specced-but-deferred half of the calculator.
+20. **Omni golden vectors in corpus** consumed by `flutter test` (the app's conformance-vector equivalent).
+21. **Tag-sheet PDF generation + Report Doctor tag lookup + public `/p/` part pages + opt-in telemetry** — the R5 advanced backlog, deferred until you green-light the advanced phase.
+22. **App packaging CI**: `package_windows_release.ps1` runs by hand only; store-readiness (Android/iOS) audit unstarted.
+
+## Backlog / research tier (P2)
+23. OCG layer full semantics (T-12), region-level hybrid import (T-13), LC DXF image durability (T-14), Windows-on-ARM statement, OneDrive placeholder handling.
+
+## Owner-only actions (not verification, but only you can do them)
+24. **`CORPUS_READ_TOKEN` secret** on the FreeCAD repo (~2 minutes) — activates the corpus schema gate I wired.
+25. **Code signing** — parked until launch per your call.
+26. **Housekeeping you approved conceptually**: delete empty `C:\1SU-PDFimporter`; decide on the app repo's 8.6 GB Firebase SDK dedup (CMake repoint) and the git-history rewrite for the old 460 MB of dist blobs (needs a coordinated force-push window); retire the standalone steel-shape repos if the consolidation is confirmed.
+
+**The shape of it:** the importers' correctness contract is essentially closed — what remains is the 3D semantic modeler chain (items 1–5, actively moving), performance engineering (6–9), pipeline hardening (12–17), and the app's advanced phase (18–22) which is queued behind your go signal. Items 1 and 6 are the two I'd put names on today; the swarm's already circling both.
+
+Here is the complete remaining-work list from Q&A resolutions R3–R8, the closure addendum, and the feature-parity matrix — excluding T-01 and any other human visual sign-off.
+
+Importers — shared / pdfcadcore
+ID	Priority	Remaining work
+R5-2 / R8-7
+P0
+parts_bootstrap full implementation — stub sidecar exists on FC only; extract BOM rows from tables[] → {piece_mark, quantity, profile_hint, page, span_ids[]}; emit on all hosts that produce import reports
+R8-A
+P1
+Semantic AISC steel modeling — extrude real member profiles by BOM mark + length using corpus aisc_v16_profiles.json (beyond v1 closed-region plate extrusion)
+R4-1
+P1
+Text-merge conformance phase 2 — rotation/BOM-column vectors (stacked-fraction phase 1 shipped)
+R4-2
+P1
+Portable regression anchors — eliminate remaining hardcoded corpus paths; fail CI when P0 anchors skip (T1-11 fraction PDF shipped; proprietary Tier-1 shop PDFs still manifest-only)
+R4-3
+P1
+Release pipeline contract gates — attach dependency_audit manifest JSON to all host releases; extend schema validation to LC/BL CI (FC wired)
+R7 P2
+P2
+Cross-product unified corpus CI — single workflow validating schemas + conformance across hosts
+R5-8
+P2
+import_telemetry envelope — opt-in diagnostics schema (candidate only)
+R4-05 / R4-30
+P2
+span_quality signals and confidence % display in import_report (Round 4 Phase 2)
+T-11 / T-12
+P2
+WASM core research; OCG per-span semantics
+—
+P1
+Large-PDF performance — batching/merge strategies without silent geometry drops (core O(n²) fix shipped; multi-page parallelism deferred)
+—
+P1
+Visual fidelity automation — golden raster/oracle tests for color, lineweight, dimension spacing (engineering; separate from your eyes-on T-01)
+SketchUp
+ID	Priority	Remaining work
+R7-9 / R8-9
+P1
+CLI merge — unify su_pdf_cli.rb, tools/su_batch_cli.rb, and in-extension cli.rb behind one contract + compatibility tests
+Scale-by-Ref
+P2
+Scale-by-Reference tool — FC has it; port to SU/LC/BL
+R2-6
+P2
+PDF JavaScript / OpenAction detection — Python hosts warn; SU scan still deferred
+—
+P2
+Root THIRD_PARTY_NOTICES.txt — only notices inside bin/ today
+—
+P2
+Prune unused bundled OpenSSL/libcurl/libssh2 (~8 MB bloat/CVE surface)
+—
+P2
+Lineweight overview gain — optional UI multiplier so thin PDF strokes read better at full-sheet zoom (proposal)
+—
+—
+Full headless geometry — batch CLI reports offline; SketchUp host still required to create geometry
+FreeCAD
+ID	Priority	Remaining work
+—
+P1
+parts_bootstrap row extraction (see shared)
+R8-A
+P1
+Profile/member Part modeling from BOM + AISC catalog
+—
+P2
+Import Health UI — SU has Import Health; FC/LC/BL have no equivalent support snapshot screen
+—
+P2
+Tag sheet PDF generation (tag_sheet.pdf phase 2 per R5-7)
+—
+P2
+Wire source_provenance on LC/BL — module synced; full host wiring on LC/BL was deferred in one pass (verify current state on disk)
+LibreCAD
+ID	Priority	Remaining work
+Scale-by-Ref
+P2
+Scale-by-Reference (FC-only today)
+—
+P2
+Import Health equivalent
+—
+—
+True 3D — permanently out of scope; honest 2D reporting is done
+Blender
+ID	Priority	Remaining work
+—
+P1
+Lineweight display — data is proportional; Blender curves lack screen-space width; optional gain or Grease Pencil path (proposal)
+Scale-by-Ref
+P2
+Scale-by-Reference port
+—
+P2
+Import Health equivalent
+—
+P2
+Per-character glyph semantics — document honestly; text-run outline meshes only
+—
+P2
+Off-Windows PyMuPDF bootstrap — Windows-only wheel today
+Release / packaging / legal
+ID	Priority	Remaining work
+R3-8 / R5-8
+P1
+PE code signing — LC portable EXEs + FC unsigned installer; AV/EDR false-positive hardening
+—
+P1
+SmartScreen / Defender restore documentation on website
+—
+P2
+AGPL/GPL corresponding_source_url on distributed bundles
+—
+P2
+Windows-on-ARM support
+—
+P2
+OneDrive online-only placeholder PDFs — graceful handling
+—
+P2
+Upgrade/uninstall DLL hygiene
+Test corpus
+ID	Priority	Remaining work
+R5-7 / R7-10
+P1
+tier1/tags/ fixtures — sample_parts_bootstrap.json, part_record_golden.json, synthetic QR URL samples (T1-12 embedded-image PDF shipped)
+R4-3
+P1
+Full corpus CI workflow (minimal validate exists; unified cross-host job open)
+—
+P1
+More legally safe public PDFs — layers, clipping, hybrid, malformed, CAD exports
+—
+P2
+Host-specific visual oracles beyond current conformance vectors
+Website
+ID	Priority	Remaining work
+R5-7
+P1
+Report Doctor Tags tab — read parts_bootstrap sidecar
+R5-6
+P1
+Public part pages — https://bluecollar-systems.com/p/<opaque-id> static JSON
+—
+P2
+Expand Report Doctor for Ready Check, full text entity verification, import recovery contracts
+—
+P2
+Shapes Hub / install copy audit for stale repo names
+—
+P2
+Code-signing / AV guidance pages
+Steel Logic app
+ID	Priority	Remaining work
+R5-1
+P0
+Part Tracking / barcode full loop — scan → part record → drawing page (mobile scan stub shipped; lifecycle not done)
+R5-3
+P0
+Reverse-tag highlight — scan → PDF page + bbox when span_ids[] present (provenance now shipped; UI/highlight loop open)
+R5-2
+P0
+Full parts_bootstrap ingestion — beyond current import_report parse stub
+R5-6
+P1
+steellogic://part/ + Universal Links /p/*; Android/iOS manifest entries
+R5-4
+P1
+Omni domain packs — weight/CG, fab geometry, galv vent; compound inventory create/edit; tape @N → time
+R5-5
+P1
+import_build_stamp on part records from bootstrap ingest
+R5-7
+P1
+On-demand tag sheet printing from app
+T-10
+P1
+Full BOM / import_report bridge — callout lookup partial; full table ingestion open
+—
+P1
+Offline scan queue (mirror inventory/time sync pattern)
+—
+P2
+Home-screen global omni bar (Omni-Box today under Tools)
+—
+P2
+Unify Universal Calculator with Omni engine
+—
+P2
+Area/volume in omni calculator
+—
+P2
+l10n — Omni-Box English-only
+—
+P2
+Photo/voice/MTR OCR capture channels (ranked defer per R5-4)
+Q&A / docs housekeeping
+Priority	Remaining work
+P2
+Refresh human-confirmation script automation docs (R3-3) — machine-readable artifact checklist (not the visual pass itself)
+P2
+Some Round 6 resolution rows still say OPEN for items later shipped (text-merge, provenance) — docs drift only
+Bottom line
+Engineering is not “empty,” but the importer contract gate is largely done. The biggest non-human buckets are:
+
+parts_bootstrap + Part Tracking/digital thread (importers → app → website)
+Semantic steel modeling (R8-A)
+SU CLI merge + scale-by-reference parity
+Release signing / AV trust
+Report Doctor Tags + public /p/ pages
+Everything under T-01 / R6-9 / R7-8 / R8-8 is intentionally omitted from this list. If you want to move on to advanced features, the practical prerequisite is finishing R5-2 + R5-1/R5-3 on the app side while optionally tackling R8-A on FC.
+
+---
+
+## Progress append (2026-07-04 autonomous session)
+
+See **`Remaining Tasks - PROGRESS.md`** for full checkbox inventory.
+
+Shipped this session: FC parts_bootstrap row extraction (v4.0.60), corpus schemas/fixtures, R8-A FC foundation (aisc_profiles + semantic_members, default OFF), Report Doctor Tags tab, app rows[] ingestion test, pdfcadcore sync to LC/BL.
+
+Still open: Part Tracking full loop, SU CLI merge contract test, semantic members GUI/runtime proof, all-host bootstrap emitters, corpus baseline generation, cross-product CI, signing/AV docs, scale-by-ref parity, BL-2 perf, FC-1 dense dims.

@@ -1,50 +1,52 @@
-# Round 11 — Brand-neutral part tag naming (2026-07-04)
+# Round 11 - Brand-Neutral Part Tracking Naming (2026-07-04)
 
 ## Problem
 
-**KettleTag** (Infosite / **InfoSight** registered trademark) must not appear in BCS code, UI strings, file names, fixture names, or QA identifiers. It is a third-party galvanizing-tag product brand; not every shop uses that vendor. Prior app code named the QR/barcode lookup feature after it (`KettleTagService`, `KettleTagHit`, `kettle_tag_service.dart`) and ~19 QA mirror docs repeated the term.
+The owner flagged that a third-party galvanizing-tag brand had been used as shorthand for our QR/barcode lookup feature. That is not acceptable for product naming: it is vendor-specific, not every shop uses that product, and it creates avoidable trademark ambiguity.
 
-## Decision R11-1 — canonical replacement: **Part Tag**
+**Rename chain (historical):** KettleTag → Part Tag (interim R11 scrub) → **Part Tracking** (R11-1 final, owner decision 2026-07-04).
+
+## Decision R11-1 - Canonical Name
+
+Use **Part Tracking** as the product-neutral term. Supersedes interim "Part Tag" naming from the earlier R11 trademark scrub.
 
 | Layer | Replacement |
 |-------|-------------|
-| Service class | `PartTagService` |
-| Hit model | `PartTagHit` |
-| Source file | `part_tag_service.dart` |
-| Test file | `part_tag_service_test.dart` |
-| UI copy | "part tag / QR lookup" |
+| Service class | `PartTrackingService` |
+| Hit model | `PartTrackingHit` |
+| Source file | `part_tracking_service.dart` |
+| Test file | `part_tracking_service_test.dart` |
+| UI copy | "part tracking / QR lookup" |
 
-Rationale: generic, vendor-neutral, descriptive (bar code, QR, stamped, or handwritten tags), aligns with existing `bcs.part/1.0` digital-thread naming.
+Rationale: "Part Tracking" is generic, vendor-neutral, and descriptive across bar code, QR, stamped, laser-etched, or handwritten tags. It also aligns with the existing `bcs.part/1.0` digital-thread naming and shop-floor "track this part" vocabulary.
 
-## Decision R11-2 — no third-party tag vendor brands
+Physical objects remain "physical tags" or "shop tags" in prose when docs refer to the actual QR/barcode labels on steel.
 
-No third-party product or brand names in identifiers, UI strings, file names, or fixture names. Vendor examples may appear only nominatively in design discussion when unavoidable (e.g., "galvanizing-rated metal tags such as those sold by tag vendors"). Historical git commits are **not** rewritten; current working-tree files are scrubbed.
+## Decision R11-2 - Brand Policy
 
-## Status (implemented)
+Do not use third-party product or brand names in identifiers, UI strings, file names, fixture names, feature names, or QA identifiers. Vendor examples may appear only nominatively in design discussion when unavoidable, phrased generically enough that a scrub check can stay clean. Historical git commits are not rewritten; current working-tree files are scrubbed.
 
-| Repo | Scrub commit | Scope |
-|------|--------------|-------|
-| Steel Logic app | `55839ed` | `PartTagService` / `PartTagHit` rename, UI strings, tests (259 pass) |
-| SketchUp importer | `0aece9e` | QA mirror scrub |
-| FreeCAD importer | `3d19b63` | QA mirror scrub |
-| LibreCAD importer | `14e34c2` | QA mirror scrub |
-| Blender importer | `496a3ee` | QA mirror scrub |
-| BlueCollar website | `7269bef` | QA mirror scrub |
-| pdf-test-corpus | `a3f6a24` | QA mirror scrub |
-| Desktop Q&A | *(authoritative, not git)* | 147 QA docs scrubbed |
+## Status
 
-Post-scrub verification grep (2026-07-04): **0 hits** for `KettleTag`, `Kettle Tag`, `kettletag`, `InfoSight` across all 7 repos + Desktop Q&A in non-git-history files.
+Implemented and verified:
 
-## Ballot — ratify Part Tag (pending anonymous Q&A round)
+| Area | Status |
+|------|--------|
+| Steel Logic app | App service/test/UI names use `PartTrackingService`, `PartTrackingHit`, `part_tracking_service.dart`, and "part tracking / QR lookup" wording. |
+| QA docs | Desktop Q&A and repo QA mirrors use "part tracking" / "Part Tracking" for the feature; "physical tags" / "shop tags" for hardware. |
+| Importer, website, corpus code | No live code identifiers used the retired brand after the app rename. |
 
-**Proposed ratification:** adopt **Part Tag** as the canonical neutral term for QR/barcode piece-mark lookup across app, importers, website, and corpus.
+Post-scrub verification grep target: zero hits in current files for PartTag, part_tag, Part Tag, part tag, KettleTag, or vendor spelling variants across all seven repos plus Desktop Q&A (except this rename-chain note).
 
-**Alternatives rejected:**
+## Ballot
+
+The QA agreement is to ratify **Part Tracking** as the canonical neutral term for QR/barcode piece-mark lookup across the app, importers, website, and corpus.
+
+Rejected alternatives:
 
 | Alternative | Why rejected |
 |-------------|--------------|
-| Piece mark tag | Redundant with existing piece-mark vocabulary; conflates mark text with physical tag |
-| Shop tag | Too informal; ambiguous (could mean any shop-floor label) |
-| Barcode lookup alone | Drops the physical-tag / galvanizing context owners expect in UI copy |
-
-**Action:** include R11-1 ratification on the next anonymous Q&A ballot, or owner may confirm scrub + this doc as sufficient without a separate round.
+| Piece mark tag | Redundant with existing piece-mark vocabulary; conflates mark text with the physical tag. |
+| Shop tag | Too informal and ambiguous as the primary feature name. |
+| Barcode lookup | Too narrow because the workflow includes QR tags and physical tag handling. |
+| Part Tag (interim) | Superseded by owner decision; retained only in rename-chain history above. |
