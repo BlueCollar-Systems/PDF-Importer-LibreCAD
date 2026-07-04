@@ -424,8 +424,39 @@ def build_model_3d_extra(
     }
 
 
+def build_import_contract_ready(report: "ImportReport") -> Dict[str, Any]:
+    """Aggregate report-contract readiness for app/Report Doctor gates."""
+
+    extra = report.extra if isinstance(report.extra, dict) else {}
+    result = report.result if isinstance(report.result, dict) else {}
+    meta = report.report_meta if isinstance(report.report_meta, dict) else {}
+
+    open_failure = extra.get("open_failure")
+    has_stamp = bool(str(meta.get("build_stamp") or "").strip())
+    has_crosscheck = "scale_crosscheck" in extra
+    text_count = int(result.get("text_entities") or 0)
+    has_entity_types = "actual_text_entity_types" in extra
+    text_ok = text_count <= 0 or has_entity_types
+    ready = has_stamp and has_crosscheck and text_ok and open_failure is None
+
+    return {
+        "ready": ready,
+        "checks": {
+            "build_stamp": has_stamp,
+            "scale_crosscheck": has_crosscheck,
+            "actual_text_entity_types": text_ok,
+            "no_open_failure": open_failure is None,
+        },
+        "note": (
+            "ready for contract consumers"
+            if ready
+            else "one or more import report contract checks need review"
+        ),
+    }
+
+
 def enrich_import_report_extras(report: "ImportReport") -> None:
-    """Attach scale cross-check, performance hint, and refresh human_summary."""
+    """Attach shared derived fields and refresh human_summary."""
 
     crosscheck = build_scale_crosscheck(report.extra)
     if crosscheck:
@@ -443,6 +474,7 @@ def enrich_import_report_extras(report: "ImportReport") -> None:
         host = str((report.host or {}).get("app") or "")
         report.extra["model_3d"] = build_model_3d_extra(host)
     report.extra["human_summary"] = build_human_summary(report)
+    report.extra["import_contract_ready"] = build_import_contract_ready(report)
 
 
 def _format_text_mode(mode: str) -> str:
@@ -831,6 +863,7 @@ __all__ = [
     "build_performance_hint",
     "build_scale_crosscheck",
     "build_model_3d_extra",
+    "build_import_contract_ready",
     "enrich_import_report_extras",
     "build_import_report",
 ]

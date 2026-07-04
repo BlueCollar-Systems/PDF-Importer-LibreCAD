@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 from pdfcadcore.import_bounds import compute_import_bounds
 from pdfcadcore.import_config import ImportConfig
 from pdfcadcore.import_report import build_actual_text_entity_types, build_import_report
+from pdfcadcore.model3d_intent import analyze_model3d_intent
 
 from .core.document import DocumentExtraction, ExtractionOptions, extract_document
 
@@ -113,6 +114,17 @@ def write_import_report(
             "alternate_scale_factors": sorted(alternate_factors),
         },
         "auto_mode": extraction.summary().get("auto_mode"),
+        "model_3d_intent": analyze_model3d_intent(
+            text_items,
+            host_supports_3d=False,
+        ).to_dict(),
+        "model_3d": {
+            "supported": False,
+            "enabled": False,
+            "mode": "off",
+            "solids_created": 0,
+            "skipped_reason": "LibreCAD is a 2D DXF host; use SketchUp, FreeCAD, or Blender for generated solids.",
+        },
     }
     if run.config.import_text and str(run.config.text_mode or "labels") != "none":
         extra["actual_text_entity_types"] = build_actual_text_entity_types(

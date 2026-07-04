@@ -33,6 +33,23 @@ _PROFILE_FROM_ROW = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_MARK_LINE_RE = re.compile(
+    r"^[A-Za-z]{1,3}\d{3,6}(?:[A-Za-z]{1,4}\d*)?$|^\d{3,6}[A-Za-z]{1,4}\d*$",
+    re.IGNORECASE,
+)
+_QTY_LINE_RE = re.compile(r"^\d+$")
+_WEIGHT_LINE_RE = re.compile(r"^\d+(?:\.\d+)?$")
+_HEADER_LINES = {
+    "BILL OF MATERIAL",
+    "QUAN",
+    "QTY",
+    "MARK",
+    "DESCRIPTION",
+    "LENGTH",
+    "TOTAL WT.",
+    "TOTAL  WT.",
+    "REMARKS",
+}
 
 
 def _sha256_file(path: str) -> str:
@@ -50,6 +67,18 @@ def _feet_inches_to_inches(text: str) -> Optional[float]:
     feet = int(m.group(1))
     inches = parse_fraction_inches(m.group(2) or "0") or 0.0
     return feet * 12.0 + inches
+
+
+def _is_length_line(text: str) -> bool:
+    return _feet_inches_to_inches(text) is not None
+
+
+def _is_header_line(text: str) -> bool:
+    return text.strip().upper() in _HEADER_LINES
+
+
+def _part_kind(profile: str) -> str:
+    return "plate" if profile.upper().startswith("PL") else "member"
 
 
 def _profile_hint_from_text(text: str) -> Optional[str]:
@@ -99,19 +128,92 @@ def _normalize_text_item(item: Any) -> tuple[str, Optional[int]]:
     return text, page_int
 
 
+def _extract_sequence_rows(items: List[tuple[str, Optional[int]]]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    idx = 0
+    while idx + 3 < len(items):
+        mark, page = items[idx]
+        qty, _ = items[idx + 1]
+        description, _ = items[idx + 2]
+        length_text, _ = items[idx + 3]
+        if (
+            _is_header_line(mark)
+            or not _MARK_LINE_RE.match(mark)
+            or not _QTY_LINE_RE.match(qty)
+            or _profile_hint_from_text(description) is None
+            or not _is_length_line(length_text)
+        ):
+            idx += 1
+            continue
+
+        cursor = idx + 4
+        total_weight = None
+        remarks = None
+        grade = None
+        if cursor < len(items) and _WEIGHT_LINE_RE.match(items[cursor][0]):
+            total_weight = float(items[cursor][0])
+            cursor += 1
+        if cursor < len(items) and not _MARK_LINE_RE.match(items[cursor][0]) and not _is_header_line(items[cursor][0]):
+            remarks = items[cursor][0]
+            cursor += 1
+        current_starts_next_row = (
+            cursor + 1 < len(items)
+            and _MARK_LINE_RE.match(items[cursor][0])
+            and _QTY_LINE_RE.match(items[cursor + 1][0])
+        )
+        if cursor < len(items) and not current_starts_next_row and not _is_header_line(items[cursor][0]):
+            grade = items[cursor][0]
+            cursor += 1
+
+        profile = _profile_hint_from_text(description) or description
+        row: Dict[str, Any] = {
+            "piece_mark": mark,
+            "quantity": int(qty),
+            "description": description,
+            "profile_hint": profile,
+            "kind": _part_kind(profile),
+            "length_in": round(_feet_inches_to_inches(length_text) or 0.0, 4),
+            "length_text": length_text,
+            "source": {
+                "page": page or 1,
+                "line_start": idx,
+                "line_end": cursor - 1,
+            },
+        }
+        if total_weight is not None:
+            row["total_weight_lb"] = total_weight
+        if remarks:
+            row["remarks"] = remarks
+        if grade:
+            row["grade"] = grade
+        rows.append(row)
+        idx = cursor
+    return rows
+
+
 def extract_bootstrap_rows(
     text_items: Iterable[Any],
     *,
     span_map: Optional[Dict[str, List[str]]] = None,
 ) -> List[Dict[str, Any]]:
     """Extract BOM row candidates from normalized text lines."""
+    normalized_items = [
+        _normalize_text_item(item)
+        for item in text_items
+    ]
+    normalized_items = [
+        (text.strip(), page)
+        for text, page in normalized_items
+        if text and text.strip()
+    ]
+    sequence_rows = _extract_sequence_rows(normalized_items)
+    if sequence_rows:
+        return sequence_rows
+
     rows: List[Dict[str, Any]] = []
     seen_marks: set[str] = set()
 
-    for item in text_items:
-        text, page = _normalize_text_item(item)
-        if not text or not text.strip():
-            continue
+    for text, page in normalized_items:
 
         mark_m = _MARK_RE.search(text)
         profile = _profile_hint_from_text(text)
@@ -161,20 +263,32 @@ def build_parts_bootstrap(
     import_build_stamp: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Return a valid bcs.parts_bootstrap/1.0 payload."""
+    part_rows = list(rows or [])
     payload: Dict[str, Any] = {
         "schema": SCHEMA,
-        "rows": list(rows or []),
+        "rows": part_rows,
+        "parts": part_rows,
+        "part_count": len(part_rows),
         "source_pdf": {
             "file": str(Path(pdf_path).name),
             "pages": int(page_count or 0),
         },
+        "tables": [
+            {
+                "name": "BILL OF MATERIAL",
+                "row_count": len(part_rows),
+                "rows": part_rows,
+            }
+        ] if part_rows else [],
     }
     if pdf_path and Path(pdf_path).is_file():
         payload["source_pdf"]["sha256"] = _sha256_file(pdf_path)
     if import_build_stamp:
         payload["import_build_stamp"] = dict(import_build_stamp)
-    if not rows:
+    if not part_rows:
         payload["note"] = "no BOM rows detected"
+    else:
+        payload["note"] = "BOM row extraction from drawing text"
     return payload
 
 

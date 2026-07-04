@@ -88,6 +88,7 @@ class ImportConfig:
     # awareness; FreeCAD/Blender/SketchUp can create solids when enabled.
     model3d_mode: str = "off"              # "off" | "auto" | "extrude"
     model3d_depth_mm: float = 3.175        # default 1/8 in plate thickness
+    model3d_semantic: bool = False         # R8-A: AISC profile solids from BOM marks
     max_bezier_segments: int = 128
 
     # ---- Arc reconstruction -------------------------------------

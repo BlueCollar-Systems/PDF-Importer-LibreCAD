@@ -14,7 +14,7 @@
   "import_config.py": "558cf596919bc0850b4e2fe2635fae069fc3a8bf882b0bd8174070d8d8eec4b6",
   "import_report.py": "487089fc00f93a723f94e45758cafc5f4527d7f8e3f4fd2c5d9e1da6c6d131e5",
   "model3d_intent.py": "4834635157fd89002adaa1d2acef5594210b81a91587651e9971b6a1a5eb455f",
-  "parts_bootstrap.py": "03e6f052de7df71235098679ba06a9e950cf8777b677860956f92ddcbe2dd6d3",
+  "parts_bootstrap.py": "d45bf232e194b0838c2032d7bbf8b6dbb01974ae32c05ceefed62f2ef65d908b",
   "preflight_copy.py": "aea5ff87dc95c614fb9a49006928c86d73bc2f2160980769848036b78b2a9458",
   "primitive_extractor.py": "8afe0b113ef3432482d326d46ac8016218bca91ee9067f91df15324496977dcd",
   "primitives.py": "eec8be4e6cce2b9d55b8bc848448c02a068502b79d36139c35262a8d2757eabe",
