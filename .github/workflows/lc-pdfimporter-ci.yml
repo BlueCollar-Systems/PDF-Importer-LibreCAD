@@ -52,6 +52,20 @@ jobs:
       - name: Run unit tests
         run: python -m pytest tests/ -v
 
+      - name: Validate corpus contract schemas and conformance vectors
+        env:
+          BCS_CORPUS_ROOT: ${{ github.workspace }}/pdf-test-corpus
+          CORPUS_READ_TOKEN: ${{ secrets.CORPUS_READ_TOKEN }}
+        run: |
+          if [ -n "$CORPUS_READ_TOKEN" ]; then
+            git clone --depth 1 "https://x-access-token:${CORPUS_READ_TOKEN}@github.com/BlueCollar-Systems/pdf-test-corpus.git" pdf-test-corpus
+          elif ! git clone --depth 1 https://github.com/BlueCollar-Systems/pdf-test-corpus.git pdf-test-corpus; then
+            echo "::warning::corpus not readable (private repo, no CORPUS_READ_TOKEN secret) - corpus contract gate skipped"
+            exit 0
+          fi
+          python pdf-test-corpus/tools/validate_contract_schemas.py
+          python pdf-test-corpus/conformance-vectors/test_conformance_vectors.py
+
       - name: Verify CLI help
         run: python pdf2dxf.py --help
 
