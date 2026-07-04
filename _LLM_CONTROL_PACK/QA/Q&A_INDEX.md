@@ -1,10 +1,24 @@
 # Q&A Index
 
-Updated: 2026-07-04 (Round 6 — importer contract gate; Reviewer S + T)
+Updated: 2026-07-04 (Round 7 - SU v3.7.79 + Steel Logic v1.0.10; Reviewer O/P/Q)
 
 ---
 
-## Active session — Round 6 (2026-07-04)
+## Active session - Round 7 (2026-07-04)
+
+| File | Role |
+|------|------|
+| **QA-2026-07-04_round7-reviewer-o-questions.md** | Round 7 - Reviewer O: SU CLI merge, embedded images, provenance sidecar, import_contract_ready, importer closure, app scope, cross-product CI |
+| **QA-2026-07-04_round7-reviewer-p-answers.md** | Round 7 - Reviewer P answers to O-1..O-7 + prior OPEN cross-table |
+| **QA-2026-07-04_round7-reviewer-q-answers.md** | Round 7 - Reviewer Q cross-answers to O-1..O-7 (corpus T1-12, field test, Report Doctor) |
+| **QA-2026-07-04_round7-reviewer-n-questions.md** | Round 7 - Reviewer N questions (parallel lane) |
+| **QA-2026-07-04_round7-resolution.md** | Round 7 - Agreements R7-1..R7-11 + cross-answer matrix |
+
+> **Round 7 cross-answer matrix complete (O questions; P + Q answers).** R7-10 embedded-image corpus anchor **T1-12 SHIPPED**.
+
+---
+
+## Prior session — Round 6 (2026-07-04)
 
 | File | Role |
 |------|------|
