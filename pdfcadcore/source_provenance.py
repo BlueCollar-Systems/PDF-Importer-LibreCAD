@@ -89,7 +89,7 @@ def ensure_provenance_bucket(opts: Any) -> List[SourceProvenanceObject]:
     bucket = getattr(opts, "_source_provenance_objects", None)
     if bucket is None:
         bucket = []
-        setattr(opts, "_source_provenance_objects", bucket)
+        opts._source_provenance_objects = bucket  # noqa: B010
     return bucket
 
 
@@ -97,7 +97,7 @@ def ensure_import_session_id(opts: Any) -> str:
     session_id = str(getattr(opts, "_import_session_id", "") or "").strip()
     if not session_id:
         session_id = new_import_session_id()
-        setattr(opts, "_import_session_id", session_id)
+        opts._import_session_id = session_id  # noqa: B010
     return session_id
 
 

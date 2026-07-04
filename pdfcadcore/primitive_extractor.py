@@ -531,6 +531,7 @@ def _extract_text(page, page_h, page_num, flip_y, scale) -> List[NormalizedText]
 
 _SLASH_RE = re.compile(r'^[/\u2044\u2215]$')   # slash, fraction slash, division slash
 _DIGITS_RE = re.compile(r'^\d{1,4}$')           # 1-4 digit number
+_FRACTION_TEXT_RE = re.compile(r'^\d{1,3}\s*/\s*\d{1,3}$')
 # Concatenated numerator+denominator: e.g. "716" = 7/16, "1116" = 11/16.
 # Valid denominators for imperial fractions.
 _VALID_DENOMS = (2, 4, 8, 16, 32, 64)
@@ -639,31 +640,51 @@ def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText
                     continue
                 split = _split_concatenated_fraction(ct)
                 if split is not None:
-                    concat_candidates.append((ci, split))
+                    distance = abs(cx - sx) + abs(cy - sy)
+                    concat_candidates.append((ci, split, distance))
 
-            if len(concat_candidates) == 1:
-                ci, (numer_s, denom_s) = concat_candidates[0]
-                cand = items[ci]
-                sizes = [cand.font_size, slash.font_size]
-                if max(sizes) <= 2.0 * min(sizes):
+            if concat_candidates:
+                concat_candidates.sort(key=lambda entry: entry[2])
+                _nearest_idx, nearest_split, nearest_distance = concat_candidates[0]
+                different_close = any(
+                    split != nearest_split and distance <= nearest_distance + 1.0
+                    for _ci, split, distance in concat_candidates[1:]
+                )
+                selected_indices = [
+                    ci
+                    for ci, split, distance in concat_candidates
+                    if split == nearest_split and distance <= nearest_distance + _FRAC_Y_SPREAD_MM
+                ]
+                if not different_close and selected_indices:
+                    numer_s, denom_s = nearest_split
+                    selected = [items[ci] for ci in selected_indices]
+                    sizes = [item.font_size for item in selected] + [slash.font_size]
+                else:
+                    sizes = []
+                if sizes and min(sizes) > 0 and max(sizes) <= 2.0 * min(sizes):
                     merged_text = f"{numer_s}/{denom_s}"
-                    avg_size = sum(sizes) / 2.0
+                    avg_size = sum(sizes) / float(len(sizes))
                     # Apply stacked fraction scale to match original footprint
                     stacked_size = avg_size * _FRAC_STACKED_SCALE
+                    first = selected[0]
                     merged_item = NormalizedText(
                         id=next_id(),
                         text=merged_text,
                         normalized=merged_text.upper().strip(),
                         insertion=slash.insertion,
-                        bbox=_merged_bbox(cand.bbox, slash.bbox, scale_width=_FRAC_STACKED_SCALE),
+                        bbox=_merged_bbox(
+                            *[item.bbox for item in selected],
+                            slash.bbox,
+                            scale_width=_FRAC_STACKED_SCALE,
+                        ),
                         font_size=stacked_size,
                         rotation=slash.rotation,
-                        font_name=slash.font_name or cand.font_name,
-                        color=slash.color or cand.color,
+                        font_name=slash.font_name or first.font_name,
+                        color=slash.color or first.color,
                         page_number=page_num,
                         generic_tags=_classify_generic(merged_text),
                     )
-                    merged_indices.update([ci, si])
+                    merged_indices.update(selected_indices + [si])
                     replacements[si] = merged_item
                     continue
 
@@ -821,7 +842,106 @@ def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText
             # else: skip (numerator or denominator that was merged)
         else:
             result.append(it)
-    return result
+    return _dedupe_fraction_overlays(result)
+
+
+def _bbox_center(box):
+    if not box:
+        return None
+    return ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0)
+
+
+def _bbox_gap(a, b) -> float:
+    if not a or not b:
+        return 0.0
+    x_gap = max(a[0] - b[2], b[0] - a[2], 0.0)
+    y_gap = max(a[1] - b[3], b[1] - a[3], 0.0)
+    return max(x_gap, y_gap)
+
+
+def _fraction_overlay_duplicate(a: NormalizedText, b: NormalizedText) -> bool:
+    """Return True for duplicate fraction overlays emitted by CAD text stacks."""
+    ta = (a.text or "").strip().replace(" ", "")
+    tb = (b.text or "").strip().replace(" ", "")
+    if ta != tb or not _FRACTION_TEXT_RE.match(ta):
+        return False
+    if a.page_number != b.page_number:
+        return False
+    try:
+        if abs(float(a.rotation or 0.0) - float(b.rotation or 0.0)) > 1.0:
+            return False
+    except (TypeError, ValueError):
+        pass
+    ca = _bbox_center(a.bbox)
+    cb = _bbox_center(b.bbox)
+    if ca is None or cb is None:
+        return False
+    return (
+        abs(ca[0] - cb[0]) <= _FRAC_X_OVERLAP_MM
+        and abs(ca[1] - cb[1]) <= (_FRAC_Y_SPREAD_MM + 1.0)
+        and _bbox_gap(a.bbox, b.bbox) <= 1.0
+    )
+
+
+def _slash_fraction_overlay_duplicate(slash: NormalizedText, fraction: NormalizedText) -> bool:
+    """Return True when a leftover slash is already represented by a fraction."""
+    if not _SLASH_RE.match((slash.text or "").strip()):
+        return False
+    text = (fraction.text or "").strip().replace(" ", "")
+    if not _FRACTION_TEXT_RE.match(text):
+        return False
+    if slash.page_number != fraction.page_number:
+        return False
+    try:
+        if abs(float(slash.rotation or 0.0) - float(fraction.rotation or 0.0)) > 1.0:
+            return False
+    except (TypeError, ValueError):
+        pass
+    cs = _bbox_center(slash.bbox)
+    cf = _bbox_center(fraction.bbox)
+    if cs is None or cf is None:
+        return False
+    return (
+        abs(cs[0] - cf[0]) <= _FRAC_X_OVERLAP_MM
+        and abs(cs[1] - cf[1]) <= (_FRAC_Y_SPREAD_MM + 1.0)
+        and _bbox_gap(slash.bbox, fraction.bbox) <= 1.0
+    )
+
+
+def _fraction_dedupe_score(item: NormalizedText) -> tuple:
+    """Prefer the tighter/smaller fraction footprint when overlays collide."""
+    box = item.bbox or (0.0, 0.0, 0.0, 0.0)
+    width = max(float(box[2]) - float(box[0]), 0.0)
+    height = max(float(box[3]) - float(box[1]), 0.0)
+    size = max(float(item.font_size or 0.0), 0.0)
+    return (size, width * height, width)
+
+
+def _dedupe_fraction_overlays(items: List[NormalizedText]) -> List[NormalizedText]:
+    """Collapse same-position duplicate fractions left by PDF overlay glyphs."""
+    kept: List[NormalizedText] = []
+    for item in items:
+        replace_at = None
+        for idx, existing in enumerate(kept):
+            if _fraction_overlay_duplicate(existing, item):
+                replace_at = idx
+                break
+        if replace_at is None:
+            kept.append(item)
+        elif _fraction_dedupe_score(item) < _fraction_dedupe_score(kept[replace_at]):
+            kept[replace_at] = item
+
+    return [
+        item
+        for item in kept
+        if not (
+            _SLASH_RE.match((item.text or "").strip())
+            and any(
+                other is not item and _slash_fraction_overlay_duplicate(item, other)
+                for other in kept
+            )
+        )
+    ]
 
 
 def _merged_bbox(*boxes, scale_width=1.0):
