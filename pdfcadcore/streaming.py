@@ -74,6 +74,7 @@ def iter_pages(
     detect_arcs: bool = True,
     arc_fit_tol_mm: float = 0.05,
     min_arc_angle_deg: float = 5.0,
+    arc_min_pts: int = 5,
 ) -> Iterator[Tuple[int, PageData]]:
     """Stream ``(page_number, PageData)`` tuples one page at a time.
 
@@ -114,6 +115,7 @@ def iter_pages(
                 detect_arcs=detect_arcs,
                 arc_fit_tol_mm=arc_fit_tol_mm,
                 min_arc_angle_deg=min_arc_angle_deg,
+                arc_min_pts=arc_min_pts,
             )
             elapsed = time.perf_counter() - t0
             total_elapsed += elapsed

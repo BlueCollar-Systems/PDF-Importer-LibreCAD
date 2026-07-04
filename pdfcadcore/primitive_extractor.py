@@ -151,13 +151,34 @@ def _quad_to_points(
     return out
 
 
+def _page_rotation(page) -> int:
+    """Return the PDF /Rotate entry (0, 90, 180, 270) normalised to [0,360)."""
+    try:
+        rot = int(getattr(page, "rotation", 0) or 0)
+    except (TypeError, ValueError):
+        rot = 0
+    return rot % 360
+
+
 def _page_mediabox_height(page) -> float:
-    """Media-box height for Y-flip (PDF user space, not crop-relative)."""
+    """Media-box height for Y-flip accounting for PDF /Rotate.
+
+    PDF user-space coordinates are defined in the *unrotated* mediabox, but
+    PyMuPDF applies /Rotate when building ``page.rect``.  For 90°/270° pages
+    the viewer swaps width↔height, so we must use the rotated dimension as the
+    Y-flip baseline to match what ``get_drawings`` / ``get_text`` actually
+    returns (which is already in the *rotated* display space).
+    """
+    rot = _page_rotation(page)
     try:
         mbox = page.mediabox
-        return float(mbox.height)
+        w, h = float(mbox.width), float(mbox.height)
     except AttributeError:
-        return float(page.rect.height)
+        w, h = float(page.rect.width), float(page.rect.height)
+    if rot in (90, 270):
+        # Rotated page: display height == mediabox width
+        return w
+    return h
 
 
 def _collect_page_layers(primitives: List[Primitive]) -> List[str]:
@@ -180,15 +201,28 @@ def extract_page(
     detect_arcs: bool = True,
     arc_fit_tol_mm: float = 0.05,
     min_arc_angle_deg: float = 5.0,
+    arc_min_pts: int = 5,
 ) -> PageData:
     """Extract normalized primitives from a PyMuPDF page."""
+    # Determine the effective display dimensions respecting PDF /Rotate.
+    # PyMuPDF applies /Rotate so page.rect already reflects the display
+    # orientation; use that for page_w/h_mm and for the Y-flip baseline.
+    rot = _page_rotation(page)
     try:
         mbox = page.mediabox
-        page_w_pts = float(mbox.width)
-        page_h_pts = float(mbox.height)
+        mb_w = float(mbox.width)
+        mb_h = float(mbox.height)
     except AttributeError:
-        page_w_pts = float(page.rect.width)
-        page_h_pts = float(page.rect.height)
+        mb_w = float(page.rect.width)
+        mb_h = float(page.rect.height)
+
+    if rot in (90, 270):
+        # Display width/height are swapped relative to the raw mediabox
+        page_w_pts, page_h_pts = mb_h, mb_w
+    else:
+        page_w_pts, page_h_pts = mb_w, mb_h
+
+    # page_h is the Y-flip baseline in PDF user-space points
     page_h = page_h_pts
     page_w_mm = page_w_pts * MM_PER_PT * scale
     page_h_mm = page_h_pts * MM_PER_PT * scale
@@ -326,11 +360,30 @@ def extract_page(
             ))
 
     if detect_arcs:
+        # Performance gate: only pass polylines that have enough points to
+        # form a plausible arc and meet the minimum angle span.  This avoids
+        # running the full Kasa circle-fit on thousands of short lines in
+        # dense drawings, cutting per-page time significantly on large PDFs.
+        #
+        # Partition in a single pass. Every Primitive has a unique ``id`` so
+        # no two are value-equal; splitting by the candidate predicate yields
+        # exactly the same two lists (and order) as the previous
+        # ``p not in arc_candidates`` membership test, but in O(n) instead of
+        # O(n^2) dataclass __eq__ comparisons (the dominant cost on
+        # primitive-dense pages).
+        arc_candidates = []
+        non_candidates = []
+        for p in primitives:
+            if p.type in ("polyline", "closed_loop") and len(p.points or []) >= arc_min_pts:
+                arc_candidates.append(p)
+            else:
+                non_candidates.append(p)
         promote_circular_primitives(
-            primitives,
+            arc_candidates,
             arc_fit_tol_mm=arc_fit_tol_mm,
             min_arc_angle_deg=min_arc_angle_deg,
         )
+        primitives = non_candidates + arc_candidates
 
     text_items = _extract_text(page, page_h_pts, page_num, flip_y, scale)
     layers = _collect_page_layers(primitives)
@@ -787,23 +840,38 @@ def _merged_bbox(*boxes, scale_width=1.0):
     return (x0, y0, x1, y1)
 
 
+# Precompiled classifier patterns.  ``_classify_generic`` runs once per text
+# span (thousands of times on text-heavy sheets); precompiling avoids a regex
+# cache lookup on every call.  Patterns and flags are unchanged, so matches are
+# identical to the previous inline ``re.search`` calls.
+_GEN_DIM_FEET = re.compile(r"\d+['']\s*[-\u2013]?\s*\d")
+_GEN_DIM_FRAC = re.compile(r"\d+\s*/\s*\d+")
+_GEN_DIM_UNIT = re.compile(r'\d+\.?\d*\s*(?:"|mm|cm|in|ft)', re.I)
+_GEN_SCALE_KW = re.compile(r"SCALE[:\s]*\d")
+_GEN_SCALE_RATIO = re.compile(r"\d+\s*:\s*\d+")
+_GEN_TITLEBLOCK = re.compile(r"\b(DRAWN|CHECKED|DATE|SCALE|REV|SHEET|PROJECT|DWG|TITLE)\b")
+_GEN_CALLOUT = re.compile(r"\u00D8|\bDIA\b|\bRAD\b|\bR\d", re.I)
+_GEN_DETAIL = re.compile(r"\b(DETAIL|SECTION|SEC|VIEW|ELEVATION)\s+[A-Z]")
+_GEN_LABEL = re.compile(r"[A-Z]{2,}")
+
+
 def _classify_generic(text: str) -> list:
     tags = []
     t = text.strip()
     tu = t.upper()
-    if re.search(r"\d+['']\s*[-\u2013]?\s*\d", t) or re.search(r"\d+\s*/\s*\d+", t):
+    if _GEN_DIM_FEET.search(t) or _GEN_DIM_FRAC.search(t):
         tags.append("dimension_like")
-    if re.search(r'\d+\.?\d*\s*(?:"|mm|cm|in|ft)', t, re.I):
+    if _GEN_DIM_UNIT.search(t):
         tags.append("dimension_like")
-    if re.search(r"SCALE[:\s]*\d", tu) or re.search(r"\d+\s*:\s*\d+", t):
+    if _GEN_SCALE_KW.search(tu) or _GEN_SCALE_RATIO.search(t):
         tags.append("scale_like")
-    if re.search(r"\b(DRAWN|CHECKED|DATE|SCALE|REV|SHEET|PROJECT|DWG|TITLE)\b", tu):
+    if _GEN_TITLEBLOCK.search(tu):
         tags.append("titleblock_like")
-    if re.search(r"\u00D8|\bDIA\b|\bRAD\b|\bR\d", t, re.I):
+    if _GEN_CALLOUT.search(t):
         tags.append("callout_like")
-    if re.search(r"\b(DETAIL|SECTION|SEC|VIEW|ELEVATION)\s+[A-Z]", tu):
+    if _GEN_DETAIL.search(tu):
         tags.append("detail_reference")
-    if len(t) > 1 and len(t) < 60 and re.search(r"[A-Z]{2,}", tu):
+    if len(t) > 1 and len(t) < 60 and _GEN_LABEL.search(tu):
         tags.append("label_like")
     return tags
 
