@@ -1,4 +1,4 @@
-# Feature Parity Matrix — Code-Level Audit (2026-07-04, R8 update)
+# Feature Parity Matrix — Code-Level Audit (2026-07-04, R9 update)
 
 Evidence: grep + file reads on `C:\1PDF-Importer-*` repos.
 
@@ -16,11 +16,11 @@ Evidence: grep + file reads on `C:\1PDF-Importer-*` repos.
 | `extra.performance_hint` | ✓ | ✓ | ✓ | ✓ | 50k entities / 1024 MB thresholds |
 | `performance.phases.total_ms` | ✓ | ✓ | ✓ | ✓ | |
 | `extra.actual_text_entity_types` | ✓ R6 | ✓ | ✓ | ✓ | shared builder |
-| `extra.model_3d` | ✓ R8 | ✓ report | ✓ honest 2D | ✓ report | SU extrude v3.7.80; LC `supported:false` |
-| `extra.model_3d_intent` | ✗ | partial | partial | partial | plate/member analysis module exists |
+| `extra.model_3d` | ✓ GUI+CLI report | ✓ Part solids | ✓ honest 2D | ✓ mesh solids | LC `supported:false`; SU headless CLI report-only |
+| `extra.model_3d_intent` | ✓ | ✓ | ✓ | ✓ | plate/member evidence scan; advisory eligibility gate |
 | `extra.source_provenance` | ✓ R7 | ✓ R6 | ✓ R6 | ✓ R6 | sidecar + summary |
 | `extra.parts_bootstrap` | ✗ | ✓ stub R8 | ✗ | ✗ | FC empty sidecar v4.0.59 |
-| `extra.import_contract_ready` | ✓ R7 | partial | partial | partial | SU stub |
+| `extra.import_contract_ready` | ✓ R7 | ✓ R9 | ✓ R9 | ✓ R9 | shared readiness aggregate; app/Report Doctor advisory |
 
 ---
 
@@ -28,9 +28,11 @@ Evidence: grep + file reads on `C:\1PDF-Importer-*` repos.
 
 | Capability | SU | FC | LC | BL |
 |------------|:--:|:--:|:--:|:--:|
-| Optional extrude UI | ✓ Advanced | OPEN P2 | N/A | OPEN P3 |
+| Optional extrude UI | ✓ Advanced | ✓ Workbench | N/A | ✓ Operator |
+| 3D solids generated | ✓ SketchUp pushpull | ✓ Part extrude | N/A | ✓ mesh prism |
 | Default off (additive) | ✓ | ✓ | ✓ | ✓ |
 | Honest unsupported report | N/A | N/A | ✓ | N/A |
+| `model_3d_intent` report | ✓ | ✓ | ✓ | ✓ |
 | Scale-by-Reference | ✗ | ✓ | ✗ | ✗ | FC-only; documented OPEN |
 
 ---
@@ -61,10 +63,11 @@ Evidence: grep + file reads on `C:\1PDF-Importer-*` repos.
 ## Largest honesty gaps (not parity bugs)
 
 1. **Visual fidelity** (color, lineweight, dimension spacing) — needs T-01 + golden rasters.
-2. **LibreCAD 3D** — architectural non-goal; report is honest.
-3. **FC/BL solid extrusion UI** — Phase 2/3 after SU proof.
-4. **SU CLI merge** — dual lane until contract parity (R7-9 OPEN).
+2. **Semantic steel solids** — exact AISC profile/member modeling by BOM mark/length remains the next advanced feature; current v1 is closed-region extrusion plus intent evidence.
+3. **LibreCAD 3D** — architectural non-goal; report is honest.
+4. **SU headless geometry** — CLI can analyze/report, but SketchUp host is required to create geometry.
+5. **SU CLI merge** — dual lane until contract parity (R7-9 OPEN).
 
 ---
 
-*Audit snapshot — 2026-07-04 R8*
+*Audit snapshot — 2026-07-04 R9*

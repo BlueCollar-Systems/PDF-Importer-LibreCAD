@@ -1,20 +1,23 @@
 # Q&A Index
 
-Updated: 2026-07-04 (Round 8 — PDF→3D optional extrusion + Q&A audit closure)
+Updated: 2026-07-04 (Round 9 — PDF-to-3D implementation closure + final verification sweep)
 
 ---
 
-## Active session — Round 8 PDF→3D (2026-07-04)
+## Active session — Round 9 PDF-to-3D closure (2026-07-04)
 
 | File | Role |
 |------|------|
+| **`QA-2026-07-04_final-verification-sweep.md`** | Final verification sweep: import_contract_ready gap closure, final test counts, current-vs-historical OPEN status |
+| **`QA-2026-07-04_round8-closure-addendum.md`** | Audit verification — gate table, BL WIP fix, Round 5 restore, STILL OPEN ranked list |
+| **`QA-2026-07-04_round9-pdf-3d-implementation-closure.md`** | Round 9 — implementation closure: SU/FC/BL v1 3D generation, LC honest 2D, app + Report Doctor consumption, verification |
 | **`QA-2026-07-04_round8-pdf-to-3d-questions.md`** | Round 8 — Reviewer W: host scope, 3D semantics, eligibility, UI, report contract, Z-order research |
 | **`QA-2026-07-04_round8-pdf-to-3d-answers.md`** | Round 8 — Reviewer X answers W1–W7 + prior OPEN cross-answers |
 | **`QA-2026-07-04_round8-resolution.md`** | Round 8 — Agreements R8-1…R8-9 + phased implementation plan |
 | **`QA-2026-07-04_round8-sketchup-cli-images-app-pass/QA-2026-07-04_round8-sketchup-cli-images-app-pass.md`** | Round 8 earlier pass — CLI/images/app QA closure |
 | **`QA-2026-07-04_feature-parity-matrix.md`** | Updated parity audit incl. `model_3d`, `parts_bootstrap` stub |
 
-> **Round 8 PDF→3D status:** SU v3.7.80 ships optional extrude + `extra.model_3d`; LC honest 2D note; FC `parts_bootstrap` stub v4.0.59. FC/BL solid extrusion UI deferred Phase 2/3.
+> **Round 9 PDF→3D status:** SU, FC, and BL ship default-off v1 closed-region 3D generation; LC reports honest 2D unsupported status; all hosts emit `extra.model_3d` and `extra.model_3d_intent`; Steel Logic and Report Doctor consume both. Remaining gates: T-01 visual signoff, semantic AISC/member modeling, large-PDF speed work.
 
 ---
 
@@ -26,7 +29,7 @@ Updated: 2026-07-04 (Round 8 — PDF→3D optional extrusion + Q&A audit closure
 | **QA-2026-07-04_round8-sketchup-cli-images-app-pass/feature_matrix.md** | Cross-repo feature matrix regenerated after SketchUp CLI detection fix |
 | **QA-2026-07-04_round8-sketchup-cli-images-app-pass/feature_matrix.json** | Machine-readable feature matrix |
 
-> **Round 8 status:** tracked importer/app matrix coverage is 100%; automated tests are green. Remaining gates are host-app visual signoff and future Report Doctor UI integration.
+> **Round 8/9 status:** tracked importer/app matrix coverage is 100%; automated tests are green. Remaining gates are host-app visual signoff and large-PDF performance tuning.
 
 ---
 
