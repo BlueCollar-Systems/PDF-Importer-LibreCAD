@@ -214,6 +214,7 @@ def convert(
             detect_arcs=config.detect_arcs,
             arc_fit_tol_mm=config.arc_fit_tol_mm,
             min_arc_angle_deg=config.min_arc_angle_deg,
+            arc_min_pts=getattr(config, "arc_sampling_pts", 5),
         )
 
         # 3c. Geometry cleanup (remove micro-segments)
