@@ -15,8 +15,8 @@
 | **R6-4** | CLI stderr templates (R4-03) | `pdfcadcore/cli_error_copy.py`; LC `pdf2dxf.py`, `lcpdf-import`, BL CLI wired. | **SHIPPED** | LC, BL, pdfcadcore |
 | **R6-5** | Blender GUI import perf | Remove in-loop `redraw_timer`; single `view_layer.update()` at end. | **SHIPPED** | BL |
 | **R6-6** | Corpus CI + FC importer gate | Corpus `ci.yml` exists; FC workflow clones corpus + runs `validate_contract_schemas.py`. | **SHIPPED** | corpus, FC |
-| **R6-7** | Text-merge conformance vectors (R4-1) | P1 — not blocking Round 6. Corpus vectors + SU test next slice. | **OPEN** | corpus, SU |
-| **R6-8** | `source_provenance` emitter | Required for reverse-tag bbox highlight (R5-3); no host emits yet. | **OPEN** | FC first |
+| **R6-7** | Text-merge conformance vectors (R4-1) | Corpus `stacked-fraction-merge-vectors.json` (8 vectors incl. whole_number_fraction_spacing), `stacked-fraction-extract-golden.json`, `tier1/tags/bom_quan_upright_oracle.json`; FC `test_text_merge_conformance.py`; FC/LC/BL `test_fraction_extract_golden.py`; SU `stacked_fraction_conformance_test.rb`. | **SHIPPED** | corpus, FC, LC, BL, SU |
+| **R6-8** | `source_provenance` emitter | Minimal `bcs.source_provenance/1.0` sidecar from FC labels path; `pdfcadcore/source_provenance.py`; golden `tier1/tags/sample_source_provenance_golden.json`. LC/BL pdfcadcore synced; SU mirror deferred. | **SHIPPED (FC)** | FC, pdfcadcore |
 | **R6-9** | T-01 human visual sign-off | Screenshots + FC/LC/BL field defects (FC-2 fill, BL-1 lineweight) still need in-host verification. | **OPEN** | human |
 | **R6-10** | App advanced features (KettleTag, bootstrap, `/p/`) | R5-1…R5-7 remain **app/website** backlog; importers not blocking on barcode. | **DEFERRED** | Steel Logic, website |
 
@@ -72,7 +72,8 @@ See `QA-2026-07-04_feature-parity-matrix.md`.
 | LC/BL CLI stderr | **SHIPPED** |
 | Blender GUI perf | **SHIPPED** |
 | Corpus CI | **SHIPPED** (existed); FC wired **SHIPPED** |
-| Text-merge vectors R4-1 | **OPEN** |
+| Text-merge vectors R4-1 | **SHIPPED** |
+| `source_provenance` FC emitter | **SHIPPED (FC)** |
 | T-01 visual defects FC-2, BL-1, BL-2, FC-1 | **OPEN** |
 | LibreCAD 3D text | **N/A** (2D host by design) |
 | KettleTag / barcode | **DEFERRED** (app) |

@@ -17,7 +17,7 @@ Evidence: grep + file reads on `C:\1PDF-Importer-*` repos.
 | `performance.phases.total_ms` | ✓ | ✓ | ✓ | ✓ | |
 | `extra.actual_text_entity_types` | ✓ R6 | ✓ | ✓ | ✓ | shared builder |
 | `extra.ready_check` | partial | partial | partial | partial | diagnostics only |
-| `extra.source_provenance` | ✗ | ✗ | ✗ | ✗ | schema exists, no emitter |
+| `extra.source_provenance` | ✓ R6-8 | ✗ | ✗ | ✗ | FC sidecar + summary; LC/BL/SU next |
 | `extra.parts_bootstrap` | ✗ | ✗ | ✗ | ✗ | R5-2 deferred |
 
 ---

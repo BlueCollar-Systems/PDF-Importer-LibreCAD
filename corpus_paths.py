@@ -2,9 +2,10 @@
 """Resolve PDF test corpus paths without Desktop-specific absolute paths."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 DEFAULT_CORPUS_ROOTS = (
     Path(r"C:\1pdf-test-corpus"),
@@ -59,6 +60,60 @@ def require_corpus_root() -> Path:
             "PDF corpus not found. Set BCS_CORPUS_ROOT or place files under C:\\1pdf-test-corpus."
         )
     return root
+
+
+def load_manifest(root: Optional[Path] = None) -> Dict[str, Any]:
+    corpus_root = root or require_corpus_root()
+    manifest_path = corpus_root / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"manifest.json missing under {corpus_root}")
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+
+def resolve_manifest_entry(entry_id: str, *, root: Optional[Path] = None) -> Optional[Path]:
+    corpus_root = root or resolve_corpus_root()
+    if corpus_root is None:
+        return None
+    manifest = load_manifest(corpus_root)
+    for entry in manifest.get("entries", []):
+        if str(entry.get("id")) != str(entry_id):
+            continue
+        rel = entry.get("local_path")
+        if not rel:
+            return None
+        pdf_path = corpus_root / str(rel)
+        if pdf_path.is_file():
+            return pdf_path.resolve()
+        desktop_fallback = entry.get("desktop_fallback")
+        if desktop_fallback:
+            for base in (corpus_root, corpus_root / "tier1" / "user", Path.home() / "Desktop" / "PDFTest Files"):
+                candidate = base / str(desktop_fallback)
+                if candidate.is_file():
+                    return candidate.resolve()
+        return None
+    return None
+
+
+def require_manifest_pdf(entry_id: str, *, p0: bool = False) -> Path:
+    pdf_path = resolve_manifest_entry(entry_id)
+    if pdf_path is not None:
+        return pdf_path
+    message = (
+        f"Corpus manifest entry {entry_id!r} not available. "
+        "Set BCS_CORPUS_ROOT to a checkout of pdf-test-corpus."
+    )
+    if p0:
+        raise FileNotFoundError(message)
+    raise unittest_skip(message)
+
+
+def unittest_skip(message: str) -> Exception:
+    try:
+        import unittest
+
+        return unittest.SkipTest(message)
+    except ImportError:  # pragma: no cover
+        return FileNotFoundError(message)
 
 
 if __name__ == "__main__":
