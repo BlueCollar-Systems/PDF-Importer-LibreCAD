@@ -116,8 +116,8 @@ def create_semantic_members(
         return report
 
     try:
-        import FreeCAD  # type: ignore
-        import Part  # type: ignore
+        import FreeCAD  # type: ignore  # noqa: F401 - availability probe
+        import Part  # type: ignore  # noqa: F401 - availability probe
     except ImportError:
         report["skipped_reason"] = "FreeCAD Part module unavailable"
         return report
