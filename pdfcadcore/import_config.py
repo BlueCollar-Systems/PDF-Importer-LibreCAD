@@ -84,6 +84,10 @@ class ImportConfig:
     #   "raster" -- force raster rendering
     #   "hybrid" -- mixed vectors + raster regions
     import_mode: str = "auto"
+    # Optional host-side 3D generation. 2D hosts keep this as report-only
+    # awareness; FreeCAD/Blender/SketchUp can create solids when enabled.
+    model3d_mode: str = "off"              # "off" | "auto" | "extrude"
+    model3d_depth_mm: float = 3.175        # default 1/8 in plate thickness
     max_bezier_segments: int = 128
 
     # ---- Arc reconstruction -------------------------------------
