@@ -138,6 +138,7 @@ def main() -> int:
             map_dashes=bool(run.config.map_dashes),
             page_arrangement=args.page_arrangement,
             page_gap_ratio=max(0.0, float(args.page_gap_ratio or 0.0)),
+            provenance_opts=run.config,
         ),
     )
     export_dxf_ms = (time.perf_counter() - t_export) * 1000.0

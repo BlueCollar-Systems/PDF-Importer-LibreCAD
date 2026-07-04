@@ -152,6 +152,35 @@ def write_import_report(
         text_glyph_estimate=text_glyph_estimate,
         extra=extra,
     )
+
+    provenance_objects = list(getattr(run.config, "_source_provenance_objects", []) or [])
+    if provenance_objects:
+        from pdfcadcore.source_provenance import (
+            SCHEMA,
+            ensure_import_session_id,
+            write_source_provenance_sidecar,
+        )
+
+        session_id = ensure_import_session_id(run.config)
+        sidecar_path = str(Path(output_path).with_name("source_provenance.json"))
+        build_stamp = str((report.report_meta or {}).get("build_stamp") or "")
+        write_source_provenance_sidecar(
+            output_path=sidecar_path,
+            import_session_id=session_id,
+            pdf_path=extraction.pdf_path,
+            objects=provenance_objects,
+            host_app="librecad",
+            importer_version=importer_version or _importer_version(),
+            build_stamp=build_stamp,
+            page_count=len(pages) or None,
+        )
+        report.extra["source_provenance_path"] = Path(sidecar_path).name
+        report.extra["source_provenance"] = {
+            "schema": SCHEMA,
+            "import_session_id": session_id,
+            "object_count": len(provenance_objects),
+        }
+
     report.write_json(output_path)
     return output_path
 
@@ -199,6 +228,13 @@ def run_import(pdf_path: str, mode: str = "auto",
 
     extraction = extract_document(pdf_path, opts)
     run = ImportRun(extraction=extraction, config=cfg)
+    if cfg.import_text and str(cfg.text_mode or "labels") != "none":
+        try:
+            from pdfcadcore.source_provenance import ensure_import_session_id
+
+            ensure_import_session_id(cfg)
+        except ImportError:
+            pass
 
     report_path = (overrides or {}).get("import_report_path")
     if report_path:

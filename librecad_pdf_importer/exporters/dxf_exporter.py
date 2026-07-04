@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import ezdxf
 from ezdxf.colors import rgb2int
@@ -38,6 +38,25 @@ class DxfExportOptions:
     # - "overlay": place all pages on same origin
     page_arrangement: str = "spread"
     page_gap_ratio: float = 0.02
+    provenance_opts: Optional[Any] = None
+
+
+def _text_span_dict(text_item) -> Dict[str, Any]:
+    bbox = getattr(text_item, "bbox", None)
+    insertion = getattr(text_item, "insertion", (0.0, 0.0)) or (0.0, 0.0)
+    return {
+        "text": str(getattr(text_item, "text", "") or ""),
+        "bbox": list(bbox) if bbox else None,
+        "origin": [float(insertion[0]), float(insertion[1])],
+        "size": float(getattr(text_item, "font_size", 0.0) or 0.0),
+    }
+
+
+def _provenance_entity_type(text_mode: str) -> str:
+    mode = str(text_mode or "labels").strip().lower()
+    if mode in {"glyphs", "geometry", "outlines"}:
+        return "raw_geometry_edges"
+    return "dxf_text"
 
 
 @dataclass
@@ -189,6 +208,23 @@ def export_to_dxf(extraction: DocumentExtraction, output_path: str,
                     _track_xy(float(x0), float(y0))
                     _track_xy(float(x1), float(y1))
                 entity_count += created
+                if created > 0 and opts.provenance_opts is not None:
+                    try:
+                        from pdfcadcore.source_provenance import record_text_span_provenance
+
+                        record_text_span_provenance(
+                            opts.provenance_opts,
+                            page=int(page.page_data.page_number),
+                            span=_text_span_dict(ti),
+                            text=str(ti.text or ""),
+                            created_entity_type=_provenance_entity_type(opts.text_mode),
+                            import_mode=str(
+                                getattr(opts.provenance_opts, "import_mode", "") or ""
+                            ),
+                            text_mode=str(opts.text_mode or ""),
+                        )
+                    except (ImportError, TypeError, ValueError):
+                        pass
 
         if opts.include_images:
             for placement in page.images:

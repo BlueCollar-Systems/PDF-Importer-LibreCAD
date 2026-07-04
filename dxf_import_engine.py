@@ -85,6 +85,7 @@ def _convert_via_package(
             attach_metadata=True,
             dxf_version=dxf_version,
             map_dashes=bool(config.map_dashes),
+            provenance_opts=run.config,
         ),
     )
     export_dxf_ms = (time.perf_counter() - t_phase) * 1000.0
