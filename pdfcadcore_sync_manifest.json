@@ -12,7 +12,7 @@
   "import_config.py": "e8e7605c73656459e18b8cb89c07aa2d7dd2f20fe25a57c0771de496fcc0d413",
   "import_report.py": "7d171f868f4cf5e97c6a200e3c9af91a74516821f95490fd1d174e1416666ad3",
   "preflight_copy.py": "aea5ff87dc95c614fb9a49006928c86d73bc2f2160980769848036b78b2a9458",
-  "primitive_extractor.py": "5372d9ad5c5ad0e8698b19de614663ac8a296ce550727b888abe9d1aa94adeb4",
+  "primitive_extractor.py": "dedc83eb580946f846ecf76f04c4b3e31ed654c8f6c67ad2538bcba35dbda7f4",
   "primitives.py": "eec8be4e6cce2b9d55b8bc848448c02a068502b79d36139c35262a8d2757eabe",
   "qa_report.py": "d8697c9b632f5f1bc778d6a8121493fc8cd79ab0147853c91b8747aab095e63f",
   "recognition.py": "f0bb9961d71056d3dc60d8318405a3068b73a421f1996c5148be5579bc7fde27",

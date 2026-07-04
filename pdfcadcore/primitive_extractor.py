@@ -30,7 +30,16 @@ def _norm_color(col) -> Optional[Tuple[float, float, float]]:
     if col is None:
         return None
     try:
-        if isinstance(col, (int, float)):
+        if isinstance(col, int) and not isinstance(col, bool):
+            if col < 0:
+                return None
+            packed = int(col) & 0xFFFFFF
+            return (
+                ((packed >> 16) & 0xFF) / 255.0,
+                ((packed >> 8) & 0xFF) / 255.0,
+                (packed & 0xFF) / 255.0,
+            )
+        if isinstance(col, float):
             g = max(0.0, min(1.0, float(col)))
             return (g, g, g)
         vals = [max(0.0, min(1.0, float(c))) for c in col]
