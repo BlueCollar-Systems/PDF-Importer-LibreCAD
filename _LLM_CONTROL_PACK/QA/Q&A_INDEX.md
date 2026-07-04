@@ -1,6 +1,16 @@
 # Q&A Index
 
-Updated: 2026-07-04 (Round 9 — PDF-to-3D implementation closure + final verification sweep)
+Updated: 2026-07-04 (remaining-tasks completion pass)
+
+---
+
+## Active session - Round 11 naming cleanup (2026-07-04)
+
+| File | Role |
+|------|------|
+| **QA-2026-07-04_round11-trademark-rename.md** | Round 11 - QA agreement and repo-wide scrub: neutral PartTag / part_tag identifiers, user-facing "part tag" wording, and zero current-file hits for the retired vendor-brand term |
+
+> **Round 11 status:** current code, UI copy, QA mirrors, desktop Q&A, and corpus docs are scrubbed; use brand-neutral part tag wording going forward.
 
 ---
 
@@ -15,9 +25,10 @@ Updated: 2026-07-04 (Round 9 — PDF-to-3D implementation closure + final verifi
 | **`QA-2026-07-04_round8-pdf-to-3d-answers.md`** | Round 8 — Reviewer X answers W1–W7 + prior OPEN cross-answers |
 | **`QA-2026-07-04_round8-resolution.md`** | Round 8 — Agreements R8-1…R8-9 + phased implementation plan |
 | **`QA-2026-07-04_round8-sketchup-cli-images-app-pass/QA-2026-07-04_round8-sketchup-cli-images-app-pass.md`** | Round 8 earlier pass — CLI/images/app QA closure |
-| **`QA-2026-07-04_feature-parity-matrix.md`** | Updated parity audit incl. `model_3d`, `parts_bootstrap` stub |
+| **`QA-2026-07-04_remaining-tasks-completion-pass.md`** | Remaining tasks completion pass — SU CLI merge, all-host parts_bootstrap emitters, Report Doctor, part tag corpus/baseline verification |
+| **`QA-2026-07-04_feature-parity-matrix.md`** | Updated parity audit incl. `model_3d`, all-host `parts_bootstrap` |
 
-> **Round 9 PDF→3D status:** SU, FC, and BL ship default-off v1 closed-region 3D generation; LC reports honest 2D unsupported status; all hosts emit `extra.model_3d` and `extra.model_3d_intent`; Steel Logic and Report Doctor consume both. Remaining gates: T-01 visual signoff, semantic AISC/member modeling, large-PDF speed work.
+> **Completion-pass status:** SU/FC/LC/BL emit `extra.parts_bootstrap`; Report Doctor and Steel Logic consume the sidecar path/rows; part tag resolves piece marks and `/p/<part_id>` URLs. Remaining gates: T-01 visual signoff, semantic AISC/member modeling v2, scale-reference parity, and visual-regression automation.
 
 ---
 
