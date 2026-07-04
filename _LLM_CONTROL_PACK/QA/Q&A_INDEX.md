@@ -75,11 +75,11 @@ Read the contributor handoff first. Follow linked paths into repo mirrors only w
 
 | File | Role |
 |------|------|
-| **`QA-2026-07-03_round5-reviewer-n-questions.md`** | Round 5 — Reviewer N: KettleTag/barcode lifecycle, `bcs.part/1.0` digital thread, gloves-on capture channels, omni calculator domain packs, **outside-the-box** URL-encoded QR tags (Q-N10), opt-in import telemetry |
-| **`QA-2026-07-03_round5-reviewer-p-questions.md`** | Round 5 — Reviewer P: KettleTag symbology floor, importer `parts_bootstrap` automation, omni-box shop-floor gaps, **outside-the-box** reverse scan → PDF callout (Q-P4), import build stamp on part records |
+| **`QA-2026-07-03_round5-reviewer-n-questions.md`** | Round 5 — Reviewer N: part-tag/barcode lifecycle, `bcs.part/1.0` digital thread, gloves-on capture channels, omni calculator domain packs, **outside-the-box** URL-encoded QR tags (Q-N10), opt-in import telemetry |
+| **`QA-2026-07-03_round5-reviewer-p-questions.md`** | Round 5 — Reviewer P: part tag symbology floor, importer `parts_bootstrap` automation, omni-box shop-floor gaps, **outside-the-box** reverse scan → PDF callout (Q-P4), import build stamp on part records |
 | **`QA-2026-07-03_round5-reviewer-p-answers.md`** | Round 5 — Reviewer P cross-answers to Q-N6, Q-N7, Q-N8, Q-J7, Reviewer L non-PDF gate, semantic text verification |
 | **`QA-2026-07-03_round5-reviewer-q-questions.md`** | Round 5 — Reviewer Q: `mobile_scanner`/ML Kit contract, `steellogic://` deep link matrix, corpus part-id fixtures, Report Doctor tag lookup, **outside-the-box** importer tag-sheet PDF (Q-Q5) |
-| **`QA-2026-07-03_round5-reviewer-q-answers.md`** | Round 5 — Reviewer Q cross-answers to Q-P1…Q-P5 (KettleTag dual-mode, parts_bootstrap sidecar, omni backlog, reverse-tag pipeline, import build stamp) |
+| **`QA-2026-07-03_round5-reviewer-q-answers.md`** | Round 5 — Reviewer Q cross-answers to Q-P1…Q-P5 (part tag dual-mode, parts_bootstrap sidecar, omni backlog, reverse-tag pipeline, import build stamp) |
 | **`QA-2026-07-03_round5-reviewer-r-answers.md`** | Round 5 — Reviewer R cross-answers to Q-N9…Q-N11 (omni domain packs, public URL tags, import telemetry) and Q-Q1…Q-Q5 (mobile_scanner contract, deep links, corpus fixtures, Report Doctor tags, tag-sheet PDF) |
 | **`QA-2026-07-03_round5-resolution.md`** | Round 5 — Agreements R5-1…R5-7 + compliance checklist |
 | **`QA-2026-07-03_app-omni-coordination.md`** | App omni precision contract — Rational-storage P0s resolved 2026-07-03; remaining context for Round 5 app questions |

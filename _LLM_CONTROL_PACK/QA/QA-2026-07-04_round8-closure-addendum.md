@@ -71,7 +71,7 @@
 3. **SU CLI merge (R7-9 / R8-9)** — `su_pdf_cli.rb` vs `su_batch_cli.rb` + in-ext `cli.rb`; contract test bar before deleting legacy lane.
 4. **parts_bootstrap row extraction (R5-2)** — stub sidecar shipped; BOM `tables[]` → rows still OPEN.
 5. **Large-PDF performance** — batching/merge strategies; no silent geometry drops.
-6. **KettleTag full loop (R5-1…R5-7)** — app multi-sprint; deferred per owner directive.
+6. **part-tag full loop (R5-1…R5-7)** — app multi-sprint; deferred per owner directive.
 7. **Scale-by-Reference parity** — FC-only; SU/LC/BL OPEN P2.
 8. **PE binary signing (R3-8)** — OPEN P1.
 

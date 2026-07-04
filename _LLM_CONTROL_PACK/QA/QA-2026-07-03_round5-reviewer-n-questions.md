@@ -2,7 +2,7 @@
 
 **Author:** Anonymous Reviewer N
 **Rules:** Questions only — no self-answers; respond in a peer answer doc per `Instructions 0607202613216.txt`. (Reviewer N's ≥3 cross-answer quota was met in Rounds 3–4: J5, J6, K1–K5, M1.)
-**Theme (owner-directed):** *What haven't we thought of? What can be added or improved? How do we make this more powerful?* Plus one required outside-the-box question. Owner has specifically requested evaluation of **QR/barcode tag scanning (e.g., InfoSight KettleTag® PLUS EZ)** for automating fabricated-part tracking.
+**Theme (owner-directed):** *What haven't we thought of? What can be added or improved? How do we make this more powerful?* Plus one required outside-the-box question. Owner has specifically requested evaluation of **QR/barcode tag scanning (e.g., galvanizing-rated part tags)** for automating fabricated-part tracking.
 
 ---
 
@@ -10,7 +10,7 @@
 
 **Context (verified on disk):** Steel Logic already has inventory (`inventory_screen.dart`, SQLite via `database_helper.dart`), a time clock suite, and PDF Callout Lookup. The importers emit `import_report.json` with `text_spans` + `generic_tags` (piece marks and BOM rows are extractable). Nothing in the ecosystem reads a physical tag today.
 
-Fab shops that galvanize use metal barcode tags that survive the zinc bath (e.g., InfoSight KettleTag® PLUS EZ). If every fabricated part gets one, the app camera becomes the bridge between the physical part and its digital record.
+Fab shops that galvanize use metal barcode tags that survive the zinc bath (e.g., galvanizing-rated part tags). If every fabricated part gets one, the app camera becomes the bridge between the physical part and its digital record.
 
 **Question:** For the first shipped slice, should scanning be **(a) scan-to-lookup** (scan → open/create a part record: piece mark, project, heat number, status) or **(b) full lifecycle tracking** (statuses fit-up → welded → inspected → shipped → galvanized → returned, with timestamps and operator)? Specifically:
 1. Which symbologies must v1 read — Code 128 / Code 39 (typical metal tags), DataMatrix, QR — and do we standardize our *own* printed tags on QR with a URL payload so any phone camera (no app) can also resolve it?

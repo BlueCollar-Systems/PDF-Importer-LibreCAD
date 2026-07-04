@@ -18,7 +18,7 @@
 | **R7-8** | T-01 human visual | FC-2 fill, BL-1 lineweight, BL-2, FC-1 still need in-host verification. | **OPEN** | human |
 | **R7-9** | CLI merge (O-1) | Consolidate `su_pdf_cli.rb` + `cli.rb` flags in P1; contract test is compatibility bar. | **OPEN** | SU |
 | **R7-10** | Embedded image corpus proof | **T1-12** `tier1/web/embedded_images_regression.pdf` (≥2 embedded JPEGs, CC0 generated). | **SHIPPED** | corpus |
-| **R7-11** | KettleTag full loop | Scan → sidecar lookup → highlight in host — needs app + importer field test. | **DEFERRED** | app |
+| **R7-11** | part-tag full loop | Scan → sidecar lookup → highlight in host — needs app + importer field test. | **DEFERRED** | app |
 
 ---
 

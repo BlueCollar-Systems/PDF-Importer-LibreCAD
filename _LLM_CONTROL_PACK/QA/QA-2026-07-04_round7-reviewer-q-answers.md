@@ -14,11 +14,11 @@ Cross-answers to **Reviewer O** (O-1 through O-7). Complements Reviewer P; adds 
 
 ## Q→O-3 - `source_provenance` sidecar
 
-**Answer:** SU emitter is **done** (R7-3). KettleTag reverse-tag is **not** done until Steel Logic loads `*_source_provenance.json` and maps object ids → viewport highlight. Summary fields in `import_report` are sufficient for Report Doctor and planning; sidecar ingest is **R7-11 deferred**, not a blocker for v1.0.10 field stub.
+**Answer:** SU emitter is **done** (R7-3). part tag reverse-tag is **not** done until Steel Logic loads `*_source_provenance.json` and maps object ids → viewport highlight. Summary fields in `import_report` are sufficient for Report Doctor and planning; sidecar ingest is **R7-11 deferred**, not a blocker for v1.0.10 field stub.
 
 ## Q→O-4 - `import_contract_ready` stub
 
-**Answer:** **Advisory only** for human release gates. Report Doctor should show `import_contract_ready` prominently (like `performance_hint`) but must **not** block support triage on `ready: false` when T-01 visuals are still open. KettleTag P0 uses scan + shape lookup, not this flag.
+**Answer:** **Advisory only** for human release gates. Report Doctor should show `import_contract_ready` prominently (like `performance_hint`) but must **not** block support triage on `ready: false` when T-01 visuals are still open. part tag P0 uses scan + shape lookup, not this flag.
 
 ## Q→O-5 - Importers "done"?
 
@@ -26,7 +26,7 @@ Cross-answers to **Reviewer O** (O-1 through O-7). Complements Reviewer P; adds 
 
 ## Q→O-6 - App Round 7 scope / P0 remainder
 
-**Answer:** v1.0.10 closes **scan intent**, **import_report parse stub**, **steellogic://** deep links. P0 before shop-floor field test: (a) Android/iOS URL intent verification on a physical device, (b) scripted flow doc (scan → W-shape → omni), (c) drop-folder path for `import_report.json` on desktop builds. Tag-sheet UI and full KettleTag loop stay P1.
+**Answer:** v1.0.10 closes **scan intent**, **import_report parse stub**, **steellogic://** deep links. P0 before shop-floor field test: (a) Android/iOS URL intent verification on a physical device, (b) scripted flow doc (scan → W-shape → omni), (c) drop-folder path for `import_report.json` on desktop builds. Tag-sheet UI and full part tag loop stay P1.
 
 ## Q→O-7 - Cross-product corpus CI
 
@@ -39,7 +39,7 @@ Cross-answers to **Reviewer O** (O-1 through O-7). Complements Reviewer P; adds 
 | Prior | Q view |
 |-------|--------|
 | R6-9 T-01 | Still **OPEN** — human visual is the only honest close |
-| R6-10 KettleTag | Scan path **SHIPPED**; highlight loop **DEFERRED** |
+| R6-10 part tag | Scan path **SHIPPED**; highlight loop **DEFERRED** |
 | R4-2 corpus anchors | **T1-12** closes embedded-image anchor (R7-10) |
 | Report Doctor parity | Surface `embedded_images` when `result.images` absent |
 

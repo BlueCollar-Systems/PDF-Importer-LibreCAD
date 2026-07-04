@@ -84,7 +84,7 @@ Verified: `pubspec.yaml` has **no camera dependency**; `omni_intent.dart` enum l
 | Contract item | Decision |
 |---------------|----------|
 | **Dependency** | `mobile_scanner: ^6.0.0` (ML Kit bundled). Min **Android API 21**, **iOS 12** — matches shop-floor oldest-hardware mission; document in `docs/shop_tag_standard.md`. |
-| **Symbology filter** | `BarcodeFormat.code128` + `BarcodeFormat.qrCode` **only** at `MobileScannerController` — ignore DataMatrix/EAN/UPC to cut false positives on shop clutter (KettleTag + BCS QR cover v1 per R5-1). |
+| **Symbology filter** | `BarcodeFormat.code128` + `BarcodeFormat.qrCode` **only** at `MobileScannerController` — ignore DataMatrix/EAN/UPC to cut false positives on shop clutter (part tag + BCS QR cover v1 per R5-1). |
 | **Omni handoff** | Camera icon → full-screen scanner widget → on decode inject **`OmniEngine.process('scan $payload')`** with **`OmniIntentKind.scan`** matched **before** NL classifier (prefix bypass, same as `timeLog` cues). HTTPS QR payload passed verbatim; engine routes to part lookup or URL handoff. |
 | **Offline model** | **Non-blocking:** scanner screen opens immediately; first-launch ML Kit model download shows **banner** `"Preparing scanner…"` with **manual entry field active on same screen** (`tag <id>`). Never block omni-box on model fetch. |
 | **Test strategy** | **Golden widget test** with mocked `MobileScannerController` returning fixed Code 128 + QR strings → assert `OmniIntentKind.scan` + part-route navigation args. **Plus** one manual device checklist in T-01 human script. ProGuard/R8: add ML Kit keep rules to `android/app/proguard-rules.pro` in spike PR. |
@@ -133,7 +133,7 @@ Verified: corpus has `source_provenance.schema.json` but **no `part.schema.json`
 | File | Purpose |
 |------|---------|
 | `tier1/tags/sample_parts_bootstrap.json` | Valid `bcs.parts_bootstrap/1.0`, 3 rows from `stacked_fraction_spacing.pdf` BOM |
-| `tier1/tags/code128_kettletag_sample.txt` | Expected decode string `884422` (text, not image — CI cannot scan metal) |
+| `tier1/tags/code128_part tag | Expected decode string `884422` (text, not image — CI cannot scan metal) |
 | `tier1/tags/qr_bcs_part_url.txt` | `https://bluecollar-systems.com/p/00000000-0000-4000-8000-000000000001` |
 | `tier1/tags/part_record_golden.json` | Full `bcs.part/1.0` with tag assigned + `import_build_stamp` |
 

@@ -8,19 +8,19 @@
 
 ---
 
-## Q-P1 — KettleTag® PLUS EZ and shop tag symbology: what must v1 actually read?
+## Q-P1 — galvanizing-rated part tags and shop tag symbology: what must v1 actually read?
 
 **Reviewer:** P (shop-floor / physical tracking)  
 **Host scope:** Steel Logic app (camera/scanner), optional website tag-resolve page, importers (BOM export for tag assignment)  
-**Why it matters:** InfoSight KettleTag® PLUS EZ and similar metal tags survive galvanizing; shops already buy them. Round 5 Q-N6 asks lifecycle breadth; this question locks **hardware compatibility and payload content** before we pick a scanner library or data model.
+**Why it matters:** galvanizing-rated part tags and similar metal tags survive galvanizing; shops already buy them. Round 5 Q-N6 asks lifecycle breadth; this question locks **hardware compatibility and payload content** before we pick a scanner library or data model.
 
 **Question:** For a first shipped scanner slice tied to fabricated-part tracking, what is the agreed **symbology floor** and **tag payload standard**?
 
 | Option | Detail |
 |--------|--------|
 | **(a) Read-only legacy** | Support Code 128 / Code 39 only — match tags the shop already laser-etches (piece mark + job number). No BCS-printed tags in v1. |
-| **(b) BCS QR standard** | Shops may use KettleTag or our printable sheets; v1 reads QR + Code 128, encodes `bcs://part/<opaque-id>` or URL per Q-N10. |
-| **(c) Dual-mode assign** | Importer exports piece marks from BOM → app assigns opaque IDs → user prints BCS QR sheets *or* hand-associates existing KettleTag barcodes via one omni-box phrase: `link tag 884422 to B-14`. |
+| **(b) BCS QR standard** | Shops may use part tag or our printable sheets; v1 reads QR + Code 128, encodes `bcs://part/<opaque-id>` or URL per Q-N10. |
+| **(c) Dual-mode assign** | Importer exports piece marks from BOM → app assigns opaque IDs → user prints BCS QR sheets *or* hand-associates existing part tag barcodes via one omni-box phrase: `link tag 884422 to B-14`. |
 
 Sub-questions:
 1. Minimum module size / contrast guidance for post-galv reads (document in app help, not code)?
@@ -71,7 +71,7 @@ Sub-questions:
 
 **Reviewer:** P (outside-the-box / fabrication physics)  
 **Host scope:** Steel Logic app, `import_report` + future `source_provenance`, PDF Callout Lookup, website (optional deep link)  
-**Why it matters:** Every workflow so far is **drawing → CAD → app → tag**. On the shop floor the part exists *before* anyone opens the PDF. KettleTag on a staged beam should run the chain **backward**: physical scan → digital record → drawing proof.
+**Why it matters:** Every workflow so far is **drawing → CAD → app → tag**. On the shop floor the part exists *before* anyone opens the PDF. part tag on a staged beam should run the chain **backward**: physical scan → digital record → drawing proof.
 
 **Question:** Should scanning a assigned tag trigger a **reverse lookup pipeline**?
 

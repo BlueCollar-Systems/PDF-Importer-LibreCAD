@@ -71,7 +71,7 @@ Still **OPEN P1**. R8 does not block on merge; dual lane documented. Contract te
 
 Still **OPEN** (FC-only). Document in parity matrix; not a 3D prerequisite.
 
-### X→R7-11 (KettleTag full loop)
+### X→R7-11 (part-tag full loop)
 
 **DEFERRED** — scan path shipped; sidecar highlight needs app field test.
 

@@ -18,7 +18,7 @@
 | **R6-7** | Text-merge conformance vectors (R4-1) | Corpus `stacked-fraction-merge-vectors.json` (8 vectors incl. whole_number_fraction_spacing), `stacked-fraction-extract-golden.json`, `tier1/tags/bom_quan_upright_oracle.json`; FC `test_text_merge_conformance.py`; FC/LC/BL `test_fraction_extract_golden.py`; SU `stacked_fraction_conformance_test.rb`. | **SHIPPED** | corpus, FC, LC, BL, SU |
 | **R6-8** | `source_provenance` emitter | Minimal `bcs.source_provenance/1.0` sidecar + `extra.source_provenance` summary. FC/LC/BL emit sidecar from text spans; SU Ruby mirrors summary only (no sidecar). | **SHIPPED** | FC, LC, BL, SU (partial), pdfcadcore |
 | **R6-9** | T-01 human visual sign-off | Screenshots + FC/LC/BL field defects (FC-2 fill, BL-1 lineweight) still need in-host verification. | **OPEN** | human |
-| **R6-10** | App advanced features (KettleTag, bootstrap, `/p/`) | R5-1…R5-7 remain **app/website** backlog; importers not blocking on barcode. | **DEFERRED** | Steel Logic, website |
+| **R6-10** | App advanced features (part tag bootstrap, `/p/`) | R5-1…R5-7 remain **app/website** backlog; importers not blocking on barcode. | **DEFERRED** | Steel Logic, website |
 
 ---
 
@@ -44,7 +44,7 @@
 1. `import_contract_ready` aggregate (Report Doctor client-side first)
 2. `source_provenance` sidecar
 3. `parts_bootstrap` sidecar (R5-2)
-4. KettleTag / barcode (R5-1) — **app only**
+4. part tag / barcode (R5-1) — **app only**
 
 ---
 
@@ -76,7 +76,7 @@ See `QA-2026-07-04_feature-parity-matrix.md`.
 | `source_provenance` FC emitter | **SHIPPED** FC/LC/BL sidecar + summary; **SU partial** (summary only) |
 | T-01 visual defects FC-2, BL-1, BL-2, FC-1 | **OPEN** |
 | LibreCAD 3D text | **N/A** (2D host by design) |
-| KettleTag / barcode | **DEFERRED** (app) |
+| part tag / barcode | **DEFERRED** (app) |
 
 ---
 

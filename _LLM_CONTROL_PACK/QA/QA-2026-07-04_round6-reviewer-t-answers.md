@@ -30,7 +30,7 @@
 
 **P0 (importer contract):** `actual_text_entity_types` all hosts, `report_meta.build_stamp`, CLI stderr templates LC/BL, Blender GUI perf fix, scale banner parity (already shipped), corpus CI wired to FC.
 
-**P2 (app/advanced):** KettleTag/barcode (R5-1), `parts_bootstrap` (R5-2), `source_provenance` emitter (R5-3), public `/p/` URLs (R5-6).
+**P2 (app/advanced):** part-tag/barcode (R5-1), `parts_bootstrap` (R5-2), `source_provenance` emitter (R5-3), public `/p/` URLs (R5-6).
 
 **Honest non-goal:** LibreCAD 3D text; cross-host visual pixel parity.
 
@@ -51,7 +51,7 @@
 
 ## A-T→S7 — `import_contract_ready` aggregate
 
-**Answer: Yes as P2 stub; not Round 6 blocker.** Compute client-side in Report Doctor first: `ready = actual_text_entity_types present && build_stamp present && no open_failure`. Avoid new schema until three hosts emit stamps. KettleTag work starts when **P0 importer rows** in S5 are green — not when this boolean exists.
+**Answer: Yes as P2 stub; not Round 6 blocker.** Compute client-side in Report Doctor first: `ready = actual_text_entity_types present && build_stamp present && no open_failure`. Avoid new schema until three hosts emit stamps. part tag work starts when **P0 importer rows** in S5 are green — not when this boolean exists.
 
 ---
 

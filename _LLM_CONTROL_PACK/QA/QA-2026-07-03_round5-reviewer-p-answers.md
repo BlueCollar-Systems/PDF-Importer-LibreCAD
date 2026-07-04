@@ -19,7 +19,7 @@ Verified on disk: `C:\1 Structural_Steel_Shapes_App\lib\omni_box_screen.dart` ro
 | Topic | Decision |
 |-------|----------|
 | **v1 scope** | **(a) scan-to-lookup** — scan opens/creates part record (piece mark, project, optional heat #). Status history (fit-up → galv) deferred until Q-P4 reverse lookup proves the data model. |
-| **Symbologies** | **Code 128 + QR** in v1. DataMatrix phase 2. Standardize **BCS-printed** QR on `https://bluecollar-systems.com/p/<id>` (aligns Q-N10) while **reading** legacy KettleTag Code 128 without re-printing. |
+| **Symbologies** | **Code 128 + QR** in v1. DataMatrix phase 2. Standardize **BCS-printed** QR on `https://bluecollar-systems.com/p/<id>` (aligns Q-N10) while **reading** legacy part tag Code 128 without re-printing. |
 | **Data model** | **`parts` table** (fabricated assemblies) separate from **`inventory`** (stock/remnants). Foreign-key optional when a part consumes stock. Tag ID = opaque UUID, not piece mark (marks repeat across jobs). |
 | **Offline** | **Required** — mirror `inventory_sync.dart` / `time_clock_sync.dart` pattern: scan queue locally, sync when online. |
 | **Scanner lib** | **`mobile_scanner`** (ML Kit) for Flutter — bundled, works offline after first model cache; fallback = omni-box manual entry `tag 884422` on same screen. |
@@ -155,4 +155,4 @@ Zero self-answers.
 
 ## Implementation note (2026-07-03)
 
-Omni-Box engine, inventory NL, and time NL now exist in Steel Logic (`lib/core/omni/`, Tools→Omni-Box). Barcode/KettleTag scan (Q-P1) should route through the same intent router as the next slice.
+Omni-Box engine, inventory NL, and time NL now exist in Steel Logic (`lib/core/omni/`, Tools→Omni-Box). Barcode/part tag scan (Q-P1) should route through the same intent router as the next slice.

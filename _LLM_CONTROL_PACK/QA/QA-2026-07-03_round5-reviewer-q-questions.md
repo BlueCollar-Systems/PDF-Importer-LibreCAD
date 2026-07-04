@@ -61,7 +61,7 @@ Sub-questions:
 | Fixture | Purpose |
 |---------|---------|
 | `sample_parts_bootstrap.json` | Valid `bcs.parts_bootstrap/1.0` with 3 piece marks from `stacked_fraction_spacing.pdf` BOM |
-| `code128_kettletag_sample.txt` | Expected decode string (not image — CI cannot scan metal) |
+| `code128_part tag | Expected decode string (not image — CI cannot scan metal) |
 | `qr_bcs_part_url.txt` | `https://bluecollar-systems.com/p/00000000-0000-4000-8000-000000000001` |
 | `part_record_golden.json` | Full `bcs.part/1.0` with tag assigned + `import_build_stamp` |
 

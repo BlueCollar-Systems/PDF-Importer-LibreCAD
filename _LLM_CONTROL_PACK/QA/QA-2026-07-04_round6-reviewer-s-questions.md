@@ -52,7 +52,7 @@ Corpus repo **now has** `.github/workflows/ci.yml` running `validate_contract_sc
 | 3D text | ✓ | ✓ | **no** (2D host) | ✓ |
 | `source_provenance` emitter | ✗ | ✗ | ✗ | ✗ |
 
-**Question:** Which row is still P0 for “importers nailed down” vs honestly P2 (app-side barcode/KettleTag per R5-1)?
+**Question:** Which row is still P0 for “importers nailed down” vs honestly P2 (app-side barcode/part tag per R5-1)?
 
 ---
 
@@ -70,9 +70,9 @@ Proposal for peer review:
 
 ## Q-S7 — Outside-the-box: should importers emit a “ready for advanced features” boolean?
 
-R5 defers barcode/KettleTag to Steel Logic app. Importers already emit `ready_check`-shaped diagnostics in Python hosts.
+R5 defers barcode/part tag to Steel Logic app. Importers already emit `ready_check`-shaped diagnostics in Python hosts.
 
-**Question:** Should Round 6 add a **`import_contract_ready`** aggregate in `import_report.extra` — true only when `actual_text_entity_types`, `report_meta.build_stamp`, `scale_crosscheck`, and schema validation all pass — so the website Report Doctor and T-01 script can gate “start KettleTag work” without reading six separate fields?
+**Question:** Should Round 6 add a **`import_contract_ready`** aggregate in `import_report.extra` — true only when `actual_text_entity_types`, `report_meta.build_stamp`, `scale_crosscheck`, and schema validation all pass — so the website Report Doctor and T-01 script can gate “start part tag work” without reading six separate fields?
 
 ---
 
