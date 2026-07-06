@@ -1,6 +1,7 @@
 """Mode-driven import orchestration for LibreCAD PDF importer (BCS-ARCH-001)."""
 from __future__ import annotations
 
+import hashlib
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -193,7 +194,45 @@ def write_import_report(
             "object_count": len(provenance_objects),
         }
 
+    from pdfcadcore.parts_bootstrap import extract_bootstrap_rows, write_parts_bootstrap_sidecar
+
+    bootstrap_path = str(Path(output_path).with_name("parts_bootstrap.json"))
+    bootstrap_rows = extract_bootstrap_rows(text_items)
+    build_stamp = str((report.report_meta or {}).get("build_stamp") or "")
+    import_build_stamp = {
+        "host": "librecad",
+        "semver": importer_version or _importer_version(),
+    }
+    if build_stamp:
+        import_build_stamp["build_stamp"] = build_stamp
+    write_parts_bootstrap_sidecar(
+        bootstrap_path,
+        extraction.pdf_path,
+        page_count=len(pages) or 0,
+        rows=bootstrap_rows,
+        import_build_stamp=import_build_stamp,
+    )
+    report.extra["parts_bootstrap"] = {
+        "schema": "bcs.parts_bootstrap/1.0",
+        "sidecar_path": Path(bootstrap_path).name,
+        "row_count": len(bootstrap_rows),
+        "note": "BOM row extraction from drawing text" if bootstrap_rows else "no BOM rows detected",
+    }
+
     report.write_json(output_path)
+    try:
+        import_build_stamp["report_sha256"] = hashlib.sha256(
+            Path(output_path).read_bytes()
+        ).hexdigest()
+        write_parts_bootstrap_sidecar(
+            bootstrap_path,
+            extraction.pdf_path,
+            page_count=len(pages) or 0,
+            rows=bootstrap_rows,
+            import_build_stamp=import_build_stamp,
+        )
+    except OSError:
+        pass
     return output_path
 
 
