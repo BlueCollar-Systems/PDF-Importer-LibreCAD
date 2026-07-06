@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve PDF test corpus paths without Desktop-specific absolute paths."""
+"""Resolve PDF test corpus paths via BCS_CORPUS_ROOT."""
 from __future__ import annotations
 
 import json
@@ -7,11 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-DEFAULT_CORPUS_ROOTS = (
-    Path(r"C:\1pdf-test-corpus"),
-    Path.home() / "Desktop" / "PDFTest Files",
-    Path(r"C:\Users\Rowdy Payton\Desktop\PDFTest Files"),
-)
+DEFAULT_CORPUS_ROOTS = (Path(r"C:\1pdf-test-corpus"),)
 
 
 def resolve_corpus_root(candidates: Optional[Iterable[Path]] = None) -> Optional[Path]:
@@ -37,7 +33,7 @@ def resolve_corpus_pdf(relative_name: str, *, subdir: str = "") -> Optional[Path
     search_dirs = [root]
     if subdir:
         search_dirs.insert(0, root / subdir)
-    for folder_name in ("PDFTest Files", "web-acquired", "pdfs", "New folder (2)"):
+    for folder_name in ("web-acquired", "pdfs"):
         candidate = root / folder_name
         if candidate.is_dir():
             search_dirs.append(candidate)
@@ -84,12 +80,6 @@ def resolve_manifest_entry(entry_id: str, *, root: Optional[Path] = None) -> Opt
         pdf_path = corpus_root / str(rel)
         if pdf_path.is_file():
             return pdf_path.resolve()
-        desktop_fallback = entry.get("desktop_fallback")
-        if desktop_fallback:
-            for base in (corpus_root, corpus_root / "tier1" / "user", Path.home() / "Desktop" / "PDFTest Files"):
-                candidate = base / str(desktop_fallback)
-                if candidate.is_file():
-                    return candidate.resolve()
         return None
     return None
 
