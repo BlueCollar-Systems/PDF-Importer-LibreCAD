@@ -1,28 +1,34 @@
-# Human Confirmation — PDF to DXF (LibreCAD)
+# Human Verification — PDF to DXF (LibreCAD)
 
-**Coordination:** see Desktop Q&A COORDINATION-HUB or `_LLM_CONTROL_PACK/QA/QA-2026-06-24_COORDINATION-HUB.md`
+Use **your own shop PDFs** for sign-off. There is no fixed public test matrix.
 
-**Prep:** 2026-06-24 · See `Desktop/PDFTest Files/Q&A/QA-2026-06-24_human-confirmation-script.md`
+**2D limits:** use **Labels** or **Outlines** text modes only. LibreCAD has no true 3D text.
 
-## Setup
+## Before you start
 
-1. Importer **v1.0.39+** (portable or plugin).
-2. `$env:BCS_CORPUS_ROOT = 'C:\1pdf-test-corpus'`
-3. `python C:\1pdf-test-corpus\tools\list_tier1.py --host LC --resolved`
+1. Install the latest portable ZIP or plugin release from GitHub Releases.
 
-## Tier-1 (Labels + Outlines only — no 3D text)
+## Checklist
 
-| PDF | Labels → DXF TEXT | Outlines | Pass |
-|-----|-------------------|----------|------|
-| 1017 - Rev 0 | ☐ | ☐ | Geometry + readable dims |
-| 1011 (1 OF 2) | ☐ | ☐ | Title block text |
-| hello_world_rotated | ☐ | ☐ | Rotation handled |
-| text_only_fontsNotEmbedded | ☐ | ☐ | Text entities present |
+For each representative shop drawing you import:
 
-## CLI spot check
+| Check | Pass |
+|-------|------|
+| **Labels** → DXF TEXT readable | ☐ |
+| **Outlines** — linework faithful to the PDF | ☐ |
+| Scale plausible vs the source drawing | ☐ |
+| Multi-page import behaves as expected | ☐ |
 
-```powershell
-python -m pytest tests/ -q -k "import_report or preflight" --ignore=tests/integration
-```
+## After each import
+
+- Save `import_report.json` when the importer writes one
+- If something looks wrong: use [Report Doctor](https://bluecollarsystems.com/report-doctor) or **Send Feedback** with screenshots and your report JSON
+
+## Sign-off
+
+| Role | Name | Date | Result |
+|------|------|------|--------|
+| Shop tester | | | |
+| Engineering | | | |
 
 BUILT. NOT BOUGHT.
