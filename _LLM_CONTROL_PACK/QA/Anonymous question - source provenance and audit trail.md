@@ -1,1 +1,0 @@
-How can every importer preserve enough source provenance for each created object, such as PDF file, page, layer/OCG, source bounding box, text span or vector path id, selected mode, fallback reason, and scale decision, so that a user or support technician can audit why an imported entity exists and diagnose errors without re-importing the PDF?

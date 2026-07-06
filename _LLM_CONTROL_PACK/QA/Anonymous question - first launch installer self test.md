@@ -1,1 +1,0 @@
-How can each installer or portable package run a first-launch self-test on a clean, offline, low-permission PC to verify bundled dependencies, parent-software API compatibility, writable temp/cache paths, font availability, and import/export health, then present a plain-language repair path before a user attempts a real project file?

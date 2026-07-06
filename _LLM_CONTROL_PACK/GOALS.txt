@@ -1,9 +1,0 @@
-GOAL: Perfect visual fidelity in every mode, preset, and workflow, within host software limits.
-
-NON-NEGOTIABLES:
-- No discontinuities
-- No missing geometry
-- No text drift
-- No lost layers, colors, or groups
-- No mode regressions
-- No unguarded fixes (every fix leaves a regression guardrail behind)

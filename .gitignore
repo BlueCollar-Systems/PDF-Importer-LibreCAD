@@ -32,3 +32,5 @@ dist/windows/
 dist/pyinstaller_work/
 dist/pyinstaller_specs/
 installer/Output/
+
+_LLM_CONTROL_PACK/
