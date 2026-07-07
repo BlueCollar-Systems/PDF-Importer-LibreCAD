@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from pdfcadcore.model3d_intent import (
+from .model3d_intent import (
     _FEET_INCH_RE,
     _MARK_RE,
     _MEMBER_RE,

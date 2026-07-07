@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
-from pdfcadcore.aisc_profiles import lookup_profile
+from .aisc_profiles import lookup_profile
 
 DEFAULT_MEMBER_LENGTH_IN = 12.0
 

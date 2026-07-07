@@ -11,7 +11,6 @@ honored.
 from __future__ import annotations
 
 import math
-import re
 from typing import Any, Callable, Dict, Optional, Tuple
 
 # Ratio thresholds — tuned on synthetic CTM fixtures and prior shop-drawing QA.
@@ -118,6 +117,42 @@ def _default_estimate_text_width_units(text: str) -> float:
     return units
 
 
+def estimate_text_width_units(text: str) -> float:
+    """Return an approximate width, in font-size units, for one text run."""
+    return _default_estimate_text_width_units(text)
+
+
+def calibrate_text_size_to_bbox(
+    text: str,
+    font_size: float,
+    bbox: Optional[Tuple[float, float, float, float]],
+    angle_deg: float = 0.0,
+    *,
+    min_size: float = 0.1,
+    estimate_width_units: Optional[Callable[[str], float]] = None,
+) -> float:
+    """Clamp host text size to an already-normalized bbox in the same units."""
+    try:
+        fitted = float(font_size)
+    except (TypeError, ValueError):
+        return font_size
+    if fitted <= 0.0:
+        return fitted
+    if not bbox:
+        return max(min_size, fitted)
+
+    span = {"bbox": bbox}
+    calibrated = fit_font_size_to_span_bbox(
+        text,
+        fitted,
+        span,
+        1.0,
+        angle_deg,
+        estimate_width_units=estimate_width_units,
+    )
+    return max(min_size, calibrated)
+
+
 def fit_font_size_to_span_bbox(
     text: str,
     font_size_host: float,
@@ -145,7 +180,6 @@ def fit_font_size_to_span_bbox(
         return max(0.1, fitted)
 
     s = max(float(scale), 1e-12)
-    norm_angle = abs(normalize_text_angle_deg(angle_deg))
     along_pdf = bbox_glyph_width_pt(bbox, angle_deg)
     normal_pdf = bbox_glyph_height_pt(bbox, angle_deg)
 
@@ -189,8 +223,10 @@ def effective_font_size_from_text_matrix(
 __all__ = [
     "bbox_glyph_height_pt",
     "bbox_glyph_width_pt",
+    "calibrate_text_size_to_bbox",
     "effective_font_size_from_text_matrix",
     "effective_span_font_size_pt",
+    "estimate_text_width_units",
     "fit_font_size_to_span_bbox",
     "normalize_text_angle_deg",
     "span_bbox_pdf",
