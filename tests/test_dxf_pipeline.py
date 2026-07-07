@@ -12,7 +12,9 @@ except ImportError:
     import fitz  # Legacy fallback
 
 from pdfcadcore.primitive_extractor import _merge_stacked_fractions, extract_page
+from pdfcadcore.import_config import ImportConfig
 from pdfcadcore.primitives import NormalizedText
+from dxf_text_builder import build_text
 from librecad_pdf_importer.core.document import ExtractionOptions, extract_document
 from librecad_pdf_importer.exporters.dxf_exporter import DxfExportOptions, export_to_dxf
 from librecad_pdf_importer.importer import run_import
@@ -175,6 +177,26 @@ class TestDxfPipeline(unittest.TestCase):
             if str(entity.dxf.layer or "") == "P001_TEXT"
         }
         self.assertIn("TEXT", text_layer_types)
+
+    def test_editable_text_height_is_calibrated_to_source_bbox(self) -> None:
+        doc = ezdxf.new("R2010")
+        msp = doc.modelspace()
+        item = NormalizedText(
+            id=1,
+            text="LONG CALLOUT TEXT",
+            normalized="LONG CALLOUT TEXT",
+            insertion=(0.0, 0.0),
+            bbox=(0.0, 0.0, 10.0, 3.0),
+            font_size=12.0,
+            rotation=0.0,
+        )
+
+        count = build_text(item, msp, "TEXT", ImportConfig(text_mode="labels"), target_app="librecad")
+
+        self.assertEqual(count, 1)
+        text_entities = [entity for entity in msp if entity.dxftype() == "TEXT"]
+        self.assertEqual(len(text_entities), 1)
+        self.assertLess(text_entities[0].dxf.height, item.font_size)
 
     def test_glyphs_text_mode_outputs_noneditable_outlines(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})

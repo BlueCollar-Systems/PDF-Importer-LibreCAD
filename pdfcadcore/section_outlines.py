@@ -28,7 +28,7 @@ _cache: Dict[str, Dict[str, Any]] = {}
 
 
 def _default_profiles_path() -> Optional[Path]:
-    root = os.environ.get("BCS_CORPUS_ROOT", r"C:\1pdf-test-corpus")
+    root = os.environ.get("BCS_PRIVATE_VALIDATION_ROOT", r"__private_validation_assets_not_configured__")
     p = Path(root) / _PROFILE_REL
     return p if p.is_file() else None
 

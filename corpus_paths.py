@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve PDF test corpus paths via BCS_CORPUS_ROOT."""
+"""Resolve private validation PDF paths via BCS_PRIVATE_VALIDATION_ROOT."""
 from __future__ import annotations
 
 import json
@@ -7,12 +7,12 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-DEFAULT_CORPUS_ROOTS = (Path(r"C:\1pdf-test-corpus"),)
+DEFAULT_CORPUS_ROOTS: tuple[Path, ...] = ()
 
 
 def resolve_corpus_root(candidates: Optional[Iterable[Path]] = None) -> Optional[Path]:
-    """Return the first existing corpus root from env or known defaults."""
-    env_root = os.environ.get("BCS_CORPUS_ROOT") or os.environ.get("PDF_TEST_CORPUS")
+    """Return the first existing private validation root from env."""
+    env_root = os.environ.get("BCS_PRIVATE_VALIDATION_ROOT") or os.environ.get("PDF_PRIVATE_VALIDATION_ROOT")
     ordered: List[Path] = []
     if env_root:
         ordered.append(Path(env_root))
@@ -53,7 +53,7 @@ def require_corpus_root() -> Path:
     root = resolve_corpus_root()
     if root is None:
         raise FileNotFoundError(
-            "PDF corpus not found. Set BCS_CORPUS_ROOT or place files under C:\\1pdf-test-corpus."
+            "Private validation PDFs not found. Set BCS_PRIVATE_VALIDATION_ROOT."
         )
     return root
 
@@ -89,8 +89,8 @@ def require_manifest_pdf(entry_id: str, *, p0: bool = False) -> Path:
     if pdf_path is not None:
         return pdf_path
     message = (
-        f"Corpus manifest entry {entry_id!r} not available. "
-        "Set BCS_CORPUS_ROOT to a checkout of pdf-test-corpus."
+        f"Private validation manifest entry {entry_id!r} not available. "
+        "Set BCS_PRIVATE_VALIDATION_ROOT."
     )
     if p0:
         raise FileNotFoundError(message)

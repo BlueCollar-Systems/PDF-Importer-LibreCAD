@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""P0 extract_page golden for tier1/web/stacked_fraction_spacing.pdf (T1-11)."""
+"""P0 extract_page golden for private/web/stacked_fraction_spacing.pdf (PRIVATE-11)."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ except ImportError:  # pragma: no cover
 
 
 def _golden() -> dict:
-    root = Path(os.environ.get("BCS_CORPUS_ROOT") or r"C:\1pdf-test-corpus")
+    root = Path(os.environ.get("BCS_PRIVATE_VALIDATION_ROOT") or r"__private_validation_assets_not_configured__")
     path = root / "conformance-vectors" / "stacked-fraction-extract-golden.json"
     if not path.is_file():
         pytest.skip(f"golden file missing: {path}")
@@ -32,7 +32,7 @@ def _golden() -> dict:
 
 def test_stacked_fraction_spacing_extract_page_matches_golden() -> None:
     golden = _golden()
-    pdf_path = require_manifest_pdf(str(golden.get("manifest_entry_id") or "T1-11"), p0=True)
+    pdf_path = require_manifest_pdf(str(golden.get("manifest_entry_id") or "PRIVATE-11"), p0=True)
     doc = fitz.open(str(pdf_path))
     try:
         page_data = extract_page(doc[0], int(golden.get("page") or 1))

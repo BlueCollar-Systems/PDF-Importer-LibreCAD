@@ -53,7 +53,7 @@ CLI launchers. No system Python, pip, or administrator rights are required.
 
 ## Upgrading / skipping versions
 
-Extract a newer portable ZIP over your folder (or run the latest installer). Skipping versions (e.g. 1.0.40 → 1.0.44) is supported — run `preflight_check.py` and convert one Tier-1 PDF before shop use.
+Extract a newer portable ZIP over your folder (or run the latest installer). Skipping versions (e.g. 1.0.40 → 1.0.44) is supported — run `preflight_check.py` and convert one of your own representative PDFs before shop use.
 
 Bundled command-line entrypoints:
 

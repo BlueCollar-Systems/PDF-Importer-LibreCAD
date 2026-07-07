@@ -28,8 +28,8 @@ try:
 except ImportError:  # pragma: no cover
     import fitz  # type: ignore  # noqa: E402
 
-_CORPUS_ENV = os.environ.get("BCS_CORPUS_ROOT") or os.environ.get("PDF_TEST_CORPUS")
-CORPUS_ROOT = Path(_CORPUS_ENV) if _CORPUS_ENV else Path(r"C:\1pdf-test-corpus")
+_CORPUS_ENV = os.environ.get("BCS_PRIVATE_VALIDATION_ROOT") or os.environ.get("PDF_PRIVATE_VALIDATION_ROOT")
+CORPUS_ROOT = Path(_CORPUS_ENV) if _CORPUS_ENV else Path(r"__private_validation_assets_not_configured__")
 
 
 def _write_sample_pdf(pdf_path: Path) -> None:

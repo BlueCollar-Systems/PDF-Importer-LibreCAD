@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 from pdfcadcore.primitives import NormalizedText
 from pdfcadcore.import_config import ImportConfig
+from pdfcadcore.text_scale import calibrate_text_size_to_bbox
 
 # Threshold (character count) above which MTEXT is used instead of TEXT.
 _MTEXT_THRESHOLD = 120
@@ -100,8 +101,18 @@ def build_text(
     if not content or not content.strip():
         return 0
 
-    # Font size: NormalizedText.font_size is already in mm.
-    height = max(0.5, text_item.font_size)
+    # Font size: NormalizedText.font_size is already in mm. Calibrate it
+    # against the PDF bbox so host font substitution cannot dwarf the drawing.
+    height = max(
+        0.5,
+        calibrate_text_size_to_bbox(
+            content,
+            text_item.font_size,
+            text_item.bbox,
+            text_item.rotation or 0.0,
+            min_size=0.5,
+        ),
+    )
 
     # Insertion point
     insert = (text_item.insertion[0], text_item.insertion[1])
