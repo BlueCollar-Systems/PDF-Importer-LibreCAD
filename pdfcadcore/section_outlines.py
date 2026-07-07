@@ -1,7 +1,7 @@
 """AISC cross-section outlines for semantic 3D member generation (R8-A).
 
 Host-neutral geometry: given a designation from ``model_3d_intent.members``
-(e.g. ``W12X30``), resolve its true dimensions from the corpus profile
+(e.g. ``W12X30``), resolve its true dimensions from the private profile
 catalog (``profiles/aisc_v16_profiles.json``) and emit the cross-section
 outline every host can extrude along the BOM length:
 
@@ -28,7 +28,9 @@ _cache: Dict[str, Dict[str, Any]] = {}
 
 
 def _default_profiles_path() -> Optional[Path]:
-    root = os.environ.get("BCS_PRIVATE_VALIDATION_ROOT", r"__private_validation_assets_not_configured__")
+    root = os.environ.get("BCS_PRIVATE_VALIDATION_ROOT")
+    if not root:
+        return None
     p = Path(root) / _PROFILE_REL
     return p if p.is_file() else None
 

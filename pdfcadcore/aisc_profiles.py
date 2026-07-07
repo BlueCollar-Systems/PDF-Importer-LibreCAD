@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Load AISC profile dimensions from the corpus catalog (R8-A / R8-E)."""
+"""Load AISC profile dimensions from the private validation catalog (R8-A / R8-E)."""
 
 from __future__ import annotations
 
@@ -21,9 +21,6 @@ def _corpus_profiles_path() -> Optional[Path]:
         candidate = Path(root) / "profiles" / "aisc_v16_profiles.json"
         if candidate.is_file():
             return candidate
-    default = Path(r"__private_validation_assets_not_configured__\profiles\aisc_v16_profiles.json")
-    if default.is_file():
-        return default
     return None
 
 
