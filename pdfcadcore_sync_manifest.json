@@ -26,6 +26,7 @@
   "semantic_members.py": "bd7905c39ca8f52704ab8423cdfbceacb3aeef06a9ffce78ac3dfe41b46bee9b",
   "source_provenance.py": "5ecfcad2f2cabd0d8b0ff037d50d46d19cfb058fdd393caf9ed00f4a94497325",
   "streaming.py": "0347e795ea7508fcc56f9ace572e25f5a3fc47843abf99c1e2634b32ff9e8e00",
+  "text_scale.py": "3f513d650217dc99b6caa96d118a744fe04e6e176b3998f863f715f8b60f8ec3",
   "validation.py": "0510e4367e8fd4214e2ea3d42e933e60e8b33961eeb1ecda5125728e80fd7142",
   "repo_context_builder_core.py": "8fe18c896c63372b5c2d7c17c383b548e9573c9b7592019cd72159f2b08505de",
   "pdfcadcore_sync_check.py": "d4cb98f0aaeb08f84c9a72ecc4af4b9664f199712b343f106977ef21da4047af"
