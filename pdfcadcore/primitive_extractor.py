@@ -14,6 +14,7 @@ from .primitives import (
     Primitive, NormalizedText, PageData, next_id
 )
 from .geometry_cleanup import promote_circular_primitives
+from .text_scale import effective_span_font_size_pt
 
 MM_PER_PT = 25.4 / 72.0
 
@@ -488,7 +489,11 @@ def _extract_text(page, page_h, page_num, flip_y, scale) -> List[NormalizedText]
 
                 x, y = _span_baseline_pdf(span, line)
                 px, py = _to_mm(x, y, page_h, flip_y, scale)
-                size = max(float(span.get("size", 3)), 1.0) * MM_PER_PT * scale
+                size_pt = effective_span_font_size_pt(
+                    {"size": span.get("size", 3), "bbox": span.get("bbox")},
+                    angle,
+                )
+                size = max(size_pt, 1.0) * MM_PER_PT * scale
                 font = str(span.get("font", ""))
 
                 # Extract text color from span

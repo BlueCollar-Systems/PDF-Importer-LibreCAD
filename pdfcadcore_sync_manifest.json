@@ -16,7 +16,7 @@
   "model3d_intent.py": "4834635157fd89002adaa1d2acef5594210b81a91587651e9971b6a1a5eb455f",
   "parts_bootstrap.py": "be4c07425d8692601cb29ffdff7c59ecf4a9f92ac4976034d58c2ae2852b0ff1",
   "preflight_copy.py": "aea5ff87dc95c614fb9a49006928c86d73bc2f2160980769848036b78b2a9458",
-  "primitive_extractor.py": "8afe0b113ef3432482d326d46ac8016218bca91ee9067f91df15324496977dcd",
+  "primitive_extractor.py": "cc8cd97e841e2efbf117a78ff1df45e14775dc714e6b3883595428287d8e7a7b",
   "primitives.py": "eec8be4e6cce2b9d55b8bc848448c02a068502b79d36139c35262a8d2757eabe",
   "qa_report.py": "d8697c9b632f5f1bc778d6a8121493fc8cd79ab0147853c91b8747aab095e63f",
   "recognition.py": "f0bb9961d71056d3dc60d8318405a3068b73a421f1996c5148be5579bc7fde27",
@@ -26,7 +26,7 @@
   "semantic_members.py": "32d5f1d5f4f1946eea4dce0924e3cdfe53c95244d5a0792ab8217c84c36148c9",
   "source_provenance.py": "5ecfcad2f2cabd0d8b0ff037d50d46d19cfb058fdd393caf9ed00f4a94497325",
   "streaming.py": "0347e795ea7508fcc56f9ace572e25f5a3fc47843abf99c1e2634b32ff9e8e00",
-  "text_scale.py": "d4eb82a9a5294183a748f69c763404c9969ca0fa5b539d54a6c0438f2db6da8b",
+  "text_scale.py": "539b315e1f690120aac0d0ea36251328552707e652c6ae571845441e7c3e207a",
   "validation.py": "0510e4367e8fd4214e2ea3d42e933e60e8b33961eeb1ecda5125728e80fd7142",
   "repo_context_builder_core.py": "8fe18c896c63372b5c2d7c17c383b548e9573c9b7592019cd72159f2b08505de",
   "pdfcadcore_sync_check.py": "d4cb98f0aaeb08f84c9a72ecc4af4b9664f199712b343f106977ef21da4047af"

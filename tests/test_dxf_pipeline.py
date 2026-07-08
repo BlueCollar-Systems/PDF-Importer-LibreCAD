@@ -196,7 +196,7 @@ class TestDxfPipeline(unittest.TestCase):
         self.assertEqual(count, 1)
         text_entities = [entity for entity in msp if entity.dxftype() == "TEXT"]
         self.assertEqual(len(text_entities), 1)
-        self.assertLess(text_entities[0].dxf.height, item.font_size)
+        self.assertEqual(text_entities[0].dxf.height, item.font_size)
 
     def test_glyphs_text_mode_outputs_noneditable_outlines(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
