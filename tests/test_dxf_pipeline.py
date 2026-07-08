@@ -178,7 +178,7 @@ class TestDxfPipeline(unittest.TestCase):
         }
         self.assertIn("TEXT", text_layer_types)
 
-    def test_editable_text_height_is_calibrated_to_source_bbox(self) -> None:
+    def test_editable_text_height_preserves_nominal_font_size(self) -> None:
         doc = ezdxf.new("R2010")
         msp = doc.modelspace()
         item = NormalizedText(

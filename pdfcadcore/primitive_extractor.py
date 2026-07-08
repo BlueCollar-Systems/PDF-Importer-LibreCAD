@@ -489,10 +489,7 @@ def _extract_text(page, page_h, page_num, flip_y, scale) -> List[NormalizedText]
 
                 x, y = _span_baseline_pdf(span, line)
                 px, py = _to_mm(x, y, page_h, flip_y, scale)
-                size_pt = effective_span_font_size_pt(
-                    {"size": span.get("size", 3), "bbox": span.get("bbox")},
-                    angle,
-                )
+                size_pt = effective_span_font_size_pt(span, angle)
                 size = max(size_pt, 1.0) * MM_PER_PT * scale
                 font = str(span.get("font", ""))
 
