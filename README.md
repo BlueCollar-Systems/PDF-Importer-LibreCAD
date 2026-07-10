@@ -2,6 +2,8 @@
 
 **BlueCollar Systems -- BUILT. NOT BOUGHT.**
 
+![Version: 1.0.59](https://img.shields.io/badge/Version-1.0.59-blue.svg)
+
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
 
@@ -126,7 +128,7 @@ python pdf2dxf.py input.pdf [output.dxf] [options]
 Options:
   --pages 1,2,3          Pages to convert (default: all)
   --mode MODE            auto | vector | raster | hybrid  (default: auto)
-  --text-mode MODE       labels | 3d_text | glyphs | geometry  (default: 3d_text)
+  --text-mode MODE       labels | 3d_text | glyphs | geometry  (default: labels)
   --import-text / --no-import-text  Whether to import text at all (default: on)
   --scale 1.0            Scale factor
   --dxf-version VER      R12 | R2000 | R2004 | R2007 | R2010 | R2013 | R2018
@@ -163,7 +165,7 @@ python gui.py
 The GUI provides file pickers, **professional single-flow import** (Auto strategy per page),
 text choice (**Labels** or **Outlines** — LibreCAD is 2D-only), page range input,
 option checkboxes, a progress bar, a status log, and optional auto-open in LibreCAD.
-Advanced users can still use CLI `--mode` and `--text-mode` (including `3d_text` / `glyphs`).
+Advanced users can still use CLI `--mode` and `--text-mode` (including `3d_text` as a 2D editable-text alias, or `glyphs` for outline geometry).
 
 Windows no-console options:
 ```

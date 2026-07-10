@@ -260,7 +260,10 @@ def _mode_config(mode: str) -> ImportConfig:
 def run_import(pdf_path: str, mode: str = "auto",
                overrides: Optional[Dict[str, Any]] = None) -> ImportRun:
     cfg = _mode_config(mode)
-    for key, value in (overrides or {}).items():
+    incoming = overrides or {}
+    if "text_mode" not in incoming:
+        cfg.text_mode = "labels"
+    for key, value in incoming.items():
         if hasattr(cfg, key):
             setattr(cfg, key, value)
 
@@ -287,7 +290,7 @@ def run_import(pdf_path: str, mode: str = "auto",
         except ImportError:
             pass
 
-    report_path = (overrides or {}).get("import_report_path")
+    report_path = incoming.get("import_report_path")
     if report_path:
         run.import_report_path = write_import_report(run, str(report_path), elapsed_ms=0.0)
 

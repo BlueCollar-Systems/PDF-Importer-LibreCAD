@@ -124,7 +124,7 @@ only in extraction strategy, not in quality tier.
 
 ### Text Rendering (orthogonal)
 
-GUI: Labels (default) · Outlines · plus Import text toggle. CLI also accepts 3d_text and glyphs (mapped to DXF TEXT).
+GUI: Labels (default) · Outlines · plus Import text toggle. CLI also accepts `3d_text` as an editable-text alias and `glyphs` / `geometry` as non-editable outline geometry.
 
 ## Requirements
 

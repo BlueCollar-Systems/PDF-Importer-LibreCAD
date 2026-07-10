@@ -13,7 +13,7 @@ import os
 import sys
 import time
 
-__version__ = "1.0.58"
+__version__ = "1.0.59"
 
 # ---------------------------------------------------------------------------
 # Ensure project root is on sys.path so ``import pdfcadcore`` resolves
@@ -141,6 +141,7 @@ def main(argv: list[str] | None = None) -> int:
     config: ImportConfig = factory()
     config.user_scale = args.scale
     config.verbose = args.verbose
+    config.text_mode = "labels"
     if args.text_mode is not None:
         config.text_mode = args.text_mode
         config.import_text = True

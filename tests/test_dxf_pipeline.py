@@ -76,6 +76,10 @@ class TestDxfPipeline(unittest.TestCase):
         run = run_import(str(self.pdf_path), mode="vector")
         self.assertEqual(len(run.extraction.pages), 2)
 
+    def test_run_import_defaults_to_librecad_labels(self) -> None:
+        run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
+        self.assertEqual(run.config.text_mode, "labels")
+
     def test_raster_mode_outputs_image_entity(self) -> None:
         run = run_import(str(self.pdf_path), mode="raster", overrides={"pages": "1"})
         export = export_to_dxf(

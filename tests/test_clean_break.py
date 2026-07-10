@@ -14,6 +14,7 @@ GUI_PY = REPO_ROOT / "gui.py"
 CORE_CONFIG_PY = REPO_ROOT / "pdfcadcore" / "import_config.py"
 PACKAGE_CONFIG_PY = REPO_ROOT / "librecad_pdf_importer" / "core" / "PDFImportConfig.py"
 PLUGIN_MENU_CPP = REPO_ROOT / "plugin" / "lcpdf_menu" / "lcpdf_menu.cpp"
+PDF2DXF_PY = REPO_ROOT / "pdf2dxf.py"
 
 
 def _run_cli(*args: str) -> subprocess.CompletedProcess:
@@ -142,6 +143,10 @@ class TestTextDefaults(unittest.TestCase):
         source = CORE_CONFIG_PY.read_text(encoding="utf-8")
         self.assertIn('text_mode: str = "3d_text"', source)
         self.assertNotIn('text_mode: str = "labels"', source)
+
+    def test_legacy_pdf2dxf_uses_librecad_2d_default(self) -> None:
+        source = PDF2DXF_PY.read_text(encoding="utf-8")
+        self.assertIn('config.text_mode = "labels"', source)
 
 
 class TestLibreCadPluginLauncher(unittest.TestCase):

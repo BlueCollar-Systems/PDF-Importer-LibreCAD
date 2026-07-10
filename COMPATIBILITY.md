@@ -76,7 +76,8 @@ Portable users: run `lcpdf-gui.exe` from extracted ZIP — no terminal required.
 
 ### LibreCAD-specific behavior
 
-- **2D only**: 3D Text and Glyphs map to DXF TEXT equivalent to Labels in GUI.
+- **2D only**: Labels are editable DXF TEXT; explicit 3D Text is accepted as the same editable-text alias for cross-importer CLI compatibility.
+- **Outline modes**: Glyphs and Geometry create non-editable outline geometry for visual fidelity.
 - **GUI text options**: Labels (editable TEXT) and Outlines only.
 
 ## DXF consumers (secondary)
