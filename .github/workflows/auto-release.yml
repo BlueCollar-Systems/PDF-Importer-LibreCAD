@@ -79,6 +79,12 @@ jobs:
               got = pyproject_match.group(1) if pyproject_match else "missing"
               raise SystemExit(f"Version mismatch: cli={version} pyproject={got}")
 
+          readme_text = pathlib.Path("README.md").read_text(encoding="utf-8")
+          readme_match = re.search(r'Version-(\d+\.\d+\.\d+)-blue', readme_text)
+          if not readme_match or readme_match.group(1) != version:
+              got = readme_match.group(1) if readme_match else "missing"
+              raise SystemExit(f"Version mismatch: cli={version} README badge={got}")
+
           out = pathlib.Path(os.environ["GITHUB_OUTPUT"])
           out.write_text(f"version={version}\n", encoding="utf-8")
           PY
