@@ -112,6 +112,35 @@ jobs:
           # touches .github/workflows/ is rejected. gh creates the tag through the
           # releases API, which is not subject to that restriction.
           if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists — re-uploading assets, not minting."
+            # R21-3: stranded-release detector, warning-first (NEVER hard-fail:
+            # legitimate staging like CI-only -> fix -> bump-later would go red).
+            STRANDED_EXCLUDES=(
+              ':(exclude)*.md'
+              ':(exclude)docs/**'
+              ':(exclude)tests/**'
+              ':(exclude).github/**'
+              ':(exclude)_archived/**'
+              ':(exclude)dist/_archived/**'
+              ':(exclude)dev_logs/**'
+            )
+            if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+              STRANDED_FILES=$(git diff --name-only "${TAG}..HEAD" -- "${STRANDED_EXCLUDES[@]}" || true)
+              if [ -n "$STRANDED_FILES" ]; then
+                STRANDED_COMMITS=$(git log --no-merges --format='%h %s' "${TAG}..HEAD" -- "${STRANDED_EXCLUDES[@]}" || true)
+                echo "::warning::Stranded product commits past ${TAG} (release exists, nothing minted): $(echo "${STRANDED_COMMITS}" | tr '\n' ';')"
+                {
+                  echo "### Stranded product commits past ${TAG}"
+                  echo ""
+                  echo "Product files changed after tag \`${TAG}\` but this push minted no release."
+                  echo "Ship them with a version-bump commit (see quick card §4.2)."
+                  echo ""
+                  echo '```'
+                  echo "${STRANDED_COMMITS}"
+                  echo '```'
+                } >> "$GITHUB_STEP_SUMMARY"
+              fi
+            fi
             gh release upload "$TAG" "$PORTABLE" "$SOURCE" --clobber
           else
             gh release create "$TAG" --target "${RELEASE_TARGET:-$GITHUB_SHA}" --title "$TITLE" --generate-notes --latest "$PORTABLE" "$SOURCE"
