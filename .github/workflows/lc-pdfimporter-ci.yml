@@ -52,16 +52,33 @@ jobs:
       - name: Run unit tests
         run: python -m pytest tests/ -v
 
-      - name: Validate private validation schemas
+      # Corpus gate (R21-15c): token-clone pattern from FC 1a9df9f, one matrix
+      # leg only. Replaces the former path-secret gate, which could never
+      # resolve to a directory on hosted runners (permanent silent skip).
+      # The public FreeCAD repo is cloned because the conformance runner's
+      # python leg imports pdfcadcore from $BCS_FREECAD_REPO/PDFVectorImporter.
+      - name: Optional corpus clone (CORPUS_READ_TOKEN)
+        if: matrix.python-version == '3.12'
         env:
-          BCS_PRIVATE_VALIDATION_ROOT: ${{ secrets.BCS_PRIVATE_VALIDATION_ROOT }}
+          CORPUS_READ_TOKEN: ${{ secrets.CORPUS_READ_TOKEN }}
         run: |
-          if [ -z "$BCS_PRIVATE_VALIDATION_ROOT" ] || [ ! -d "$BCS_PRIVATE_VALIDATION_ROOT" ]; then
-            echo "::notice::private validation assets are not mounted; schema gate skipped"
+          if [ -z "$CORPUS_READ_TOKEN" ]; then
+            echo "::notice::CORPUS_READ_TOKEN not set; corpus matrix gate visible-skip (R4-2)"
+            echo "corpus_available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          python "$BCS_PRIVATE_VALIDATION_ROOT/tools/validate_contract_schemas.py"
-          python "$BCS_PRIVATE_VALIDATION_ROOT/conformance-vectors/test_conformance_vectors.py"
+          git clone --depth 1 "https://x-access-token:${CORPUS_READ_TOKEN}@github.com/BlueCollar-Systems/pdf-test-corpus.git" "$RUNNER_TEMP/pdf-test-corpus"
+          git clone --depth 1 "https://github.com/BlueCollar-Systems/PDF-Importer-FreeCAD.git" "$RUNNER_TEMP/PDF-Importer-FreeCAD"
+          echo "corpus_available=true" >> "$GITHUB_OUTPUT"
+          echo "BCS_CORPUS_ROOT=$RUNNER_TEMP/pdf-test-corpus" >> "$GITHUB_ENV"
+          echo "BCS_FREECAD_REPO=$RUNNER_TEMP/PDF-Importer-FreeCAD" >> "$GITHUB_ENV"
+        id: corpus
+
+      - name: Corpus schema + conformance-vector gate
+        if: matrix.python-version == '3.12' && steps.corpus.outputs.corpus_available == 'true'
+        run: |
+          python "$BCS_CORPUS_ROOT/tools/validate_contract_schemas.py"
+          python "$BCS_CORPUS_ROOT/conformance-vectors/test_conformance_vectors.py"
 
       - name: Verify CLI help
         run: python pdf2dxf.py --help
