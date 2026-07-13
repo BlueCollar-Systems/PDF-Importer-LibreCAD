@@ -125,8 +125,11 @@ jobs:
             python scripts/release_safety.py audit-existing-tag \
               --repo "${GITHUB_REPOSITORY}" \
               --tag "$TAG" \
+              --before "${{ github.event.before }}" \
+              --head "$GITHUB_SHA" \
               --session-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-              --release-mode \
+              --mode release \
+              --summary "$GITHUB_STEP_SUMMARY" \
               --warnings-file .release-safety/warnings.json
             exit 0
           else
@@ -135,6 +138,7 @@ jobs:
           fi
 
       - name: Check website dispatch token secret
+        if: steps.mint.outputs.minted == 'true'
         id: website_dispatch_token
         env:
           WEBSITE_DISPATCH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN || secrets.BLUECOLLAR_WEBSITE_DISPATCH_TOKEN || secrets.REPO_DISPATCH_TOKEN }}

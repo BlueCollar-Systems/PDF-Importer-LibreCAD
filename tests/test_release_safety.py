@@ -5,8 +5,11 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
 import sys
 import tempfile
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -38,9 +41,9 @@ def fake_git_factory(
         args = cmd[1:]
         if args[:2] == ["diff", "--name-only"]:
             return FakeCompleted(stdout="\n".join(files))
-        if args[:2] == ["log", "--no-merges"]:
+        if args and args[0] == "log":
             return FakeCompleted(stdout="\n".join(f"{sha} {subj}" for sha, subj in commits))
-        if args[:3] == ["diff-tree", "--no-commit-id", "--name-only"]:
+        if args and args[0] == "diff-tree":
             sha = args[-1]
             return FakeCompleted(stdout="\n".join(commit_files_map.get(sha, [])))
         raise AssertionError(f"unexpected git command: {cmd}")
@@ -87,7 +90,7 @@ class ReleaseSafetyTest:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "warnings.json"
             path.write_text(
-                '{"schema_version":1,"warnings":[{"repo":"r","tag":"t","first_seen":"2026-07-12T00:00:00+00:00","deadline":"2026-07-13T01:00:00+00:00"}]}',
+                '{"schema_version":1,"warnings":[{"repo":"r","tag":"t","first_seen":"2026-07-12T00:00:00+00:00","first_seen_sha":"abc","deadline":"2026-07-13T01:00:00+00:00","responsible_session":"sess"}]}',
                 encoding="utf-8",
             )
             try:
@@ -276,6 +279,7 @@ class ReleaseSafetyTest:
                                 "repo": "owner/repo",
                                 "tag": "v1.0.0",
                                 "first_seen": first_seen.isoformat(),
+                                "first_seen_sha": "abc",
                                 "deadline": (first_seen + datetime.timedelta(hours=24)).isoformat(),
                                 "responsible_session": "sess-1",
                             }
@@ -296,6 +300,336 @@ class ReleaseSafetyTest:
             assert code == 0
             record = json.loads(warnings_path.read_text(encoding="utf-8"))
             assert record["warnings"][0]["version_bump_plan"] == "1.0.1"
+
+    def test_later_product_push_without_persisted_state_blocks_release(self):
+        record = {"schema_version": 1, "warnings": []}
+        first_seen = datetime.datetime(
+            2026, 7, 12, 0, 0, 0, tzinfo=datetime.timezone.utc
+        )
+        code, summary, out = rs.evaluate_warning(
+            record,
+            "owner/repo",
+            "v1.0.0",
+            ["build_release.py"],
+            ["abc first product", "def later product"],
+            first_seen + datetime.timedelta(hours=1),
+            "sess-2",
+            release_mode=True,
+            later_product_push=True,
+            first_seen_sha="abc",
+            first_seen_at=first_seen,
+        )
+        assert code == 2
+        assert "later product push" in summary.lower()
+        assert out["warnings"][0]["first_seen_sha"] == "abc"
+        assert out["warnings"][0]["responsible_session"] == "derived:abc"
+
+    def test_expired_deferral_report_mode_stays_green(self):
+        first_seen = datetime.datetime(
+            2026, 7, 12, 0, 0, 0, tzinfo=datetime.timezone.utc
+        )
+        record = {
+            "schema_version": 1,
+            "warnings": [
+                {
+                    "repo": "owner/repo",
+                    "tag": "v1.0.0",
+                    "first_seen": first_seen.isoformat(),
+                    "first_seen_sha": "abc",
+                    "deadline": (first_seen + datetime.timedelta(hours=24)).isoformat(),
+                    "responsible_session": "sess-1",
+                    "release_deferred_until": (
+                        first_seen + datetime.timedelta(hours=12)
+                    ).isoformat(),
+                }
+            ],
+        }
+        code, summary, _ = rs.evaluate_warning(
+            record,
+            "owner/repo",
+            "v1.0.0",
+            ["build_release.py"],
+            ["abc fix"],
+            first_seen + datetime.timedelta(hours=25),
+            "sess-2",
+            release_mode=False,
+        )
+        assert code == 0
+        assert "expired" in summary.lower()
+
+    def test_load_record_rejects_naive_timestamp_and_wrong_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "warnings.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "warnings": [
+                            {
+                                "repo": "wrong/repo",
+                                "tag": "v1.0.0",
+                                "first_seen": "2026-07-12T00:00:00",
+                                "first_seen_sha": "abc",
+                                "deadline": "2026-07-13T00:00:00",
+                                "responsible_session": "sess-1",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            try:
+                rs.load_warning_record(
+                    path, expected_repo="owner/repo", expected_tag="v1.0.0"
+                )
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("naive/wrong-repository state was accepted")
+
+    def test_release_safety_helper_is_not_a_product_path(self):
+        assert not rs.is_product_path("tools/release_safety.py")
+        assert not rs.is_product_path("scripts/release_safety.py")
+
+    def test_collect_delta_accepts_explicit_head(self):
+        git = fake_git_factory(
+            files=["build_release.py"],
+            commits=[("abc123", "fix package")],
+            commit_files_map={"abc123": ["build_release.py"]},
+        )
+        files, commits = rs.collect_delta(
+            "v1.0.0", head="push-head", git_command=git, repo_root=Path(".")
+        )
+        assert files == ["build_release.py"]
+        assert commits == ["abc123 fix package"]
+
+    def test_multi_commit_first_push_warns_once_and_lists_every_sha(self):
+        record = {"schema_version": 1, "warnings": []}
+        now = datetime.datetime(
+            2026, 7, 12, 0, 0, 0, tzinfo=datetime.timezone.utc
+        )
+        commits = ["abc root product", "def merge product"]
+        code, summary, out = rs.evaluate_warning(
+            record,
+            "owner/repo",
+            "v1.0.0",
+            ["build_release.py", "installer/setup.py"],
+            commits,
+            now,
+            "sess-1",
+            release_mode=True,
+            later_product_push=False,
+            first_seen_sha="abc",
+            first_seen_at=now,
+        )
+        assert code == 0
+        assert "First stranded-release warning" in summary
+        assert "abc root product" in summary
+        assert "def merge product" in summary
+        assert out["warnings"][0]["first_seen_sha"] == "abc"
+        assert out["warnings"][0]["responsible_session"] == "sess-1"
+
+    def test_main_uses_prior_and_current_push_ranges_without_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "warnings.json"
+            original_collect = rs.collect_delta
+            original_before = rs._effective_before
+            original_time = rs._git_commit_time
+            try:
+                def fake_collect(base, *, head="HEAD", **_kwargs):
+                    ranges = {
+                        ("v1.0.0", "headsha"): (
+                            ["build_release.py", "installer/setup.py"],
+                            ["abc first", "def later"],
+                        ),
+                        ("beforesha", "headsha"): (
+                            ["installer/setup.py"],
+                            ["def later"],
+                        ),
+                        ("v1.0.0", "beforesha"): (
+                            ["build_release.py"],
+                            ["abc first"],
+                        ),
+                    }
+                    return ranges[(base, head)]
+
+                rs.collect_delta = fake_collect
+                rs._effective_before = lambda *_args: "beforesha"
+                rs._git_commit_time = lambda *_args: datetime.datetime(
+                    2026, 7, 12, tzinfo=datetime.timezone.utc
+                )
+                code = rs.main(
+                    [
+                        "audit-existing-tag",
+                        "--repo", "owner/repo",
+                        "--tag", "v1.0.0",
+                        "--before", "beforesha",
+                        "--head", "headsha",
+                        "--mode", "release",
+                        "--session-id", "sess-2",
+                        "--warnings-file", str(state),
+                        "--repo-root", str(root),
+                    ]
+                )
+                assert code == 2
+            finally:
+                rs.collect_delta = original_collect
+                rs._effective_before = original_before
+                rs._git_commit_time = original_time
+
+    def test_main_docs_only_followup_never_escalates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "warnings.json"
+            original_collect = rs.collect_delta
+            original_before = rs._effective_before
+            try:
+                def fake_collect(base, *, head="HEAD", **_kwargs):
+                    if (base, head) == ("v1.0.0", "headsha"):
+                        return ["build_release.py"], ["abc first"]
+                    if (base, head) == ("beforesha", "headsha"):
+                        return [], []
+                    raise AssertionError((base, head))
+
+                rs.collect_delta = fake_collect
+                rs._effective_before = lambda *_args: "beforesha"
+                code = rs.main(
+                    [
+                        "audit-existing-tag",
+                        "--repo", "owner/repo",
+                        "--tag", "v1.0.0",
+                        "--before", "beforesha",
+                        "--head", "headsha",
+                        "--mode", "release",
+                        "--warnings-file", str(state),
+                        "--repo-root", str(root),
+                    ]
+                )
+                assert code == 0
+                assert not state.exists()
+            finally:
+                rs.collect_delta = original_collect
+                rs._effective_before = original_before
+
+    def test_all_zero_before_falls_back_to_tag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assert rs._effective_before("0" * 40, "v1.0.0", Path(tmp)) == "v1.0.0"
+
+    def test_unresolvable_before_falls_back_to_tag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assert rs._effective_before("deadbeef", "v1.0.0", Path(tmp)) == "v1.0.0"
+
+    def test_load_record_rejects_duplicate_and_wrong_tag(self):
+        warning = {
+            "repo": "owner/repo",
+            "tag": "v0.9.0",
+            "first_seen": "2026-07-12T00:00:00+00:00",
+            "first_seen_sha": "abc",
+            "deadline": "2026-07-13T00:00:00+00:00",
+            "responsible_session": "sess-1",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "warnings.json"
+            path.write_text(
+                json.dumps({"schema_version": 1, "warnings": [warning, warning]}),
+                encoding="utf-8",
+            )
+            try:
+                rs.load_warning_record(
+                    path, expected_repo="owner/repo", expected_tag="v1.0.0"
+                )
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("duplicate/wrong-tag state was accepted")
+
+    def test_expired_version_plan_report_mode_stays_green(self):
+        first_seen = datetime.datetime(
+            2026, 7, 12, tzinfo=datetime.timezone.utc
+        )
+        record = {
+            "schema_version": 1,
+            "warnings": [
+                {
+                    "repo": "owner/repo",
+                    "tag": "v1.0.0",
+                    "first_seen": first_seen.isoformat(),
+                    "first_seen_sha": "abc",
+                    "deadline": (first_seen + datetime.timedelta(hours=24)).isoformat(),
+                    "responsible_session": "sess-1",
+                    "version_bump_plan": "1.0.1",
+                }
+            ],
+        }
+        code, _, _ = rs.evaluate_warning(
+            record,
+            "owner/repo",
+            "v1.0.0",
+            ["build_release.py"],
+            ["abc fix"],
+            first_seen + datetime.timedelta(hours=25),
+            "sess-2",
+            release_mode=False,
+        )
+        assert code == 0
+
+    def test_workflow_passes_push_boundary_and_gates_every_downstream_step(self):
+        workflow = (REPO_ROOT / ".github" / "workflows" / "auto-release.yml").read_text(
+            encoding="utf-8"
+        )
+        assert '--before "${{ github.event.before }}"' in workflow
+        assert '--head "$GITHUB_SHA"' in workflow
+        assert "--mode release" in workflow
+        assert '--summary "$GITHUB_STEP_SUMMARY"' in workflow
+        audit_at = workflow.index("release_safety.py audit-existing-tag")
+        false_at = workflow.rfind('echo "minted=false"', 0, audit_at)
+        assert false_at >= 0
+        token_at = workflow.index("- name: Check website dispatch token secret")
+        token_block = workflow[token_at : workflow.index("- name:", token_at + 8)]
+        assert "if: steps.mint.outputs.minted == 'true'" in token_block
+        assert not re.search(r"^\s*gh release upload\b", workflow, re.MULTILINE)
+        assert "--clobber" not in workflow
+
+    def test_acknowledge_rejects_past_deferral(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "warnings.json"
+            first_seen = datetime.datetime(
+                2026, 7, 12, tzinfo=datetime.timezone.utc
+            )
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "warnings": [
+                            {
+                                "repo": "owner/repo",
+                                "tag": "v1.0.0",
+                                "first_seen": first_seen.isoformat(),
+                                "first_seen_sha": "abc",
+                                "deadline": (
+                                    first_seen + datetime.timedelta(hours=24)
+                                ).isoformat(),
+                                "responsible_session": "sess-1",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stderr = StringIO()
+            with redirect_stderr(stderr):
+                code = rs.main(
+                    [
+                        "acknowledge",
+                        "--repo", "owner/repo",
+                        "--tag", "v1.0.0",
+                        "--release-deferred-until", "2000-01-01T00:00:00+00:00",
+                        "--warnings-file", str(path),
+                    ]
+                )
+            assert code == 1
+            assert "must be in the future" in stderr.getvalue()
 
 
 if __name__ == "__main__":

@@ -31,6 +31,7 @@ import copy
 import datetime
 import fnmatch
 import json
+import os
 import re
 import subprocess
 import sys
@@ -48,6 +49,8 @@ DEFAULT_EXCLUDES = [
     "dev_logs/**",
     "steel_shapes/**",
     ".release-safety/**",
+    "tools/release_safety.py",
+    "scripts/release_safety.py",
     "test_*.py",
     "*_test.py",
     "*_test.rb",
@@ -57,7 +60,7 @@ DEFAULT_EXCLUDES = [
 ]
 
 # ISO 8601 timestamp with timezone.
-_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$")
+_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$")
 
 
 def _now() -> datetime.datetime:
@@ -126,15 +129,15 @@ def _run_git(
     )
 
 
-def _git_names(tag: str, repo_root: Path, git_command: Callable[..., _Completed]) -> list[str]:
-    proc = _run_git(repo_root, git_command, ["diff", "--name-only", f"{tag}..HEAD", "--", "."])
+def _git_names(base: str, head: str, repo_root: Path, git_command: Callable[..., _Completed]) -> list[str]:
+    proc = _run_git(repo_root, git_command, ["diff", "--name-only", f"{base}..{head}", "--", "."])
     return [line for line in proc.stdout.splitlines() if line.strip()]
 
 
 def _git_commits(
-    tag: str, repo_root: Path, git_command: Callable[..., _Completed]
+    base: str, head: str, repo_root: Path, git_command: Callable[..., _Completed]
 ) -> list[tuple[str, str]]:
-    proc = _run_git(repo_root, git_command, ["log", "--no-merges", "--format=%H %s", f"{tag}..HEAD"])
+    proc = _run_git(repo_root, git_command, ["log", "--reverse", "--format=%H %s", f"{base}..{head}"])
     out = []
     for line in proc.stdout.splitlines():
         line = line.strip()
@@ -148,22 +151,55 @@ def _git_commits(
 
 
 def _git_commit_files(sha: str, repo_root: Path, git_command: Callable[..., _Completed]) -> list[str]:
-    proc = _run_git(repo_root, git_command, ["diff-tree", "--no-commit-id", "--name-only", "-r", sha])
+    proc = _run_git(repo_root, git_command, ["diff-tree", "--root", "-m", "--no-commit-id", "--name-only", "-r", sha])
     return [line for line in proc.stdout.splitlines() if line.strip()]
 
 
+def _git_ref_exists(ref: str, repo_root: Path) -> bool:
+    try:
+        subprocess.run(
+            ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
+def _effective_before(before: str | None, tag: str, repo_root: Path) -> str:
+    candidate = (before or "").strip()
+    if not candidate or set(candidate) == {"0"}:
+        return tag
+    return candidate if _git_ref_exists(candidate, repo_root) else tag
+
+
+def _git_commit_time(sha: str, repo_root: Path) -> datetime.datetime:
+    proc = subprocess.run(
+        ["git", "show", "-s", "--format=%cI", sha],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return _parse_iso(proc.stdout.strip())
+
+
 def collect_delta(
-    tag: str,
+    base: str,
     *,
+    head: str = "HEAD",
     exclude_patterns: Sequence[str] | None = None,
     repo_root: Path | None = None,
     git_command: Callable[..., _Completed] = subprocess.run,
 ) -> tuple[list[str], list[str]]:
-    """Return (product_files, product_commits) changed since [tag]."""
+    """Return (product_files, product_commits) in [base]..[head]."""
     exclude_patterns = exclude_patterns if exclude_patterns is not None else DEFAULT_EXCLUDES
     repo_root = repo_root or Path.cwd()
-    files = _git_names(tag, repo_root, git_command)
-    commits = _git_commits(tag, repo_root, git_command)
+    files = _git_names(base, head, repo_root, git_command)
+    commits = _git_commits(base, head, repo_root, git_command)
 
     product_files = [f for f in files if is_product_path(f, exclude_patterns=exclude_patterns)]
     product_commits: list[str] = []
@@ -176,11 +212,21 @@ def collect_delta(
 
 
 def _parse_iso(value: str) -> datetime.datetime:
-    return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"timestamp must include a timezone: {value!r}")
+    return parsed
 
 
 def _validate_warning(w: dict) -> None:
-    required = {"repo", "tag", "first_seen", "deadline"}
+    required = {
+        "repo",
+        "tag",
+        "first_seen",
+        "first_seen_sha",
+        "deadline",
+        "responsible_session",
+    }
     missing = required - set(w.keys())
     if missing:
         raise ValueError(f"warning missing required keys: {sorted(missing)}")
@@ -189,6 +235,12 @@ def _validate_warning(w: dict) -> None:
             raise ValueError(f"{key} is not an ISO-8601 timestamp: {w[key]!r}")
     first = _parse_iso(str(w["first_seen"]))
     deadline = _parse_iso(str(w["deadline"]))
+    if not str(w["first_seen_sha"]).strip():
+        raise ValueError("first_seen_sha must be nonempty")
+    if not str(w["responsible_session"]).strip():
+        raise ValueError("responsible_session must be nonempty")
+    if deadline < first:
+        raise ValueError(f"deadline {deadline} precedes first_seen {first}")
     if deadline > first + datetime.timedelta(hours=24):
         raise ValueError(f"deadline {deadline} is more than 24h after first_seen {first}")
     if "version_bump_plan" in w and "release_deferred_until" in w:
@@ -198,7 +250,12 @@ def _validate_warning(w: dict) -> None:
             raise ValueError(f"release_deferred_until is not an ISO-8601 timestamp: {w['release_deferred_until']!r}")
 
 
-def load_warning_record(path: Path) -> dict:
+def load_warning_record(
+    path: Path,
+    *,
+    expected_repo: str | None = None,
+    expected_tag: str | None = None,
+) -> dict:
     """Load .release-safety/warnings.json or return an empty record."""
     if not path.exists():
         return {"schema_version": 1, "warnings": []}
@@ -210,8 +267,17 @@ def load_warning_record(path: Path) -> dict:
     warnings = data.get("warnings", [])
     if not isinstance(warnings, list):
         raise ValueError("warnings must be a list")
+    seen: set[tuple[str, str]] = set()
     for w in warnings:
         _validate_warning(w)
+        key = (str(w["repo"]), str(w["tag"]))
+        if key in seen:
+            raise ValueError(f"duplicate warning for {key[0]}:{key[1]}")
+        seen.add(key)
+        if expected_repo is not None and key[0] != expected_repo:
+            raise ValueError(f"warning repository {key[0]!r} does not match {expected_repo!r}")
+        if expected_tag is not None and key[1] != expected_tag:
+            raise ValueError(f"warning tag {key[1]!r} does not match {expected_tag!r}")
     return {"schema_version": 1, "warnings": warnings}
 
 
@@ -237,6 +303,9 @@ def evaluate_warning(
     now: datetime.datetime,
     session_id: str,
     release_mode: bool = False,
+    later_product_push: bool = False,
+    first_seen_sha: str | None = None,
+    first_seen_at: datetime.datetime | None = None,
 ) -> tuple[int, str, dict]:
     """Return (exit_code, summary, updated_record)."""
     record = copy.deepcopy(record)
@@ -254,18 +323,26 @@ def evaluate_warning(
     summary = _format_summary(product_files, product_commits)
 
     if existing is None:
-        first_seen = now
-        deadline = first_seen + datetime.timedelta(hours=24)
-        warnings.append(
-            {
-                "repo": repo,
-                "tag": tag,
-                "first_seen": first_seen.isoformat(),
-                "deadline": deadline.isoformat(),
-                "responsible_session": session_id,
-            }
+        first_seen = first_seen_at or now
+        opening_sha = first_seen_sha or (
+            product_commits[0].split(" ", 1)[0] if product_commits else "unknown"
         )
-        return 0, f"::warning::First stranded-release warning for {repo}:{tag}.\n{summary}", record
+        deadline = first_seen + datetime.timedelta(hours=24)
+        existing = {
+            "repo": repo,
+            "tag": tag,
+            "first_seen": first_seen.isoformat(),
+            "first_seen_sha": opening_sha,
+            "deadline": deadline.isoformat(),
+            "responsible_session": (
+                f"derived:{opening_sha}"
+                if later_product_push
+                else (session_id or f"derived:{opening_sha}")
+            ),
+        }
+        warnings.append(existing)
+        if not later_product_push:
+            return 0, f"::warning::First stranded-release warning for {repo}:{tag}.\n{summary}", record
 
     # Validate first_seen/deadline already done by load_warning_record, but re-parse here.
     first_seen = _parse_iso(existing["first_seen"])
@@ -275,14 +352,19 @@ def evaluate_warning(
         defer_until = _parse_iso(existing["release_deferred_until"])
         if now < defer_until:
             return 0, f"Release deferred until {defer_until.isoformat()} for {repo}:{tag}.", record
-        return 2, f"::error::Deferred release date expired for {repo}:{tag}.\n{summary}", record
+        code = 2 if release_mode else 0
+        return code, f"::error::Deferred release date expired for {repo}:{tag}.\n{summary}", record
 
     if "version_bump_plan" in existing:
         if now <= deadline:
             return 0, f"Version bump plan '{existing['version_bump_plan']}' acknowledged for {repo}:{tag}; deadline {deadline.isoformat()}.", record
-        return 2, f"::error::Version bump plan for {repo}:{tag} exceeded deadline {deadline.isoformat()}.\n{summary}", record
+        code = 2 if release_mode else 0
+        return code, f"::error::Version bump plan for {repo}:{tag} exceeded deadline {deadline.isoformat()}.\n{summary}", record
 
     # Unacknowledged.
+    if later_product_push:
+        code = 2 if release_mode else 0
+        return code, f"::error::Later product push for {repo}:{tag} has no committed acknowledgement.\n{summary}", record
     if now <= deadline:
         return 0, f"::warning::Stranded product changes for {repo}:{tag} not yet acknowledged (deadline {deadline.isoformat()}).\n{summary}", record
 
@@ -295,6 +377,16 @@ def evaluate_warning(
 def _write_record(path: Path, record: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+
+
+def _emit_summary(summary: str, path: str | None) -> None:
+    if not summary:
+        return
+    print(summary)
+    target = (path or os.environ.get("GITHUB_STEP_SUMMARY") or "").strip()
+    if target:
+        with Path(target).open("a", encoding="utf-8") as handle:
+            handle.write(summary.rstrip() + "\n")
 
 
 def _find_warning(record: dict, repo: str, tag: str) -> dict | None:
@@ -311,32 +403,78 @@ def _main_audit(args: argparse.Namespace) -> int:
     record_path = Path(args.warnings_file)
     repo_root = Path(args.repo_root) if args.repo_root else Path.cwd()
 
-    product_files, product_commits = collect_delta(
+    head = args.head or "HEAD"
+    before = _effective_before(args.before, tag, repo_root)
+    total_files, total_commits = collect_delta(
         tag,
+        head=head,
         exclude_patterns=args.exclude,
         repo_root=repo_root,
     )
 
-    record = load_warning_record(record_path)
+    record = load_warning_record(
+        record_path, expected_repo=repo, expected_tag=tag
+    )
+    if not total_files:
+        return 0
+
+    current_files, _current_commits = collect_delta(
+        before,
+        head=head,
+        exclude_patterns=args.exclude,
+        repo_root=repo_root,
+    )
+    if not current_files:
+        _emit_summary(
+            f"::notice::Existing stranded product delta for {repo}:{tag}; "
+            "current push is non-product, so no escalation.",
+            args.summary,
+        )
+        return 0
+
+    prior_files: list[str] = []
+    prior_commits: list[str] = []
+    if before != tag:
+        prior_files, prior_commits = collect_delta(
+            tag,
+            head=before,
+            exclude_patterns=args.exclude,
+            repo_root=repo_root,
+        )
+
+    opening = prior_commits or total_commits
+    first_seen_sha = opening[0].split(" ", 1)[0] if opening else head
+    first_seen_at = _now()
+    if prior_commits:
+        try:
+            first_seen_at = _git_commit_time(first_seen_sha, repo_root)
+        except (OSError, subprocess.CalledProcessError, ValueError):
+            first_seen_at = _now()
+
+    release_mode = args.mode == "release" or args.release_mode
     exit_code, summary, record = evaluate_warning(
         record,
         repo,
         tag,
-        product_files,
-        product_commits,
+        total_files,
+        total_commits,
         _now(),
         session_id,
-        release_mode=args.release_mode,
+        release_mode=release_mode,
+        later_product_push=bool(prior_files),
+        first_seen_sha=first_seen_sha,
+        first_seen_at=first_seen_at,
     )
     _write_record(record_path, record)
-    if summary:
-        print(summary)
+    _emit_summary(summary, args.summary)
     return exit_code
 
 
 def _main_acknowledge(args: argparse.Namespace) -> int:
     record_path = Path(args.warnings_file)
-    record = load_warning_record(record_path)
+    record = load_warning_record(
+        record_path, expected_repo=args.repo, expected_tag=args.tag
+    )
     warning = _find_warning(record, args.repo, args.tag)
     if warning is None:
         print(f"No warning exists for {args.repo}:{args.tag}; run audit-existing-tag first.", file=sys.stderr)
@@ -348,6 +486,9 @@ def _main_acknowledge(args: argparse.Namespace) -> int:
     elif args.release_deferred_until:
         # Validate ISO date.
         when = _parse_iso(args.release_deferred_until)
+        if when <= _now():
+            print("release_deferred_until must be in the future", file=sys.stderr)
+            return 1
         warning["release_deferred_until"] = when.isoformat()
         warning.pop("version_bump_plan", None)
     else:
@@ -370,6 +511,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     audit.add_argument("--tag", required=True, help="existing tag to audit")
     audit.add_argument("--session-id", default="", help="session/run identifier for the warning")
     audit.add_argument("--release-mode", action="store_true", help="exit 2 when a stranded deadline has expired")
+    audit.add_argument("--mode", choices=("release", "report"), default="report")
+    audit.add_argument("--before", default=None, help="push boundary SHA; all-zero/missing falls back to tag")
+    audit.add_argument("--head", default="HEAD", help="head SHA for the current push")
+    audit.add_argument("--summary", default=None, help="optional GitHub step-summary path")
     audit.add_argument("--warnings-file", default=".release-safety/warnings.json", help="path to warnings.json")
     audit.add_argument("--repo-root", default=None, help="git repository root (default: cwd)")
     audit.add_argument("--exclude", action="append", default=None, help="additional glob to exclude (can repeat)")
