@@ -288,15 +288,20 @@ class ReleaseSafetyTest:
                 ),
                 encoding="utf-8",
             )
-            code = rs.main(
-                [
-                    "acknowledge",
-                    "--repo", "owner/repo",
-                    "--tag", "v1.0.0",
-                    "--version-bump-plan", "1.0.1",
-                    "--warnings-file", str(warnings_path),
-                ]
-            )
+            original_now = rs._now
+            try:
+                rs._now = lambda: first_seen + datetime.timedelta(hours=12)
+                code = rs.main(
+                    [
+                        "acknowledge",
+                        "--repo", "owner/repo",
+                        "--tag", "v1.0.0",
+                        "--version-bump-plan", "1.0.1",
+                        "--warnings-file", str(warnings_path),
+                    ]
+                )
+            finally:
+                rs._now = original_now
             assert code == 0
             record = json.loads(warnings_path.read_text(encoding="utf-8"))
             assert record["warnings"][0]["version_bump_plan"] == "1.0.1"
@@ -630,6 +635,118 @@ class ReleaseSafetyTest:
                 )
             assert code == 1
             assert "must be in the future" in stderr.getvalue()
+
+    def test_load_rejects_invalid_version_plan_values(self):
+        first_seen = "2026-07-12T00:00:00+00:00"
+        base = {
+            "repo": "owner/repo",
+            "tag": "v1.0.0",
+            "first_seen": first_seen,
+            "first_seen_sha": "abc",
+            "deadline": "2026-07-13T00:00:00+00:00",
+            "responsible_session": "sess-1",
+            "acknowledged_at": "2026-07-12T01:00:00+00:00",
+        }
+        for bad in (None, "", {}, [], True, "next someday"):
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "warnings.json"
+                warning = dict(base, version_bump_plan=bad)
+                path.write_text(
+                    json.dumps({"schema_version": 1, "warnings": [warning]}),
+                    encoding="utf-8",
+                )
+                try:
+                    rs.load_warning_record(
+                        path, expected_repo="owner/repo", expected_tag="v1.0.0"
+                    )
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError(f"invalid plan was accepted: {bad!r}")
+
+    def test_historical_tag_for_same_repo_is_allowed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "warnings.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "warnings": [
+                            {
+                                "repo": "owner/repo",
+                                "tag": "v0.9.0",
+                                "first_seen": "2026-07-12T00:00:00+00:00",
+                                "first_seen_sha": "abc",
+                                "deadline": "2026-07-13T00:00:00+00:00",
+                                "responsible_session": "sess-1",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            record = rs.load_warning_record(
+                path, expected_repo="owner/repo", expected_tag="v1.0.0"
+            )
+            assert record["warnings"][0]["tag"] == "v0.9.0"
+
+    def test_deferral_must_be_future_when_acknowledged_but_may_expire_later(self):
+        warning = {
+            "repo": "owner/repo",
+            "tag": "v1.0.0",
+            "first_seen": "2026-07-12T00:00:00+00:00",
+            "first_seen_sha": "abc",
+            "deadline": "2026-07-13T00:00:00+00:00",
+            "responsible_session": "sess-1",
+            "acknowledged_at": "2026-07-12T01:00:00+00:00",
+            "release_deferred_until": "2026-07-12T12:00:00+00:00",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "warnings.json"
+            path.write_text(
+                json.dumps({"schema_version": 1, "warnings": [warning]}),
+                encoding="utf-8",
+            )
+            rs.load_warning_record(
+                path, expected_repo="owner/repo", expected_tag="v1.0.0"
+            )
+            warning["acknowledged_at"] = "2026-07-12T13:00:00+00:00"
+            path.write_text(
+                json.dumps({"schema_version": 1, "warnings": [warning]}),
+                encoding="utf-8",
+            )
+            try:
+                rs.load_warning_record(
+                    path, expected_repo="owner/repo", expected_tag="v1.0.0"
+                )
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("deferral already past at acknowledgement was accepted")
+
+    def test_load_rejects_non_string_identity_fields(self):
+        for key, bad in (("repo", None), ("tag", []), ("first_seen_sha", True), ("responsible_session", {})):
+            warning = {
+                "repo": "owner/repo",
+                "tag": "v1.0.0",
+                "first_seen": "2026-07-12T00:00:00+00:00",
+                "first_seen_sha": "abc",
+                "deadline": "2026-07-13T00:00:00+00:00",
+                "responsible_session": "sess-1",
+            }
+            warning[key] = bad
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "warnings.json"
+                path.write_text(
+                    json.dumps({"schema_version": 1, "warnings": [warning]}),
+                    encoding="utf-8",
+                )
+                try:
+                    rs.load_warning_record(path, expected_repo="owner/repo")
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError(f"non-string {key} was accepted")
 
 
 if __name__ == "__main__":

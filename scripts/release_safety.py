@@ -61,6 +61,7 @@ DEFAULT_EXCLUDES = [
 
 # ISO 8601 timestamp with timezone.
 _ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$")
+_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 
 
 def _now() -> datetime.datetime:
@@ -230,24 +231,43 @@ def _validate_warning(w: dict) -> None:
     missing = required - set(w.keys())
     if missing:
         raise ValueError(f"warning missing required keys: {sorted(missing)}")
+    for key in ("repo", "tag", "first_seen_sha", "responsible_session"):
+        if not isinstance(w[key], str) or not w[key].strip():
+            raise ValueError(f"{key} must be a nonempty string")
     for key in ("first_seen", "deadline"):
-        if not _ISO_RE.match(str(w[key])):
+        if not isinstance(w[key], str) or not _ISO_RE.match(w[key]):
             raise ValueError(f"{key} is not an ISO-8601 timestamp: {w[key]!r}")
     first = _parse_iso(str(w["first_seen"]))
     deadline = _parse_iso(str(w["deadline"]))
-    if not str(w["first_seen_sha"]).strip():
-        raise ValueError("first_seen_sha must be nonempty")
-    if not str(w["responsible_session"]).strip():
-        raise ValueError("responsible_session must be nonempty")
     if deadline < first:
         raise ValueError(f"deadline {deadline} precedes first_seen {first}")
     if deadline > first + datetime.timedelta(hours=24):
         raise ValueError(f"deadline {deadline} is more than 24h after first_seen {first}")
-    if "version_bump_plan" in w and "release_deferred_until" in w:
+    has_plan = "version_bump_plan" in w
+    has_deferral = "release_deferred_until" in w
+    if has_plan and has_deferral:
         raise ValueError("warning has both version_bump_plan and release_deferred_until")
-    if "release_deferred_until" in w:
-        if not _ISO_RE.match(str(w["release_deferred_until"])):
-            raise ValueError(f"release_deferred_until is not an ISO-8601 timestamp: {w['release_deferred_until']!r}")
+    if has_plan or has_deferral:
+        acknowledged_at = w.get("acknowledged_at")
+        if not isinstance(acknowledged_at, str) or not _ISO_RE.match(acknowledged_at):
+            raise ValueError("acknowledged_at is required for an acknowledgement")
+        acknowledged = _parse_iso(acknowledged_at)
+        if acknowledged < first or acknowledged > deadline:
+            raise ValueError("acknowledged_at must be between first_seen and deadline")
+        if has_plan:
+            plan = w["version_bump_plan"]
+            if not isinstance(plan, str) or not _VERSION_RE.match(plan):
+                raise ValueError("version_bump_plan must be a semantic version string")
+        if has_deferral:
+            value = w["release_deferred_until"]
+            if not isinstance(value, str) or not _ISO_RE.match(value):
+                raise ValueError(
+                    f"release_deferred_until is not an ISO-8601 timestamp: {value!r}"
+                )
+            if _parse_iso(value) <= acknowledged:
+                raise ValueError("release_deferred_until must be after acknowledged_at")
+    elif "acknowledged_at" in w:
+        raise ValueError("acknowledged_at requires a version plan or deferral")
 
 
 def load_warning_record(
@@ -270,14 +290,12 @@ def load_warning_record(
     seen: set[tuple[str, str]] = set()
     for w in warnings:
         _validate_warning(w)
-        key = (str(w["repo"]), str(w["tag"]))
+        key = (w["repo"], w["tag"])
         if key in seen:
             raise ValueError(f"duplicate warning for {key[0]}:{key[1]}")
         seen.add(key)
         if expected_repo is not None and key[0] != expected_repo:
             raise ValueError(f"warning repository {key[0]!r} does not match {expected_repo!r}")
-        if expected_tag is not None and key[1] != expected_tag:
-            raise ValueError(f"warning tag {key[1]!r} does not match {expected_tag!r}")
     return {"schema_version": 1, "warnings": warnings}
 
 
@@ -480,13 +498,14 @@ def _main_acknowledge(args: argparse.Namespace) -> int:
         print(f"No warning exists for {args.repo}:{args.tag}; run audit-existing-tag first.", file=sys.stderr)
         return 1
 
+    acknowledged_at = _now()
     if args.version_bump_plan:
         warning["version_bump_plan"] = args.version_bump_plan
         warning.pop("release_deferred_until", None)
     elif args.release_deferred_until:
         # Validate ISO date.
         when = _parse_iso(args.release_deferred_until)
-        if when <= _now():
+        if when <= acknowledged_at:
             print("release_deferred_until must be in the future", file=sys.stderr)
             return 1
         warning["release_deferred_until"] = when.isoformat()
@@ -495,6 +514,7 @@ def _main_acknowledge(args: argparse.Namespace) -> int:
         print("acknowledge requires --version-bump-plan or --release-deferred-until", file=sys.stderr)
         return 1
 
+    warning["acknowledged_at"] = acknowledged_at.isoformat()
     warning["responsible_session"] = args.session_id or warning.get("responsible_session", "")
     _validate_warning(warning)
     _write_record(record_path, record)
