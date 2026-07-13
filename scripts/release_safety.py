@@ -60,9 +60,9 @@ DEFAULT_EXCLUDES = [
 ]
 
 # ISO 8601 timestamp with timezone.
-_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$")
-_SEMVER_NUMBER = r"(?:0|[1-9]\d*)"
-_SEMVER_PRERELEASE_ID = rf"(?:{_SEMVER_NUMBER}|\d*[A-Za-z-][0-9A-Za-z-]*)"
+_ISO_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:?[0-9]{2})$")
+_SEMVER_NUMBER = r"(?:0|[1-9][0-9]*)"
+_SEMVER_PRERELEASE_ID = rf"(?:{_SEMVER_NUMBER}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
 _VERSION_RE = re.compile(
     rf"^{_SEMVER_NUMBER}\.{_SEMVER_NUMBER}\.{_SEMVER_NUMBER}"
     rf"(?:-{_SEMVER_PRERELEASE_ID}(?:\.{_SEMVER_PRERELEASE_ID})*)?"
@@ -241,7 +241,7 @@ def _validate_warning(w: dict) -> None:
         if not isinstance(w[key], str) or not w[key].strip():
             raise ValueError(f"{key} must be a nonempty string")
     for key in ("first_seen", "deadline"):
-        if not isinstance(w[key], str) or not _ISO_RE.match(w[key]):
+        if not isinstance(w[key], str) or not _ISO_RE.fullmatch(w[key]):
             raise ValueError(f"{key} is not an ISO-8601 timestamp: {w[key]!r}")
     first = _parse_iso(str(w["first_seen"]))
     deadline = _parse_iso(str(w["deadline"]))
@@ -255,18 +255,18 @@ def _validate_warning(w: dict) -> None:
         raise ValueError("warning has both version_bump_plan and release_deferred_until")
     if has_plan or has_deferral:
         acknowledged_at = w.get("acknowledged_at")
-        if not isinstance(acknowledged_at, str) or not _ISO_RE.match(acknowledged_at):
+        if not isinstance(acknowledged_at, str) or not _ISO_RE.fullmatch(acknowledged_at):
             raise ValueError("acknowledged_at is required for an acknowledgement")
         acknowledged = _parse_iso(acknowledged_at)
         if acknowledged < first or acknowledged > deadline:
             raise ValueError("acknowledged_at must be between first_seen and deadline")
         if has_plan:
             plan = w["version_bump_plan"]
-            if not isinstance(plan, str) or not _VERSION_RE.match(plan):
+            if not isinstance(plan, str) or not _VERSION_RE.fullmatch(plan):
                 raise ValueError("version_bump_plan must be a semantic version string")
         if has_deferral:
             value = w["release_deferred_until"]
-            if not isinstance(value, str) or not _ISO_RE.match(value):
+            if not isinstance(value, str) or not _ISO_RE.fullmatch(value):
                 raise ValueError(
                     f"release_deferred_until is not an ISO-8601 timestamp: {value!r}"
                 )

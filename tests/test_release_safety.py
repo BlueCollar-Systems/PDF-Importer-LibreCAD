@@ -675,6 +675,58 @@ class ReleaseSafetyTest:
                 else:
                     raise AssertionError(f"invalid plan was accepted: {bad!r}")
 
+    def test_load_rejects_unicode_digits_in_version_plan(self):
+        warning = {
+            "repo": "owner/repo",
+            "tag": "v1.0.0",
+            "first_seen": "2026-07-12T00:00:00+00:00",
+            "first_seen_sha": "abc",
+            "deadline": "2026-07-13T00:00:00+00:00",
+            "responsible_session": "sess-1",
+            "acknowledged_at": "2026-07-12T01:00:00+00:00",
+            "version_bump_plan": "1١.2.3",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "warnings.json"
+            path.write_text(
+                json.dumps({"schema_version": 1, "warnings": [warning]}),
+                encoding="utf-8",
+            )
+            try:
+                rs.load_warning_record(
+                    path, expected_repo="owner/repo", expected_tag="v1.0.0"
+                )
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Unicode digits were accepted in a version plan")
+
+    def test_load_rejects_trailing_newline_in_version_plan(self):
+        warning = {
+            "repo": "owner/repo",
+            "tag": "v1.0.0",
+            "first_seen": "2026-07-12T00:00:00+00:00",
+            "first_seen_sha": "abc",
+            "deadline": "2026-07-13T00:00:00+00:00",
+            "responsible_session": "sess-1",
+            "acknowledged_at": "2026-07-12T01:00:00+00:00",
+            "version_bump_plan": "1.2.3\n",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "warnings.json"
+            path.write_text(
+                json.dumps({"schema_version": 1, "warnings": [warning]}),
+                encoding="utf-8",
+            )
+            try:
+                rs.load_warning_record(
+                    path, expected_repo="owner/repo", expected_tag="v1.0.0"
+                )
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("a trailing newline was accepted in a version plan")
+
     def test_load_accepts_full_semver_version_plan(self):
         warning = {
             "repo": "owner/repo",
