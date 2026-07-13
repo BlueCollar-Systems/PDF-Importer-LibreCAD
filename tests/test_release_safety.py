@@ -647,7 +647,18 @@ class ReleaseSafetyTest:
             "responsible_session": "sess-1",
             "acknowledged_at": "2026-07-12T01:00:00+00:00",
         }
-        for bad in (None, "", {}, [], True, "next someday"):
+        for bad in (
+            None,
+            "",
+            {},
+            [],
+            True,
+            "next someday",
+            "01.2.3",
+            "1.2.3-.",
+            "1.2.3-a..b",
+            "1.2.3-01",
+        ):
             with tempfile.TemporaryDirectory() as tmp:
                 path = Path(tmp) / "warnings.json"
                 warning = dict(base, version_bump_plan=bad)
@@ -663,6 +674,26 @@ class ReleaseSafetyTest:
                     pass
                 else:
                     raise AssertionError(f"invalid plan was accepted: {bad!r}")
+
+    def test_load_accepts_full_semver_version_plan(self):
+        warning = {
+            "repo": "owner/repo",
+            "tag": "v1.0.0",
+            "first_seen": "2026-07-12T00:00:00+00:00",
+            "first_seen_sha": "abc",
+            "deadline": "2026-07-13T00:00:00+00:00",
+            "responsible_session": "sess-1",
+            "acknowledged_at": "2026-07-12T01:00:00+00:00",
+            "version_bump_plan": "1.2.3-rc.1+build.5",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "warnings.json"
+            path.write_text(
+                json.dumps({"schema_version": 1, "warnings": [warning]}),
+                encoding="utf-8",
+            )
+            record = rs.load_warning_record(path, expected_repo="owner/repo")
+            assert record["warnings"][0]["version_bump_plan"] == warning["version_bump_plan"]
 
     def test_historical_tag_for_same_repo_is_allowed(self):
         with tempfile.TemporaryDirectory() as tmp:

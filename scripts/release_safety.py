@@ -61,7 +61,13 @@ DEFAULT_EXCLUDES = [
 
 # ISO 8601 timestamp with timezone.
 _ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$")
-_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
+_SEMVER_NUMBER = r"(?:0|[1-9]\d*)"
+_SEMVER_PRERELEASE_ID = rf"(?:{_SEMVER_NUMBER}|\d*[A-Za-z-][0-9A-Za-z-]*)"
+_VERSION_RE = re.compile(
+    rf"^{_SEMVER_NUMBER}\.{_SEMVER_NUMBER}\.{_SEMVER_NUMBER}"
+    rf"(?:-{_SEMVER_PRERELEASE_ID}(?:\.{_SEMVER_PRERELEASE_ID})*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
 
 
 def _now() -> datetime.datetime:
