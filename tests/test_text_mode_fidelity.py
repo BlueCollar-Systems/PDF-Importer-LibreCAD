@@ -143,22 +143,60 @@ class TestLibreCADTextModeFidelity(unittest.TestCase):
             reason="host_2d_no_3d_text",
         )
 
-    def test_textmode_invariant_uses_production_report_data(self) -> None:
-        scenarios = (
-            ("labels", "normal", "labels", None),
-            ("geometry", "raises", "labels", "text2path_failed"),
-            ("3d_text", "normal", "labels", "host_2d_no_3d_text"),
-        )
+    @staticmethod
+    def _delivered_family(drawing) -> str:
+        """Classify what the DXF actually delivers for the lone text span."""
+        types = {entity.dxftype() for entity in drawing.modelspace()}
+        if types & {"TEXT", "MTEXT"}:
+            return "labels"
+        if types & {"LWPOLYLINE", "POLYLINE"}:
+            return "outlines"
+        return "none"
 
-        for requested, outline_result, delivered, reason in scenarios:
-            with self.subTest(requested=requested, outline_result=outline_result):
-                _, report, _ = self._export_and_report(requested, outline_result)
-                self._assert_requested_or_reported_fallback(
-                    report,
-                    requested=requested,
-                    delivered=delivered,
-                    reason=reason,
-                )
+    @staticmethod
+    def _requested_family(mode: str) -> str:
+        """Glyphs and Geometry are one peer family (identical text2path engine)."""
+        if mode in {"glyphs", "geometry"}:
+            return "outlines"
+        return mode
+
+    def test_textmode_invariant_requested_or_reported_fallback(self) -> None:
+        """TEXTMODE-1 item 13 invariant: for every LC text mode x forced
+        failure, delivered == requested OR the report records a fallback.text
+        with requested/delivered/reason -- never neither, and never nothing
+        delivered."""
+        modes = ("labels", "glyphs", "geometry", "3d_text")
+        failure_axis = ("normal", "raises", "empty")
+
+        for requested in modes:
+            for outline_result in failure_axis:
+                with self.subTest(requested=requested, outline_result=outline_result):
+                    _, report, drawing = self._export_and_report(
+                        requested, outline_result
+                    )
+                    delivered_family = self._delivered_family(drawing)
+                    self.assertNotEqual(
+                        delivered_family,
+                        "none",
+                        "text disappeared -- violates 'there will be an option'",
+                    )
+                    text_fallback = report["fallback"].get("text")
+                    if delivered_family == self._requested_family(requested):
+                        self.assertIsNone(
+                            text_fallback,
+                            "requested == delivered must not synthesize a fallback",
+                        )
+                    else:
+                        self.assertIsNotNone(
+                            text_fallback,
+                            f"silent substitution: requested {requested!r}, "
+                            f"delivered {delivered_family!r} with no fallback.text",
+                        )
+                        self.assertTrue(report["fallback"]["used"])
+                        self.assertEqual(text_fallback["requested"], requested)
+                        self.assertEqual(text_fallback["delivered"], delivered_family)
+                        self.assertTrue(text_fallback["reason"])
+                        self.assertGreaterEqual(int(text_fallback["count"]), 1)
 
 
 if __name__ == "__main__":
