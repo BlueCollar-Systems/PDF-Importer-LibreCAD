@@ -1,10 +1,10 @@
 """DXF export adapter for LibreCAD workflows."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import ezdxf
 from ezdxf.colors import rgb2int
@@ -52,9 +52,9 @@ def _text_span_dict(text_item) -> Dict[str, Any]:
     }
 
 
-def _provenance_entity_type(text_mode: str) -> str:
-    mode = str(text_mode or "labels").strip().lower()
-    if mode in {"glyphs", "geometry", "outlines"}:
+def _provenance_entity_type(delivered_kind: str) -> str:
+    """Map the entity kind actually created to source-provenance vocabulary."""
+    if str(delivered_kind or "").strip().lower() == "outlines":
         return "raw_geometry_edges"
     return "dxf_text"
 
@@ -65,6 +65,46 @@ class DxfExportResult:
     entity_count: int
     layer_count: int
     image_count: int
+    text_fallbacks: List[Dict[str, Any]] = field(default_factory=list)
+    delivered_text_entity_counts: Dict[str, int] = field(default_factory=dict)
+
+
+def _normalized_text_mode(text_mode: str) -> str:
+    mode = str(text_mode or "labels").strip().lower()
+    return "3d_text" if mode == "text3d" else mode
+
+
+def _delivered_text_entity_bucket(delivered_kind: str) -> str:
+    if str(delivered_kind or "").strip().lower() == "outlines":
+        return "raw_geometry_edges"
+    return "dxf_text"
+
+
+def _append_text_fallback(
+    records: List[Dict[str, Any]],
+    *,
+    requested: str,
+    delivered: str,
+    reason: str,
+    count: int,
+) -> None:
+    """Accumulate one mode substitution without losing repeated spans."""
+    for record in records:
+        if (
+            record.get("requested") == requested
+            and record.get("delivered") == delivered
+            and record.get("reason") == reason
+        ):
+            record["count"] = int(record.get("count", 0) or 0) + int(count)
+            return
+    records.append(
+        {
+            "requested": requested,
+            "delivered": delivered,
+            "reason": reason,
+            "count": int(count),
+        }
+    )
 
 
 def export_to_dxf(extraction: DocumentExtraction, output_path: str,
@@ -80,6 +120,13 @@ def export_to_dxf(extraction: DocumentExtraction, output_path: str,
 
     entity_count = 0
     image_count = 0
+    text_fallbacks: List[Dict[str, Any]] = []
+    delivered_text_entity_counts: Dict[str, int] = {}
+    if opts.provenance_opts is not None:
+        # This transient export state is consumed by write_import_report after
+        # the DXF is built, so stale data from a prior export cannot lie.
+        opts.provenance_opts._text_mode_fallbacks = []  # noqa: B010
+        opts.provenance_opts._delivered_text_entity_counts = {}  # noqa: B010
     dash_cache: Dict[str, str] = {}
     image_def_cache: Dict[str, object] = {}
 
@@ -193,7 +240,7 @@ def export_to_dxf(extraction: DocumentExtraction, output_path: str,
                             else None
                         ),
                     )
-                created = build_text(
+                delivered_kind, created = build_text(
                     ti,
                     msp,
                     layer,
@@ -201,13 +248,36 @@ def export_to_dxf(extraction: DocumentExtraction, output_path: str,
                     is_r12=is_r12,
                     target_app="librecad",
                     dxf_version=dxf_ver,
+                    return_delivered_kind=True,
                 )
+                created = int(created)
                 _track_xy(float(ti.insertion[0]), float(ti.insertion[1]))
                 if ti.bbox:
                     x0, y0, x1, y1 = ti.bbox
                     _track_xy(float(x0), float(y0))
                     _track_xy(float(x1), float(y1))
                 entity_count += created
+                if created > 0:
+                    delivered_bucket = _delivered_text_entity_bucket(delivered_kind)
+                    delivered_text_entity_counts[delivered_bucket] = (
+                        int(delivered_text_entity_counts.get(delivered_bucket, 0) or 0)
+                        + created
+                    )
+                    requested_mode = _normalized_text_mode(opts.text_mode)
+                    if (
+                        requested_mode in {"glyphs", "geometry", "outlines"}
+                        and delivered_bucket == "dxf_text"
+                    ):
+                        # Both a conversion exception and an empty outline
+                        # result retain source TEXT.  That is a real fallback,
+                        # never a sizing or placement correction.
+                        _append_text_fallback(
+                            text_fallbacks,
+                            requested=requested_mode,
+                            delivered="labels",
+                            reason="text2path_failed",
+                            count=1,
+                        )
                 if created > 0 and opts.provenance_opts is not None:
                     try:
                         from pdfcadcore.source_provenance import record_text_span_provenance
@@ -217,7 +287,7 @@ def export_to_dxf(extraction: DocumentExtraction, output_path: str,
                             page=int(page.page_data.page_number),
                             span=_text_span_dict(ti),
                             text=str(ti.text or ""),
-                            created_entity_type=_provenance_entity_type(opts.text_mode),
+                            created_entity_type=_provenance_entity_type(delivered_kind),
                             import_mode=str(
                                 getattr(opts.provenance_opts, "import_mode", "") or ""
                             ),
@@ -285,11 +355,19 @@ def export_to_dxf(extraction: DocumentExtraction, output_path: str,
     output.parent.mkdir(parents=True, exist_ok=True)
     doc.saveas(str(output))
 
+    if opts.provenance_opts is not None:
+        # ImportRun owns the config during CLI export; importer.py reads these
+        # actual delivery facts immediately afterward to build import_report.
+        opts.provenance_opts._text_mode_fallbacks = [dict(item) for item in text_fallbacks]  # noqa: B010
+        opts.provenance_opts._delivered_text_entity_counts = dict(delivered_text_entity_counts)  # noqa: B010
+
     return DxfExportResult(
         output_path=str(output),
         entity_count=entity_count,
         layer_count=len(doc.layers),
         image_count=image_count,
+        text_fallbacks=[dict(item) for item in text_fallbacks],
+        delivered_text_entity_counts=dict(delivered_text_entity_counts),
     )
 
 

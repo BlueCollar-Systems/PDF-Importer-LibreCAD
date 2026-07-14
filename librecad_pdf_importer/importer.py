@@ -39,6 +39,50 @@ def _importer_version() -> str:
         return ""
 
 
+def _normalized_text_mode(text_mode: Any) -> str:
+    mode = str(text_mode or "labels").strip().lower()
+    return "3d_text" if mode == "text3d" else mode
+
+
+def _text_mode_fallback_for_report(config: ImportConfig, text_source_spans: int) -> Optional[Dict[str, Any]]:
+    """Return the real text substitution record accumulated during export.
+
+    LibreCAD has no true 3D text, so its documented alias is a permanent
+    host-limit fallback.  Outline failures are recorded by dxf_exporter only
+    after it knows the source TEXT was retained in the DXF.
+    """
+    if not bool(getattr(config, "import_text", False)):
+        return None
+    requested = _normalized_text_mode(getattr(config, "text_mode", "labels"))
+    if requested == "3d_text":
+        return {
+            "requested": "3d_text",
+            "delivered": "labels",
+            "reason": "host_2d_no_3d_text",
+            "count": max(0, int(text_source_spans or 0)),
+        }
+
+    records = list(getattr(config, "_text_mode_fallbacks", []) or [])
+    matching = [
+        record
+        for record in records
+        if isinstance(record, dict)
+        and _normalized_text_mode(record.get("requested")) == requested
+        and str(record.get("delivered") or "").strip()
+        and str(record.get("reason") or "").strip()
+    ]
+    if not matching:
+        return None
+
+    first = matching[0]
+    return {
+        "requested": requested,
+        "delivered": str(first.get("delivered") or "").strip(),
+        "reason": str(first.get("reason") or "").strip(),
+        "count": sum(max(0, int(record.get("count", 0) or 0)) for record in matching),
+    }
+
+
 def write_import_report(
     run: ImportRun,
     output_path: str,
@@ -127,17 +171,33 @@ def write_import_report(
             "skipped_reason": "LibreCAD is a 2D DXF host; use SketchUp, FreeCAD, or Blender for generated solids.",
         },
     }
-    if run.config.import_text and str(run.config.text_mode or "labels") != "none":
+    requested_text_mode = _normalized_text_mode(run.config.text_mode)
+    delivered_text_entity_counts = dict(
+        getattr(run.config, "_delivered_text_entity_counts", {}) or {}
+    )
+    delivered_font_rendered = None
+    if delivered_text_entity_counts:
+        try:
+            delivered_font_rendered = bool(
+                int(delivered_text_entity_counts.get("dxf_text", 0) or 0)
+            )
+        except (TypeError, ValueError):
+            delivered_font_rendered = None
+    if run.config.import_text and requested_text_mode != "none":
         extra["actual_text_entity_types"] = build_actual_text_entity_types(
             host_app="librecad",
-            text_mode=str(run.config.text_mode or "labels"),
+            text_mode=requested_text_mode,
             count=extraction.text_count,
+            font_rendered=delivered_font_rendered,
             examples=[
                 str(getattr(txt, "text", "") or "")[:20]
                 for txt in text_items[:3]
                 if str(getattr(txt, "text", "") or "").strip()
             ],
+            delivered_counts=delivered_text_entity_counts or None,
         )
+
+    text_fallback = _text_mode_fallback_for_report(run.config, text_source_spans)
 
     report = build_import_report(
         host_app="librecad",
@@ -160,9 +220,10 @@ def write_import_report(
         fallback_reason=fallback_reason,
         pdf_engine_version=_pymupdf_version(),
         import_text=bool(run.config.import_text),
-        text_mode=str(run.config.text_mode or "labels"),
+        text_mode=requested_text_mode,
         text_source_spans=text_source_spans,
         text_glyph_estimate=text_glyph_estimate,
+        text_fallback=text_fallback,
         extra=extra,
     )
 

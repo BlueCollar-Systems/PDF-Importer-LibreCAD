@@ -8,7 +8,7 @@ Convert :class:`NormalizedText` items produced by *pdfcadcore* into DXF
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Tuple, Union
 
 import ezdxf
 from ezdxf import path as ezdxf_path
@@ -72,7 +72,8 @@ def build_text(
     is_r12: bool = False,
     target_app: str = "generic",
     dxf_version: str = "R2010",
-) -> int:
+    return_delivered_kind: bool = False,
+) -> Union[int, Tuple[str, int]]:
     """Add a TEXT or MTEXT entity to *msp* for the given *text_item*.
 
     Parameters
@@ -96,9 +97,15 @@ def build_text(
         is ``"R2000"`` or earlier, TEXT entities are used exclusively
         because older DXF versions have limited MTEXT support.
     """
+    def _result(delivered_kind: str, count: int) -> Union[int, Tuple[str, int]]:
+        """Preserve the legacy count return while exposing actual delivery."""
+        if return_delivered_kind:
+            return (delivered_kind, int(count))
+        return int(count)
+
     content = text_item.text
     if not content or not content.strip():
-        return 0
+        return _result("dxf_text", 0)
 
     # NormalizedText.font_size is already the PDF nominal text height in mm.
     # Bboxes are placement/reference data and must not resize editable TEXT.
@@ -165,10 +172,13 @@ def build_text(
                         pass
                 for entity in outlines:
                     msp.add_entity(entity)
-                return len(outlines)
+                return _result("outlines", len(outlines))
         except Exception:
             pass
-        return 1
+        # The source TEXT remains in the DXF when conversion fails or yields
+        # no outlines.  Callers that request delivery metadata must report
+        # this genuine Glyphs/Geometry -> Labels fallback.
+        return _result("dxf_text", 1)
 
     # Determine whether MTEXT is allowed.  Force TEXT-only when:
     #   - targeting DXF R12 (no MTEXT support at all)
@@ -184,7 +194,7 @@ def build_text(
             content,
             dxfattribs=attribs,
         ).set_location(insert, attachment_point=1)  # TOP_LEFT
-        return 1
+        return _result("dxf_text", 1)
     else:
         # Single-line TEXT
         attribs["height"] = height
@@ -193,7 +203,7 @@ def build_text(
             content,
             dxfattribs=attribs,
         )
-        return 1
+        return _result("dxf_text", 1)
 
 
 def reset_text_styles() -> None:
