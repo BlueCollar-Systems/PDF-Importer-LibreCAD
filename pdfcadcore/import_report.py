@@ -40,6 +40,38 @@ def _unique_strings(values: List[str]) -> List[str]:
     return result
 
 
+def build_text_mode_fallback(
+    *,
+    requested: str,
+    delivered: str,
+    reason: str,
+    count: int = 0,
+) -> Optional[Dict[str, Any]]:
+    """Normalize a text-mode substitution record for the fallback block.
+
+    TEXTMODE-1 (owner directive 2026-07-13): mode substitution is never
+    silent — the report carries requested mode, delivered mode, and reason.
+    Returns ``None`` when there is no real substitution (missing modes or
+    requested == delivered) so callers can pass the result straight to
+    ``build_import_report(text_fallback=...)``.
+    """
+    req = str(requested or "").strip().lower()
+    dlv = str(delivered or "").strip().lower()
+    why = str(reason or "").strip()
+    if not req or not dlv or req == dlv:
+        return None
+    try:
+        n = int(count or 0)
+    except (TypeError, ValueError):
+        n = 0
+    return {
+        "requested": req,
+        "delivered": dlv,
+        "reason": why or "unspecified",
+        "count": max(0, n),
+    }
+
+
 def build_fidelity_diagnostics(
     *,
     primitive_count: int = 0,
@@ -52,6 +84,7 @@ def build_fidelity_diagnostics(
     text_mode: Optional[str] = None,
     text_source_spans: Optional[int] = None,
     text_glyph_estimate: Optional[int] = None,
+    text_fallback: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Return portable, user-facing fidelity signals for support and UI."""
 
@@ -86,6 +119,16 @@ def build_fidelity_diagnostics(
             )
         else:
             actions.append("Review the fallback reason and attach the import report when requesting support.")
+
+    if text_fallback:
+        signals.append("text_mode_fallback")
+        requested_mode = str(text_fallback.get("requested") or "").strip()
+        delivered_mode = str(text_fallback.get("delivered") or "").strip()
+        if requested_mode and delivered_mode:
+            actions.append(
+                f"Requested text mode '{requested_mode}' was delivered as '{delivered_mode}' — "
+                "see fallback.text in this report for the reason."
+            )
 
     if warning_count:
         signals.append("warnings_present")
@@ -615,6 +658,17 @@ class TextEntityVerification:
         return asdict(self)
 
 
+#: Bucket names hosts may report as DELIVERED entity counts (TEXTMODE-1).
+TEXT_ENTITY_DELIVERED_BUCKETS = (
+    "native_label",
+    "native_3d_text",
+    "outline_curve_or_mesh",
+    "raw_geometry_edges",
+    "dxf_text",
+    "fallback_geometry",
+)
+
+
 def build_actual_text_entity_types(
     *,
     host_app: str,
@@ -622,8 +676,17 @@ def build_actual_text_entity_types(
     count: int = 0,
     font_rendered: Optional[bool] = None,
     examples: Optional[List[str]] = None,
+    delivered_counts: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Any]:
-    """Return the shared actual_text_entity_types payload."""
+    """Return the shared actual_text_entity_types payload.
+
+    When ``delivered_counts`` is provided (mapping TEXT_ENTITY_DELIVERED_BUCKETS
+    names to counts the host actually created), the payload reflects DELIVERED
+    entities instead of being derived from the requested ``text_mode`` string
+    (TEXTMODE-1: the report must be able to tell the truth when delivered
+    differs from requested). Without it, the historical requested-mode
+    derivation is used — fully backward compatible.
+    """
 
     host = str(host_app or "").strip().lower()
     mode = str(text_mode or "").strip().lower()
@@ -638,6 +701,20 @@ def build_actual_text_entity_types(
         font_rendered=bool(rendered),
         examples=list(examples or [])[:3],
     )
+    if delivered_counts:
+        delivered_total = 0
+        for bucket in TEXT_ENTITY_DELIVERED_BUCKETS:
+            try:
+                value = int(delivered_counts.get(bucket, 0) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            if value > 0:
+                setattr(info, bucket, value)
+                delivered_total += value
+        if delivered_total > 0:
+            if total <= 0:
+                info.count = delivered_total
+            return info.to_dict()
     if total <= 0 or mode in {"", "none"}:
         return info.to_dict()
 
@@ -754,8 +831,29 @@ def build_import_report(
     text_mode: Optional[str] = None,
     text_source_spans: Optional[int] = None,
     text_glyph_estimate: Optional[int] = None,
+    text_fallback: Optional[Dict[str, Any]] = None,
     extra: Optional[Dict[str, Any]] = None,
 ) -> ImportReport:
+    # TEXTMODE-1: a text-mode substitution is a loud fallback. Normalize the
+    # host-supplied record; a real substitution marks fallback.used and adds
+    # the fallback.text block {requested, delivered, reason, count}.
+    text_fallback_block = None
+    if text_fallback:
+        text_fallback_block = build_text_mode_fallback(
+            requested=str(text_fallback.get("requested") or ""),
+            delivered=str(text_fallback.get("delivered") or ""),
+            reason=str(text_fallback.get("reason") or ""),
+            count=text_fallback.get("count") or 0,
+        )
+    effective_fallback_used = bool(fallback_used) or text_fallback_block is not None
+    effective_fallback_reason = fallback_reason
+    if text_fallback_block is not None and not effective_fallback_reason:
+        effective_fallback_reason = (
+            "text_mode_fallback: "
+            f"{text_fallback_block['requested']} -> {text_fallback_block['delivered']} "
+            f"({text_fallback_block['reason']})"
+        )
+
     input_block: Dict[str, Any] = {
         "file": str(pdf_path),
         "pages": int(pages),
@@ -787,12 +885,13 @@ def build_import_report(
             text_count=text_count,
             layer_count=layer_count,
             warnings=warnings,
-            fallback_used=fallback_used,
-            fallback_reason=fallback_reason,
+            fallback_used=effective_fallback_used,
+            fallback_reason=effective_fallback_reason,
             import_text=import_text,
             text_mode=text_mode,
             text_source_spans=text_source_spans,
             text_glyph_estimate=text_glyph_estimate,
+            text_fallback=text_fallback_block,
         ),
     )
 
@@ -817,6 +916,13 @@ def build_import_report(
         if helpers:
             performance_block["helpers_ms"] = helpers
 
+    fallback_block: Dict[str, Any] = {
+        "used": bool(effective_fallback_used),
+        "reason": effective_fallback_reason,
+    }
+    if text_fallback_block is not None:
+        fallback_block["text"] = text_fallback_block
+
     report = ImportReport(
         host={"app": host_app, "version": host_version},
         runtime={"lang": runtime_lang, "version": runtime_version},
@@ -835,7 +941,7 @@ def build_import_report(
             "warnings": int(warnings),
         },
         performance=performance_block,
-        fallback={"used": bool(fallback_used), "reason": fallback_reason},
+        fallback=fallback_block,
         mode=mode,
         report_meta=build_report_meta(
             host_app=host_app,
@@ -853,8 +959,10 @@ __all__ = [
     "SCALE_TRUST_CONFIDENCE",
     "PERFORMANCE_HINT_ENTITY_THRESHOLD",
     "PERFORMANCE_HINT_PEAK_MB",
+    "TEXT_ENTITY_DELIVERED_BUCKETS",
     "ImportReport",
     "build_fidelity_diagnostics",
+    "build_text_mode_fallback",
     "build_actual_text_entity_types",
     "build_report_meta",
     "build_font_embedding_hints",
