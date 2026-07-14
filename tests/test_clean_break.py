@@ -149,6 +149,16 @@ class TestTextDefaults(unittest.TestCase):
         self.assertIn('config.text_mode = "labels"', source)
 
 
+class TestTextModeLadderDocumented(unittest.TestCase):
+    """TEXTMODE-1 item 14: the FINAL LC proximity ladder must stay documented."""
+
+    def test_readme_documents_final_ladder(self) -> None:
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("Text-Mode Fallback Ladder (TEXTMODE-1)", readme)
+        self.assertIn("host_2d_no_3d_text", readme)
+        self.assertIn("text2path_failed", readme)
+
+
 class TestLibreCadPluginLauncher(unittest.TestCase):
     """Menu plugin must resolve installed Windows launcher apps, not only source scripts."""
 

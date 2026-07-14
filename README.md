@@ -231,6 +231,28 @@ LibreCAD is **2D CAD** — there is no true 3D text in DXF or LibreCAD.
 
 Plus `--import-text` / `--no-import-text` to skip text entirely.
 
+### Text-Mode Fallback Ladder (TEXTMODE-1)
+
+The requested text mode is the delivered text mode. Alignment, rotation, or
+scaling defects are fixed *inside* the requested mode — never by substituting
+a different mode. Substitution happens only when the requested mode is
+genuinely impossible for this host + option + PDF, walks the documented
+ladder below, always terminates in *some* delivered representation, and is
+always recorded in `import_report.json` (`fallback.text` block with
+`requested`, `delivered`, `reason`, `count`, plus the `text_mode_fallback`
+diagnostics signal) — never silent. (Owner directive 2026-07-13.)
+
+**Peer-family rule:** `glyphs` and `geometry` share the identical `text2path`
+outline engine, so a fallback between them would be a no-op; the ladder
+treats them as a single rung.
+
+| Requested | FINAL LibreCAD ladder | Host-limit notes |
+|-----------|----------------------|------------------|
+| **labels** | Glyphs/Geometry outlines → page raster (DXF `IMAGE`) | No second editable form for LibreCAD targets (MTEXT excluded by host bounding-box bugs). |
+| **glyphs / geometry** | peer family (`text2path` outlines) → Labels (`TEXT`, reported `text2path_failed`) → page raster (DXF `IMAGE`) | Labels sits before raster per the audit's interim ruling (no per-span raster patch exists; whole-page raster only). |
+| **3d_text** | **permanent host-limit fallback** → Labels (`TEXT`, reported `host_2d_no_3d_text`), then the Labels ladder | LibreCAD is a 2D DXF host — the first rung always fires and is always reported; delivered behavior is unchanged from the documented alias. |
+| **raster** | terminal — always achievable | — |
+
 ## DXF Compatibility
 
 - **R12**: Maximum compatibility. No true-color, limited linetypes.
