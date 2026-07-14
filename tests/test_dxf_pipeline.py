@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import tempfile
 import unittest
@@ -17,7 +18,7 @@ from pdfcadcore.primitives import NormalizedText
 from dxf_text_builder import build_text
 from librecad_pdf_importer.core.document import ExtractionOptions, extract_document
 from librecad_pdf_importer.exporters.dxf_exporter import DxfExportOptions, export_to_dxf
-from librecad_pdf_importer.importer import run_import
+from librecad_pdf_importer.importer import run_import, write_import_report
 
 
 class TestDxfPipeline(unittest.TestCase):
@@ -168,10 +169,16 @@ class TestDxfPipeline(unittest.TestCase):
 
     def test_3d_text_alias_outputs_editable_text_in_2d_librecad(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
+        run.config.import_text = True
+        run.config.text_mode = "3d_text"
         export = export_to_dxf(
             run.extraction,
             str(self.dxf_path),
-            DxfExportOptions(include_images=False, text_mode="3d_text"),
+            DxfExportOptions(
+                include_images=False,
+                text_mode="3d_text",
+                provenance_opts=run.config,
+            ),
         )
 
         dxf = ezdxf.readfile(export.output_path)
@@ -181,6 +188,21 @@ class TestDxfPipeline(unittest.TestCase):
             if str(entity.dxf.layer or "") == "P001_TEXT"
         }
         self.assertIn("TEXT", text_layer_types)
+
+        # TEXTMODE-1 item 10: delivered behavior is unchanged, but the report
+        # must present the 2D alias as a documented host-limit fallback.
+        report_path = self.tmp_path / "alias_import_report.json"
+        write_import_report(run, str(report_path), elapsed_ms=1.0)
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertTrue(report["fallback"]["used"])
+        text_block = report["fallback"]["text"]
+        self.assertEqual(text_block["requested"], "3d_text")
+        self.assertEqual(text_block["delivered"], "labels")
+        self.assertEqual(text_block["reason"], "host_2d_no_3d_text")
+        self.assertEqual(report["extra"]["text_mode"], "3d_text")
+        self.assertGreaterEqual(
+            report["extra"]["actual_text_entity_types"]["dxf_text"], 1
+        )
 
     def test_editable_text_height_preserves_nominal_font_size(self) -> None:
         doc = ezdxf.new("R2010")

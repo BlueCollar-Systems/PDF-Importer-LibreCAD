@@ -59,6 +59,49 @@ def test_performance_phases_optional():
     assert data["extra"]["text_glyph_estimate"] == 14
 
 
+def test_3d_text_alias_reported_as_host_limit_fallback():
+    """TEXTMODE-1 item 10: the 2D alias is a documented host-limit fallback."""
+    report = build_import_report(
+        host_app="librecad",
+        pdf_path="plan.pdf",
+        mode="vector",
+        import_text=True,
+        text_mode="3d_text",
+        text_fallback={
+            "requested": "3d_text",
+            "delivered": "labels",
+            "reason": "host_2d_no_3d_text",
+            "count": 2,
+        },
+    )
+    data = report.to_dict()
+    assert data["fallback"]["used"] is True
+    text_block = data["fallback"]["text"]
+    assert text_block["requested"] == "3d_text"
+    assert text_block["delivered"] == "labels"
+    assert text_block["reason"] == "host_2d_no_3d_text"
+    assert text_block["count"] == 2
+    extra = data["extra"]
+    # The report keeps the REQUESTED mode; the fallback block tells the truth.
+    assert extra["text_mode"] == "3d_text"
+    assert "text_mode_fallback" in extra["diagnostics"]["signals"]
+
+
+def test_matching_delivery_emits_no_fallback_text():
+    """TEXTMODE-1: requested == delivered must not synthesize a fallback."""
+    report = build_import_report(
+        host_app="librecad",
+        pdf_path="plan.pdf",
+        mode="vector",
+        import_text=True,
+        text_mode="labels",
+    )
+    data = report.to_dict()
+    assert data["fallback"]["used"] is False
+    assert data["fallback"].get("text") is None
+    assert "text_mode_fallback" not in data["extra"]["diagnostics"]["signals"]
+
+
 def test_import_report_diagnostics_for_fallback_and_dense_text():
     report = build_import_report(
         host_app="librecad",
