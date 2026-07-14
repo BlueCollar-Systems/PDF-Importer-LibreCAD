@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from unittest.mock import patch
 import ezdxf
 try:
     import pymupdf as fitz  # PyMuPDF >= 1.24 preferred name
@@ -92,6 +93,82 @@ class TestDxfPipeline(unittest.TestCase):
         dxf = ezdxf.readfile(export.output_path)
         types = {entity.dxftype() for entity in dxf.modelspace()}
         self.assertIn("IMAGE", types)
+
+    def test_text_cloud_raster_none_retains_text_and_reports_failure(self) -> None:
+        """A failed terminal raster must retain a usable text representation."""
+        with (
+            patch(
+                "librecad_pdf_importer.core.document._looks_like_text_cloud_page",
+                return_value=True,
+            ),
+            patch(
+                "librecad_pdf_importer.core.document._render_page_raster",
+                return_value=None,
+            ),
+        ):
+            run = run_import(str(self.pdf_path), mode="auto", overrides={"pages": "1"})
+
+        page = run.extraction.pages[0]
+        self.assertTrue(page.page_data.text_items)
+        self.assertTrue(page.raster_fallback_failed)
+        self.assertEqual(page.resolved_mode, "vector")
+        self.assertIn("raster render failed", page.resolved_reason)
+
+        export = export_to_dxf(
+            run.extraction,
+            str(self.dxf_path),
+            DxfExportOptions(
+                include_images=False,
+                text_mode="labels",
+                provenance_opts=run.config,
+            ),
+        )
+        dxf = ezdxf.readfile(export.output_path)
+        self.assertIn("TEXT", {entity.dxftype() for entity in dxf.modelspace()})
+
+        report_path = self.tmp_path / "raster_none_import_report.json"
+        write_import_report(run, str(report_path), elapsed_ms=1.0)
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertTrue(report["fallback"]["used"])
+        self.assertIn("raster render failed", report["fallback"]["reason"])
+        self.assertNotIn("text", report["fallback"])
+        self.assertEqual(report["extra"]["text_mode"], "labels")
+        self.assertGreaterEqual(report["extra"]["actual_text_entity_types"]["dxf_text"], 1)
+
+    def test_text_cloud_raster_error_retains_text_and_reports_failure(self) -> None:
+        """An unexpected page-raster exception must not erase the text fallback."""
+        with (
+            patch(
+                "librecad_pdf_importer.core.document._looks_like_text_cloud_page",
+                return_value=True,
+            ),
+            patch(
+                "librecad_pdf_importer.core.document._render_page_raster",
+                side_effect=OSError("simulated raster save failure"),
+            ),
+        ):
+            run = run_import(str(self.pdf_path), mode="auto", overrides={"pages": "1"})
+
+        page = run.extraction.pages[0]
+        self.assertTrue(page.page_data.text_items)
+        self.assertTrue(page.raster_fallback_failed)
+        self.assertEqual(page.resolved_mode, "vector")
+        self.assertIn("raster render failed", page.resolved_reason)
+
+    def test_blank_forced_raster_none_fails_loudly(self) -> None:
+        """A terminal raster without any viable prior content cannot be silent."""
+        blank_pdf = self.tmp_path / "blank_raster.pdf"
+        doc = fitz.open()
+        doc.new_page(width=600, height=400)
+        doc.save(str(blank_pdf))
+        doc.close()
+
+        with patch(
+            "librecad_pdf_importer.core.document._render_page_raster",
+            return_value=None,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "no viable vector/text representation"):
+                run_import(str(blank_pdf), mode="raster", overrides={"pages": "1"})
 
     def test_geometry_text_mode_outputs_noneditable_outlines(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})

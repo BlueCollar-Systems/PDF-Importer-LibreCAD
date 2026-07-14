@@ -56,6 +56,7 @@ class ExtractedPage:
     images: List[ImagePlacement] = field(default_factory=list)
     resolved_mode: Optional[str] = None       # "vector" | "raster" | "hybrid"
     resolved_reason: Optional[str] = None     # human-readable
+    raster_fallback_failed: bool = False       # raster delivery failed; vector/text was retained
 
 
 @dataclass
@@ -129,6 +130,52 @@ class ExtractionOptions:
     max_text_items_per_page: Optional[int] = None
     image_dir: Optional[str] = None
 
+
+def _prepare_vector_page_data(page_data: PageData, options: ExtractionOptions) -> None:
+    """Apply the existing vector controls without changing text sizing."""
+    if options.min_segment_mm > 0:
+        _prune_micro_segments(page_data, options.min_segment_mm)
+    if not options.import_text:
+        page_data.text_items = []
+    elif options.max_text_items_per_page is not None:
+        cap = int(max(0, options.max_text_items_per_page))
+        if len(page_data.text_items) > cap:
+            page_data.text_items = page_data.text_items[:cap]
+    if options.detect_arcs:
+        _promote_arcs(page_data, options.arc_fit_tol_mm, options.min_arc_span_deg)
+
+
+def _has_viable_vector_content(page_data: PageData) -> bool:
+    return bool(page_data.primitives or page_data.text_items)
+
+
+def _restore_viable_vector_content(
+    page_data: PageData,
+    retained_content,
+    *,
+    content_prepared: bool,
+    options: ExtractionOptions,
+) -> bool:
+    if retained_content is None:
+        return False
+    primitives, text_items = retained_content
+    page_data.primitives = list(primitives)
+    page_data.text_items = list(text_items)
+    if not content_prepared:
+        _prepare_vector_page_data(page_data, options)
+    return _has_viable_vector_content(page_data)
+
+
+def _render_page_raster_safely(page, page_number: int, options: ExtractionOptions,
+                               image_dir: Optional[Path]):
+    """Return a page raster or a delivery-failure detail for recovery/reporting."""
+    try:
+        rendered = _render_page_raster(page, page_number, options, image_dir)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    if rendered is None:
+        return None, "renderer returned no placement"
+    return rendered, ""
 
 def parse_pages_spec(spec: Optional[Iterable[int] | str], page_count: int) -> List[int]:
     if spec is None:
@@ -212,18 +259,16 @@ def extract_document(pdf_path: str, options: Optional[ExtractionOptions] = None)
             page_data = extract_page(page, page_number, scale=opts.scale, flip_y=opts.flip_y)
 
             include_vectors = effective_mode in {"vector", "hybrid"}
+            retained_content = None
+            retained_content_prepared = False
             if include_vectors:
-                if opts.min_segment_mm > 0:
-                    _prune_micro_segments(page_data, opts.min_segment_mm)
-                if not opts.import_text:
-                    page_data.text_items = []
-                elif opts.max_text_items_per_page is not None:
-                    cap = int(max(0, opts.max_text_items_per_page))
-                    if len(page_data.text_items) > cap:
-                        page_data.text_items = page_data.text_items[:cap]
-                if opts.detect_arcs:
-                    _promote_arcs(page_data, opts.arc_fit_tol_mm, opts.min_arc_span_deg)
+                _prepare_vector_page_data(page_data, opts)
+                if _has_viable_vector_content(page_data):
+                    retained_content = (list(page_data.primitives), list(page_data.text_items))
+                    retained_content_prepared = True
             else:
+                if _has_viable_vector_content(page_data):
+                    retained_content = (list(page_data.primitives), list(page_data.text_items))
                 page_data.primitives = []
                 page_data.text_items = []
 
@@ -235,26 +280,60 @@ def extract_document(pdf_path: str, options: Optional[ExtractionOptions] = None)
                     effective_mode = "raster"
                     resolved_reason = "Page frame only -- fallback to raster"
                 if effective_mode == "raster":
+                    if _has_viable_vector_content(page_data):
+                        retained_content = (list(page_data.primitives), list(page_data.text_items))
+                        retained_content_prepared = True
                     page_data.primitives = []
                     page_data.text_items = []
 
             profile = profile_page(page_data)
             images = []
+            raster_failure_detail = ""
             if opts.import_images:
                 if effective_mode in {"raster", "hybrid"}:
-                    rendered = _render_page_raster(page, page_number, opts, image_dir)
+                    rendered, raster_failure_detail = _render_page_raster_safely(
+                        page, page_number, opts, image_dir
+                    )
                     if rendered is not None:
                         images.append(rendered)
+                        raster_failure_detail = ""
                 elif effective_mode == "vector":
                     images = _extract_images(doc, page, page_number, opts, image_dir)
                     has_text = bool(page_data.text_items)
                     vector_empty = not page_data.primitives and not has_text
                     if opts.raster_fallback and (vector_empty or _looks_like_page_frame_only(page_data)) and not images:
-                        rendered = _render_page_raster(page, page_number, opts, image_dir)
+                        rendered, raster_failure_detail = _render_page_raster_safely(
+                            page, page_number, opts, image_dir
+                        )
                         if rendered is not None:
                             images.append(rendered)
                             effective_mode = "raster"
                             resolved_reason = "Vector empty -- raster fallback"
+                            raster_failure_detail = ""
+            elif effective_mode in {"raster", "hybrid"}:
+                raster_failure_detail = "image delivery disabled"
+
+            raster_fallback_failed = False
+            if raster_failure_detail:
+                if not _restore_viable_vector_content(
+                    page_data,
+                    retained_content,
+                    content_prepared=retained_content_prepared,
+                    options=opts,
+                ):
+                    raise RuntimeError(
+                        f"Page {page_number}: raster render failed ({raster_failure_detail}); "
+                        "no viable vector/text representation remains."
+                    )
+                profile = profile_page(page_data)
+                if effective_mode == "raster":
+                    effective_mode = "vector"
+                prior_reason = resolved_reason or "Raster representation requested"
+                resolved_reason = (
+                    f"{prior_reason}; raster render failed ({raster_failure_detail}); "
+                    "retained vector/text representation"
+                )
+                raster_fallback_failed = True
 
             extracted.append(ExtractedPage(
                 page_data=page_data,
@@ -262,6 +341,7 @@ def extract_document(pdf_path: str, options: Optional[ExtractionOptions] = None)
                 images=images,
                 resolved_mode=effective_mode,
                 resolved_reason=resolved_reason,
+                raster_fallback_failed=raster_fallback_failed,
             ))
 
     return DocumentExtraction(

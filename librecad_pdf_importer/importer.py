@@ -138,10 +138,18 @@ def write_import_report(
     text_source_spans = len(text_items)
     text_glyph_estimate = sum(len(str(getattr(txt, "text", "") or "")) for txt in text_items)
 
+    raster_delivery_failure = next(
+        (page for page in pages if bool(getattr(page, "raster_fallback_failed", False))),
+        None,
+    )
     fallback_used = any(
         (p.resolved_mode or "") == "raster" for p in pages
-    )
-    fallback_reason = next(
+    ) or raster_delivery_failure is not None
+    fallback_reason = (
+        getattr(raster_delivery_failure, "resolved_reason", None)
+        if raster_delivery_failure is not None
+        else None
+    ) or next(
         (p.resolved_reason for p in pages if (p.resolved_mode or "") == "raster"),
         None,
     )
