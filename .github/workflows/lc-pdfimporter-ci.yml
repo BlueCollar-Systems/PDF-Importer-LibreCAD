@@ -57,6 +57,11 @@ jobs:
       # resolve to a directory on hosted runners (permanent silent skip).
       # The public FreeCAD repo is cloned because the conformance runner's
       # python leg imports pdfcadcore from $BCS_FREECAD_REPO/PDFVectorImporter.
+      # D-4 (round 21 deferral QS-4): the public SketchUp repo is cloned so the
+      # runner's sketchup legs execute instead of visible-skipping; without
+      # $BCS_SKETCHUP_REPO the runner defaults to a Windows path that never
+      # exists here, and its own R4-2 skip logic handles any absence (ruby is
+      # preinstalled on ubuntu runners; guarded anyway).
       - name: Optional corpus clone (CORPUS_READ_TOKEN)
         if: matrix.python-version == '3.12'
         env:
@@ -72,6 +77,13 @@ jobs:
           echo "corpus_available=true" >> "$GITHUB_OUTPUT"
           echo "BCS_CORPUS_ROOT=$RUNNER_TEMP/pdf-test-corpus" >> "$GITHUB_ENV"
           echo "BCS_FREECAD_REPO=$RUNNER_TEMP/PDF-Importer-FreeCAD" >> "$GITHUB_ENV"
+          if command -v ruby >/dev/null 2>&1; then
+            ruby --version
+            git clone --depth 1 "https://github.com/BlueCollar-Systems/PDF-Importer-SketchUp.git" "$RUNNER_TEMP/PDF-Importer-SketchUp"
+            echo "BCS_SKETCHUP_REPO=$RUNNER_TEMP/PDF-Importer-SketchUp" >> "$GITHUB_ENV"
+          else
+            echo "::notice::ruby not on PATH; SketchUp conformance legs visible-skip (R4-2, D-4)"
+          fi
         id: corpus
 
       - name: Corpus schema + conformance-vector gate
