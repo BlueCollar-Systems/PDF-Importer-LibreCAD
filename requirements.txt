@@ -1,4 +1,4 @@
 PyMuPDF>=1.24,<2.0
-ezdxf>=1.0
+ezdxf>=1.1
 fonttools>=4.50,<5.0
 matplotlib>=3.7,<4.0

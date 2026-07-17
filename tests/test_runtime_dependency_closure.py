@@ -212,7 +212,7 @@ def test_build_environment_inventory_copies_exact_notices_and_versions(tmp_path)
     distributions = (
         ("PyInstaller", "6.21.0", "GPL-2.0-or-later WITH Bootloader-exception"),
         ("PyMuPDF", "1.24.0", "AGPL-3.0-only"),
-        ("ezdxf", "1.0.0", "MIT"),
+        ("ezdxf", "1.1.0", "MIT"),
         ("fonttools", "4.50.0", "MIT"),
         ("matplotlib", "3.7.0", "PSF-based"),
         ("numpy", "1.26.4", "BSD-3-Clause"),
@@ -260,7 +260,7 @@ def test_portable_smoke_requires_dynamic_python_notice_inventory() -> None:
     assert "licenses/python-distributions.json" in smoke_portable_zip.REQUIRED_NOTICES
 
 
-def test_runtime_probe_imports_ezdxf_text2path_with_its_matplotlib_dependency() -> None:
+def test_runtime_probe_imports_the_complete_ezdxf_text_production_surface() -> None:
     source = (
         Path(__file__).resolve().parents[1]
         / "librecad_pdf_importer"
@@ -268,7 +268,17 @@ def test_runtime_probe_imports_ezdxf_text2path_with_its_matplotlib_dependency() 
     ).read_text(encoding="utf-8")
 
     assert "from ezdxf.addons import text2path" in source
+    assert "from ezdxf.fonts import fonts as ezdxf_fonts" in source
+    assert "from ezdxf.fonts.font_face import FontFace" in source
     assert "Matplotlib" in source
+
+    dependency_manager_source = (
+        Path(__file__).resolve().parents[1]
+        / "librecad_pdf_importer"
+        / "dependency_manager.py"
+    ).read_text(encoding="utf-8")
+    assert "from ezdxf.fonts import fonts as ezdxf_fonts" in dependency_manager_source
+    assert "from ezdxf.fonts.font_face import FontFace" in dependency_manager_source
 
 
 def test_portable_self_test_timeout_fails_closed(monkeypatch, tmp_path) -> None:

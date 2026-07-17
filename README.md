@@ -2,7 +2,7 @@
 
 **BlueCollar Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.64](https://img.shields.io/badge/Version-1.0.64-blue.svg)
+![Version: 1.0.65](https://img.shields.io/badge/Version-1.0.65-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
@@ -38,7 +38,7 @@ See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the full host version matrix (L
 ## Requirements
 
 - Windows release installer or portable ZIP: no separate Python or pip packages.
-- Source/dev install: Python 3.10+, PyMuPDF >=1.24,<2.0, ezdxf >=1.0,
+- Source/dev install: Python 3.10+, PyMuPDF >=1.24,<2.0, ezdxf >=1.1,
   FontTools >=4.50,<5.0, and Matplotlib >=3.7,<4.0. All are free software dependencies.
 
 ## Installation

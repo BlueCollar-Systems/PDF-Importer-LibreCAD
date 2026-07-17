@@ -34,7 +34,7 @@ Release portable ZIP bundles Python + PyMuPDF + ezdxf + FontTools + Matplotlib �
 |------------|--------------|------------|
 | Python runtime | ✅ Bundled | 3.10+ required |
 | PyMuPDF (>=1.24, &lt;2.0) | ✅ Bundled | `preflight_check.py --install` |
-| ezdxf (>=1.0) | ✅ Bundled | `preflight_check.py --install` |
+| ezdxf (>=1.1) | ✅ Bundled | `preflight_check.py --install` |
 | FontTools (>=4.50, &lt;5.0) | ✅ Bundled | `preflight_check.py --install` |
 | Matplotlib (>=3.7, &lt;4.0) | ✅ Bundled | `preflight_check.py --install` |
 | pdfcadcore | ✅ Bundled | Same |

@@ -41,6 +41,8 @@ def check_ezdxf() -> bool:
     try:
         import ezdxf  # noqa: F401
         from ezdxf.addons import text2path  # noqa: F401
+        from ezdxf.fonts import fonts as ezdxf_fonts  # noqa: F401
+        from ezdxf.fonts.font_face import FontFace  # noqa: F401
         return True
     except ImportError:
         return False

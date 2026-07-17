@@ -26,12 +26,23 @@ def test_ci_clones_optional_corpus_before_tests_and_runs_minimum_dependencies() 
     assert workflow.index("Optional corpus clone") < workflow.index("Run unit tests")
     assert "minimum-dependencies:" in workflow
     assert '"PyMuPDF==1.24.0"' in workflow
-    assert '"ezdxf==1.0.0"' in workflow
+    assert '"ezdxf==1.1.0"' in workflow
     assert '"fonttools==4.50.0"' in workflow
     assert '"numpy==1.23.5"' in workflow
     assert '"matplotlib==3.7.0"' in workflow
     assert "pip install --no-deps -e ." in workflow
     assert workflow.count("python -m pytest tests/ -v") >= 2
+
+
+def test_declared_ezdxf_floor_matches_the_production_font_api() -> None:
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    # ezdxf 1.0.x has ezdxf.tools.fonts only.  Production imports the
+    # ezdxf.fonts package introduced in 1.1.0, so every installer must reject
+    # the older, import-incompatible runtime before conversion starts.
+    assert "ezdxf>=1.1" in requirements
+    assert '"ezdxf>=1.1"' in project
 
 
 def test_runtime_requirements_have_one_source_of_truth() -> None:

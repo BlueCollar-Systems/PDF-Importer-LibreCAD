@@ -9,7 +9,7 @@ license.
 |---|---|---|---|
 | CPython | bundled by PyInstaller | PSF License | https://www.python.org/ |
 | PyMuPDF (embeds MuPDF) | >=1.24,<2.0 | AGPL-3.0 (or Artifex commercial) | https://github.com/pymupdf/PyMuPDF — https://mupdf.com/ |
-| ezdxf | >=1.0 | MIT | https://github.com/mozman/ezdxf |
+| ezdxf | >=1.1 | MIT | https://github.com/mozman/ezdxf |
 | FontTools | >=4.50,<5.0 | MIT | https://github.com/fonttools/fonttools |
 | Matplotlib (`ezdxf.addons.text2path` runtime) | >=3.7,<4.0 | PSF-based Matplotlib license | https://github.com/matplotlib/matplotlib |
 | NumPy (ezdxf dependency) | resolved at build | BSD-3-Clause and bundled notices | https://github.com/numpy/numpy |
