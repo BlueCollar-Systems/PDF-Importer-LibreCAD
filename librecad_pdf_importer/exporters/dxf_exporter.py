@@ -795,11 +795,18 @@ def _attempt_terminal_text_raster(
     attempts = list(delivery.attempts)
     for prior in attempts:
         prior.superseded = True
+    source_content_whitespace_only = not bool(
+        str(getattr(source_text, "text", "") or "").strip()
+    )
     attempt = TextDeliveryAttempt(
         source_id=delivery.source_id,
         requested_representation=delivery.requested_representation,
         attempted_representation="raster",
-        strategy="pymupdf_item_clip",
+        strategy=(
+            "source_bound_zero_ink_png"
+            if source_content_whitespace_only
+            else "pymupdf_item_clip"
+        ),
     )
     attempts.append(attempt)
     doc = msp.doc
@@ -809,11 +816,6 @@ def _attempt_terminal_text_raster(
     try:
         if not delivery.source_id:
             raise ValueError("terminal raster has no stable source identity")
-        if not str(getattr(source_text, "text", "") or "").strip():
-            raise ValueError(
-                "terminal raster cannot certify a whitespace-only source item "
-                "from unrelated page ink"
-            )
         source_bbox = getattr(source_text, "source_bbox_pdf", None)
         placed_bbox = getattr(placed_text, "bbox", None)
         if not source_bbox or len(source_bbox) < 4 or not placed_bbox or len(placed_bbox) < 4:
@@ -827,64 +829,93 @@ def _attempt_terminal_text_raster(
         if min(source_width, source_height, placed_width, placed_height) <= 0.0:
             raise ValueError("terminal raster source item bbox is empty")
 
-        with fitz.open(extraction.pdf_path) as source_doc:
-            page = source_doc.load_page(int(page_number) - 1)
-            rotation_matrix = _page_rotation_transform(
-                page.rect,
-                getattr(page, "rotation_matrix", None),
-            )
-            source_corners = [
-                _transform_pdf_point(x, y, rotation_matrix)
-                for x, y in (
-                    (sx0, sy0),
-                    (sx1, sy0),
-                    (sx1, sy1),
-                    (sx0, sy1),
-                )
-            ]
-            requested_clip = fitz.Rect(
-                min(point[0] for point in source_corners),
-                min(point[1] for point in source_corners),
-                max(point[0] for point in source_corners),
-                max(point[1] for point in source_corners),
-            )
-            clip = requested_clip & page.rect
-            if clip.is_empty or clip.is_infinite:
-                raise ValueError("terminal raster clip is outside the source page")
-            containment_tolerance = max(
-                1e-6,
-                max(float(page.rect.width), float(page.rect.height), 1.0) * 1e-7,
-            )
-            if any(
-                not math.isclose(
-                    left,
-                    right,
-                    rel_tol=0.0,
-                    abs_tol=containment_tolerance,
-                )
-                for left, right in zip(
-                    (requested_clip.x0, requested_clip.y0, requested_clip.x1, requested_clip.y1),
-                    (clip.x0, clip.y0, clip.x1, clip.y1),
-                    strict=True,
-                )
-            ):
-                raise ValueError(
-                    "terminal raster source bbox is not fully contained by the source page"
-                )
-            dpi = max(72, int(raster_dpi or 300))
-            pixmap = page.get_pixmap(
-                matrix=fitz.Matrix(dpi / 72.0, dpi / 72.0),
-                clip=clip,
-                alpha=True,
-            )
+        source_clip: Optional[List[float]] = None
+        source_rotation: Optional[List[float]] = None
+        source_pixels_sampled = False
+        visible_ink_verified = False
+        zero_ink_verified = False
+        if source_content_whitespace_only:
+            pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 1, 1), True)
+            pixmap.clear_with(0)
+            pixmap.set_alpha(bytes([0]))
             png = bytes(pixmap.tobytes("png"))
+            zero_ink_verified = not _pixmap_contains_ink(pixmap)
+            if not zero_ink_verified:
+                raise ValueError("terminal raster zero-ink asset contains visible pixels")
+        else:
+            with fitz.open(extraction.pdf_path) as source_doc:
+                page = source_doc.load_page(int(page_number) - 1)
+                rotation_matrix = _page_rotation_transform(
+                    page.rect,
+                    getattr(page, "rotation_matrix", None),
+                )
+                source_corners = [
+                    _transform_pdf_point(x, y, rotation_matrix)
+                    for x, y in (
+                        (sx0, sy0),
+                        (sx1, sy0),
+                        (sx1, sy1),
+                        (sx0, sy1),
+                    )
+                ]
+                requested_clip = fitz.Rect(
+                    min(point[0] for point in source_corners),
+                    min(point[1] for point in source_corners),
+                    max(point[0] for point in source_corners),
+                    max(point[1] for point in source_corners),
+                )
+                clip = requested_clip & page.rect
+                if clip.is_empty or clip.is_infinite:
+                    raise ValueError("terminal raster clip is outside the source page")
+                containment_tolerance = max(
+                    1e-6,
+                    max(float(page.rect.width), float(page.rect.height), 1.0) * 1e-7,
+                )
+                if any(
+                    not math.isclose(
+                        left,
+                        right,
+                        rel_tol=0.0,
+                        abs_tol=containment_tolerance,
+                    )
+                    for left, right in zip(
+                        (
+                            requested_clip.x0,
+                            requested_clip.y0,
+                            requested_clip.x1,
+                            requested_clip.y1,
+                        ),
+                        (clip.x0, clip.y0, clip.x1, clip.y1),
+                        strict=True,
+                    )
+                ):
+                    raise ValueError(
+                        "terminal raster source bbox is not fully contained by the source page"
+                    )
+                dpi = max(72, int(raster_dpi or 300))
+                pixmap = page.get_pixmap(
+                    matrix=fitz.Matrix(dpi / 72.0, dpi / 72.0),
+                    clip=clip,
+                    alpha=True,
+                )
+                png = bytes(pixmap.tobytes("png"))
+                source_clip = [
+                    float(clip.x0),
+                    float(clip.y0),
+                    float(clip.x1),
+                    float(clip.y1),
+                ]
+                source_rotation = [float(value) for value in rotation_matrix]
+                source_pixels_sampled = True
+
+            visible_ink_verified = _pixmap_contains_ink(pixmap)
+            if not visible_ink_verified:
+                raise ValueError("terminal raster crop contains no visible source ink")
 
         if pixmap.width <= 0 or pixmap.height <= 0:
             raise ValueError("terminal raster rendered zero pixels")
         if not png.startswith(b"\x89PNG\r\n\x1a\n"):
             raise ValueError("terminal raster output is not a PNG")
-        if not _pixmap_contains_ink(pixmap):
-            raise ValueError("terminal raster crop contains no visible source ink")
 
         safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", delivery.source_id)
         asset_path = asset_root / f"{safe_id}.png"
@@ -928,8 +959,13 @@ def _attempt_terminal_text_raster(
         ) and math.isclose(
             actual_height, placed_height, rel_tol=1e-8, abs_tol=1e-9
         )
+        ink_contract_verified = (
+            zero_ink_verified
+            if source_content_whitespace_only
+            else visible_ink_verified
+        )
         attempt.type_verified = image.dxftype() == "IMAGE"
-        attempt.visual_verified = insert_ok and size_ok
+        attempt.visual_verified = insert_ok and size_ok and ink_contract_verified
         attempt.cleanup_verified = all(
             doc.entitydb.get(handle) is not None
             and getattr(doc.entitydb.get(handle), "is_alive", True)
@@ -942,14 +978,9 @@ def _attempt_terminal_text_raster(
             "source_id": delivery.source_id,
             "asset_path": str(asset_path),
             "asset_sha256": hashlib.sha256(png).hexdigest(),
-            "source_clip_pdf": [
-                float(clip.x0),
-                float(clip.y0),
-                float(clip.x1),
-                float(clip.y1),
-            ],
+            "source_clip_pdf": source_clip,
             "source_bbox_pdf": [sx0, sy0, sx1, sy1],
-            "source_to_display_rotation": [float(value) for value in rotation_matrix],
+            "source_to_display_rotation": source_rotation,
             "target_bbox_model": [
                 min(px0, px1),
                 min(py0, py1),
@@ -957,7 +988,11 @@ def _attempt_terminal_text_raster(
                 max(py0, py1),
             ],
             "pixel_size": [int(pixmap.width), int(pixmap.height)],
-            "visible_ink_verified": True,
+            "source_content_whitespace_only": source_content_whitespace_only,
+            "visible_ink_expected": not source_content_whitespace_only,
+            "visible_ink_verified": visible_ink_verified,
+            "zero_ink_verified": zero_ink_verified,
+            "source_pixels_sampled": source_pixels_sampled,
             "anchor_verified": insert_ok,
             "size_verified": size_ok,
         }

@@ -1520,7 +1520,9 @@ def test_exporter_fails_loudly_when_terminal_raster_cannot_be_verified(
     assert not list(tmp_path.rglob("*.png"))
 
 
-def test_terminal_raster_cannot_borrow_neighboring_ink_for_whitespace(tmp_path) -> None:
+def test_requested_raster_delivers_whitespace_as_source_bound_zero_ink_image(
+    tmp_path,
+) -> None:
     run = _real_text_extraction(tmp_path)
     original = run.extraction.pages[0].page_data.text_items[0]
     whitespace = __import__("dataclasses").replace(
@@ -1530,29 +1532,106 @@ def test_terminal_raster_cannot_borrow_neighboring_ink_for_whitespace(tmp_path) 
     )
     run.extraction.pages[0].page_data.text_items = [whitespace]
     source_id = f"text_span:1:{whitespace.id}"
-    failure = TextDeliveryResult(
-        source_id=source_id,
-        requested_representation="labels",
-        final_representation=None,
-        verified=False,
-        terminal_fallback_authorized=True,
-        failure_reason="all structural representations proven impossible",
-    )
-    output = tmp_path / "whitespace_must_not_be_rasterized.dxf"
+    output = tmp_path / "whitespace_zero_ink_raster.dxf"
 
     with patch(
-        "librecad_pdf_importer.exporters.dxf_exporter.build_text",
-        return_value=failure,
-    ):
-        with pytest.raises(RuntimeError, match="whitespace-only"):
-            export_to_dxf(
-                run.extraction,
-                str(output),
-                DxfExportOptions(include_images=False, text_mode="labels"),
-            )
+        "librecad_pdf_importer.exporters.dxf_exporter.fitz.open",
+        side_effect=AssertionError("zero-ink Raster must not sample neighboring page pixels"),
+    ) as source_open:
+        result = export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(
+                include_images=False,
+                text_mode="raster",
+                provenance_opts=run.config,
+            ),
+        )
 
-    assert not output.exists()
-    assert not list(tmp_path.rglob("*.png"))
+    source_open.assert_not_called()
+    assert output.is_file()
+    assert result.entity_count == 1
+    assert result.image_count == 1
+    assert result.delivered_text_entity_counts == {"raster_image": 1}
+    assert result.text_fallbacks == []
+    assert len(result.text_deliveries) == 1
+    delivery = result.text_deliveries[0]
+    assert delivery["source_id"] == source_id
+    assert delivery["requested_representation"] == "raster"
+    assert delivery["final_representation"] == "raster"
+    assert delivery["verified"] is True
+    assert delivery["fallback_used"] is False
+    assert len(delivery["entity_handles"]) == 1
+    assert len(delivery["support_entity_handles"]) == 2
+    assert len(delivery["attempts"]) == 1
+    attempt = delivery["attempts"][0]
+    assert attempt["attempted_representation"] == "raster"
+    assert attempt["strategy"] == "source_bound_zero_ink_png"
+    assert attempt["outcome"] == "verified"
+    assert attempt["type_verified"] is True
+    assert attempt["visual_verified"] is True
+    assert attempt["cleanup_verified"] is True
+    evidence = attempt["evidence"]
+    assert evidence["source_id"] == source_id
+    assert evidence["source_pdf_sha256"] == hashlib.sha256(
+        Path(run.extraction.pdf_path).read_bytes()
+    ).hexdigest()
+    assert evidence["source_bbox_pdf"] == pytest.approx(whitespace.source_bbox_pdf)
+    assert evidence["target_bbox_model"] == pytest.approx(whitespace.bbox)
+    assert evidence["source_content_whitespace_only"] is True
+    assert evidence["visible_ink_expected"] is False
+    assert evidence["zero_ink_verified"] is True
+    assert evidence["source_pixels_sampled"] is False
+    assert evidence["pixel_size"] == [1, 1]
+    assert evidence["anchor_verified"] is True
+    assert evidence["size_verified"] is True
+
+    asset_path = Path(evidence["asset_path"])
+    assert asset_path.is_file()
+    asset_content = asset_path.read_bytes()
+    assert asset_content.startswith(b"\x89PNG\r\n\x1a\n")
+    assert hashlib.sha256(asset_content).hexdigest() == evidence["asset_sha256"]
+    transparent = fitz.Pixmap(str(asset_path))
+    assert (transparent.width, transparent.height) == (1, 1)
+    assert bool(transparent.alpha) is True
+    assert transparent.pixel(0, 0)[-1] == 0
+
+    drawing = ezdxf.readfile(output)
+    images = list(drawing.modelspace())
+    assert [entity.dxftype() for entity in images] == ["IMAGE"]
+    image = images[0]
+    assert str(image.dxf.handle) == delivery["entity_handles"][0]
+    assert int(image.dxf.flags or 0) & 8
+    x0, y0, x1, y1 = evidence["target_bbox_model"]
+    actual_size = (
+        math.hypot(image.dxf.u_pixel.x, image.dxf.u_pixel.y)
+        * float(image.dxf.image_size.x),
+        math.hypot(image.dxf.v_pixel.x, image.dxf.v_pixel.y)
+        * float(image.dxf.image_size.y),
+    )
+    assert tuple(image.dxf.insert)[:2] == pytest.approx((x0, y0))
+    assert actual_size == pytest.approx((x1 - x0, y1 - y0))
+    assert all(
+        drawing.entitydb.get(handle) is not None
+        for handle in delivery["support_entity_handles"]
+    )
+    _verify_serialized_text_deliveries(drawing, result.text_deliveries)
+
+    report_path = tmp_path / "whitespace_zero_ink_import_report.json"
+    write_import_report(run, str(report_path), elapsed_ms=1.0)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    actual = report["extra"]["actual_text_entity_types"]
+    assert actual["entity_type"] == "raster"
+    assert actual["raster_image"] == 1
+    delivery_report = report["extra"]["text_representation_delivery"]
+    assert delivery_report["requested_representation"] == "raster"
+    assert delivery_report["verified"] is True
+    assert delivery_report["source_ids"] == [source_id]
+    assert delivery_report["entity_handles"] == delivery["entity_handles"]
+    assert delivery_report["support_entity_handles"] == delivery["support_entity_handles"]
+    run.close()
+    assert asset_path.is_file()
+    assert not list(tmp_path.rglob("*.tmp"))
 
 
 def test_unproven_structural_failure_cannot_start_terminal_raster(
@@ -1908,7 +1987,7 @@ def test_real_embedded_chart_fonts_drive_the_requested_dxf_representation(
     assert not list(tmp_path.rglob("*.tmp"))
 
 
-def test_real_welding_chart_requested_item_raster_is_source_bound(
+def test_real_welding_chart_all_requested_raster_spans_are_source_bound(
     tmp_path,
     welding_symbol_chart,
 ) -> None:
@@ -1919,11 +1998,13 @@ def test_real_welding_chart_requested_item_raster_is_source_bound(
         overrides={"pages": "1", "import_text": True, "text_mode": "raster"},
     )
     page = run.extraction.pages[0]
-    source_item = next(item for item in page.page_data.text_items if item.text.strip())
-    page.page_data.text_items = [source_item]
+    source_items = list(page.page_data.text_items)
+    assert len(source_items) == 372
+    whitespace_ids = {int(item.id) for item in source_items if not item.text.strip()}
+    assert whitespace_ids == {166, 311, 314}
     page.page_data.primitives = []
     page.images = []
-    output = tmp_path / "welding-requested-item-raster.dxf"
+    output = tmp_path / "welding-all-requested-item-raster.dxf"
 
     result = export_to_dxf(
         run.extraction,
@@ -1936,20 +2017,98 @@ def test_real_welding_chart_requested_item_raster_is_source_bound(
         ),
     )
 
-    assert len(result.text_deliveries) == 1
-    delivery = result.text_deliveries[0]
-    assert delivery["requested_representation"] == "raster"
-    assert delivery["final_representation"] == "raster"
-    assert delivery["fallback_used"] is False
-    evidence = delivery["attempts"][-1]["evidence"]
-    assert evidence["source_pdf_sha256"] == hashlib.sha256(chart.read_bytes()).hexdigest()
-    assert evidence["source_page_number"] == 1
-    assert evidence["source_id"] == delivery["source_id"]
-    assert evidence["visible_ink_verified"] is True
+    assert output.is_file()
+    assert result.entity_count == 372
+    assert result.image_count == 372
+    assert result.delivered_text_entity_counts == {"raster_image": 372}
+    assert result.text_fallbacks == []
+    assert len(result.text_deliveries) == 372
+    expected_source_ids = {f"text_span:1:{item.id}" for item in source_items}
+    assert {"text_span:1:166", "text_span:1:311", "text_span:1:314"}.issubset(
+        expected_source_ids
+    )
+    deliveries_by_source = {
+        delivery["source_id"]: delivery for delivery in result.text_deliveries
+    }
+    assert set(deliveries_by_source) == expected_source_ids
+
     drawing = ezdxf.readfile(output)
-    assert [entity.dxftype() for entity in drawing.modelspace()] == ["IMAGE"]
+    images = list(drawing.modelspace())
+    assert len(images) == 372
+    assert {entity.dxftype() for entity in images} == {"IMAGE"}
+    assert {str(entity.dxf.handle) for entity in images} == {
+        delivery["entity_handles"][0] for delivery in result.text_deliveries
+    }
+    source_sha = hashlib.sha256(chart.read_bytes()).hexdigest()
+    asset_paths = set()
+    zero_ink_asset_paths = set()
+    for item in source_items:
+        source_id = f"text_span:1:{item.id}"
+        delivery = deliveries_by_source[source_id]
+        assert delivery["requested_representation"] == "raster"
+        assert delivery["final_representation"] == "raster"
+        assert delivery["verified"] is True
+        assert delivery["fallback_used"] is False
+        assert len(delivery["entity_handles"]) == 1
+        assert len(delivery["support_entity_handles"]) == 2
+        assert len(delivery["attempts"]) == 1
+        attempt = delivery["attempts"][0]
+        assert attempt["attempted_representation"] == "raster"
+        assert attempt["outcome"] == "verified"
+        assert attempt["cleanup_verified"] is True
+        evidence = attempt["evidence"]
+        assert evidence["source_pdf_sha256"] == source_sha
+        assert evidence["source_page_number"] == 1
+        assert evidence["source_id"] == source_id
+        assert evidence["source_bbox_pdf"] == pytest.approx(item.source_bbox_pdf)
+        x0, y0, x1, y1 = [float(value) for value in item.bbox]
+        assert evidence["target_bbox_model"] == pytest.approx(
+            [min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)]
+        )
+        asset_path = Path(evidence["asset_path"])
+        assert asset_path.is_file()
+        assert hashlib.sha256(asset_path.read_bytes()).hexdigest() == evidence[
+            "asset_sha256"
+        ]
+        asset_paths.add(asset_path)
+        if int(item.id) in whitespace_ids:
+            assert attempt["strategy"] == "source_bound_zero_ink_png"
+            assert evidence["source_content_whitespace_only"] is True
+            assert evidence["visible_ink_expected"] is False
+            assert evidence["zero_ink_verified"] is True
+            assert evidence["source_pixels_sampled"] is False
+            assert evidence["pixel_size"] == [1, 1]
+            transparent = fitz.Pixmap(str(asset_path))
+            assert (transparent.width, transparent.height) == (1, 1)
+            assert bool(transparent.alpha) is True
+            assert transparent.pixel(0, 0)[-1] == 0
+            zero_ink_asset_paths.add(asset_path)
+        else:
+            assert attempt["strategy"] == "pymupdf_item_clip"
+            assert evidence["visible_ink_verified"] is True
+            assert len(evidence["source_clip_pdf"]) == 4
+
+    assert len(asset_paths) == 372
+    assert len(zero_ink_asset_paths) == 3
+    _verify_serialized_text_deliveries(drawing, result.text_deliveries)
+
+    report_path = tmp_path / "welding-all-requested-item-raster-report.json"
+    write_import_report(run, str(report_path), elapsed_ms=1.0)
+    assert report_path.is_file()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    actual = report["extra"]["actual_text_entity_types"]
+    assert actual["entity_type"] == "raster"
+    assert actual["raster_image"] == 372
+    delivery_report = report["extra"]["text_representation_delivery"]
+    assert delivery_report["requested_representation"] == "raster"
+    assert delivery_report["verified"] is True
+    assert len(delivery_report["source_ids"]) == 372
+    assert len(delivery_report["entity_handles"]) == 372
+    assert len(delivery_report["support_entity_handles"]) == 744
+    assert len(delivery_report["items"]) == 372
     run.close()
-    assert Path(evidence["asset_path"]).is_file()
+    assert all(path.is_file() for path in asset_paths)
+    assert not list(tmp_path.rglob("*.tmp"))
 
 
 def test_real_image_only_chart_explicit_page_raster_survives_source_cleanup(
