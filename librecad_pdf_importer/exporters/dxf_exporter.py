@@ -778,6 +778,132 @@ def _pixmap_contains_ink(pixmap: Any) -> bool:
     return False
 
 
+def _entitydb_handles(doc: Any) -> set[str]:
+    return {str(handle) for handle in doc.entitydb.keys() if handle}
+
+
+def _entity_is_live(entity: Any) -> bool:
+    return entity is not None and bool(getattr(entity, "is_alive", True))
+
+
+def _dictionary_value_handle(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    dxf = getattr(value, "dxf", None)
+    return str(getattr(dxf, "handle", "") or "")
+
+
+def _dictionary_bindings(doc: Any) -> Dict[Tuple[str, str], str]:
+    bindings: Dict[Tuple[str, str], str] = {}
+    for entity in list(doc.objects):
+        if not _entity_is_live(entity) or entity.dxftype() != "DICTIONARY":
+            continue
+        dictionary_handle = str(entity.dxf.handle or "")
+        for key, value in list(entity.items()):
+            bindings[(dictionary_handle, str(key))] = _dictionary_value_handle(value)
+    return bindings
+
+
+def _dictionary_references_to_handles(doc: Any, handles: set[str]) -> List[str]:
+    references: List[str] = []
+    if not handles:
+        return references
+    for entity in list(doc.objects):
+        if not _entity_is_live(entity) or entity.dxftype() != "DICTIONARY":
+            continue
+        dictionary_handle = str(entity.dxf.handle or "")
+        for key, value in list(entity.items()):
+            value_handle = _dictionary_value_handle(value)
+            if value_handle in handles:
+                references.append(f"{dictionary_handle}:{key}:{value_handle}")
+    return references
+
+
+def _cleanup_partial_image_attempt(
+    doc: Any,
+    msp: Any,
+    created_handles: set[str],
+    dictionary_bindings_before: Dict[Tuple[str, str], str],
+) -> Tuple[List[str], bool]:
+    """Delete only entities created after this item attempt began."""
+    if not created_handles:
+        return [], True
+
+    # Remove ownership links first so destroying IMAGEDEF and document-level
+    # raster support does not leave a live dictionary entry pointing at a dead
+    # object.  Entries resolving to pre-attempt handles are never touched.
+    for entity in list(doc.objects):
+        if not _entity_is_live(entity) or entity.dxftype() != "DICTIONARY":
+            continue
+        for key, value in list(entity.items()):
+            if _dictionary_value_handle(value) in created_handles:
+                try:
+                    entity.discard(key)
+                except Exception:
+                    pass
+
+    # Layout IMAGE deletion also destroys its IMAGEDEF_REACTOR in ezdxf.
+    for handle in sorted(created_handles):
+        entity = doc.entitydb.get(handle)
+        if not _entity_is_live(entity) or entity.dxftype() != "IMAGE":
+            continue
+        try:
+            msp.delete_entity(entity)
+        except Exception:
+            pass
+
+    object_priority = {
+        "IMAGEDEF_REACTOR": 0,
+        "IMAGEDEF": 1,
+        "RASTERVARIABLES": 2,
+        "DICTIONARY": 3,
+    }
+    remaining_objects = []
+    for handle in created_handles:
+        entity = doc.entitydb.get(handle)
+        if not _entity_is_live(entity) or entity.dxftype() == "IMAGE":
+            continue
+        remaining_objects.append(entity)
+    remaining_objects.sort(
+        key=lambda entity: object_priority.get(entity.dxftype(), 4)
+    )
+    for entity in remaining_objects:
+        if not _entity_is_live(entity):
+            continue
+        try:
+            doc.objects.delete_entity(entity)
+        except Exception:
+            pass
+
+    # A generated IMAGEDEF name can collide with an existing dictionary key.
+    # Restore that exact pre-attempt binding after the new definition is gone.
+    for (dictionary_handle, key), value_handle in dictionary_bindings_before.items():
+        dictionary = doc.entitydb.get(dictionary_handle)
+        value = doc.entitydb.get(value_handle)
+        if not _entity_is_live(dictionary) or not _entity_is_live(value):
+            continue
+        current_value = dictionary.get(key)
+        if _dictionary_value_handle(current_value) == value_handle:
+            continue
+        try:
+            dictionary[key] = value
+        except Exception:
+            pass
+
+    surviving_handles = {
+        handle
+        for handle in created_handles
+        if _entity_is_live(doc.entitydb.get(handle))
+    }
+    dangling_references = _dictionary_references_to_handles(doc, created_handles)
+    dictionaries_restored = _dictionary_bindings(doc) == dictionary_bindings_before
+    removed_handles = sorted(created_handles - surviving_handles)
+    return (
+        removed_handles,
+        not surviving_handles and not dangling_references and dictionaries_restored,
+    )
+
+
 def _attempt_terminal_text_raster(
     delivery: TextDeliveryResult,
     *,
@@ -813,6 +939,8 @@ def _attempt_terminal_text_raster(
     image = None
     image_def = None
     support_handles: List[str] = []
+    entity_handles_before_creation: Optional[set[str]] = None
+    dictionary_bindings_before_creation: Dict[Tuple[str, str], str] = {}
     try:
         if not delivery.source_id:
             raise ValueError("terminal raster has no stable source identity")
@@ -822,11 +950,19 @@ def _attempt_terminal_text_raster(
             raise ValueError("terminal raster requires an exact source item bbox")
         sx0, sy0, sx1, sy1 = [float(value) for value in source_bbox[:4]]
         px0, py0, px1, py1 = [float(value) for value in placed_bbox[:4]]
+        if not all(
+            math.isfinite(value)
+            for value in (sx0, sy0, sx1, sy1, px0, py0, px1, py1)
+        ):
+            raise ValueError(
+                "terminal raster bounds must contain only finite coordinates"
+            )
         source_width = abs(sx1 - sx0)
         source_height = abs(sy1 - sy0)
         placed_width = abs(px1 - px0)
         placed_height = abs(py1 - py0)
-        if min(source_width, source_height, placed_width, placed_height) <= 0.0:
+        dimensions = (source_width, source_height, placed_width, placed_height)
+        if not all(math.isfinite(value) and value > 0.0 for value in dimensions):
             raise ValueError("terminal raster source item bbox is empty")
 
         source_clip: Optional[List[float]] = None
@@ -919,6 +1055,8 @@ def _attempt_terminal_text_raster(
 
         safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", delivery.source_id)
         asset_path = asset_root / f"{safe_id}.png"
+        entity_handles_before_creation = _entitydb_handles(doc)
+        dictionary_bindings_before_creation = _dictionary_bindings(doc)
         image_def = doc.add_image_def(
             filename=str(asset_path),
             size_in_pixel=(int(pixmap.width), int(pixmap.height)),
@@ -1017,32 +1155,27 @@ def _attempt_terminal_text_raster(
         )
     except Exception as exc:
         attempt.reason = f"{type(exc).__name__}: {exc}"
-        if image is not None:
-            handle = str(image.dxf.handle or "")
-            try:
-                msp.delete_entity(image)
-                attempt.removed_entity_handles.append(handle)
-            except Exception:
-                pass
-        if image_def is not None:
-            handles = [str(image_def.dxf.handle or "")] + support_handles[1:]
-            try:
-                doc.objects.delete_entity(image_def)
-                attempt.removed_entity_handles.extend(
-                    handle
-                    for handle in handles
-                    if handle and handle not in attempt.removed_entity_handles
-                )
-            except Exception:
-                pass
+        if entity_handles_before_creation is not None:
+            created_handles = (
+                _entitydb_handles(doc) - entity_handles_before_creation
+            ) | set(attempt.created_entity_handles)
+        else:
+            created_handles = set(attempt.created_entity_handles)
+        attempt.created_entity_handles = sorted(
+            handle for handle in created_handles if handle
+        )
+        (
+            attempt.removed_entity_handles,
+            attempt.cleanup_verified,
+        ) = _cleanup_partial_image_attempt(
+            doc,
+            msp,
+            created_handles,
+            dictionary_bindings_before_creation,
+        )
         attempt.entity_handles = []
         attempt.support_entity_handles = []
         attempt.outcome = "failed"
-        attempt.cleanup_verified = all(
-            doc.entitydb.get(handle) is None
-            or not getattr(doc.entitydb.get(handle), "is_alive", True)
-            for handle in attempt.created_entity_handles
-        )
         return (
             TextDeliveryResult(
                 source_id=delivery.source_id,

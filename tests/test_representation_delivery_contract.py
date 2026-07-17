@@ -28,6 +28,8 @@ from dxf_text_builder import (
 from librecad_pdf_importer.core.document import DocumentExtraction, ExtractedPage
 from librecad_pdf_importer.exporters.dxf_exporter import (
     DxfExportOptions,
+    TextRepresentationDeliveryError,
+    _attempt_terminal_text_raster,
     _verify_serialized_text_deliveries,
     export_to_dxf,
 )
@@ -1632,6 +1634,163 @@ def test_requested_raster_delivers_whitespace_as_source_bound_zero_ink_image(
     run.close()
     assert asset_path.is_file()
     assert not list(tmp_path.rglob("*.tmp"))
+
+
+def test_terminal_raster_cleans_partial_image_creation_without_touching_prior_state(
+    tmp_path,
+) -> None:
+    run = _real_text_extraction(tmp_path)
+    source = run.extraction.pages[0].page_data.text_items[0]
+    whitespace = __import__("dataclasses").replace(
+        source,
+        text="   ",
+        normalized="",
+    )
+    source_id = f"text_span:1:{whitespace.id}"
+    delivery = TextDeliveryResult(
+        source_id=source_id,
+        requested_representation="raster",
+        final_representation=None,
+        verified=False,
+        terminal_fallback_authorized=True,
+    )
+    doc = ezdxf.new("R2010")
+    doc.layers.add("TEXT")
+    msp = doc.modelspace()
+    prior_definition = doc.add_image_def(
+        filename=str(tmp_path / "prior.png"),
+        size_in_pixel=(1, 1),
+        name=f"BCS_TEXT_{source_id.replace(':', '_')}",
+    )
+    prior_image = msp.add_image(
+        prior_definition,
+        insert=(1.0, 2.0),
+        size_in_units=(3.0, 4.0),
+        dxfattribs={"layer": "TEXT"},
+    )
+    prior_handles = {
+        str(handle)
+        for handle, entity in doc.entitydb.items()
+        if handle and entity is not None and getattr(entity, "is_alive", True)
+    }
+    prior_support = {
+        str(prior_definition.dxf.handle),
+        str(prior_image.dxf.image_def_reactor_handle),
+    }
+    image_dict = doc.rootdict.get("ACAD_IMAGE_DICT")
+    prior_image_dict = {
+        key: str(entity.dxf.handle) for key, entity in image_dict.items()
+    }
+
+    layout_type = type(msp)
+    original_add_image = layout_type.add_image
+    injected_handles = []
+
+    def create_then_raise(self, image_def, *args, **kwargs):
+        image = original_add_image(self, image_def, *args, **kwargs)
+        injected_handles.extend(
+            [
+                str(image_def.dxf.handle),
+                str(image.dxf.handle),
+                str(image.dxf.image_def_reactor_handle),
+            ]
+        )
+        raise RuntimeError("injected post-create failure")
+
+    with patch.object(layout_type, "add_image", new=create_then_raise):
+        failed, pending = _attempt_terminal_text_raster(
+            delivery,
+            extraction=run.extraction,
+            page_number=1,
+            source_text=whitespace,
+            placed_text=whitespace,
+            msp=msp,
+            layer_name="TEXT",
+            asset_root=tmp_path / "partial_image_assets",
+            raster_dpi=300,
+            source_pdf_sha256=hashlib.sha256(
+                Path(run.extraction.pdf_path).read_bytes()
+            ).hexdigest(),
+        )
+
+    attempt = failed.attempts[-1]
+    live_handles = {
+        str(handle)
+        for handle, entity in doc.entitydb.items()
+        if handle and entity is not None and getattr(entity, "is_alive", True)
+    }
+    assert failed.verified is False
+    assert pending is None
+    assert attempt.outcome == "failed"
+    assert attempt.reason == "RuntimeError: injected post-create failure"
+    assert attempt.cleanup_verified is True
+    assert set(attempt.created_entity_handles) == set(injected_handles)
+    assert set(attempt.removed_entity_handles) == set(injected_handles)
+    assert live_handles == prior_handles
+    assert {entity.dxftype() for entity in msp} == {"IMAGE"}
+    assert str(next(iter(msp)).dxf.handle) == str(prior_image.dxf.handle)
+    assert all(
+        doc.entitydb.get(handle) is not None
+        and getattr(doc.entitydb.get(handle), "is_alive", True)
+        for handle in prior_support
+    )
+    assert {
+        key: str(entity.dxf.handle) for key, entity in image_dict.items()
+    } == prior_image_dict
+    run.close()
+
+
+@pytest.mark.parametrize("bbox_kind", ["source", "target"])
+@pytest.mark.parametrize(
+    "bad_coordinate",
+    [float("nan"), float("inf"), float("-inf")],
+    ids=["nan", "positive_infinity", "negative_infinity"],
+)
+def test_terminal_raster_rejects_non_finite_source_and_target_bounds(
+    tmp_path,
+    bbox_kind,
+    bad_coordinate,
+) -> None:
+    run = _real_text_extraction(tmp_path)
+    source = run.extraction.pages[0].page_data.text_items[0]
+    whitespace = __import__("dataclasses").replace(
+        source,
+        text="   ",
+        normalized="",
+    )
+    if bbox_kind == "source":
+        source_bbox = list(whitespace.source_bbox_pdf)
+        source_bbox[2] = bad_coordinate
+        whitespace = __import__("dataclasses").replace(
+            whitespace,
+            source_bbox_pdf=tuple(source_bbox),
+        )
+    else:
+        target_bbox = list(whitespace.bbox)
+        target_bbox[2] = bad_coordinate
+        whitespace = __import__("dataclasses").replace(
+            whitespace,
+            bbox=tuple(target_bbox),
+        )
+    run.extraction.pages[0].page_data.text_items = [whitespace]
+    output = tmp_path / f"non_finite_{bbox_kind}.dxf"
+    prior = b"prior accepted DXF must survive invalid bounds\r\n"
+    output.write_bytes(prior)
+
+    with pytest.raises(
+        TextRepresentationDeliveryError,
+        match="terminal raster bounds must contain only finite coordinates",
+    ):
+        export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(include_images=False, text_mode="raster"),
+        )
+
+    assert output.read_bytes() == prior
+    assert not list(tmp_path.rglob("*.png"))
+    assert not list(tmp_path.rglob("*.tmp"))
+    run.close()
 
 
 def test_unproven_structural_failure_cannot_start_terminal_raster(
