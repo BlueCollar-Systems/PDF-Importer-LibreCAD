@@ -34,6 +34,7 @@ from librecad_pdf_importer.exporters.dxf_exporter import (
 from librecad_pdf_importer.importer import ImportRun, run_import, write_import_report
 from pdfcadcore.import_config import ImportConfig
 from pdfcadcore.embedded_fonts import EmbeddedFontFailure
+from pdfcadcore.fitz_loader import import_fitz
 from pdfcadcore.import_report import build_actual_text_entity_types
 from pdfcadcore.primitive_extractor import (
     MM_PER_PT,
@@ -47,6 +48,9 @@ from pdfcadcore.text_scale import (
     effective_span_font_size_pt,
     fit_font_size_to_span_bbox,
 )
+
+
+fitz = import_fitz()
 
 
 def _item(
@@ -756,7 +760,7 @@ def test_shared_text_scale_preserves_subpoint_source_size_without_floor() -> Non
 
 def _run_for_items(tmp_path, mode: str, items: list[NormalizedText]):
     pdf_path = tmp_path / "source.pdf"
-    pdf = __import__("pymupdf").open()
+    pdf = fitz.open()
     pdf.new_page(width=120, height=80)
     pdf.save(str(pdf_path))
     pdf.close()
@@ -924,7 +928,7 @@ def test_noncanonical_engine_mode_fails_closed_instead_of_using_legacy_semantics
     from dxf_import_engine import convert
 
     pdf_path = tmp_path / "source.pdf"
-    pdf = __import__("pymupdf").open()
+    pdf = fitz.open()
     pdf.new_page(width=120, height=80)
     pdf.save(str(pdf_path))
     pdf.close()
@@ -939,7 +943,7 @@ def test_noncanonical_engine_mode_fails_closed_instead_of_using_legacy_semantics
 
 def _real_text_extraction(tmp_path):
     pdf_path = tmp_path / "raster_source.pdf"
-    pdf = __import__("pymupdf").open()
+    pdf = fitz.open()
     page = pdf.new_page(width=240, height=160)
     page.insert_text((36, 72), "W12X30", fontsize=12)
     pdf.save(str(pdf_path))
@@ -994,7 +998,7 @@ def test_explicit_item_raster_is_verified_without_being_reported_as_fallback(
 
 def test_explicit_raster_and_requested_labels_are_both_retained(tmp_path) -> None:
     pdf_path = tmp_path / "raster_with_requested_text.pdf"
-    pdf = __import__("pymupdf").open()
+    pdf = fitz.open()
     page = pdf.new_page(width=240, height=160)
     page.insert_text((36, 72), "W12X30", fontsize=12)
     pdf.save(str(pdf_path))
@@ -1013,7 +1017,7 @@ def test_explicit_raster_and_requested_labels_are_both_retained(tmp_path) -> Non
     assert "requested labels" in run.extraction.pages[0].resolved_reason.lower()
     source_text = run.extraction.pages[0].page_data.text_items[0]
     assert source_text.source_bbox_pdf is not None
-    page_raster = __import__("pymupdf").Pixmap(
+    page_raster = fitz.Pixmap(
         run.extraction.pages[0].images[0].path
     )
     assert page_raster.alpha
@@ -1029,7 +1033,7 @@ def test_page_raster_text_mask_uses_the_authoritative_page_rotation(
     rotation,
 ) -> None:
     pdf_path = tmp_path / f"masked-r{rotation}.pdf"
-    pdf = __import__("pymupdf").open()
+    pdf = fitz.open()
     page = pdf.new_page(width=240, height=160)
     page.insert_text((36, 72), "W12X30", fontsize=12)
     page.set_rotation(rotation)
@@ -1042,10 +1046,10 @@ def test_page_raster_text_mask_uses_the_authoritative_page_rotation(
         overrides={"pages": "1", "import_text": True, "text_mode": "labels"},
     )
     source_text = run.extraction.pages[0].page_data.text_items[0]
-    raster = __import__("pymupdf").Pixmap(run.extraction.pages[0].images[0].path)
+    raster = fitz.Pixmap(run.extraction.pages[0].images[0].path)
     assert raster.alpha
 
-    with __import__("pymupdf").open(pdf_path) as document:
+    with fitz.open(pdf_path) as document:
         page = document[0]
         transform = _page_rotation_transform(page.rect, page.rotation_matrix)
         x0, y0, x1, y1 = source_text.source_bbox_pdf
@@ -1061,7 +1065,7 @@ def test_page_raster_text_mask_uses_the_authoritative_page_rotation(
 
 def test_run_import_records_but_does_not_publish_pre_export_report(tmp_path) -> None:
     pdf_path = tmp_path / "source.pdf"
-    pdf = __import__("pymupdf").open()
+    pdf = fitz.open()
     pdf.new_page(width=120, height=80)
     pdf.save(str(pdf_path))
     pdf.close()
@@ -1083,12 +1087,12 @@ def test_failed_3d_export_writes_separate_complete_failure_report(tmp_path) -> N
     from dxf_import_engine import convert
 
     pdf_path = tmp_path / "source.pdf"
-    pdf = __import__("pymupdf").open()
+    pdf = fitz.open()
     page = pdf.new_page(width=120, height=80)
     page.insert_text((20, 40), "W12X30", fontsize=10)
     pdf.save(str(pdf_path))
     pdf.close()
-    pdf = __import__("pymupdf").open(str(pdf_path))
+    pdf = fitz.open(str(pdf_path))
     font_xref = pdf[0].get_fonts(full=True)[0][0]
     font_object = pdf.xref_object(font_xref)
     pdf.update_object(
@@ -1134,7 +1138,7 @@ def test_failed_3d_export_writes_separate_complete_failure_report(tmp_path) -> N
             return_value=structural_failure,
         ),
         patch.object(
-            __import__("pymupdf").Page,
+            fitz.Page,
             "get_pixmap",
             side_effect=RuntimeError("terminal renderer unavailable"),
         ),
@@ -1242,10 +1246,10 @@ def test_terminal_raster_uses_exact_raw_source_bbox_through_page_transform(
     user_unit,
 ) -> None:
     pdf_path = tmp_path / f"terminal-raster-r{rotation}-u{user_unit}.pdf"
-    pdf = __import__("pymupdf").open()
+    pdf = fitz.open()
     page = pdf.new_page(width=200, height=100)
     page.insert_text((30, 50), "W12X30", fontsize=12)
-    page.set_cropbox(__import__("pymupdf").Rect(20, 10, 180, 90))
+    page.set_cropbox(fitz.Rect(20, 10, 180, 90))
     page.set_rotation(rotation)
     if user_unit != 1.0:
         pdf.xref_set_key(page.xref, "UserUnit", str(user_unit))
@@ -1398,7 +1402,7 @@ def test_duplicate_source_identity_aborts_without_replacing_prior_output(
     tmp_path,
 ) -> None:
     pdf_path = tmp_path / "duplicate_source.pdf"
-    pdf = __import__("pymupdf").open()
+    pdf = fitz.open()
     pdf.new_page(width=120, height=80)
     pdf.save(str(pdf_path))
     pdf.close()
@@ -1433,7 +1437,7 @@ def test_serialized_candidate_must_reconcile_delivery_handles_before_publish(
     tmp_path,
 ) -> None:
     pdf_path = tmp_path / "source.pdf"
-    pdf = __import__("pymupdf").open()
+    pdf = fitz.open()
     pdf.new_page(width=120, height=80)
     pdf.save(str(pdf_path))
     pdf.close()
@@ -1748,7 +1752,7 @@ def test_real_image_only_chart_explicit_page_raster_survives_source_cleanup(
     actual_height = math.hypot(image.dxf.v_pixel.x, image.dxf.v_pixel.y) * float(
         image.dxf.image_size.y
     )
-    with __import__("pymupdf").open(str(chart)) as source_pdf:
+    with fitz.open(str(chart)) as source_pdf:
         source_rect = source_pdf[0].rect
     assert actual_width == pytest.approx(float(source_rect.width) * 25.4 / 72.0)
     assert actual_height == pytest.approx(float(source_rect.height) * 25.4 / 72.0)

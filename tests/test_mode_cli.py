@@ -146,7 +146,7 @@ class TestModeCli(unittest.TestCase):
             # Make the exact source font unavailable. LibreCAD still has a
             # parent-native LFF representation, so a 3D request must stop at
             # editable flat Text rather than skipping to Glyphs or Raster.
-            pdf = __import__("pymupdf").open(str(pdf_path))
+            pdf = fitz.open(str(pdf_path))
             font_xref = pdf[0].get_fonts(full=True)[0][0]
             font_object = pdf.xref_object(font_xref)
             mutated_font_object = (

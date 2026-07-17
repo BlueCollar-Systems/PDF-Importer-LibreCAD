@@ -40,6 +40,22 @@ def test_tests_do_not_hardcode_an_owner_desktop_pdf_path() -> None:
     assert offenders == []
 
 
+def test_lower_bound_tests_never_bypass_the_pymupdf_import_fallback() -> None:
+    offenders = []
+    for path in sorted((ROOT / "tests").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+                continue
+            if node.func.id != "__import__" or not node.args:
+                continue
+            module_name = node.args[0]
+            if isinstance(module_name, ast.Constant) and module_name.value == "pymupdf":
+                offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+
+    assert offenders == []
+
+
 def test_synthetic_delivery_items_use_the_controlled_test_font() -> None:
     source = (ROOT / "tests" / "test_representation_delivery_contract.py").read_text(
         encoding="utf-8"
