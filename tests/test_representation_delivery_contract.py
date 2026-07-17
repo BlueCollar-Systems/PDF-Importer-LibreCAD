@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import ezdxf
 import pytest
+import dxf_text_builder
 from ezdxf.tools.text_size import text_size
 
 from dxf_text_builder import (
@@ -44,7 +45,7 @@ from pdfcadcore.primitive_extractor import (
     _page_rotation_transform,
     _transform_pdf_point,
 )
-from pdfcadcore.primitives import NormalizedText, PageData
+from pdfcadcore.primitives import NormalizedText, PageData, TextCharLayout
 from pdfcadcore.text_scale import (
     calibrate_text_size_to_bbox,
     effective_span_font_size_pt,
@@ -199,6 +200,205 @@ def _deliver(
     )
     assert isinstance(result, TextDeliveryResult)
     return doc, msp, result
+
+
+def _positioned_repeated_item() -> NormalizedText:
+    first_quad = ((10.0, 22.0), (13.0, 22.0), (13.0, 18.0), (10.0, 18.0))
+    second_quad = ((18.0, 30.0), (18.0, 33.0), (22.0, 33.0), (22.0, 30.0))
+    return NormalizedText(
+        id=91,
+        text="AA",
+        normalized="AA",
+        insertion=(10.0, 20.0),
+        bbox=(10.0, 18.0, 22.0, 33.0),
+        font_size=4.0,
+        rotation=0.0,
+        font_name="BCS Deterministic Test",
+        page_number=3,
+        target_quad_model=((10.0, 33.0), (22.0, 33.0), (22.0, 18.0), (10.0, 18.0)),
+        advance_width=12.0,
+        glyph_height=15.0,
+        source_char_layout=(
+            TextCharLayout(
+                text="A",
+                glyph_id=65,
+                source_origin_pdf=(1.0, 2.0),
+                source_bbox_pdf=(1.0, 0.0, 4.0, 4.0),
+                source_quad_pdf=((1.0, 4.0), (4.0, 4.0), (4.0, 0.0), (1.0, 0.0)),
+                target_origin=(10.0, 20.0),
+                target_quad=first_quad,
+                advance_width=3.0,
+                glyph_height=4.0,
+            ),
+            TextCharLayout(
+                text="A",
+                glyph_id=65,
+                source_origin_pdf=(8.0, 9.0),
+                source_bbox_pdf=(6.0, 9.0, 10.0, 12.0),
+                source_quad_pdf=((6.0, 9.0), (6.0, 12.0), (10.0, 12.0), (10.0, 9.0)),
+                target_origin=(20.0, 30.0),
+                target_quad=second_quad,
+                advance_width=3.0,
+                glyph_height=4.0,
+            ),
+        ),
+        requires_individual_positioning=True,
+    )
+
+
+@pytest.mark.parametrize("mode", ["glyphs", "geometry"])
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        ezdxf.math.Matrix44.translate(9.0, -4.0, 0.0),
+        ezdxf.math.Matrix44.z_rotate(math.radians(37.0)),
+        ezdxf.math.Matrix44.scale(1.8, 0.6, 1.0),
+    ],
+    ids=["translated", "rotated", "scaled"],
+)
+def test_outline_verification_rejects_post_construction_affine_corruption(
+    mode,
+    corruption,
+) -> None:
+    original = dxf_text_builder._to_outline_entities
+
+    def corrupt_after_construction(paths, *, is_r12, attribs):
+        entities = original(paths, is_r12=is_r12, attribs=attribs)
+        for entity in entities:
+            entity.transform(corruption)
+        return entities
+
+    with patch(
+        "dxf_text_builder._to_outline_entities",
+        side_effect=corrupt_after_construction,
+    ):
+        _, msp, result = _deliver(mode)
+
+    assert result.verified is False
+    assert result.final_representation is None
+    assert list(msp) == []
+    assert all(attempt.cleanup_verified for attempt in result.attempts)
+    assert all(attempt.outcome == "failed" for attempt in result.attempts)
+
+
+@pytest.mark.parametrize("requested", ["glyphs", "labels"])
+def test_positioned_repeated_characters_keep_source_order_origin_and_rotation(
+    requested,
+) -> None:
+    item = _positioned_repeated_item()
+    with patch(
+        "dxf_text_builder.text2path.make_paths_from_entity",
+        side_effect=RuntimeError("force the source-layout string route"),
+    ):
+        _, _, result = _deliver(requested, item, target_app="librecad")
+
+    assert result.verified is True
+    final = next(attempt for attempt in result.attempts if attempt.outcome == "verified")
+    assert final.attempted_representation == "glyphs"
+    assert final.evidence["requires_individual_positioning"] is True
+    assert final.evidence["source_char_layout_verified"] is True
+    ownership = final.evidence["outline_character_ownership"]
+    assert [entry["index"] for entry in ownership] == [0, 1]
+    assert [entry["text"] for entry in ownership] == ["A", "A"]
+    assert [entry["glyph_id"] for entry in ownership] == [65, 65]
+    assert [entry["target_origin"] for entry in ownership] == [
+        [10.0, 20.0],
+        [20.0, 30.0],
+    ]
+    assert [entry["rotation_degrees"] for entry in ownership] == pytest.approx(
+        [0.0, 90.0]
+    )
+    assert all(entry["entity_handles"] for entry in ownership)
+
+
+def test_positioned_layout_never_concatenates_visible_source_characters() -> None:
+    calls = []
+    original = dxf_text_builder.text2path.make_paths_from_str
+
+    def record_source_text(text, *args, **kwargs):
+        calls.append(text)
+        return original(text, *args, **kwargs)
+
+    with (
+        patch(
+            "dxf_text_builder.text2path.make_paths_from_entity",
+            side_effect=RuntimeError("force the source-layout string route"),
+        ),
+        patch(
+            "dxf_text_builder.text2path.make_paths_from_str",
+            side_effect=record_source_text,
+        ),
+    ):
+        _, _, result = _deliver("glyphs", _positioned_repeated_item())
+
+    assert result.verified is True
+    assert calls == ["A", "A"]
+
+
+def test_positioned_layout_records_explicit_zero_ink_character_without_artifacts() -> None:
+    item = _positioned_repeated_item()
+    space = __import__("dataclasses").replace(
+        item.source_char_layout[1],
+        text=" ",
+        glyph_id=32,
+    )
+    item = __import__("dataclasses").replace(
+        item,
+        text="A ",
+        normalized="A",
+        source_char_layout=(item.source_char_layout[0], space),
+    )
+    calls = []
+    original = dxf_text_builder.text2path.make_paths_from_str
+
+    def record_source_text(text, *args, **kwargs):
+        calls.append(text)
+        return original(text, *args, **kwargs)
+
+    with patch(
+        "dxf_text_builder.text2path.make_paths_from_str",
+        side_effect=record_source_text,
+    ):
+        _, _, result = _deliver("glyphs", item)
+
+    assert result.verified is True
+    assert calls == ["A"]
+    final = next(attempt for attempt in result.attempts if attempt.outcome == "verified")
+    ownership = final.evidence["outline_character_ownership"]
+    assert ownership[0]["entity_handles"]
+    assert ownership[0]["visible_ink_expected"] is True
+    assert ownership[1]["entity_handles"] == []
+    assert ownership[1]["visible_ink_expected"] is False
+    assert ownership[1]["zero_ink_verified"] is True
+
+
+def test_positioned_layout_rejects_mismatched_source_truth_before_path_creation() -> None:
+    item = _positioned_repeated_item()
+    mismatched = __import__("dataclasses").replace(
+        item.source_char_layout[1],
+        text="B",
+        glyph_id=66,
+    )
+    item = __import__("dataclasses").replace(
+        item,
+        source_char_layout=(item.source_char_layout[0], mismatched),
+    )
+
+    with patch("dxf_text_builder.text2path.make_paths_from_str") as make_paths:
+        _, msp, result = _deliver("glyphs", item, target_app="librecad")
+
+    assert result.verified is False
+    assert result.final_representation is None
+    assert list(msp) == []
+    make_paths.assert_not_called()
+    outline_attempts = [
+        attempt
+        for attempt in result.attempts
+        if attempt.attempted_representation in {"glyphs", "geometry"}
+    ]
+    assert outline_attempts
+    assert all(attempt.outcome == "impossible" for attempt in outline_attempts)
+    assert all(attempt.cleanup_verified for attempt in outline_attempts)
 
 
 def test_text_is_a_distinct_requested_and_delivered_representation() -> None:

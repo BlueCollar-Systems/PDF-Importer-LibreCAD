@@ -127,6 +127,47 @@ class TextDeliveryResult:
         }
 
 
+@dataclass
+class _OutlineCharacterGroup:
+    """Pre-entity source ownership for one individually positioned character."""
+
+    index: int
+    text: str
+    glyph_id: Optional[int]
+    target_origin: Tuple[float, float]
+    target_quad: Tuple[Tuple[float, float], ...]
+    advance_width: float
+    glyph_height: float
+    rotation_degrees: float
+    visible_ink_expected: bool
+    expected_bbox: Optional[Tuple[float, float, float, float]]
+    outlines: List[Any] = field(default_factory=list)
+    fills: List[Any] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _OutlineExpectation:
+    """Independent source/path truth captured before DXF entity construction."""
+
+    path_bbox: Tuple[float, float, float, float]
+    source_envelope: Tuple[Tuple[float, float], ...]
+    source_envelope_source: str
+    character_groups: Tuple[_OutlineCharacterGroup, ...] = ()
+
+
+@dataclass(frozen=True)
+class _ValidatedCharacterLayout:
+    index: int
+    text: str
+    glyph_id: Optional[int]
+    target_origin: Tuple[float, float]
+    target_quad: Tuple[Tuple[float, float], ...]
+    advance_width: float
+    glyph_height: float
+    rotation_degrees: float
+    visible_ink_expected: bool
+
+
 @dataclass(frozen=True)
 class _ExactFontResolution:
     source_name: str
@@ -584,6 +625,318 @@ def _target_advance_width(text_item: NormalizedText) -> Tuple[Optional[float], s
     return None, "unavailable_for_diagonal_bbox"
 
 
+def _finite_float(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _finite_point(value: Any) -> Optional[Tuple[float, float]]:
+    if value is None:
+        return None
+    try:
+        if len(value) < 2:
+            return None
+        x = _finite_float(value[0])
+        y = _finite_float(value[1])
+    except (TypeError, IndexError):
+        return None
+    if x is None or y is None:
+        return None
+    return (x, y)
+
+
+def _finite_quad(value: Any) -> Optional[Tuple[Tuple[float, float], ...]]:
+    if value is None:
+        return None
+    try:
+        if len(value) != 4:
+            return None
+    except TypeError:
+        return None
+    points = tuple(_finite_point(point) for point in value)
+    if any(point is None for point in points):
+        return None
+    return tuple(point for point in points if point is not None)
+
+
+def _quad_dimensions(
+    quad: Tuple[Tuple[float, float], ...],
+) -> Tuple[float, float]:
+    return (
+        math.hypot(quad[1][0] - quad[0][0], quad[1][1] - quad[0][1]),
+        math.hypot(quad[3][0] - quad[0][0], quad[3][1] - quad[0][1]),
+    )
+
+
+def _validated_quad(
+    value: Any,
+    *,
+    field_name: str,
+) -> Tuple[Tuple[float, float], ...]:
+    quad = _finite_quad(value)
+    if quad is None:
+        raise _RepresentationImpossible(f"{field_name} is missing or non-finite")
+    advance, height = _quad_dimensions(quad)
+    if advance <= 0.0 or height <= 0.0:
+        raise _RepresentationImpossible(f"{field_name} is degenerate")
+    expected_opposite = (
+        quad[1][0] + quad[3][0] - quad[0][0],
+        quad[1][1] + quad[3][1] - quad[0][1],
+    )
+    scale = max(1.0, *(abs(value) for point in quad for value in point))
+    tolerance = scale * 1e-7
+    if math.hypot(
+        quad[2][0] - expected_opposite[0],
+        quad[2][1] - expected_opposite[1],
+    ) > tolerance:
+        raise _RepresentationImpossible(f"{field_name} is not an affine text quad")
+    return quad
+
+
+def _outline_source_envelope(
+    text_item: NormalizedText,
+    *,
+    representation: str,
+) -> Tuple[Tuple[Tuple[float, float], ...], str]:
+    """Derive finite placement truth without consulting generated DXF entities."""
+
+    insertion = _finite_point(getattr(text_item, "insertion", None))
+    if insertion is None:
+        raise _RepresentationImpossible("source insertion is missing or non-finite")
+    raw_quad = getattr(text_item, "target_quad_model", None)
+    if raw_quad is not None:
+        envelope = _validated_quad(raw_quad, field_name="target_quad_model")
+        source = "target_quad_model"
+    else:
+        advance, advance_source = _target_advance_width(text_item)
+        source_height = _positive_finite(getattr(text_item, "glyph_height", None))
+        if source_height is None:
+            source_height = _positive_finite(getattr(text_item, "font_size", None))
+        rotation = _finite_float(getattr(text_item, "rotation", 0.0) or 0.0)
+        descent = _finite_float(getattr(text_item, "baseline_descent", 0.0) or 0.0)
+        if advance is None or source_height is None or rotation is None or descent is None:
+            raise _RepresentationImpossible(
+                "source envelope requires finite insertion, rotation, advance, and height"
+            )
+        angle = math.radians(rotation)
+        baseline = (math.cos(angle), math.sin(angle))
+        normal = (-baseline[1], baseline[0])
+        lower_left = (
+            insertion[0] - normal[0] * descent,
+            insertion[1] - normal[1] * descent,
+        )
+        upper_left = (
+            lower_left[0] + normal[0] * source_height,
+            lower_left[1] + normal[1] * source_height,
+        )
+        upper_right = (
+            upper_left[0] + baseline[0] * advance,
+            upper_left[1] + baseline[1] * advance,
+        )
+        lower_right = (
+            lower_left[0] + baseline[0] * advance,
+            lower_left[1] + baseline[1] * advance,
+        )
+        envelope = (upper_left, upper_right, lower_right, lower_left)
+        source = f"normalized_{advance_source}_rotation_height"
+    if representation == "glyphs":
+        envelope = tuple(
+            (point[0] - insertion[0], point[1] - insertion[1]) for point in envelope
+        )
+    return envelope, source
+
+
+def _path_bbox_tuple(
+    paths: Sequence[Any],
+    *,
+    offset: Tuple[float, float] = (0.0, 0.0),
+) -> Optional[Tuple[float, float, float, float]]:
+    """Return a precise pre-entity path bound, optionally in final coordinates."""
+
+    box = ezdxf_path.bbox(paths)
+    if not box.has_data:
+        return None
+    values = (
+        float(box.extmin.x) + offset[0],
+        float(box.extmin.y) + offset[1],
+        float(box.extmax.x) + offset[0],
+        float(box.extmax.y) + offset[1],
+    )
+    return values if all(math.isfinite(value) for value in values) else None
+
+
+def _bbox_union(
+    boxes: Sequence[Optional[Tuple[float, float, float, float]]],
+) -> Optional[Tuple[float, float, float, float]]:
+    finite = [box for box in boxes if box is not None]
+    if not finite:
+        return None
+    return (
+        min(box[0] for box in finite),
+        min(box[1] for box in finite),
+        max(box[2] for box in finite),
+        max(box[3] for box in finite),
+    )
+
+
+def _visible_ink_expected(text: str) -> bool:
+    zero_width_format_characters = {
+        "\u200b",
+        "\u200c",
+        "\u200d",
+        "\u2060",
+        "\ufeff",
+    }
+    return any(
+        not character.isspace()
+        and unicodedata.category(character) != "Cc"
+        and character not in zero_width_format_characters
+        for character in text
+    )
+
+
+def _quad_coordinates(
+    point: Tuple[float, float],
+    quad: Tuple[Tuple[float, float], ...],
+) -> Tuple[float, float]:
+    baseline = (quad[1][0] - quad[0][0], quad[1][1] - quad[0][1])
+    vertical = (quad[3][0] - quad[0][0], quad[3][1] - quad[0][1])
+    relative = (point[0] - quad[0][0], point[1] - quad[0][1])
+    determinant = baseline[0] * vertical[1] - baseline[1] * vertical[0]
+    scale = max(1.0, abs(baseline[0]), abs(baseline[1]), abs(vertical[0]), abs(vertical[1]))
+    if abs(determinant) <= scale * scale * 1e-12:
+        raise _RepresentationImpossible("source character quad is singular")
+    return (
+        (relative[0] * vertical[1] - relative[1] * vertical[0]) / determinant,
+        (baseline[0] * relative[1] - baseline[1] * relative[0]) / determinant,
+    )
+
+
+def _validate_character_layout(
+    text_item: NormalizedText,
+) -> Tuple[_ValidatedCharacterLayout, ...]:
+    raw_layout = tuple(getattr(text_item, "source_char_layout", ()) or ())
+    source_text = str(getattr(text_item, "text", "") or "")
+    if not raw_layout:
+        raise _RepresentationImpossible(
+            "individual positioning was requested without source character layout"
+        )
+    layout_text = "".join(str(getattr(item, "text", "") or "") for item in raw_layout)
+    if layout_text != source_text:
+        raise _RepresentationImpossible(
+            "source character layout text/order does not match the source item"
+        )
+
+    validated: List[_ValidatedCharacterLayout] = []
+    for index, item in enumerate(raw_layout):
+        character = str(getattr(item, "text", "") or "")
+        if not character:
+            raise _RepresentationImpossible(
+                f"source character layout entry {index} has empty text"
+            )
+        source_quad = _validated_quad(
+            getattr(item, "source_quad_pdf", None),
+            field_name=f"source_char_layout[{index}].source_quad_pdf",
+        )
+        target_quad = _validated_quad(
+            getattr(item, "target_quad", None),
+            field_name=f"source_char_layout[{index}].target_quad",
+        )
+        source_origin = _finite_point(getattr(item, "source_origin_pdf", None))
+        target_origin = _finite_point(getattr(item, "target_origin", None))
+        source_bbox_value = getattr(item, "source_bbox_pdf", None)
+        try:
+            source_bbox = tuple(float(value) for value in source_bbox_value)
+        except (TypeError, ValueError):
+            source_bbox = ()
+        if (
+            source_origin is None
+            or target_origin is None
+            or len(source_bbox) != 4
+            or not all(math.isfinite(value) for value in source_bbox)
+            or source_bbox[0] > source_bbox[2]
+            or source_bbox[1] > source_bbox[3]
+        ):
+            raise _RepresentationImpossible(
+                f"source character layout entry {index} has invalid finite bounds/origins"
+            )
+        advance = _positive_finite(getattr(item, "advance_width", None))
+        glyph_height = _positive_finite(getattr(item, "glyph_height", None))
+        target_advance, target_height = _quad_dimensions(target_quad)
+        if advance is None or glyph_height is None:
+            raise _RepresentationImpossible(
+                f"source character layout entry {index} has invalid advance or height"
+            )
+        metric_scale = max(1.0, advance, glyph_height, target_advance, target_height)
+        if not (
+            math.isclose(advance, target_advance, rel_tol=1e-7, abs_tol=metric_scale * 1e-7)
+            and math.isclose(
+                glyph_height,
+                target_height,
+                rel_tol=1e-7,
+                abs_tol=metric_scale * 1e-7,
+            )
+        ):
+            raise _RepresentationImpossible(
+                f"source character layout entry {index} metrics do not match its target quad"
+            )
+
+        horizontal, vertical = _quad_coordinates(source_origin, source_quad)
+        mapped_origin = (
+            target_quad[0][0]
+            + horizontal * (target_quad[1][0] - target_quad[0][0])
+            + vertical * (target_quad[3][0] - target_quad[0][0]),
+            target_quad[0][1]
+            + horizontal * (target_quad[1][1] - target_quad[0][1])
+            + vertical * (target_quad[3][1] - target_quad[0][1]),
+        )
+        origin_scale = max(1.0, *(abs(value) for value in mapped_origin + target_origin))
+        if math.hypot(
+            mapped_origin[0] - target_origin[0],
+            mapped_origin[1] - target_origin[1],
+        ) > origin_scale * 1e-7:
+            raise _RepresentationImpossible(
+                f"source character layout entry {index} target origin is not source-bound"
+            )
+
+        glyph_id = getattr(item, "glyph_id", None)
+        if glyph_id is not None:
+            try:
+                integer_glyph_id = int(glyph_id)
+            except (TypeError, ValueError):
+                raise _RepresentationImpossible(
+                    f"source character layout entry {index} has invalid glyph id"
+                ) from None
+            if integer_glyph_id != glyph_id:
+                raise _RepresentationImpossible(
+                    f"source character layout entry {index} has non-integral glyph id"
+                )
+            glyph_id = integer_glyph_id
+        rotation_degrees = math.degrees(
+            math.atan2(
+                target_quad[1][1] - target_quad[0][1],
+                target_quad[1][0] - target_quad[0][0],
+            )
+        )
+        validated.append(
+            _ValidatedCharacterLayout(
+                index=index,
+                text=character,
+                glyph_id=glyph_id,
+                target_origin=target_origin,
+                target_quad=target_quad,
+                advance_width=advance,
+                glyph_height=glyph_height,
+                rotation_degrees=rotation_degrees,
+                visible_ink_expected=_visible_ink_expected(character),
+            )
+        )
+    return tuple(validated)
+
+
 def _handle(entity: Any) -> str:
     return str(getattr(getattr(entity, "dxf", None), "handle", "") or "")
 
@@ -688,7 +1041,11 @@ def _bbox_matches(
         expected[3] + offset[1],
     )
     scale = max(1.0, *(abs(value) for value in shifted + actual))
-    tolerance = max(1e-7, scale * 1e-8)
+    # ``ezdxf.path.to_*polylines`` flattens Bézier curves with a documented
+    # maximum 0.01 drawing-unit sagitta.  Compare the independently calculated
+    # curve bounds within that conversion error; any later affine translation,
+    # rotation, or scale remains far outside this narrow construction tolerance.
+    tolerance = max(0.010001, scale * 1e-8)
     return all(
         math.isclose(left, right, rel_tol=1e-8, abs_tol=tolerance)
         for left, right in zip(shifted, actual, strict=True)
@@ -1313,6 +1670,71 @@ def _solid_fill_verified(fills: Sequence[Any], *, is_r12: bool) -> bool:
     return True
 
 
+def _make_scaled_string_paths(
+    text: str,
+    face: FontFace,
+    *,
+    height: float,
+    target_advance: Optional[float],
+    rotation_degrees: float,
+    translation: Tuple[float, float] = (0.0, 0.0),
+) -> Tuple[List[Any], float, float]:
+    """Create source paths with an explicit baseline scale and placement."""
+
+    font = text2path.get_font(face)
+    natural_advance = float(font.text_width(text)) * height
+    if not math.isfinite(natural_advance) or natural_advance < 0.0:
+        raise ValueError("font returned an invalid source advance")
+    if target_advance is None:
+        width_scale = 1.0
+        delivered_advance = natural_advance
+    elif natural_advance > 0.0:
+        width_scale = target_advance / natural_advance
+        delivered_advance = natural_advance * width_scale
+    elif _visible_ink_expected(text):
+        raise ValueError("visible source character has no measurable font advance")
+    else:
+        width_scale = 1.0
+        delivered_advance = 0.0
+    if not math.isfinite(width_scale) or width_scale <= 0.0:
+        raise ValueError("font baseline scale is invalid")
+    transform = (
+        Matrix44.scale(width_scale, 1.0, 1.0)
+        * Matrix44.z_rotate(math.radians(rotation_degrees))
+        * Matrix44.translate(translation[0], translation[1], 0.0)
+    )
+    paths = list(
+        text2path.make_paths_from_str(
+            text,
+            face,
+            size=height,
+            m=transform,
+        )
+    )
+    return paths, delivered_advance, width_scale
+
+
+def _outline_expectation(
+    text_item: NormalizedText,
+    *,
+    representation: str,
+    path_bbox: Optional[Tuple[float, float, float, float]],
+    character_groups: Sequence[_OutlineCharacterGroup] = (),
+) -> _OutlineExpectation:
+    if path_bbox is None:
+        raise _RepresentationImpossible("source paths have no finite visible-ink bounds")
+    envelope, envelope_source = _outline_source_envelope(
+        text_item,
+        representation=representation,
+    )
+    return _OutlineExpectation(
+        path_bbox=path_bbox,
+        source_envelope=envelope,
+        source_envelope_source=envelope_source,
+        character_groups=tuple(character_groups),
+    )
+
+
 def _unique_block_name(doc: ezdxf.document.Drawing, source_id: str) -> str:
     base = "BCS_GLYPH_" + re.sub(r"[^A-Za-z0-9_]+", "_", source_id).strip("_")
     if not base or base == "BCS_GLYPH_":
@@ -1344,6 +1766,71 @@ def _block_structure_handles(
     ]
 
 
+def _verify_outline_character_ownership(
+    expectation: _OutlineExpectation,
+    outlines: Sequence[Any],
+    fills: Sequence[Any],
+    *,
+    is_r12: bool,
+) -> Tuple[bool, List[Dict[str, Any]]]:
+    if not expectation.character_groups:
+        return True, []
+    ownership: List[Dict[str, Any]] = []
+    owned_handles: List[str] = []
+    for group in expectation.character_groups:
+        outline_handles = [_handle(entity) for entity in group.outlines]
+        fill_handles = [_handle(entity) for entity in group.fills]
+        entity_handles = outline_handles + fill_handles
+        owned_handles.extend(entity_handles)
+        actual_bbox = _bbox_tuple(group.outlines)
+        if group.visible_ink_expected:
+            group_verified = bool(
+                outline_handles
+                and fill_handles
+                and all(entity_handles)
+                and _solid_fill_verified(group.fills, is_r12=is_r12)
+                and _bbox_matches(group.expected_bbox, actual_bbox)
+            )
+            zero_ink_verified = False
+        else:
+            group_verified = bool(
+                not group.outlines
+                and not group.fills
+                and group.expected_bbox is None
+                and actual_bbox is None
+            )
+            zero_ink_verified = group_verified
+        ownership.append(
+            {
+                "index": group.index,
+                "text": group.text,
+                "glyph_id": group.glyph_id,
+                "target_origin": list(group.target_origin),
+                "target_quad": [list(point) for point in group.target_quad],
+                "advance_width": group.advance_width,
+                "glyph_height": group.glyph_height,
+                "rotation_degrees": group.rotation_degrees,
+                "visible_ink_expected": group.visible_ink_expected,
+                "zero_ink_verified": zero_ink_verified,
+                "entity_handles": entity_handles,
+                "outline_entity_handles": outline_handles,
+                "fill_entity_handles": fill_handles,
+                "expected_outline_bbox": (
+                    list(group.expected_bbox) if group.expected_bbox else None
+                ),
+                "actual_outline_bbox": list(actual_bbox) if actual_bbox else None,
+                "group_verified": group_verified,
+            }
+        )
+    all_child_handles = [_handle(entity) for entity in list(outlines) + list(fills)]
+    ownership_is_exact = bool(
+        len(owned_handles) == len(set(owned_handles))
+        and set(owned_handles) == set(all_child_handles)
+        and all(entry["group_verified"] for entry in ownership)
+    )
+    return ownership_is_exact, ownership
+
+
 def _commit_outlines(
     attempt: TextDeliveryAttempt,
     outlines: List[Any],
@@ -1352,7 +1839,7 @@ def _commit_outlines(
     *,
     representation: str,
     insertion: Tuple[float, float],
-    expected_bbox: Optional[Tuple[float, float, float, float]],
+    expectation: _OutlineExpectation,
     is_r12: bool,
 ) -> None:
     doc = msp.doc
@@ -1364,6 +1851,11 @@ def _commit_outlines(
             "solid_fill_entity_type": "SOLID",
             "solid_fill_entity_count": len(fills),
             "solid_fill_verified": fill_verified,
+            "source_outline_envelope": [
+                list(point) for point in expectation.source_envelope
+            ],
+            "source_outline_envelope_source": expectation.source_envelope_source,
+            "pre_entity_path_expectation": list(expectation.path_bbox),
         }
     )
     if not fill_verified:
@@ -1383,11 +1875,21 @@ def _commit_outlines(
             )
             and _solid_fill_verified(fills, is_r12=is_r12)
         )
-        attempt.visual_verified = _bbox_matches(expected_bbox, actual_bbox)
+        ownership_verified, ownership = _verify_outline_character_ownership(
+            expectation,
+            outlines,
+            fills,
+            is_r12=is_r12,
+        )
+        attempt.visual_verified = bool(
+            _bbox_matches(expectation.path_bbox, actual_bbox) and ownership_verified
+        )
         attempt.evidence.update(
             {
-                "expected_outline_bbox": list(expected_bbox) if expected_bbox else None,
+                "expected_outline_bbox": list(expectation.path_bbox),
                 "actual_outline_bbox": list(actual_bbox) if actual_bbox else None,
+                "outline_character_ownership": ownership,
+                "outline_character_ownership_verified": ownership_verified,
             }
         )
         return
@@ -1455,22 +1957,31 @@ def _commit_outlines(
         )
         and _solid_fill_verified(fills, is_r12=is_r12)
     )
+    ownership_verified, ownership = _verify_outline_character_ownership(
+        expectation,
+        outlines,
+        fills,
+        is_r12=is_r12,
+    )
     attempt.visual_verified = bool(
         insert_verified
         and insert_color_verified
-        and _bbox_matches(expected_bbox, actual_bbox)
+        and _bbox_matches(expectation.path_bbox, actual_bbox)
+        and ownership_verified
     )
     attempt.evidence.update(
         {
             "block_name": block_name,
             "nonserializable_support_roles": ["BLOCK_RECORD"] if is_r12 else [],
-            "expected_outline_bbox": list(expected_bbox) if expected_bbox else None,
+            "expected_outline_bbox": list(expectation.path_bbox),
             "actual_outline_bbox": list(actual_bbox) if actual_bbox else None,
             "expected_block_insert": list(insertion),
             "actual_block_insert": list(actual_insert),
             "block_insert_verified": insert_verified,
             "block_insert_color_verified": insert_color_verified,
             "block_insert_true_color": expected_true_color,
+            "outline_character_ownership": ownership,
+            "outline_character_ownership_verified": ownership_verified,
         }
     )
 
@@ -1532,6 +2043,21 @@ def _attempt_outline_entity(
     style_handle = ""
     style_created = False
     try:
+        requires_individual = bool(
+            getattr(text_item, "requires_individual_positioning", False)
+        )
+        attempt.evidence["requires_individual_positioning"] = requires_individual
+        if requires_individual:
+            positioned_layout = _validate_character_layout(text_item)
+            attempt.evidence.update(
+                {
+                    "source_char_layout_verified": True,
+                    "source_char_layout_count": len(positioned_layout),
+                }
+            )
+            raise _RepresentationImpossible(
+                "entity text2path cannot retain independent source character placement"
+            )
         source_em_height = _positive_finite(getattr(text_item, "font_size", None))
         if source_em_height is None:
             raise _RepresentationImpossible(
@@ -1596,7 +2122,27 @@ def _attempt_outline_entity(
             raise ValueError(
                 "outline source text failed content, anchor, size, rotation, or width verification"
             )
-        paths = text2path.make_paths_from_entity(source)
+        paths = list(text2path.make_paths_from_entity(source))
+        expected_path_bbox = _path_bbox_tuple(paths)
+        if expected_path_bbox is None:
+            if str(text_item.text) and not str(text_item.text).strip():
+                attempt.evidence.update(
+                    {
+                        "source_content_whitespace_only": True,
+                        "visible_ink_expected": False,
+                        "zero_outline_result_verified": True,
+                        "item_specific_creation_attempted": True,
+                    }
+                )
+                raise _RepresentationImpossible(
+                    "whitespace-only source item has no outline ink"
+                )
+            raise ValueError("visible source text produced no finite outline paths")
+        expectation = _outline_expectation(
+            text_item,
+            representation=representation,
+            path_bbox=expected_path_bbox,
+        )
         outlines = _to_outline_entities(
             paths, is_r12=is_r12, attribs=_outline_attributes(attribs)
         )
@@ -1605,19 +2151,6 @@ def _attempt_outline_entity(
             is_r12=is_r12,
             attribs=_outline_attributes(attribs),
         )
-        if not outlines and str(text_item.text) and not str(text_item.text).strip():
-            attempt.evidence.update(
-                {
-                    "source_content_whitespace_only": True,
-                    "visible_ink_expected": False,
-                    "zero_outline_result_verified": True,
-                    "item_specific_creation_attempted": True,
-                }
-            )
-            raise _RepresentationImpossible(
-                "whitespace-only source item has no outline ink"
-            )
-        expected_bbox = _bbox_tuple(outlines)
         if _delete_entity(msp, source):
             attempt.removed_entity_handles.append(source_handle)
         source = None
@@ -1631,7 +2164,7 @@ def _attempt_outline_entity(
             msp,
             representation=representation,
             insertion=insertion,
-            expected_bbox=expected_bbox,
+            expectation=expectation,
             is_r12=is_r12,
         )
         if not attempt.type_verified or not attempt.visual_verified:
@@ -1676,28 +2209,30 @@ def _attempt_outline_string(
     )
     doc = msp.doc
     try:
+        requires_individual = bool(
+            getattr(text_item, "requires_individual_positioning", False)
+        )
+        attempt.evidence["requires_individual_positioning"] = requires_individual
         source_em_height = _positive_finite(getattr(text_item, "font_size", None))
         if source_em_height is None:
             raise _RepresentationImpossible(
                 "source nominal text height is missing or invalid for outline delivery"
             )
-        insertion = tuple(float(value) for value in text_item.insertion[:2])
-        rotation = math.radians(float(getattr(text_item, "rotation", 0.0) or 0.0))
+        insertion_point = _finite_point(getattr(text_item, "insertion", None))
+        rotation_degrees = _finite_float(
+            getattr(text_item, "rotation", 0.0) or 0.0
+        )
+        if insertion_point is None or rotation_degrees is None:
+            raise _RepresentationImpossible(
+                "source insertion or rotation is missing or non-finite"
+            )
+        insertion = insertion_point
         target_width, width_source = _target_advance_width(text_item)
         font_resolution = _require_exact_item_font(text_item, config, attempt)
         height, cap_height_ratio = _delivery_cap_height(
             source_em_height, font_resolution
         )
-        face = FontFace(
-            filename=font_resolution.filename
-        )
-        paths = text2path.make_paths_from_str(
-            str(text_item.text),
-            face,
-            size=height,
-            length=target_width or 0.0,
-            m=Matrix44.z_rotate(rotation),
-        )
+        face = FontFace(filename=font_resolution.filename)
         attribs = _base_attributes(
             text_item,
             layer_name=layer_name,
@@ -1706,37 +2241,187 @@ def _attempt_outline_string(
             is_r12=is_r12,
             style_name="Standard",
         )
-        outlines = _to_outline_entities(
-            paths, is_r12=is_r12, attribs=_outline_attributes(attribs)
-        )
-        fills = _to_solid_fill_entities(
-            paths,
-            is_r12=is_r12,
-            attribs=_outline_attributes(attribs),
-        )
-        if not outlines and str(text_item.text) and not str(text_item.text).strip():
+        outline_attribs = _outline_attributes(attribs)
+        character_groups: List[_OutlineCharacterGroup] = []
+        delivered_advance: Optional[float] = None
+        baseline_scale: Optional[float] = None
+        if requires_individual:
+            positioned_layout = _validate_character_layout(text_item)
             attempt.evidence.update(
                 {
-                    "source_content_whitespace_only": True,
-                    "visible_ink_expected": False,
-                    "zero_outline_result_verified": True,
-                    "item_specific_creation_attempted": True,
+                    "source_char_layout_verified": True,
+                    "source_char_layout_count": len(positioned_layout),
                 }
             )
-            raise _RepresentationImpossible(
-                "whitespace-only source item has no outline ink"
+            outlines: List[Any] = []
+            fills: List[Any] = []
+            character_metrics: List[Dict[str, Any]] = []
+            for character in positioned_layout:
+                if representation == "glyphs":
+                    translation = (
+                        character.target_origin[0] - insertion[0],
+                        character.target_origin[1] - insertion[1],
+                    )
+                else:
+                    translation = character.target_origin
+                if character.visible_ink_expected:
+                    character_paths, character_advance, character_scale = (
+                        _make_scaled_string_paths(
+                            character.text,
+                            face,
+                            height=height,
+                            target_advance=character.advance_width,
+                            rotation_degrees=character.rotation_degrees,
+                            translation=translation,
+                        )
+                    )
+                else:
+                    # A source space/control/zero-width format character owns
+                    # placement and advance but deliberately owns no ink.  Do
+                    # not let a font's .notdef glyph invent visible geometry.
+                    character_paths = []
+                    character_advance = character.advance_width
+                    character_scale = None
+                character_bbox = _path_bbox_tuple(character_paths)
+                if character.visible_ink_expected and character_bbox is None:
+                    raise ValueError(
+                        f"visible source character {character.index} produced no outline paths"
+                    )
+                if not character.visible_ink_expected and character_bbox is not None:
+                    raise ValueError(
+                        f"zero-ink source character {character.index} produced visible paths"
+                    )
+                character_outlines = _to_outline_entities(
+                    character_paths,
+                    is_r12=is_r12,
+                    attribs=outline_attribs,
+                )
+                character_fills = _to_solid_fill_entities(
+                    character_paths,
+                    is_r12=is_r12,
+                    attribs=outline_attribs,
+                )
+                character_groups.append(
+                    _OutlineCharacterGroup(
+                        index=character.index,
+                        text=character.text,
+                        glyph_id=character.glyph_id,
+                        target_origin=character.target_origin,
+                        target_quad=character.target_quad,
+                        advance_width=character.advance_width,
+                        glyph_height=character.glyph_height,
+                        rotation_degrees=character.rotation_degrees,
+                        visible_ink_expected=character.visible_ink_expected,
+                        expected_bbox=character_bbox,
+                        outlines=character_outlines,
+                        fills=character_fills,
+                    )
+                )
+                outlines.extend(character_outlines)
+                fills.extend(character_fills)
+                character_metrics.append(
+                    {
+                        "index": character.index,
+                        "expected_advance_width": character.advance_width,
+                        "delivered_advance_width": character_advance,
+                        "baseline_scale": character_scale,
+                    }
+                )
+            expected_path_bbox = _bbox_union(
+                [group.expected_bbox for group in character_groups]
             )
-        if representation == "geometry":
-            for entity in outlines + fills:
-                entity.translate(insertion[0], insertion[1], 0.0)
-        expected_bbox = _bbox_tuple(outlines)
+            if expected_path_bbox is None:
+                attempt.evidence.update(
+                    {
+                        "source_content_whitespace_only": not str(text_item.text).strip(),
+                        "visible_ink_expected": False,
+                        "zero_outline_result_verified": True,
+                        "item_specific_creation_attempted": True,
+                        "positioned_character_metrics": character_metrics,
+                    }
+                )
+                raise _RepresentationImpossible(
+                    "individually positioned source item contains no visible outline ink"
+                )
+            expectation = _outline_expectation(
+                text_item,
+                representation=representation,
+                path_bbox=expected_path_bbox,
+                character_groups=character_groups,
+            )
+            attempt.evidence["positioned_character_metrics"] = character_metrics
+        else:
+            translation = insertion if representation == "geometry" else (0.0, 0.0)
+            paths, delivered_advance, baseline_scale = _make_scaled_string_paths(
+                str(text_item.text),
+                face,
+                height=height,
+                target_advance=target_width,
+                rotation_degrees=rotation_degrees,
+                translation=translation,
+            )
+            expected_path_bbox = _path_bbox_tuple(paths)
+            if expected_path_bbox is None:
+                if str(text_item.text) and not str(text_item.text).strip():
+                    attempt.evidence.update(
+                        {
+                            "source_content_whitespace_only": True,
+                            "visible_ink_expected": False,
+                            "zero_outline_result_verified": True,
+                            "item_specific_creation_attempted": True,
+                        }
+                    )
+                    raise _RepresentationImpossible(
+                        "whitespace-only source item has no outline ink"
+                    )
+                raise ValueError("visible source text produced no finite outline paths")
+            expectation = _outline_expectation(
+                text_item,
+                representation=representation,
+                path_bbox=expected_path_bbox,
+            )
+            outlines = _to_outline_entities(
+                paths,
+                is_r12=is_r12,
+                attribs=outline_attribs,
+            )
+            fills = _to_solid_fill_entities(
+                paths,
+                is_r12=is_r12,
+                attribs=outline_attribs,
+            )
         attempt.evidence.update(
             {
                 "expected_advance_width": target_width,
+                "delivered_advance_width": delivered_advance,
+                "string_baseline_scale": baseline_scale,
                 "width_source": width_source,
+                "source_text_type_verified": True,
+                "source_text_parameters_verified": True,
                 "font_candidate": face.filename,
                 "source_font_em_height": source_em_height,
                 "source_cap_height_ratio": cap_height_ratio,
+                "source_text_evidence": {
+                    "entity_type": "SOURCE_BOUND_PATH_LAYOUT",
+                    "content_verified": True,
+                    "source_content": str(text_item.text),
+                    "delivered_content": str(text_item.text),
+                    "anchor_verified": True,
+                    "height_verified": True,
+                    "rotation_verified": True,
+                    "width_verified": True,
+                    "expected_insert": list(insertion),
+                    "actual_insert": list(insertion),
+                    "expected_height": height,
+                    "actual_height": height,
+                    "expected_rotation": rotation_degrees,
+                    "actual_rotation": rotation_degrees,
+                    "expected_advance_width": target_width,
+                    "actual_advance_width": delivered_advance,
+                    "source_font_em_height": source_em_height,
+                    "source_cap_height_ratio": cap_height_ratio,
+                    "source_char_layout_verified": requires_individual,
+                },
             }
         )
         _commit_outlines(
@@ -1746,7 +2431,7 @@ def _attempt_outline_string(
             msp,
             representation=representation,
             insertion=insertion,
-            expected_bbox=expected_bbox,
+            expectation=expectation,
             is_r12=is_r12,
         )
         if not attempt.type_verified or not attempt.visual_verified:
