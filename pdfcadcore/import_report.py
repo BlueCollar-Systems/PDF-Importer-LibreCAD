@@ -717,6 +717,10 @@ def build_human_summary(report: ImportReport | Dict[str, Any]) -> str:
     if perf_hint:
         parts.append(perf_hint.rstrip("."))
 
+    importer_version = str((data.get("importer") or {}).get("version") or "").strip()
+    if importer_version:
+        parts.append(f"Importer v{importer_version}")
+
     paragraph = ". ".join(part.rstrip(".") for part in parts if part).strip()
     if paragraph and not paragraph.endswith("."):
         paragraph += "."
