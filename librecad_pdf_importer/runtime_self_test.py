@@ -20,6 +20,7 @@ def load_runtime_dependencies() -> None:
     """Import the exact modules exercised by production representation delivery."""
 
     import ezdxf  # noqa: F401
+    from ezdxf.addons import text2path  # noqa: F401
     import librecad_pdf_importer  # noqa: F401
     import pdfcadcore  # noqa: F401
 
@@ -37,5 +38,8 @@ def run_runtime_self_test() -> int:
     except Exception as exc:
         print(f"LibreCAD PDF Importer self-test FAILED: {exc}")
         return 1
-    print("LibreCAD PDF Importer self-test OK (PyMuPDF, ezdxf, FontTools)")
+    print(
+        "LibreCAD PDF Importer self-test OK "
+        "(PyMuPDF, ezdxf text2path, FontTools, Matplotlib)"
+    )
     return 0

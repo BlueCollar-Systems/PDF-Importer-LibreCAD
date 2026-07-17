@@ -28,6 +28,8 @@ def test_ci_clones_optional_corpus_before_tests_and_runs_minimum_dependencies() 
     assert '"PyMuPDF==1.24.0"' in workflow
     assert '"ezdxf==1.0.0"' in workflow
     assert '"fonttools==4.50.0"' in workflow
+    assert '"numpy==1.23.5"' in workflow
+    assert '"matplotlib==3.7.0"' in workflow
     assert "pip install --no-deps -e ." in workflow
     assert workflow.count("python -m pytest tests/ -v") >= 2
 

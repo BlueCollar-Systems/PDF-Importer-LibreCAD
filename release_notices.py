@@ -26,6 +26,7 @@ REQUIRED_PYTHON_DISTRIBUTIONS = frozenset(
         "pymupdf",
         "ezdxf",
         "fonttools",
+        "matplotlib",
         "numpy",
         "pyparsing",
         "typing-extensions",

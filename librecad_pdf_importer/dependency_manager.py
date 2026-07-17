@@ -40,6 +40,7 @@ def check_ezdxf() -> bool:
     ensure_lib_path()
     try:
         import ezdxf  # noqa: F401
+        from ezdxf.addons import text2path  # noqa: F401
         return True
     except ImportError:
         return False
@@ -161,9 +162,11 @@ def print_diagnostics() -> int:
     print(f"FontTools: {'OK' if fonttools_ok else 'MISSING'}")
     if not (pymupdf_ok and ezdxf_ok and fonttools_ok):
         print("Install with:")
+        requirements = " ".join(
+            f'"{requirement}"' for requirement in load_runtime_requirements(PROJECT_ROOT)
+        )
         print(
-            f'  python -m pip install --target "{get_lib_dir()}" '
-            '"PyMuPDF>=1.24,<2.0" ezdxf "fonttools>=4.50,<5.0"'
+            f'  python -m pip install --target "{get_lib_dir()}" {requirements}'
         )
         print("Or run:")
         print("  python preflight_check.py --install")

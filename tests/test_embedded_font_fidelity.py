@@ -4,7 +4,10 @@ from collections import Counter
 from io import BytesIO
 from unittest.mock import patch
 
-import pymupdf
+try:
+    import pymupdf
+except ImportError:
+    import fitz as pymupdf  # type: ignore[no-redef]
 import pytest
 from fontTools.ttLib import TTFont
 from fontTools.cffLib import CFFFontSet

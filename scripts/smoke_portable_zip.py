@@ -101,7 +101,10 @@ def _validate_source_zip(source_zip: Path) -> None:
 
 
 def _write_tiny_pdf(path: Path) -> None:
-    import pymupdf
+    try:
+        import pymupdf
+    except ImportError:
+        import fitz as pymupdf  # type: ignore[no-redef]
 
     document = pymupdf.open()
     try:

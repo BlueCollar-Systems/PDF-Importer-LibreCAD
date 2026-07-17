@@ -214,6 +214,7 @@ def test_build_environment_inventory_copies_exact_notices_and_versions(tmp_path)
         ("PyMuPDF", "1.24.0", "AGPL-3.0-only"),
         ("ezdxf", "1.0.0", "MIT"),
         ("fonttools", "4.50.0", "MIT"),
+        ("matplotlib", "3.7.0", "PSF-based"),
         ("numpy", "1.26.4", "BSD-3-Clause"),
         ("pyparsing", "3.1.0", "MIT"),
         ("typing_extensions", "4.6.0", "PSF-2.0"),
@@ -257,6 +258,17 @@ def test_build_environment_inventory_copies_exact_notices_and_versions(tmp_path)
 def test_portable_smoke_requires_dynamic_python_notice_inventory() -> None:
     assert "licenses/PYTHON_DISTRIBUTIONS.md" in smoke_portable_zip.REQUIRED_NOTICES
     assert "licenses/python-distributions.json" in smoke_portable_zip.REQUIRED_NOTICES
+
+
+def test_runtime_probe_imports_ezdxf_text2path_with_its_matplotlib_dependency() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "librecad_pdf_importer"
+        / "runtime_self_test.py"
+    ).read_text(encoding="utf-8")
+
+    assert "from ezdxf.addons import text2path" in source
+    assert "Matplotlib" in source
 
 
 def test_portable_self_test_timeout_fails_closed(monkeypatch, tmp_path) -> None:

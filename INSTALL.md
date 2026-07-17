@@ -4,7 +4,7 @@ This tool converts PDF drawings to DXF files that you can open in LibreCAD, Auto
 
 ## Canonical install (field testers)
 
-**Use the portable ZIP** (`LibreCAD-PDF-Importer-Windows-Portable_vX.Y.Z.zip`) as the single supported path for human confirmation and shop-floor testing. It bundles Python, PyMuPDF, ezdxf, FontTools, pdfcadcore, `lcpdf-gui.exe`, and CLI tools with no Qt or system-Python dependencies.
+**Use the portable ZIP** (`LibreCAD-PDF-Importer-Windows-Portable_vX.Y.Z.zip`) as the single supported path for human confirmation and shop-floor testing. It bundles Python, PyMuPDF, ezdxf, FontTools, Matplotlib, pdfcadcore, `lcpdf-gui.exe`, and CLI tools with no Qt or system-Python dependencies.
 
 The native **`pdfimporter1.dll` menu plugin is not supported** on most Windows installs — LibreCAD ships its own Qt runtime and a plugin built against a different Qt kit fails with opaque DLL errors. Do not use the native plugin for release sign-off.
 
@@ -15,7 +15,7 @@ The native **`pdfimporter1.dll` menu plugin is not supported** on most Windows i
 2. Extract it anywhere you can write files.
 3. Run `lcpdf-gui.exe`, or use `pdf2dxf.exe` / `lcpdf-batch.exe` for command-line and batch conversion.
 
-The portable ZIP bundles Python, PyMuPDF, ezdxf, FontTools, pdfcadcore, the GUI, and the
+The portable ZIP bundles Python, PyMuPDF, ezdxf, FontTools, Matplotlib, pdfcadcore, the GUI, and the
 CLI launchers. No system Python, pip, or administrator rights are required.
 
 ### Option 0a: Source ZIP fallback
@@ -26,7 +26,7 @@ CLI launchers. No system Python, pip, or administrator rights are required.
    python preflight_check.py --install
    python pdf2dxf.py --gui
    ```
-4. `preflight_check.py --install` vendors PyMuPDF, ezdxf, and FontTools into `./lib` (no admin).
+4. `preflight_check.py --install` vendors PyMuPDF, ezdxf, FontTools, and Matplotlib into `./lib` (no admin).
 
 Each successful conversion also writes `<output>_import_report.json` beside the DXF
 with `text_mode`, `resolved_scale`, `peak_mb`, and raster fallback telemetry.
@@ -146,7 +146,7 @@ is an exact source-item `IMAGE`.
 ## Requirements
 
 - Standalone installer: no separate Python or pip packages.
-- Source/dev checkout: Python 3.10+, PyMuPDF, ezdxf, and FontTools, either installed into
+- Source/dev checkout: Python 3.10+, PyMuPDF, ezdxf, FontTools, and Matplotlib, either installed into
   your active environment or vendored into `./lib` with
   `tools/fetch_runtime_wheels.ps1`.
 
@@ -158,7 +158,7 @@ python preflight_check.py --install
 python pdf2dxf.py --preflight
 ```
 
-The `--install` flag downloads PyMuPDF, ezdxf, and FontTools into `./lib` with no admin rights required. `--preflight` prints pre-import text-mode and scale-trust guidance without converting a PDF.
+The `--install` flag downloads PyMuPDF, ezdxf, FontTools, and Matplotlib into `./lib` with no admin rights required. `--preflight` prints pre-import text-mode and scale-trust guidance without converting a PDF.
 
 Standalone app self-test after install:
 

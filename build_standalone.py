@@ -108,7 +108,7 @@ def main() -> int:
         "--workpath", str(WORK_ROOT),
         "--specpath", str(SPEC_ROOT),
         "--collect-all", "pymupdf",         # PyMuPDF binaries + data (embeds MuPDF)
-        "--collect-data", "ezdxf",          # ezdxf resource data only (avoids optional PIL/matplotlib drawing addon)
+        "--collect-data", "ezdxf",          # ezdxf resources; text2path's declared Matplotlib runtime is included
         "--collect-all", "fontTools",       # exact embedded-font parsing and outline conversion
         "--copy-metadata", "fonttools",     # preserve upstream licenses and package metadata
         "--hidden-import", "fitz",          # PyMuPDF compat shim

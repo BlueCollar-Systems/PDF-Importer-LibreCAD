@@ -87,6 +87,7 @@ def test_every_runtime_distribution_path_includes_fonttools() -> None:
     )
 
     assert "fonttools>=4.50,<5.0" in requirements.lower()
+    assert "matplotlib>=3.7,<4.0" in requirements.lower()
     assert "load_runtime_requirements(ROOT)" in standalone
     assert '"--collect-all", "fonttools"' in standalone.lower()
     assert '"--copy-metadata", "fonttools"' in standalone.lower()

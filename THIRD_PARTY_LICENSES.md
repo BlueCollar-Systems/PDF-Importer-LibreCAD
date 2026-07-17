@@ -11,6 +11,7 @@ license.
 | PyMuPDF (embeds MuPDF) | >=1.24,<2.0 | AGPL-3.0 (or Artifex commercial) | https://github.com/pymupdf/PyMuPDF — https://mupdf.com/ |
 | ezdxf | >=1.0 | MIT | https://github.com/mozman/ezdxf |
 | FontTools | >=4.50,<5.0 | MIT | https://github.com/fonttools/fonttools |
+| Matplotlib (`ezdxf.addons.text2path` runtime) | >=3.7,<4.0 | PSF-based Matplotlib license | https://github.com/matplotlib/matplotlib |
 | NumPy (ezdxf dependency) | resolved at build | BSD-3-Clause and bundled notices | https://github.com/numpy/numpy |
 | pyparsing (ezdxf dependency) | resolved at build | MIT | https://github.com/pyparsing/pyparsing |
 | typing_extensions (ezdxf dependency) | resolved at build | PSF-2.0 | https://github.com/python/typing_extensions |

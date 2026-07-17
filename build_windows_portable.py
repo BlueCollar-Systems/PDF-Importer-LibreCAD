@@ -35,6 +35,7 @@ HIDDEN_IMPORTS = [
     "ezdxf.entities",
     "ezdxf.layouts",
     "ezdxf.math",
+    "matplotlib",
     "tkinter",
 ]
 
