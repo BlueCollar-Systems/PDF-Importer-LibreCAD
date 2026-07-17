@@ -743,19 +743,134 @@ def test_shared_text_scale_preserves_subpoint_source_size_without_floor() -> Non
                 ]
             }
 
-    with patch(
-        "pdfcadcore.primitive_extractor._merge_stacked_fractions",
-        side_effect=AssertionError(
-            "production extraction must preserve original positioned source spans"
-        ),
-    ):
-        extracted = _extract_text(_Page(), 100.0, 1, True, 1.0)
-        extracted_again = _extract_text(_Page(), 100.0, 1, True, 1.0)
+    extracted = _extract_text(_Page(), 100.0, 1, True, 1.0)
+    extracted_again = _extract_text(_Page(), 100.0, 1, True, 1.0)
     assert len(extracted) == 1
     assert [item.id for item in extracted] == [1]
     assert [item.id for item in extracted_again] == [1]
     assert extracted[0].font_size == pytest.approx(0.25 * MM_PER_PT)
     assert extracted[0].font_size < 0.1
+
+
+def test_extraction_merges_stacked_fractions_into_semantic_value() -> None:
+    """Extraction owns the semantic merge: a stacked '716' + '/' IS 7/16.
+
+    RB-16 cross-host golden family (stacked-fraction-extract, T1-11). A
+    prior revision of this file locked the opposite ("production must NOT
+    merge") — that lock was wrong (worker-log Ruling 1, 2026-07-17): on
+    fabrication drawings the stacked spans ARE the dimension value, and
+    representation modes govern HOW a delivered value renders, never WHAT
+    the value is. Ids stay page-local source order after the merge.
+    """
+
+    class _Page:
+        @staticmethod
+        def get_text(_kind):
+            def _span(text, origin, bbox):
+                return {
+                    "text": text,
+                    "size": 2.0,
+                    "font": "BCS Deterministic Test",
+                    "origin": origin,
+                    "bbox": bbox,
+                    "ascender": 0.8,
+                    "descender": -0.2,
+                }
+
+            return {
+                "blocks": [
+                    {
+                        "type": 0,
+                        "lines": [
+                            {
+                                "dir": (1.0, 0.0),
+                                "bbox": (10.0, 48.0, 14.0, 51.0),
+                                "spans": [
+                                    _span(
+                                        "716",
+                                        (10.0, 50.0),
+                                        (10.0, 48.0, 14.0, 51.0),
+                                    )
+                                ],
+                            },
+                            {
+                                "dir": (1.0, 0.0),
+                                "bbox": (10.2, 50.5, 12.5, 53.5),
+                                "spans": [
+                                    _span(
+                                        "/",
+                                        (10.5, 52.0),
+                                        (10.2, 50.5, 12.5, 53.5),
+                                    )
+                                ],
+                            },
+                        ],
+                    }
+                ]
+            }
+
+    extracted = _extract_text(_Page(), 100.0, 1, True, 1.0)
+    extracted_again = _extract_text(_Page(), 100.0, 1, True, 1.0)
+
+    assert [item.text for item in extracted] == ["7/16"]
+    # Identity is page-local source order, deterministic across runs and
+    # independent of the merger's global id counter.
+    assert [item.id for item in extracted] == [1]
+    assert [item.id for item in extracted_again] == [1]
+    merged = extracted[0]
+    # The merged value positions as a whole string (per-character source
+    # layout no longer maps 1:1 onto the semantic text) and carries union
+    # source/target fidelity geometry from its constituent spans.
+    assert merged.requires_individual_positioning is False
+    assert merged.source_char_layout == ()
+    assert merged.source_bbox_pdf is not None
+    assert merged.target_quad_model is not None
+
+
+def test_render_stage_must_not_alter_delivered_text_representation(tmp_path) -> None:
+    """The render stage delivers extraction's text values verbatim.
+
+    Counterpart lock to the extraction-merge test above: the semantic
+    stacked-fraction merge happens at extraction and ONLY there. The render
+    stage must not merge ('13' + '16' never becomes '13/16'), split
+    ('7/16' stays one entity), or otherwise relabel delivered content.
+    """
+
+    def _text(item_id: int, text: str, insertion) -> NormalizedText:
+        return NormalizedText(
+            id=item_id,
+            text=text,
+            normalized=text,
+            insertion=insertion,
+            bbox=(
+                insertion[0] - 0.5,
+                insertion[1] - 0.5,
+                insertion[0] + 2.0,
+                insertion[1] + 0.5,
+            ),
+            font_size=0.9,
+            font_name="BCS Deterministic Test",
+            page_number=3,
+        )
+
+    items = [
+        _text(1, "7/16", (10.0, 20.0)),
+        _text(2, "13", (30.0, 20.3)),
+        _text(3, "16", (30.0, 19.7)),
+    ]
+    result, _config, drawing, _report = _run_for_items(tmp_path, "labels", items)
+
+    dxf_texts = [
+        entity.dxf.text
+        for entity in drawing.modelspace()
+        if entity.dxftype() == "TEXT"
+    ]
+    assert sorted(dxf_texts) == ["13", "16", "7/16"]
+    assert [entry["source_id"] for entry in result.text_deliveries] == [
+        "text_span:3:1",
+        "text_span:3:2",
+        "text_span:3:3",
+    ]
 
 
 def _run_for_items(tmp_path, mode: str, items: list[NormalizedText]):
