@@ -459,17 +459,19 @@ class TestDxfPipeline(unittest.TestCase):
             ),
         )
         dxf = ezdxf.readfile(export.output_path)
-        self.assertIn("TEXT", {entity.dxftype() for entity in dxf.modelspace()})
+        entity_types = {entity.dxftype() for entity in dxf.modelspace()}
+        self.assertIn("INSERT", entity_types)
+        self.assertNotIn("TEXT", entity_types)
 
         report_path = self.tmp_path / "raster_none_import_report.json"
         write_import_report(run, str(report_path), elapsed_ms=1.0)
         report = json.loads(report_path.read_text(encoding="utf-8"))
         self.assertTrue(report["fallback"]["used"])
         self.assertEqual(report["fallback"]["text"]["requested"], "labels")
-        self.assertEqual(report["fallback"]["text"]["delivered"], "text")
+        self.assertEqual(report["fallback"]["text"]["delivered"], "glyphs")
         self.assertEqual(report["extra"]["text_mode"], "labels")
         self.assertGreaterEqual(
-            report["extra"]["actual_text_entity_types"]["dxf_text"],
+            report["extra"]["actual_text_entity_types"]["outline_curve_or_mesh"],
             1,
         )
 
@@ -533,7 +535,7 @@ class TestDxfPipeline(unittest.TestCase):
         self.assertNotIn("MTEXT", text_layer_types)
         self.assertTrue({"LWPOLYLINE", "POLYLINE"}.intersection(text_layer_types))
 
-    def test_labels_loudly_fall_back_to_native_text_with_parent_lff_font(self) -> None:
+    def test_labels_loudly_fall_back_to_exact_source_outlines(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
         export = export_to_dxf(
             run.extraction,
@@ -548,10 +550,10 @@ class TestDxfPipeline(unittest.TestCase):
             for entity in dxf.modelspace()
             if str(entity.dxf.layer or "") == "P001_TEXT"
         }
-        self.assertEqual(text_layer_types, {"TEXT"})
+        self.assertEqual(text_layer_types, {"INSERT"})
         self.assertTrue(all(item["fallback_used"] for item in export.text_deliveries))
         self.assertTrue(
-            all(item["final_representation"] == "text" for item in export.text_deliveries)
+            all(item["final_representation"] == "glyphs" for item in export.text_deliveries)
         )
         self.assertTrue(
             all(
@@ -559,6 +561,18 @@ class TestDxfPipeline(unittest.TestCase):
                     "parent_native_label_entity_available"
                 ]
                 is False
+                for item in export.text_deliveries
+            )
+        )
+        self.assertTrue(
+            all(
+                any(
+                    attempt["attempted_representation"] == "text"
+                    and attempt["outcome"] == "impossible"
+                    and attempt["cleanup_verified"] is True
+                    and attempt["evidence"]["parent_visual_fidelity_verified"] is False
+                    for attempt in item["attempts"]
+                )
                 for item in export.text_deliveries
             )
         )
@@ -595,10 +609,14 @@ class TestDxfPipeline(unittest.TestCase):
         self.assertGreater(export.entity_count, 0)
         dxf = ezdxf.readfile(export.output_path)
         types = {entity.dxftype() for entity in dxf.modelspace()}
-        self.assertIn("TEXT", types)
+        self.assertIn("INSERT", types)
+        self.assertNotIn("TEXT", types)
         self.assertNotIn("IMAGE", types)
+        self.assertTrue(
+            all(item["final_representation"] == "glyphs" for item in export.text_deliveries)
+        )
 
-    def test_3d_text_uses_loud_native_text_fallback_in_librecad(self) -> None:
+    def test_3d_text_uses_loud_exact_outline_fallback_in_librecad(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
         run.config.import_text = True
         run.config.text_mode = "3d_text"
@@ -618,20 +636,23 @@ class TestDxfPipeline(unittest.TestCase):
             for entity in dxf.modelspace()
             if str(entity.dxf.layer or "") == "P001_TEXT"
         }
-        self.assertEqual(text_layer_types, {"TEXT"})
+        self.assertEqual(text_layer_types, {"INSERT"})
         self.assertTrue(all(item["fallback_used"] for item in export.text_deliveries))
+        self.assertTrue(
+            all(item["final_representation"] == "glyphs" for item in export.text_deliveries)
+        )
 
         report_path = self.tmp_path / "3d_text_import_report.json"
         write_import_report(run, str(report_path), elapsed_ms=1.0)
         report = json.loads(report_path.read_text(encoding="utf-8"))
         self.assertTrue(report["fallback"]["used"])
         self.assertEqual(report["fallback"]["text"]["requested"], "3d_text")
-        self.assertEqual(report["fallback"]["text"]["delivered"], "text")
+        self.assertEqual(report["fallback"]["text"]["delivered"], "glyphs")
         self.assertEqual(report["extra"]["text_mode"], "3d_text")
         actual = report["extra"]["actual_text_entity_types"]
-        self.assertEqual(actual["entity_type"], "text")
+        self.assertEqual(actual["entity_type"], "glyphs")
         self.assertEqual(actual["native_3d_text"], 0)
-        self.assertGreaterEqual(actual["dxf_text"], 1)
+        self.assertGreaterEqual(actual["outline_curve_or_mesh"], 1)
 
     def test_generic_native_text_height_preserves_source_em_via_exact_cap_ratio(self) -> None:
         run = run_import(

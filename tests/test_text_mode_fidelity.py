@@ -60,9 +60,9 @@ class TestLibreCADTextModeFidelity(unittest.TestCase):
 
     def test_every_requested_representation_is_exact_or_loudly_falls_back(self) -> None:
         expected = {
-            "text": ("text", "TEXT", "dxf_text", False),
-            "labels": ("text", "TEXT", "dxf_text", True),
-            "3d_text": ("text", "TEXT", "dxf_text", True),
+            "text": ("glyphs", "INSERT", "outline_curve_or_mesh", True),
+            "labels": ("glyphs", "INSERT", "outline_curve_or_mesh", True),
+            "3d_text": ("glyphs", "INSERT", "outline_curve_or_mesh", True),
             "glyphs": ("glyphs", "INSERT", "outline_curve_or_mesh", False),
             "geometry": ("geometry", "LWPOLYLINE", "raw_geometry_edges", False),
         }
@@ -84,6 +84,24 @@ class TestLibreCADTextModeFidelity(unittest.TestCase):
                     self.assertEqual(
                         report["fallback"]["text"]["delivered"], delivered
                     )
+                    native_attempts = [
+                        attempt
+                        for attempt in delivery["attempts"]
+                        if "parent_visual_fidelity_verified"
+                        in attempt.get("evidence", {})
+                    ]
+                    self.assertTrue(native_attempts)
+                    self.assertTrue(
+                        all(attempt["outcome"] == "impossible" for attempt in native_attempts)
+                    )
+                    self.assertTrue(
+                        all(
+                            attempt["evidence"]["parent_visual_fidelity_verified"]
+                            is False
+                            for attempt in native_attempts
+                        )
+                    )
+                    self.assertNotIn("TEXT", {entity.dxftype() for entity in entities})
                 else:
                     self.assertIsNone(report["fallback"].get("text"))
 
@@ -127,7 +145,10 @@ class TestLibreCADTextModeFidelity(unittest.TestCase):
             [attempt.attempted_representation for attempt in delivery.attempts],
             [mode, mode],
         )
-        self.assertTrue(all(attempt.outcome == "failed" for attempt in delivery.attempts))
+        self.assertTrue(any(attempt.outcome == "failed" for attempt in delivery.attempts))
+        self.assertTrue(
+            all(attempt.outcome in {"impossible", "failed"} for attempt in delivery.attempts)
+        )
         self.assertTrue(all(attempt.cleanup_verified for attempt in delivery.attempts))
         self.assertFalse(any(attempt.entity_handles for attempt in delivery.attempts))
 
