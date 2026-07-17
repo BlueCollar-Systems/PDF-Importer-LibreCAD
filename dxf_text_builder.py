@@ -392,11 +392,35 @@ def _require_exact_item_font(
 ) -> _ExactFontResolution:
     resolution = _resolve_item_font(text_item, config)
     attempt.evidence.update(resolution.evidence())
-    if resolution.exact:
+    source_authoritative = _source_font_program_is_authoritative(resolution)
+    attempt.evidence["source_font_program_authoritative"] = source_authoritative
+    if resolution.exact and source_authoritative:
         return resolution
+    if resolution.exact:
+        raise _RepresentationImpossible(
+            "the resolved font program is not source-authoritative for exact outline delivery"
+        )
     if resolution.item_impossibility_proven:
         raise _RepresentationImpossible(resolution.reason)
     raise ValueError(resolution.reason)
+
+
+_SOURCE_AUTHORITATIVE_FONT_ORIGINS = frozenset(
+    {
+        "embedded_pdf_font",
+        "pdf_base14_renderer_font",
+        "test_fixture",
+    }
+)
+
+
+def _source_font_program_is_authoritative(resolution: _ExactFontResolution) -> bool:
+    origin = str(
+        resolution.source_origin or resolution.resolution_source or ""
+    ).strip().lower()
+    return bool(
+        resolution.exact and origin in _SOURCE_AUTHORITATIVE_FONT_ORIGINS
+    )
 
 
 def _embedded_ezdxf_cap_height_ratio(font_bytes: bytes) -> float:
@@ -1032,21 +1056,8 @@ def _attempt_labels(
             parent_font_format = (
                 Path(str(style_font or "")).suffix.lower().lstrip(".") or "unknown"
             )
-            source_origin = str(
-                font_resolution.source_origin
-                or font_resolution.resolution_source
-                or ""
-            ).strip().lower()
-            # The embedded program is source-authoritative.  The repository's
-            # deterministic fixture is likewise the source program for its
-            # synthetic item; an installed family/name match is not.
-            source_authoritative_origins = {
-                "embedded_pdf_font",
-                "test_fixture",
-            }
-            parent_font_substituted = not bool(
-                font_resolution.exact
-                and source_origin in source_authoritative_origins
+            parent_font_substituted = not _source_font_program_is_authoritative(
+                font_resolution
             )
             preferred_style_name = None
         height, cap_height_ratio = _delivery_cap_height(
@@ -1841,6 +1852,12 @@ def _build_delivery(
             failure_reason=reason,
         )
 
+    def cleanup_failure(attempt: TextDeliveryAttempt) -> TextDeliveryResult:
+        return unverified_result(
+            "%s cleanup/ownership verification is incomplete; fallback is forbidden"
+            % attempt.attempted_representation
+        )
+
     if ladder == ["raster"]:
         return unverified_result(
             "requested Raster is pending a source-bound item render",
@@ -1864,7 +1881,11 @@ def _build_delivery(
             )
             attempts.append(attempt)
             if attempt.outcome == "verified":
+                if not attempt.cleanup_verified:
+                    return cleanup_failure(attempt)
                 return verified_result("3d_text", attempt)
+            if not attempt.cleanup_verified:
+                return cleanup_failure(attempt)
             if attempt.outcome != "impossible":
                 return unverified_result(
                     attempt.reason
@@ -1887,7 +1908,11 @@ def _build_delivery(
             )
             attempts.append(attempt)
             if attempt.outcome == "verified":
+                if not attempt.cleanup_verified:
+                    return cleanup_failure(attempt)
                 return verified_result("labels", attempt)
+            if not attempt.cleanup_verified:
+                return cleanup_failure(attempt)
             if attempt.outcome != "impossible":
                 return unverified_result(
                     attempt.reason or "Labels failed without impossibility proof"
@@ -1909,7 +1934,11 @@ def _build_delivery(
             )
             attempts.append(attempt)
             if attempt.outcome == "verified":
+                if not attempt.cleanup_verified:
+                    return cleanup_failure(attempt)
                 return verified_result("text", attempt)
+            if not attempt.cleanup_verified:
+                return cleanup_failure(attempt)
             if attempt.outcome != "impossible":
                 return unverified_result(
                     attempt.reason or "Text failed without impossibility proof"
@@ -1928,7 +1957,11 @@ def _build_delivery(
         )
         attempts.append(outline_attempt)
         if outline_attempt.outcome == "verified":
+            if not outline_attempt.cleanup_verified:
+                return cleanup_failure(outline_attempt)
             return verified_result(representation, outline_attempt)
+        if not outline_attempt.cleanup_verified:
+            return cleanup_failure(outline_attempt)
 
         second_attempt = _attempt_outline_string(
             text_item,
@@ -1942,7 +1975,11 @@ def _build_delivery(
         )
         attempts.append(second_attempt)
         if second_attempt.outcome == "verified":
+            if not second_attempt.cleanup_verified:
+                return cleanup_failure(second_attempt)
             return verified_result(representation, second_attempt)
+        if not second_attempt.cleanup_verified:
+            return cleanup_failure(second_attempt)
 
         representation_attempts = attempts[representation_start:]
         if not representation_attempts or any(

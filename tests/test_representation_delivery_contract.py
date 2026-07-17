@@ -106,7 +106,7 @@ def test_installed_name_match_cannot_be_verified_with_false_visual_fidelity() ->
         reason="exact installed source-font family/style match",
     )
     with patch("dxf_text_builder._resolve_item_font", return_value=installed_match):
-        _, _, result = _deliver("text", target_app="generic")
+        _, msp, result = _deliver("text", target_app="generic")
 
     native = result.attempts[0]
     evidence = native.evidence
@@ -119,9 +119,63 @@ def test_installed_name_match_cannot_be_verified_with_false_visual_fidelity() ->
     assert evidence["fallback_authorized_for_this_item"] is True
     assert not any(
         attempt.outcome == "verified"
-        and attempt.evidence.get("parent_visual_fidelity_verified") is False
         for attempt in result.attempts
     )
+    assert result.verified is False
+    assert result.final_representation is None
+    assert list(msp) == []
+
+
+def test_authenticated_base14_renderer_font_is_source_authoritative(
+    deterministic_exact_font,
+) -> None:
+    base14 = _ExactFontResolution(
+        source_name="Helvetica",
+        family="Helvetica",
+        style="Regular",
+        filename=str(deterministic_exact_font),
+        exact=True,
+        source_cap_height_ratio=0.7,
+        source_origin="pdf_base14_renderer_font",
+        resolution_source="pdf_base14_renderer_font",
+        reason="authenticated PDF Base14 renderer program",
+    )
+    with patch("dxf_text_builder._resolve_item_font", return_value=base14):
+        _, msp, result = _deliver("text", target_app="generic")
+
+    assert result.verified is True
+    assert result.final_representation == "text"
+    assert [entity.dxftype() for entity in msp] == ["TEXT"]
+    evidence = result.attempts[0].evidence
+    assert evidence["parent_native_font_substituted"] is False
+    assert evidence["parent_source_font_equivalence_verified"] is True
+    assert evidence["parent_visual_fidelity_verified"] is True
+
+
+def test_impossible_attempt_with_incomplete_cleanup_cannot_advance() -> None:
+    dirty = TextDeliveryAttempt(
+        source_id="text_span:3:17",
+        requested_representation="labels",
+        attempted_representation="labels",
+        strategy="native_dxf_text",
+        outcome="impossible",
+        reason="item-specific representation impossibility",
+        created_entity_handles=["AA"],
+        removed_entity_handles=[],
+        cleanup_verified=False,
+    )
+    with patch("dxf_text_builder._attempt_labels", return_value=dirty) as attempt_labels:
+        _, msp, result = _deliver("labels", target_app="librecad")
+
+    assert result.verified is False
+    assert result.final_representation is None
+    assert result.terminal_fallback_authorized is False
+    assert "cleanup" in result.failure_reason.lower()
+    assert attempt_labels.call_count == 1
+    assert [attempt.attempted_representation for attempt in result.attempts] == [
+        "labels"
+    ]
+    assert list(msp) == []
 
 
 def _deliver(
@@ -1638,6 +1692,35 @@ def test_serialized_librecad_fallback_contains_no_superseded_native_text(
         native_attempt["created_entity_handles"]
     )
     _verify_serialized_text_deliveries(drawing, result.text_deliveries)
+
+
+def test_serialized_native_text_fit_width_cannot_change_after_verification(
+    tmp_path,
+) -> None:
+    parent_evidence = {
+        "parent_native_text_delivery_verified": True,
+        "parent_visual_fidelity_verified": True,
+        "fallback_authorized_for_this_item": False,
+    }
+    with patch(
+        "dxf_text_builder._verify_parent_native_text_delivery",
+        return_value=(True, parent_evidence, ""),
+    ):
+        doc, _, result = _deliver("text", target_app="librecad")
+    output = tmp_path / "generic_native_text.dxf"
+    doc.saveas(output)
+    drawing = ezdxf.readfile(output)
+    native = next(iter(drawing.modelspace()))
+    assert native.dxftype() == "TEXT"
+    assert int(native.dxf.halign) == 5
+    native.dxf.align_point = (
+        float(native.dxf.align_point.x) + 1.0,
+        float(native.dxf.align_point.y),
+        0.0,
+    )
+
+    with pytest.raises(RuntimeError, match="FIT width changed"):
+        _verify_serialized_text_deliveries(drawing, [result.to_dict()])
 
 
 def test_terminal_raster_rejects_partially_clipped_source_bbox(tmp_path) -> None:
