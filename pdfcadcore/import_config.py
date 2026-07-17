@@ -7,9 +7,9 @@ Shared across FreeCAD, Blender, and LibreCAD hosts.
 
 BCS-ARCH-001 compliance (authoritative; see _LLM_CONTROL_PACK/BCS-ARCH-001.md):
 
-- Four modes only: auto (default), vector, raster, hybrid.
+- Current public extraction strategies: auto (default), vector, raster, hybrid.
 - Text rendering is a separate orthogonal control:
-  labels, 3d_text, glyphs, geometry.
+  text, labels, 3d_text, glyphs, geometry, raster.
 - Every mode targets indistinguishable-from-source fidelity.
   Modes differ only in extraction strategy on different input types;
   they do NOT differ in quality target.
@@ -17,8 +17,9 @@ BCS-ARCH-001 compliance (authoritative; see _LLM_CONTROL_PACK/BCS-ARCH-001.md):
   value.
 
 The deprecated preset names (fast, general, technical, shop,
-raster_vector, raster_only, max) have been removed. Do not re-introduce
-them under any name.
+raster_vector, raster_only, max) remain unsupported as quality tiers. This does
+not prohibit a genuinely new capability: add one when it has distinct semantics,
+the same maximum-fidelity target, and production-path verification.
 """
 from __future__ import annotations
 
@@ -61,10 +62,12 @@ class ImportConfig:
     import_text: bool = True
 
     # Text rendering (orthogonal to mode). One of:
-    #   "labels"   -- host-native text objects, editable as text
-    #   "3d_text"  -- extruded geometric text (host support varies)
-    #   "glyphs"   -- non-editable outline geometry for visual fidelity
+    #   "text"     -- request host-native editable text
+    #   "labels"   -- request a persistent host-native label entity
+    #   "3d_text"  -- request host-native extruded text
+    #   "glyphs"   -- grouped non-editable glyph outline entities
     #   "geometry" -- text fully converted to non-editable geometry
+    #   "raster"   -- item-scoped aligned raster representation
     text_mode: str = "3d_text"
 
     strict_text_fidelity: bool = True
@@ -134,10 +137,10 @@ class ImportConfig:
                                         CLEANUP_PRESETS["balanced"]))
 
     # ---- Mode constructors (BCS-ARCH-001) -----------------------
-    # These are the ONLY named constructors that exist. Deprecated
-    # preset constructors (fast, general_vector, technical_drawing,
-    # shop_drawing, full, max_fidelity) have been removed per
-    # BCS-ARCH-001 and MUST NOT be reintroduced.
+    # These are the current named strategy constructors. Deprecated preset
+    # constructors (fast, general_vector, technical_drawing, shop_drawing,
+    # full, max_fidelity) stay removed because they were quality tiers, not
+    # distinct capabilities. New verified capabilities are not blocked.
     @classmethod
     def auto(cls) -> "ImportConfig":
         """Auto mode (default). Strategy is chosen per page at extract time."""

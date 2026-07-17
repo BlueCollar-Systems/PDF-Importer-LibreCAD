@@ -10,6 +10,7 @@ from librecad_pdf_importer.core.document import DocumentExtraction, ExtractedPag
 from librecad_pdf_importer.importer import ImportRun, run_import, write_import_report
 from pdf2dxf import __version__
 from pdfcadcore.import_config import ImportConfig
+from pdfcadcore.import_report import ImportReport
 from pdfcadcore.primitives import NormalizedText, PageData
 
 try:
@@ -61,6 +62,58 @@ class TestImportReportWriter(unittest.TestCase):
             self.assertIn("actual_text_entity_types", data["extra"])
             self.assertIn("dxf_text", data["extra"]["actual_text_entity_types"])
 
+    def test_import_report_rejects_nonfinite_json_numbers(self) -> None:
+        report = ImportReport(extra={"proof": float("nan")})
+
+        with self.assertRaisesRegex(ValueError, "non-finite.*extra.proof"):
+            report.to_json()
+
+    def test_text_delivery_readiness_requires_one_unique_verified_item_per_span(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="lc_delivery_bijection_") as tmp:
+            tmp_path = Path(tmp)
+            pdf_path = tmp_path / "source.pdf"
+            self._write_blank_pdf(pdf_path)
+            text_items = [
+                NormalizedText(1, "A", "A", page_number=1),
+                NormalizedText(2, "B", "B", page_number=1),
+            ]
+            page = ExtractedPage(
+                page_data=PageData(
+                    page_number=1,
+                    width=200,
+                    height=120,
+                    text_items=text_items,
+                ),
+                profile=SimpleNamespace(titleblock_likely=False),
+                resolved_mode="vector",
+            )
+            config = ImportConfig.vector()
+            config.import_text = True
+            config.text_mode = "labels"
+            config._text_representation_deliveries = [  # noqa: SLF001
+                {
+                    "source_id": "text_span:1:1",
+                    "requested_representation": "labels",
+                    "final_representation": "labels",
+                    "verified": True,
+                    "entity_handles": ["10"],
+                },
+                "not an item record",
+            ]
+            run = ImportRun(
+                extraction=DocumentExtraction(
+                    str(pdf_path), pages=[page], requested_mode="vector"
+                ),
+                config=config,
+            )
+            report_path = tmp_path / "report.json"
+
+            write_import_report(run, str(report_path), elapsed_ms=1.0)
+
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+            delivery = payload["extra"]["text_representation_delivery"]
+            self.assertFalse(delivery["verified"])
+
     def test_write_import_report_emits_parts_bootstrap_sidecar(self) -> None:
         with tempfile.TemporaryDirectory(prefix="lc_parts_bootstrap_") as tmp:
             tmp_path = Path(tmp)
@@ -90,8 +143,15 @@ class TestImportReportWriter(unittest.TestCase):
 
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(report["extra"]["parts_bootstrap"]["row_count"], 1)
-            self.assertEqual(report["extra"]["parts_bootstrap"]["sidecar_path"], "parts_bootstrap.json")
-            sidecar = json.loads((tmp_path / "parts_bootstrap.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                report["extra"]["parts_bootstrap"]["sidecar_path"],
+                "import_report_parts_bootstrap.json",
+            )
+            sidecar = json.loads(
+                (tmp_path / "import_report_parts_bootstrap.json").read_text(
+                    encoding="utf-8"
+                )
+            )
             self.assertEqual(sidecar["schema"], "bcs.parts_bootstrap/1.0")
             self.assertEqual(sidecar["part_count"], 1)
             self.assertEqual(sidecar["rows"][0]["piece_mark"], "1017FR1")

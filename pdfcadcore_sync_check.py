@@ -9,9 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import shutil
-import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -19,7 +17,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 MANIFEST_PATH = SCRIPT_DIR / "pdfcadcore_sync_manifest.json"
 
 REPO_CORE_DIRS: Dict[str, Path] = {
-    "FC": SCRIPT_DIR / "PDFVectorImporter" / "pdfcadcore",
+    "FC": Path(r"C:\1PDF-Importer-FreeCAD") / "PDFVectorImporter" / "pdfcadcore",
     "BL": Path(r"C:\1PDF-Importer-Blender") / "pdf_vector_importer" / "pdfcadcore",
     "LC": Path(r"C:\1PDF-Importer-LibreCAD") / "pdfcadcore",
 }
@@ -76,6 +74,17 @@ def detect_local_repo() -> Optional[str]:
     if (SCRIPT_DIR / "pdfcadcore").is_dir() and (SCRIPT_DIR / "dxf_builder.py").is_file():
         return "LC"
     return None
+
+
+def local_core_dir(repo: str) -> Path:
+    """Return the detected checkout's core, never a same-host main checkout."""
+    if repo == "FC":
+        return SCRIPT_DIR / "PDFVectorImporter" / "pdfcadcore"
+    if repo == "BL":
+        return SCRIPT_DIR / "pdf_vector_importer" / "pdfcadcore"
+    if repo == "LC":
+        return SCRIPT_DIR / "pdfcadcore"
+    raise ValueError(f"unknown repository code: {repo}")
 
 
 def iter_core_files(core_dir: Path) -> Iterable[Path]:
@@ -136,14 +145,17 @@ def check_repo_core(
     return errors
 
 
-def check_repo_context_builder(manifest: Dict[str, str]) -> List[str]:
+def check_repo_context_builder(
+    manifest: Dict[str, str],
+    paths: Optional[Iterable[Path]] = None,
+) -> List[str]:
     key = "repo_context_builder_core.py"
     if key not in manifest:
         return [f"manifest missing {key}"]
 
     expected = manifest[key]
     existing: List[Tuple[Path, str]] = []
-    for path in REPO_CONTEXT_BUILDER_PATHS:
+    for path in paths if paths is not None else REPO_CONTEXT_BUILDER_PATHS:
         if path.is_file():
             existing.append((path, sha256_file(path)))
 
@@ -167,7 +179,10 @@ def check_repo_context_builder(manifest: Dict[str, str]) -> List[str]:
     return errors
 
 
-def check_self_copies(manifest: Dict[str, str]) -> List[str]:
+def check_self_copies(
+    manifest: Dict[str, str],
+    paths: Optional[Iterable[Path]] = None,
+) -> List[str]:
     """The checker guards its own copies (board Q-09-c).
 
     In a single-repo CI checkout only the local copy exists; comparing it
@@ -177,8 +192,11 @@ def check_self_copies(manifest: Dict[str, str]) -> List[str]:
     if SELF_NAME not in manifest:
         return [f"manifest missing {SELF_NAME} (rerun --write-manifest)"]
     expected = manifest[SELF_NAME]
-    candidates = {Path(__file__).resolve()}
-    candidates.update(p.resolve() for p in SELF_COPY_PATHS if p.is_file())
+    candidates = {p.resolve() for p in paths} if paths is not None else {
+        Path(__file__).resolve()
+    }
+    if paths is None:
+        candidates.update(p.resolve() for p in SELF_COPY_PATHS if p.is_file())
     errors: List[str] = []
     seen = 0
     for path in sorted(candidates):
@@ -215,7 +233,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    canonical_dir = REPO_CORE_DIRS["FC"]
+    local_repo = detect_local_repo()
+    if args.skip_cross_repo and local_repo:
+        canonical_dir = local_core_dir(local_repo)
+    else:
+        canonical_dir = (
+            local_core_dir("FC") if local_repo == "FC" else REPO_CORE_DIRS["FC"]
+        )
     if args.write_manifest:
         manifest: Dict[str, str] = {}
         for path in iter_core_files(canonical_dir):
@@ -226,30 +250,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         manifest[SELF_NAME] = sha256_file(Path(__file__).resolve())
         MANIFEST_PATH.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         print(f"Wrote manifest: {MANIFEST_PATH}")
-        for repo, core_dir in REPO_CORE_DIRS.items():
-            if repo == "FC":
-                continue
-            repo_root = core_dir.parents[1] if repo == "BL" else core_dir.parent
-            dest_manifest = repo_root / "pdfcadcore_sync_manifest.json"
-            if repo_root.is_dir():
-                dest_manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-                print(f"Copied manifest -> {dest_manifest}")
+        if not args.skip_cross_repo:
+            for repo, core_dir in REPO_CORE_DIRS.items():
+                if repo == "FC":
+                    continue
+                repo_root = core_dir.parents[1] if repo == "BL" else core_dir.parent
+                dest_manifest = repo_root / "pdfcadcore_sync_manifest.json"
+                if repo_root.is_dir():
+                    dest_manifest.write_text(
+                        json.dumps(manifest, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+                    print(f"Copied manifest -> {dest_manifest}")
         return 0
 
     manifest = load_manifest()
     errors: List[str] = []
 
-    local_repo = detect_local_repo()
     if local_repo:
-        core_dir = REPO_CORE_DIRS[local_repo]
-        if not core_dir.is_dir():
-            # Fall back to path relative to script for CI checkout layout.
-            if local_repo == "FC":
-                core_dir = SCRIPT_DIR / "PDFVectorImporter" / "pdfcadcore"
-            elif local_repo == "BL":
-                core_dir = SCRIPT_DIR / "pdf_vector_importer" / "pdfcadcore"
-            else:
-                core_dir = SCRIPT_DIR / "pdfcadcore"
+        core_dir = local_core_dir(local_repo)
         errors.extend(check_repo_core(local_repo, core_dir, manifest, args.fix, canonical_dir))
     else:
         print("WARN: could not detect local repo layout")
@@ -261,8 +280,17 @@ def main(argv: Optional[List[str]] = None) -> int:
             if core_dir.is_dir():
                 errors.extend(check_repo_core(repo, core_dir, manifest, args.fix, canonical_dir))
 
-    errors.extend(check_repo_context_builder(manifest))
-    errors.extend(check_self_copies(manifest))
+    if args.skip_cross_repo:
+        errors.extend(
+            check_repo_context_builder(
+                manifest,
+                (SCRIPT_DIR / "repo_context_builder_core.py",),
+            )
+        )
+        errors.extend(check_self_copies(manifest, (Path(__file__).resolve(),)))
+    else:
+        errors.extend(check_repo_context_builder(manifest))
+        errors.extend(check_self_copies(manifest))
 
     if errors:
         print("DRIFT DETECTED:")

@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +19,26 @@ SCALE_DIMENSION_TENSION_CONFIDENCE = 0.85
 SCALE_FACTOR_DISAGREE_RATIO = 0.15
 PERFORMANCE_HINT_ENTITY_THRESHOLD = 50_000
 PERFORMANCE_HINT_PEAK_MB = 1024.0
+
+
+def _require_finite_json_numbers(value: Any, path: str = "") -> None:
+    """Reject NaN and infinities with the exact report path that contains them."""
+
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(
+                f"non-finite JSON number at {path or '<root>'}: {value!r}"
+            )
+        return
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            _require_finite_json_numbers(child, child_path)
+        return
+    if isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            child_path = f"{path}[{index}]" if path else f"[{index}]"
+            _require_finite_json_numbers(child, child_path)
 
 
 def _sha256_file(path: str) -> str:
@@ -76,6 +97,7 @@ def build_fidelity_diagnostics(
     *,
     primitive_count: int = 0,
     text_count: int = 0,
+    image_count: int = 0,
     layer_count: int = 0,
     warnings: int = 0,
     fallback_used: bool = False,
@@ -90,13 +112,12 @@ def build_fidelity_diagnostics(
 
     primitives = int(primitive_count or 0)
     text_entities = int(text_count or 0)
+    images = int(image_count or 0)
     layers = int(layer_count or 0)
     warning_count = int(warnings or 0)
     source_spans = int(text_source_spans or 0)
     glyph_estimate = int(text_glyph_estimate or 0)
     mode = str(text_mode or "").strip()
-    reason = str(fallback_reason or "").strip()
-
     if primitives >= 50:
         quality_level = "high"
         signals = ["good_vector_content"]
@@ -106,6 +127,9 @@ def build_fidelity_diagnostics(
     elif primitives > 0:
         quality_level = "low"
         signals = ["very_limited_vector_content"]
+    elif images > 0:
+        quality_level = "raster"
+        signals = ["raster_or_image_content_delivered"]
     else:
         quality_level = "empty"
         signals = ["no_vector_geometry_created"]
@@ -113,12 +137,10 @@ def build_fidelity_diagnostics(
     actions: List[str] = []
     if fallback_used:
         signals.append("fallback_used")
-        if "raster" in reason.lower():
-            actions.append(
-                "If editable geometry is required, retry Vector or Hybrid mode and confirm the PDF contains vector data."
-            )
-        else:
-            actions.append("Review the fallback reason and attach the import report when requesting support.")
+        actions.append(
+            "Inspect the item-specific proof and correct the importer while keeping "
+            "the requested representation unchanged."
+        )
 
     if text_fallback:
         signals.append("text_mode_fallback")
@@ -143,18 +165,24 @@ def build_fidelity_diagnostics(
         signals.append("text_import_disabled")
     elif mode:
         signals.append(f"text_mode_{mode}")
-        if mode in {"glyphs", "geometry"}:
-            actions.append("Use Labels or 3D Text mode when editable text is more important than exact glyph outlines.")
-        elif mode in {"labels", "3d_text"}:
-            actions.append("Use Geometry or Glyphs mode when exact visual text outlines are more important than editability.")
+        actions.append(
+            "Confirm each source item reports the requested text representation "
+            "with verified content, placement, rotation, width, and height."
+        )
 
     if import_text and source_spans > 0 and text_entities == 0:
         signals.append("source_text_seen_but_no_text_entities_created")
-        actions.append("Retest with another text mode and compare the text_source_spans count against visible text.")
+        actions.append(
+            "Treat missing delivered text entities as a failed import; inspect the "
+            "item attempt history without changing the requested representation."
+        )
 
     if glyph_estimate >= 1000:
         signals.append("dense_text_glyph_workload")
-        actions.append("For heavy PDFs on older PCs, import one page first and compare Labels versus Glyphs/Geometry performance.")
+        actions.append(
+            "For heavy PDFs on older PCs, diagnose one page first while keeping "
+            "the requested representation unchanged."
+        )
 
     return {
         "quality_level": quality_level,
@@ -304,8 +332,9 @@ def build_font_embedding_hints(doc: Any) -> Dict[str, Any]:
     if len(non_embedded) > 5:
         sample += f" (+{len(non_embedded) - 5} more)"
     note = (
-        f"Non-embedded PDF fonts detected ({sample}) — Labels mode may substitute "
-        "Windows or CAD fonts on this PC; use Outlines or Glyphs for exact appearance."
+        f"Non-embedded PDF fonts detected ({sample}); preserve the requested "
+        "representation, report any parent-native font substitution as "
+        "source-font non-equivalent, and use an item fallback only after proof."
     )
     return {
         "non_embedded_fonts": non_embedded,
@@ -480,7 +509,29 @@ def build_import_contract_ready(report: "ImportReport") -> Dict[str, Any]:
     text_count = int(result.get("text_entities") or 0)
     has_entity_types = "actual_text_entity_types" in extra
     text_ok = text_count <= 0 or has_entity_types
-    ready = has_stamp and has_crosscheck and text_ok and open_failure is None
+    status = str(extra.get("result_status") or result.get("status") or "success").lower()
+    terminal_failure = extra.get("terminal_failure")
+    result_succeeded = status not in {
+        "failed",
+        "error",
+        "incomplete",
+        "cancelled",
+        "pending",
+        "pending_export",
+    } and terminal_failure is None
+    source_spans = int(extra.get("text_source_spans") or 0)
+    delivery = extra.get("text_representation_delivery")
+    text_delivery_ok = source_spans <= 0 or (
+        isinstance(delivery, dict) and delivery.get("verified") is True
+    )
+    ready = (
+        has_stamp
+        and has_crosscheck
+        and text_ok
+        and text_delivery_ok
+        and result_succeeded
+        and open_failure is None
+    )
 
     return {
         "ready": ready,
@@ -488,6 +539,11 @@ def build_import_contract_ready(report: "ImportReport") -> Dict[str, Any]:
             "build_stamp": has_stamp,
             "scale_crosscheck": has_crosscheck,
             "actual_text_entity_types": text_ok,
+            "text_delivery": text_delivery_ok,
+            "result_succeeded": result_succeeded,
+            # Compatibility spelling retained for existing Report Doctor clients.
+            "successful_result": result_succeeded,
+            "no_terminal_failure": terminal_failure is None,
             "no_open_failure": open_failure is None,
         },
         "note": (
@@ -526,8 +582,10 @@ def _format_text_mode(mode: str) -> str:
         "geometry": "geometry text",
         "glyphs": "glyph geometry",
         "3d_text": "3D text",
+        "text": "flat editable text",
         "labels": "labels",
         "outlines": "outlines",
+        "raster": "item-scoped raster text",
     }
     return labels.get(key, key.replace("_", " ") if key else "")
 
@@ -549,6 +607,7 @@ def build_human_summary(report: ImportReport | Dict[str, Any]) -> str:
     pages = int(input_block.get("pages") or 0)
     primitives = int(result.get("primitives") or 0)
     text_count = int(result.get("text_entities") or 0)
+    image_count = int(result.get("images") or 0)
     layers = int(result.get("layers") or 0)
     warnings = int(result.get("warnings") or 0)
     elapsed_ms = float(perf.get("elapsed_ms") or 0.0)
@@ -560,7 +619,19 @@ def build_human_summary(report: ImportReport | Dict[str, Any]) -> str:
 
     parts: List[str] = []
     page_phrase = f"{pages} page{'s' if pages != 1 else ''}" if pages else "the PDF"
-    parts.append(f"Imported {page_phrase} from {pdf_name} into {host} using {mode} mode")
+    result_status = str(
+        extra.get("result_status") or result.get("status") or "success"
+    ).lower()
+    if result_status in {"failed", "error", "cancelled"}:
+        parts.append(
+            f"Import failed for {page_phrase} from {pdf_name} in {host} using {mode} mode"
+        )
+    elif result_status in {"incomplete", "pending", "pending_export"}:
+        parts.append(
+            f"Import is incomplete for {page_phrase} from {pdf_name} in {host} using {mode} mode"
+        )
+    else:
+        parts.append(f"Imported {page_phrase} from {pdf_name} into {host} using {mode} mode")
 
     if text_mode:
         parts[-1] += f" with {text_mode}"
@@ -570,6 +641,10 @@ def build_human_summary(report: ImportReport | Dict[str, Any]) -> str:
         outcome.append(f"{primitives} vector primitive{'s' if primitives != 1 else ''}")
     if text_count:
         outcome.append(f"{text_count} text item{'s' if text_count != 1 else ''}")
+    if image_count:
+        outcome.append(
+            f"{image_count} raster/image placement{'s' if image_count != 1 else ''}"
+        )
     if layers:
         outcome.append(f"{layers} PDF layer{'s' if layers != 1 else ''}")
 
@@ -643,15 +718,21 @@ def build_human_summary(report: ImportReport | Dict[str, Any]) -> str:
 class TextEntityVerification:
     """Text entity type verification for cross-host consistency."""
 
-    entity_type: str = ""  # "label", "glyphs", "geometry", "3d_text"
+    entity_type: str = ""  # text, labels, 3d_text, glyphs, geometry, raster, mixed
     count: int = 0
     font_rendered: bool = False
     examples: List[str] = field(default_factory=list)
     native_label: int = 0
+    native_text: int = 0
     native_3d_text: int = 0
+    glyph_curve: int = 0
+    geometry_mesh: int = 0
+    raster_patch: int = 0
     outline_curve_or_mesh: int = 0
     raw_geometry_edges: int = 0
+    raster_text_patch: int = 0
     dxf_text: int = 0
+    raster_image: int = 0
     fallback_geometry: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
@@ -661,12 +742,33 @@ class TextEntityVerification:
 #: Bucket names hosts may report as DELIVERED entity counts (TEXTMODE-1).
 TEXT_ENTITY_DELIVERED_BUCKETS = (
     "native_label",
+    "native_text",
     "native_3d_text",
+    "glyph_curve",
+    "geometry_mesh",
+    "raster_patch",
     "outline_curve_or_mesh",
     "raw_geometry_edges",
+    "raster_text_patch",
     "dxf_text",
+    "raster_image",
     "fallback_geometry",
 )
+
+_DELIVERED_ENTITY_TYPES = {
+    "native_label": "labels",
+    "native_text": "text",
+    "native_3d_text": "3d_text",
+    "glyph_curve": "glyphs",
+    "geometry_mesh": "geometry",
+    "outline_curve_or_mesh": "glyphs",
+    "raw_geometry_edges": "geometry",
+    "raster_patch": "raster",
+    "raster_text_patch": "raster",
+    "dxf_text": "text",
+    "raster_image": "raster",
+    "fallback_geometry": "geometry",
+}
 
 
 def build_actual_text_entity_types(
@@ -693,7 +795,14 @@ def build_actual_text_entity_types(
     total = max(0, int(count or 0))
     rendered = font_rendered
     if rendered is None:
-        rendered = mode in {"labels", "label", "3d_text", "text3d"}
+        rendered = mode in {
+            "text",
+            "native_text",
+            "labels",
+            "label",
+            "3d_text",
+            "text3d",
+        }
 
     info = TextEntityVerification(
         entity_type=mode,
@@ -701,8 +810,8 @@ def build_actual_text_entity_types(
         font_rendered=bool(rendered),
         examples=list(examples or [])[:3],
     )
-    if delivered_counts:
-        delivered_total = 0
+    if delivered_counts is not None:
+        delivered_buckets: List[str] = []
         for bucket in TEXT_ENTITY_DELIVERED_BUCKETS:
             try:
                 value = int(delivered_counts.get(bucket, 0) or 0)
@@ -710,35 +819,78 @@ def build_actual_text_entity_types(
                 value = 0
             if value > 0:
                 setattr(info, bucket, value)
-                delivered_total += value
-        if delivered_total > 0:
-            if total <= 0:
-                info.count = delivered_total
+                delivered_buckets.append(bucket)
+
+        # Blender reports specific curve/mesh buckets plus the historical
+        # outline aggregate. Count the aggregate only when no specific bucket
+        # was supplied, so compatibility fields cannot double-count entities.
+        count_buckets = list(delivered_buckets)
+        if {"glyph_curve", "geometry_mesh"} & set(delivered_counts):
+            count_buckets = [
+                bucket for bucket in count_buckets
+                if bucket != "outline_curve_or_mesh"
+            ]
+            info.outline_curve_or_mesh = max(
+                int(info.outline_curve_or_mesh or 0),
+                int(info.glyph_curve or 0) + int(info.geometry_mesh or 0),
+            )
+        delivered_total = sum(int(getattr(info, bucket, 0) or 0) for bucket in count_buckets)
+        info.count = delivered_total
+        if not delivered_buckets:
+            info.entity_type = "none"
+            info.font_rendered = False
             return info.to_dict()
+
+        delivered_types = {
+            _DELIVERED_ENTITY_TYPES[bucket] for bucket in delivered_buckets
+        }
+        info.entity_type = (
+            next(iter(delivered_types)) if len(delivered_types) == 1 else "mixed"
+        )
+        if font_rendered is None:
+            info.font_rendered = bool(
+                {"native_label", "native_text", "native_3d_text", "dxf_text"}
+                & set(delivered_buckets)
+            )
+        return info.to_dict()
     if total <= 0 or mode in {"", "none"}:
         return info.to_dict()
 
     if host == "librecad":
-        if mode in {"labels", "label", "3d_text", "text3d"}:
+        if mode in {"text", "labels", "label", "3d_text", "text3d"}:
             info.dxf_text = total
         elif mode in {"glyphs", "geometry", "outlines"}:
             info.raw_geometry_edges = total
         else:
             info.fallback_geometry = total
     elif host == "blender":
-        if mode in {"labels", "label", "3d_text", "text3d"}:
+        if mode in {"labels", "label"}:
+            info.native_label = total
+        elif mode in {"text"}:
+            info.native_text = total
+        elif mode in {"3d_text", "text3d"}:
             info.native_3d_text = total
-        elif mode in {"glyphs", "geometry", "outlines"}:
+        elif mode in {"glyphs"}:
+            info.glyph_curve = total
             info.outline_curve_or_mesh = total
+        elif mode in {"geometry", "outlines"}:
+            info.geometry_mesh = total
+            info.outline_curve_or_mesh = total
+        elif mode == "raster":
+            info.raster_patch = total
         else:
             info.fallback_geometry = total
     elif host == "freecad":
-        if mode in {"labels", "label"}:
+        if mode in {"text", "native_text"}:
+            info.native_text = total
+        elif mode in {"labels", "label"}:
             info.native_label = total
         elif mode in {"3d_text", "text3d"}:
             info.native_3d_text = total
         elif mode in {"glyphs", "geometry", "outlines"}:
             info.outline_curve_or_mesh = total
+        elif mode in {"raster", "raster_text_patch"}:
+            info.raster_text_patch = total
         else:
             info.fallback_geometry = total
     elif host == "sketchup":
@@ -774,12 +926,19 @@ class ImportReport:
         return asdict(self)
 
     def to_json(self, indent: int = 2) -> str:
-        return json.dumps(self.to_dict(), indent=indent, sort_keys=False)
+        payload = self.to_dict()
+        _require_finite_json_numbers(payload)
+        return json.dumps(
+            payload,
+            indent=indent,
+            sort_keys=False,
+            allow_nan=False,
+        )
 
     def write_json(self, output_path: str, indent: int = 2) -> None:
-        path = Path(output_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self.to_json(indent=indent) + "\n", encoding="utf-8")
+        from .atomic_io import atomic_write_text
+
+        atomic_write_text(output_path, self.to_json(indent=indent) + "\n")
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ImportReport":
@@ -815,6 +974,7 @@ def build_import_report(
     pages: int = 0,
     primitive_count: int = 0,
     text_count: int = 0,
+    image_count: int = 0,
     layer_count: int = 0,
     bbox: Optional[List[float]] = None,
     warnings: int = 0,
@@ -883,6 +1043,7 @@ def build_import_report(
         build_fidelity_diagnostics(
             primitive_count=primitive_count,
             text_count=text_count,
+            image_count=image_count,
             layer_count=layer_count,
             warnings=warnings,
             fallback_used=effective_fallback_used,
@@ -936,6 +1097,7 @@ def build_import_report(
         result={
             "primitives": int(primitive_count),
             "text_entities": int(text_count),
+            "images": int(image_count),
             "layers": int(layer_count),
             "bbox": bbox,
             "warnings": int(warnings),

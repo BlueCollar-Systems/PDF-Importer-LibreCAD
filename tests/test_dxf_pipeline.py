@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import tempfile
@@ -59,6 +60,43 @@ class TestDxfPipeline(unittest.TestCase):
 
         doc.save(str(out_path))
 
+    def _build_transparent_image_pdf(self, out_path: Path) -> None:
+        pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 4, 4), 1)
+        pix.clear_with(0)
+        for y in range(4):
+            for x in range(4):
+                alpha = 255 if x == y else 0
+                pix.set_pixel(x, y, (255, 0, 0, alpha))
+
+        doc = fitz.open()
+        page = doc.new_page(width=100, height=100)
+        page.insert_image(
+            fitz.Rect(10, 10, 50, 50),
+            stream=pix.tobytes("png"),
+        )
+        invisible = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 4, 4), 1)
+        for y in range(4):
+            for x in range(4):
+                invisible.set_pixel(x, y, (0, 0, 0, 0))
+        page.insert_image(
+            fitz.Rect(60, 10, 90, 40),
+            stream=invisible.tobytes("png"),
+        )
+        doc.save(str(out_path))
+        doc.close()
+
+    def _build_filled_and_stroked_pdf(self, out_path: Path) -> None:
+        doc = fitz.open()
+        page = doc.new_page(width=100, height=100)
+        page.draw_rect(
+            fitz.Rect(20, 20, 80, 80),
+            color=(0.0, 0.0, 0.0),
+            fill=(0.5, 0.5, 0.5),
+            width=2.0,
+        )
+        doc.save(str(out_path))
+        doc.close()
+
     def test_pdf_to_dxf_export(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
         export = export_to_dxf(run.extraction, str(self.dxf_path))
@@ -74,16 +112,301 @@ class TestDxfPipeline(unittest.TestCase):
         types = {entity.dxftype() for entity in entities}
         self.assertTrue({"LINE", "LWPOLYLINE", "ARC", "CIRCLE"}.intersection(types))
 
+    def test_filled_stroked_path_keeps_distinct_fill_and_stroke_colors(self) -> None:
+        source = self.tmp_path / "filled-and-stroked.pdf"
+        output = self.tmp_path / "filled-and-stroked.dxf"
+        self._build_filled_and_stroked_pdf(source)
+        run = run_import(
+            str(source),
+            mode="vector",
+            overrides={"pages": "1", "import_text": False},
+        )
+
+        export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(include_text=False, include_images=False),
+        )
+
+        drawing = ezdxf.readfile(output)
+        entities = list(drawing.modelspace())
+        hatches = [entity for entity in entities if entity.dxftype() == "HATCH"]
+        strokes = [
+            entity
+            for entity in entities
+            if entity.dxftype() in {"LWPOLYLINE", "POLYLINE"}
+        ]
+        self.assertEqual(len(hatches), 1)
+        self.assertEqual(len(strokes), 1)
+        self.assertEqual(hatches[0].dxf.true_color, 0x808080)
+        self.assertEqual(hatches[0].dxf.color, 8)
+        self.assertEqual(strokes[0].dxf.true_color, 0x000000)
+        self.assertTrue(hatches[0].dxf.solid_fill)
+        self.assertTrue(all(path.is_closed for path in hatches[0].paths))
+
+    def test_r12_filled_stroked_path_uses_solid_fill_and_distinct_aci(self) -> None:
+        source = self.tmp_path / "filled-and-stroked-r12.pdf"
+        output = self.tmp_path / "filled-and-stroked-r12.dxf"
+        self._build_filled_and_stroked_pdf(source)
+        run = run_import(
+            str(source),
+            mode="vector",
+            overrides={"pages": "1", "import_text": False},
+        )
+
+        export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(
+                include_text=False,
+                include_images=False,
+                dxf_version="R12",
+            ),
+        )
+
+        entities = list(ezdxf.readfile(output).modelspace())
+        fills = [entity for entity in entities if entity.dxftype() == "SOLID"]
+        strokes = [entity for entity in entities if entity.dxftype() == "POLYLINE"]
+        self.assertTrue(fills)
+        self.assertEqual(len(strokes), 1)
+        self.assertEqual({entity.dxf.color for entity in fills}, {8})
+        self.assertEqual(strokes[0].dxf.color, 250)
+
+    def test_full_page_white_fill_uses_parent_paper_instead_of_black_hatch(self) -> None:
+        source = self.tmp_path / "white-page-background.pdf"
+        output = self.tmp_path / "white-page-background.dxf"
+        doc = fitz.open()
+        page = doc.new_page(width=100, height=100)
+        page.draw_rect(
+            page.rect,
+            color=None,
+            fill=(1.0, 1.0, 1.0),
+            width=0.0,
+        )
+        page.draw_line((10, 50), (90, 50), color=(0.0, 0.0, 0.0), width=1.0)
+        doc.save(str(source))
+        doc.close()
+        run = run_import(
+            str(source),
+            mode="vector",
+            overrides={"pages": "1", "import_text": False},
+        )
+
+        export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(include_text=False, include_images=False),
+        )
+
+        entities = list(ezdxf.readfile(output).modelspace())
+        self.assertFalse(any(entity.dxftype() == "HATCH" for entity in entities))
+        self.assertEqual(
+            [entity.dxftype() for entity in entities if entity.dxftype() == "LINE"],
+            ["LINE"],
+        )
+
+    def test_smaller_white_fill_avoids_librecad_print_color_inversion(self) -> None:
+        source = self.tmp_path / "white-knockout.pdf"
+        output = self.tmp_path / "white-knockout.dxf"
+        doc = fitz.open()
+        page = doc.new_page(width=100, height=100)
+        page.draw_rect(
+            fitz.Rect(20, 20, 80, 80),
+            color=(0.0, 0.0, 0.0),
+            fill=(1.0, 1.0, 1.0),
+            width=1.0,
+        )
+        doc.save(str(source))
+        doc.close()
+        run = run_import(
+            str(source),
+            mode="vector",
+            overrides={"pages": "1", "import_text": False},
+        )
+
+        export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(include_text=False, include_images=False),
+        )
+
+        hatch = next(
+            entity
+            for entity in ezdxf.readfile(output).modelspace()
+            if entity.dxftype() == "HATCH"
+        )
+        self.assertEqual(hatch.dxf.true_color, 0xFEFEFE)
+        self.assertNotIn(hatch.dxf.color, {7})
+
+    def test_embedded_image_soft_mask_is_preserved(self) -> None:
+        source = self.tmp_path / "transparent.pdf"
+        image_dir = self.tmp_path / "extracted_images"
+        self._build_transparent_image_pdf(source)
+
+        extraction = extract_document(
+            str(source),
+            ExtractionOptions(
+                pages="1",
+                import_mode="vector",
+                import_text=False,
+                import_images=True,
+                image_dir=str(image_dir),
+            ),
+        )
+
+        self.assertEqual(len(extraction.pages[0].images), 1)
+        extracted = fitz.Pixmap(extraction.pages[0].images[0].path)
+        self.assertTrue(extracted.alpha)
+        alpha_samples = bytes(extracted.samples)[extracted.n - 1 :: extracted.n]
+        self.assertEqual(min(alpha_samples), 0)
+        self.assertEqual(max(alpha_samples), 255)
+
+    def test_export_stages_image_assets_beside_the_accepted_dxf(self) -> None:
+        run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
+        source_asset = Path(run.extraction.pages[0].images[0].path)
+        expected_sha = hashlib.sha256(source_asset.read_bytes()).hexdigest()
+
+        export_to_dxf(
+            run.extraction,
+            str(self.dxf_path),
+            DxfExportOptions(include_text=False, include_images=True),
+        )
+
+        drawing = ezdxf.readfile(str(self.dxf_path))
+        image = list(drawing.modelspace().query("IMAGE"))[0]
+        self.assertTrue(int(image.dxf.flags) & 8)
+        raster_variables = list(drawing.objects.query("RASTERVARIABLES"))
+        self.assertEqual(len(raster_variables), 1)
+        self.assertEqual(int(raster_variables[0].dxf.frame), 0)
+        self.assertEqual(int(raster_variables[0].dxf.units), 1)
+        image_def = drawing.entitydb.get(str(image.dxf.image_def_handle))
+        staged_asset = Path(str(image_def.dxf.filename)).resolve()
+        asset_parent = self.dxf_path.with_name(f"{self.dxf_path.stem}_assets").resolve()
+        self.assertIn(asset_parent, staged_asset.parents)
+        self.assertNotEqual(staged_asset, source_asset.resolve())
+        self.assertTrue(staged_asset.is_file())
+        self.assertEqual(
+            hashlib.sha256(staged_asset.read_bytes()).hexdigest(),
+            expected_sha,
+        )
+
+    def test_import_run_close_reclaims_only_importer_owned_image_workspace(self) -> None:
+        run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
+        source_asset = Path(run.extraction.pages[0].images[0].path)
+        owned_workspace = source_asset.parent
+
+        self.assertTrue(source_asset.is_file())
+        run.close()
+        self.assertFalse(owned_workspace.exists())
+
+        # Closing an already-closed run is safe and cannot broaden deletion scope.
+        run.close()
+
+    def test_cleanup_never_removes_a_caller_owned_image_directory(self) -> None:
+        caller_owned = self.tmp_path / "caller-owned-images"
+        extraction = extract_document(
+            str(self.pdf_path),
+            ExtractionOptions(
+                pages="1",
+                import_mode="vector",
+                import_text=False,
+                import_images=True,
+                image_dir=str(caller_owned),
+            ),
+        )
+        extracted_asset = Path(extraction.pages[0].images[0].path)
+
+        extraction.cleanup_temporary_assets()
+
+        self.assertTrue(caller_owned.is_dir())
+        self.assertTrue(extracted_asset.is_file())
+
+    def test_failed_extraction_reclaims_the_importer_owned_image_workspace(self) -> None:
+        real_temporary_directory = tempfile.TemporaryDirectory
+        retained_workspaces = []
+
+        def tracked_workspace(*args, **kwargs):
+            kwargs["dir"] = str(self.tmp_path)
+            workspace = real_temporary_directory(*args, **kwargs)
+            retained_workspaces.append(workspace)
+            return workspace
+
+        with (
+            patch(
+                "librecad_pdf_importer.core.document.tempfile.TemporaryDirectory",
+                side_effect=tracked_workspace,
+            ),
+            patch(
+                "librecad_pdf_importer.core.document._extract_images",
+                side_effect=RuntimeError("simulated extraction failure"),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "simulated extraction failure"):
+                extract_document(
+                    str(self.pdf_path),
+                    ExtractionOptions(
+                        pages="1",
+                        import_mode="vector",
+                        import_text=False,
+                        import_images=True,
+                    ),
+                )
+
+        self.assertTrue(retained_workspaces)
+        self.assertTrue(all(not Path(item.name).exists() for item in retained_workspaces))
+
+    def test_failed_candidate_removes_staged_image_assets_and_preserves_prior_dxf(self) -> None:
+        run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
+        prior = b"prior accepted DXF\r\n"
+        self.dxf_path.write_bytes(prior)
+
+        with patch(
+            "librecad_pdf_importer.exporters.dxf_exporter.ezdxf.readfile",
+            side_effect=RuntimeError("simulated candidate reopen failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "candidate reopen"):
+                export_to_dxf(
+                    run.extraction,
+                    str(self.dxf_path),
+                    DxfExportOptions(include_text=False, include_images=True),
+                )
+
+        self.assertEqual(self.dxf_path.read_bytes(), prior)
+        self.assertFalse(
+            self.dxf_path.with_name(f"{self.dxf_path.stem}_assets").exists()
+        )
+
+    def test_unreadable_image_asset_fails_closed_and_preserves_prior_dxf(self) -> None:
+        run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
+        corrupt = self.tmp_path / "corrupt.png"
+        corrupt.write_bytes(b"not an image")
+        run.extraction.pages[0].images[0].path = str(corrupt)
+        prior = b"prior accepted DXF\r\n"
+        self.dxf_path.write_bytes(prior)
+
+        with self.assertRaisesRegex(RuntimeError, "image asset"):
+            export_to_dxf(
+                run.extraction,
+                str(self.dxf_path),
+                DxfExportOptions(include_text=False, include_images=True),
+            )
+
+        self.assertEqual(self.dxf_path.read_bytes(), prior)
+
     def test_default_page_selection_imports_all_pages(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector")
         self.assertEqual(len(run.extraction.pages), 2)
 
-    def test_run_import_defaults_to_librecad_labels(self) -> None:
+    def test_run_import_defaults_to_librecad_text(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
-        self.assertEqual(run.config.text_mode, "labels")
+        self.assertEqual(run.config.text_mode, "text")
 
     def test_raster_mode_outputs_image_entity(self) -> None:
-        run = run_import(str(self.pdf_path), mode="raster", overrides={"pages": "1"})
+        run = run_import(
+            str(self.pdf_path),
+            mode="raster",
+            overrides={"pages": "1", "import_text": False},
+        )
         export = export_to_dxf(
             run.extraction,
             str(self.dxf_path),
@@ -93,9 +416,16 @@ class TestDxfPipeline(unittest.TestCase):
         dxf = ezdxf.readfile(export.output_path)
         types = {entity.dxftype() for entity in dxf.modelspace()}
         self.assertIn("IMAGE", types)
+        report_path = self.tmp_path / "explicit_raster_import_report.json"
+        write_import_report(run, str(report_path), elapsed_ms=1.0)
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertEqual(run.extraction.requested_mode, "raster")
+        self.assertEqual(run.extraction.pages[0].resolved_mode, "raster")
+        self.assertFalse(report["fallback"]["used"])
+        self.assertIsNone(report["fallback"]["reason"])
 
-    def test_text_cloud_raster_none_retains_text_and_reports_failure(self) -> None:
-        """A failed terminal raster must retain a usable text representation."""
+    def test_text_cloud_auto_does_not_preempt_requested_labels(self) -> None:
+        """Auto classification must preserve the requested text representation."""
         with (
             patch(
                 "librecad_pdf_importer.core.document._looks_like_text_cloud_page",
@@ -104,15 +434,20 @@ class TestDxfPipeline(unittest.TestCase):
             patch(
                 "librecad_pdf_importer.core.document._render_page_raster",
                 return_value=None,
-            ),
+            ) as render_raster,
         ):
-            run = run_import(str(self.pdf_path), mode="auto", overrides={"pages": "1"})
+            run = run_import(
+                str(self.pdf_path),
+                mode="auto",
+                overrides={"pages": "1", "text_mode": "labels"},
+            )
 
         page = run.extraction.pages[0]
         self.assertTrue(page.page_data.text_items)
-        self.assertTrue(page.raster_fallback_failed)
+        self.assertFalse(page.raster_fallback_failed)
         self.assertEqual(page.resolved_mode, "vector")
-        self.assertIn("raster render failed", page.resolved_reason)
+        self.assertIn("vector", page.resolved_reason.lower())
+        render_raster.assert_not_called()
 
         export = export_to_dxf(
             run.extraction,
@@ -130,13 +465,16 @@ class TestDxfPipeline(unittest.TestCase):
         write_import_report(run, str(report_path), elapsed_ms=1.0)
         report = json.loads(report_path.read_text(encoding="utf-8"))
         self.assertTrue(report["fallback"]["used"])
-        self.assertIn("raster render failed", report["fallback"]["reason"])
-        self.assertNotIn("text", report["fallback"])
+        self.assertEqual(report["fallback"]["text"]["requested"], "labels")
+        self.assertEqual(report["fallback"]["text"]["delivered"], "text")
         self.assertEqual(report["extra"]["text_mode"], "labels")
-        self.assertGreaterEqual(report["extra"]["actual_text_entity_types"]["dxf_text"], 1)
+        self.assertGreaterEqual(
+            report["extra"]["actual_text_entity_types"]["dxf_text"],
+            1,
+        )
 
-    def test_text_cloud_raster_error_retains_text_and_reports_failure(self) -> None:
-        """An unexpected page-raster exception must not erase the text fallback."""
+    def test_text_cloud_auto_never_calls_raster_for_requested_geometry(self) -> None:
+        """A requested non-raster text type blocks auto-raster preemption."""
         with (
             patch(
                 "librecad_pdf_importer.core.document._looks_like_text_cloud_page",
@@ -145,15 +483,20 @@ class TestDxfPipeline(unittest.TestCase):
             patch(
                 "librecad_pdf_importer.core.document._render_page_raster",
                 side_effect=OSError("simulated raster save failure"),
-            ),
+            ) as render_raster,
         ):
-            run = run_import(str(self.pdf_path), mode="auto", overrides={"pages": "1"})
+            run = run_import(
+                str(self.pdf_path),
+                mode="auto",
+                overrides={"pages": "1", "text_mode": "geometry"},
+            )
 
         page = run.extraction.pages[0]
         self.assertTrue(page.page_data.text_items)
-        self.assertTrue(page.raster_fallback_failed)
+        self.assertFalse(page.raster_fallback_failed)
         self.assertEqual(page.resolved_mode, "vector")
-        self.assertIn("raster render failed", page.resolved_reason)
+        self.assertIn("vector", page.resolved_reason.lower())
+        render_raster.assert_not_called()
 
     def test_blank_forced_raster_none_fails_loudly(self) -> None:
         """A terminal raster without any viable prior content cannot be silent."""
@@ -190,7 +533,7 @@ class TestDxfPipeline(unittest.TestCase):
         self.assertNotIn("MTEXT", text_layer_types)
         self.assertTrue({"LWPOLYLINE", "POLYLINE"}.intersection(text_layer_types))
 
-    def test_labels_text_mode_outputs_editable_text(self) -> None:
+    def test_labels_loudly_fall_back_to_native_text_with_parent_lff_font(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
         export = export_to_dxf(
             run.extraction,
@@ -205,11 +548,22 @@ class TestDxfPipeline(unittest.TestCase):
             for entity in dxf.modelspace()
             if str(entity.dxf.layer or "") == "P001_TEXT"
         }
-        self.assertIn("TEXT", text_layer_types)
-        self.assertNotIn("LWPOLYLINE", text_layer_types)
-        self.assertNotIn("POLYLINE", text_layer_types)
+        self.assertEqual(text_layer_types, {"TEXT"})
+        self.assertTrue(all(item["fallback_used"] for item in export.text_deliveries))
+        self.assertTrue(
+            all(item["final_representation"] == "text" for item in export.text_deliveries)
+        )
+        self.assertTrue(
+            all(
+                item["attempts"][0]["evidence"][
+                    "parent_native_label_entity_available"
+                ]
+                is False
+                for item in export.text_deliveries
+            )
+        )
 
-    def test_auto_mode_text_only_page_preserves_editable_text(self) -> None:
+    def test_auto_mode_text_only_page_preserves_visible_text_content(self) -> None:
         text_only_pdf = self.tmp_path / "text_only.pdf"
         doc = fitz.open()
         page = doc.new_page(width=600, height=400)
@@ -244,7 +598,7 @@ class TestDxfPipeline(unittest.TestCase):
         self.assertIn("TEXT", types)
         self.assertNotIn("IMAGE", types)
 
-    def test_3d_text_alias_outputs_editable_text_in_2d_librecad(self) -> None:
+    def test_3d_text_uses_loud_native_text_fallback_in_librecad(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
         run.config.import_text = True
         run.config.text_mode = "3d_text"
@@ -264,42 +618,56 @@ class TestDxfPipeline(unittest.TestCase):
             for entity in dxf.modelspace()
             if str(entity.dxf.layer or "") == "P001_TEXT"
         }
-        self.assertIn("TEXT", text_layer_types)
+        self.assertEqual(text_layer_types, {"TEXT"})
+        self.assertTrue(all(item["fallback_used"] for item in export.text_deliveries))
 
-        # TEXTMODE-1 item 10: delivered behavior is unchanged, but the report
-        # must present the 2D alias as a documented host-limit fallback.
-        report_path = self.tmp_path / "alias_import_report.json"
+        report_path = self.tmp_path / "3d_text_import_report.json"
         write_import_report(run, str(report_path), elapsed_ms=1.0)
         report = json.loads(report_path.read_text(encoding="utf-8"))
         self.assertTrue(report["fallback"]["used"])
-        text_block = report["fallback"]["text"]
-        self.assertEqual(text_block["requested"], "3d_text")
-        self.assertEqual(text_block["delivered"], "labels")
-        self.assertEqual(text_block["reason"], "host_2d_no_3d_text")
+        self.assertEqual(report["fallback"]["text"]["requested"], "3d_text")
+        self.assertEqual(report["fallback"]["text"]["delivered"], "text")
         self.assertEqual(report["extra"]["text_mode"], "3d_text")
-        self.assertGreaterEqual(
-            report["extra"]["actual_text_entity_types"]["dxf_text"], 1
-        )
+        actual = report["extra"]["actual_text_entity_types"]
+        self.assertEqual(actual["entity_type"], "text")
+        self.assertEqual(actual["native_3d_text"], 0)
+        self.assertGreaterEqual(actual["dxf_text"], 1)
 
-    def test_editable_text_height_preserves_nominal_font_size(self) -> None:
+    def test_generic_native_text_height_preserves_source_em_via_exact_cap_ratio(self) -> None:
+        run = run_import(
+            str(self.pdf_path),
+            mode="vector",
+            overrides={"pages": "1", "text_mode": "text"},
+        )
+        item = run.extraction.pages[0].page_data.text_items[0]
+        asset = item.font_asset
+        self.assertIsNotNone(asset)
+        font_path = self.tmp_path / f"{asset.usable_sha256}.{asset.usable_format}"
+        font_path.write_bytes(asset.usable_bytes)
+        config = ImportConfig(text_mode="text")
+        config._embedded_font_asset_paths = {asset.asset_id: str(font_path)}
         doc = ezdxf.new("R2010")
         msp = doc.modelspace()
-        item = NormalizedText(
-            id=1,
-            text="LONG CALLOUT TEXT",
-            normalized="LONG CALLOUT TEXT",
-            insertion=(0.0, 0.0),
-            bbox=(0.0, 0.0, 10.0, 3.0),
-            font_size=12.0,
-            rotation=0.0,
+
+        result = build_text(
+            item,
+            msp,
+            "TEXT",
+            config,
+            target_app="generic",
+            return_delivery_result=True,
         )
 
-        count = build_text(item, msp, "TEXT", ImportConfig(text_mode="labels"), target_app="librecad")
-
-        self.assertEqual(count, 1)
+        self.assertTrue(result.verified)
         text_entities = [entity for entity in msp if entity.dxftype() == "TEXT"]
         self.assertEqual(len(text_entities), 1)
-        self.assertEqual(text_entities[0].dxf.height, item.font_size)
+        evidence = result.attempts[0].evidence
+        expected = (
+            evidence["source_font_em_height"]
+            * evidence["source_cap_height_ratio"]
+        )
+        self.assertAlmostEqual(float(text_entities[0].dxf.height), expected)
+        self.assertAlmostEqual(evidence["actual_height"], expected)
 
     def test_glyphs_text_mode_outputs_noneditable_outlines(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
@@ -318,7 +686,21 @@ class TestDxfPipeline(unittest.TestCase):
         }
         self.assertNotIn("TEXT", text_layer_types)
         self.assertNotIn("MTEXT", text_layer_types)
-        self.assertTrue({"LWPOLYLINE", "POLYLINE"}.intersection(text_layer_types))
+        self.assertEqual(text_layer_types, {"INSERT"})
+        glyph_refs = [
+            entity for entity in dxf.modelspace()
+            if str(entity.dxf.layer or "") == "P001_TEXT"
+        ]
+        self.assertGreater(len(glyph_refs), 0)
+        for glyph_ref in glyph_refs:
+            block = dxf.blocks.get(glyph_ref.dxf.name)
+            self.assertTrue(
+                all(
+                    entity.dxftype() in {"LWPOLYLINE", "POLYLINE", "SOLID"}
+                    for entity in block
+                )
+            )
+            self.assertIn("SOLID", {entity.dxftype() for entity in block})
 
     def test_dxf_version_override(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})

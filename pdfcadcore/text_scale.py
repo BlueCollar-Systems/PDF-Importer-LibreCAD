@@ -12,7 +12,6 @@ from __future__ import annotations
 import math
 from typing import Any, Callable, Dict, Optional, Tuple
 
-_MIN_FONT_PT = 1.0
 _DEFAULT_FONT_PT = 3.0
 
 
@@ -85,14 +84,14 @@ def effective_span_font_size_pt(
     del angle_deg
     size_pt = _positive_span_number(span, ("nominal_size", "font_size", "size"))
     if size_pt is not None:
-        return max(size_pt, _MIN_FONT_PT)
+        return size_pt
 
     raw_pt = _positive_span_number(span, ("raw_size", "raw_font_size", "tf_size"))
     matrix = _span_text_matrix(span)
     if raw_pt is not None and matrix is not None:
-        return max(effective_font_size_from_text_matrix(raw_pt, matrix), _MIN_FONT_PT)
+        return effective_font_size_from_text_matrix(raw_pt, matrix)
     if raw_pt is not None:
-        return max(raw_pt, _MIN_FONT_PT)
+        return raw_pt
     return _DEFAULT_FONT_PT
 
 
@@ -137,7 +136,8 @@ def calibrate_text_size_to_bbox(
         return font_size
     if fitted <= 0.0:
         return fitted
-    return max(min_size, fitted)
+    del min_size
+    return fitted
 
 
 def fit_font_size_to_span_bbox(
@@ -160,7 +160,7 @@ def fit_font_size_to_span_bbox(
         return font_size_host
     if fitted <= 0.0:
         return fitted
-    return max(0.1, fitted)
+    return fitted
 
 
 def _positive_span_number(span: Dict[str, Any], keys: Tuple[str, ...]) -> Optional[float]:

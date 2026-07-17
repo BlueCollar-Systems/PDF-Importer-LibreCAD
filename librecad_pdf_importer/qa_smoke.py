@@ -42,6 +42,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="lc_smoke_") as td:
         td_path = Path(td)
         for pdf in pdfs:
+            run = None
             try:
                 run = run_import(str(pdf), mode=args.mode, overrides={"pages": args.pages})
                 out_dxf = td_path / f"{pdf.stem}.dxf"
@@ -60,13 +61,24 @@ def main() -> int:
             except Exception as exc:  # noqa: BLE001
                 report["failed"] += 1
                 report["results"].append({"pdf": str(pdf), "status": "FAIL", "error": str(exc)})
+            finally:
+                if run is not None:
+                    run.close()
 
-    print(json.dumps({k: v for k, v in report.items() if k != "results"}, indent=2))
+    print(
+        json.dumps(
+            {k: v for k, v in report.items() if k != "results"},
+            indent=2,
+            allow_nan=False,
+        )
+    )
 
     if args.json:
         out = Path(args.json).expanduser().resolve()
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        out.write_text(
+            json.dumps(report, indent=2, allow_nan=False), encoding="utf-8"
+        )
         print(f"Wrote report: {out}")
 
     return 0 if report["failed"] == 0 else 1
@@ -74,4 +86,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

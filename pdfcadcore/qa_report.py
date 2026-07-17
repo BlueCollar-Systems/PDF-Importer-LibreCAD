@@ -62,12 +62,14 @@ class QAReport:
         return asdict(self)
 
     def to_json(self, indent: int = 2) -> str:
-        return json.dumps(self.to_dict(), indent=indent, sort_keys=False)
+        return json.dumps(
+            self.to_dict(), indent=indent, sort_keys=False, allow_nan=False
+        )
 
     def write_json(self, output_path: str, indent: int = 2) -> None:
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(self.to_json(indent=indent))
-            f.write("\n")
+        from .atomic_io import atomic_write_text
+
+        atomic_write_text(output_path, self.to_json(indent=indent) + "\n")
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "QAReport":

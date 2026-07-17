@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -20,6 +20,16 @@ class ImportRun:
     extraction: DocumentExtraction
     config: ImportConfig
     import_report_path: Optional[str] = None
+
+    def close(self) -> None:
+        """Release importer-owned temporary assets; safe to call repeatedly."""
+        self.extraction.cleanup_temporary_assets()
+
+    def __enter__(self) -> "ImportRun":
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        self.close()
 
 
 def _pymupdf_version() -> str:
@@ -40,26 +50,64 @@ def _importer_version() -> str:
 
 
 def _normalized_text_mode(text_mode: Any) -> str:
-    mode = str(text_mode or "labels").strip().lower()
+    mode = str(text_mode or "text").strip().lower()
     return "3d_text" if mode == "text3d" else mode
 
 
 def _text_mode_fallback_for_report(config: ImportConfig, text_source_spans: int) -> Optional[Dict[str, Any]]:
     """Return the real text substitution record accumulated during export.
 
-    LibreCAD has no true 3D text, so its documented alias is a permanent
-    host-limit fallback.  Outline failures are recorded by dxf_exporter only
-    after it knows the source TEXT was retained in the DXF.
+    Delivery must come from exporter evidence. Requested-mode strings and a
+    generic host capability statement are never sufficient to manufacture a
+    fallback claim.
     """
     if not bool(getattr(config, "import_text", False)):
         return None
-    requested = _normalized_text_mode(getattr(config, "text_mode", "labels"))
-    if requested == "3d_text":
+    requested = _normalized_text_mode(
+        getattr(
+            config,
+            "_export_requested_text_mode",
+            getattr(config, "text_mode", "text"),
+        )
+    )
+
+    deliveries = list(
+        getattr(config, "_text_representation_deliveries", []) or []
+    )
+    fallbacks = [
+        item
+        for item in deliveries
+        if isinstance(item, dict)
+        and item.get("verified") is True
+        and item.get("fallback_used") is True
+        and _normalized_text_mode(item.get("requested_representation")) == requested
+        and str(item.get("final_representation") or "").strip()
+    ]
+    if fallbacks:
+        delivered_types = {
+            str(item.get("final_representation") or "").strip()
+            for item in fallbacks
+        }
+        delivered = (
+            next(iter(delivered_types))
+            if len(delivered_types) == 1
+            else "mixed"
+        )
+        reason = (
+            "structural_representations_failed_verification"
+            if delivered == "raster"
+            else (
+                "text2path_failed"
+                if requested in {"glyphs", "geometry", "outlines"}
+                and delivered == "labels"
+                else "requested_representation_failed_verification"
+            )
+        )
         return {
-            "requested": "3d_text",
-            "delivered": "labels",
-            "reason": "host_2d_no_3d_text",
-            "count": max(0, int(text_source_spans or 0)),
+            "requested": requested,
+            "delivered": delivered,
+            "reason": reason,
+            "count": len(fallbacks),
         }
 
     records = list(getattr(config, "_text_mode_fallbacks", []) or [])
@@ -95,6 +143,8 @@ def write_import_report(
 ) -> str:
     """Emit bcs.import_report/1.1 JSON for one import run."""
     extraction = run.extraction
+    report_path = Path(output_path)
+    artifact_stem = report_path.stem
     pages = extraction.pages
     layer_names: set[str] = set()
     resolved_scale = None
@@ -142,17 +192,21 @@ def write_import_report(
         (page for page in pages if bool(getattr(page, "raster_fallback_failed", False))),
         None,
     )
-    fallback_used = any(
-        (p.resolved_mode or "") == "raster" for p in pages
-    ) or raster_delivery_failure is not None
+    raster_fallback_pages = [
+        page
+        for page in pages
+        if (page.resolved_mode or "") == "raster"
+        and "fallback" in str(page.resolved_reason or "").lower()
+    ]
+    # Raster is an exact outcome when the user requested Raster or Auto chose
+    # it as the appropriate page strategy. It is a fallback only when the
+    # extraction record identifies a real failed/secondary transition.
+    fallback_used = bool(raster_fallback_pages) or raster_delivery_failure is not None
     fallback_reason = (
         getattr(raster_delivery_failure, "resolved_reason", None)
         if raster_delivery_failure is not None
         else None
-    ) or next(
-        (p.resolved_reason for p in pages if (p.resolved_mode or "") == "raster"),
-        None,
-    )
+    ) or next((p.resolved_reason for p in raster_fallback_pages), None)
 
     from pdfcadcore.fitz_loader import sample_process_mb
 
@@ -161,6 +215,9 @@ def write_import_report(
         phases["total_ms"] = float(elapsed_ms)
 
     extra = {
+        "result_status": str(
+            getattr(run.config, "_result_status", "pending_export")
+        ),
         "resolved_scale": resolved_scale,
         "scale_hints": {
             **scale_hints,
@@ -176,12 +233,59 @@ def write_import_report(
             "enabled": False,
             "mode": "off",
             "solids_created": 0,
-            "skipped_reason": "LibreCAD is a 2D DXF host; use SketchUp, FreeCAD, or Blender for generated solids.",
+            "skipped_reason": (
+                "LibreCAD is a 2D DXF host and cannot verify generated solid "
+                "geometry; the item representation ladder remains responsible "
+                "for the closest verified LibreCAD outcome."
+            ),
         },
     }
-    requested_text_mode = _normalized_text_mode(run.config.text_mode)
+    requested_text_mode = _normalized_text_mode(
+        getattr(run.config, "_export_requested_text_mode", run.config.text_mode)
+    )
     delivered_text_entity_counts = dict(
         getattr(run.config, "_delivered_text_entity_counts", {}) or {}
+    )
+    delivered_image_count = int(
+        getattr(run.config, "_delivered_image_count", 0) or 0
+    )
+    text_representation_deliveries = list(
+        getattr(run.config, "_text_representation_deliveries", []) or []
+    )
+    expected_text_source_ids = {
+        f"text_span:{int(getattr(item, 'page_number', 0) or 0)}:"
+        f"{getattr(item, 'id', '')}"
+        for item in text_items
+        if str(getattr(item, "id", "") or "").strip()
+    }
+    delivery_records_well_formed = bool(text_representation_deliveries) and all(
+        isinstance(item, dict) for item in text_representation_deliveries
+    )
+    delivered_source_ids_for_gate = [
+        str(item.get("source_id") or "")
+        for item in text_representation_deliveries
+        if isinstance(item, dict)
+    ]
+    delivered_handles_for_gate = [
+        str(handle)
+        for item in text_representation_deliveries
+        if isinstance(item, dict)
+        for handle in list(item.get("entity_handles") or [])
+        if str(handle)
+    ]
+    text_delivery_verified = bool(
+        delivery_records_well_formed
+        and len(text_representation_deliveries) == text_source_spans
+        and len(delivered_source_ids_for_gate)
+        == len(set(delivered_source_ids_for_gate))
+        and set(delivered_source_ids_for_gate) == expected_text_source_ids
+        and len(delivered_handles_for_gate) == len(set(delivered_handles_for_gate))
+        and all(
+            item.get("verified") is True
+            and bool(item.get("final_representation"))
+            and bool(item.get("entity_handles"))
+            for item in text_representation_deliveries
+        )
     )
     delivered_font_rendered = None
     if delivered_text_entity_counts:
@@ -202,8 +306,59 @@ def write_import_report(
                 for txt in text_items[:3]
                 if str(getattr(txt, "text", "") or "").strip()
             ],
-            delivered_counts=delivered_text_entity_counts or None,
+            # Supplying an empty mapping is intentional and fail-closed: no
+            # exporter evidence means no actual entity may be inferred.
+            delivered_counts=delivered_text_entity_counts,
         )
+        verified_final_modes = {
+            _normalized_text_mode(item.get("final_representation"))
+            for item in text_representation_deliveries
+            if isinstance(item, dict)
+            and item.get("verified") is True
+            and item.get("final_representation")
+        }
+        if len(verified_final_modes) == 1:
+            extra["actual_text_entity_types"]["entity_type"] = next(
+                iter(verified_final_modes)
+            )
+        elif len(verified_final_modes) > 1:
+            extra["actual_text_entity_types"]["entity_type"] = "mixed"
+        source_ids = [
+            str(item.get("source_id") or "")
+            for item in text_representation_deliveries
+            if isinstance(item, dict) and str(item.get("source_id") or "")
+        ]
+        entity_handles = [
+            str(handle)
+            for item in text_representation_deliveries
+            if isinstance(item, dict)
+            for handle in list(item.get("entity_handles") or [])
+            if str(handle)
+        ]
+        support_entity_handles = [
+            str(handle)
+            for item in text_representation_deliveries
+            if isinstance(item, dict)
+            for handle in list(item.get("support_entity_handles") or [])
+            if str(handle)
+        ]
+        referenced_entity_handles = [
+            str(handle)
+            for item in text_representation_deliveries
+            if isinstance(item, dict)
+            for handle in list(item.get("referenced_entity_handles") or [])
+            if str(handle)
+        ]
+        extra["text_representation_delivery"] = {
+            "schema": "bcs.text_representation_delivery/1.0",
+            "requested_representation": requested_text_mode,
+            "verified": text_delivery_verified,
+            "source_ids": source_ids,
+            "entity_handles": entity_handles,
+            "support_entity_handles": support_entity_handles,
+            "referenced_entity_handles": referenced_entity_handles,
+            "items": text_representation_deliveries,
+        }
 
     text_fallback = _text_mode_fallback_for_report(run.config, text_source_spans)
 
@@ -218,6 +373,7 @@ def write_import_report(
         pages=len(pages),
         primitive_count=extraction.primitive_count,
         text_count=extraction.text_count,
+        image_count=delivered_image_count,
         layer_count=len(layer_names),
         bbox=bounds,
         elapsed_ms=elapsed_ms,
@@ -244,7 +400,9 @@ def write_import_report(
         )
 
         session_id = ensure_import_session_id(run.config)
-        sidecar_path = str(Path(output_path).with_name("source_provenance.json"))
+        sidecar_path = str(
+            report_path.with_name(f"{artifact_stem}_source_provenance.json")
+        )
         build_stamp = str((report.report_meta or {}).get("build_stamp") or "")
         write_source_provenance_sidecar(
             output_path=sidecar_path,
@@ -265,7 +423,9 @@ def write_import_report(
 
     from pdfcadcore.parts_bootstrap import extract_bootstrap_rows, write_parts_bootstrap_sidecar
 
-    bootstrap_path = str(Path(output_path).with_name("parts_bootstrap.json"))
+    bootstrap_path = str(
+        report_path.with_name(f"{artifact_stem}_parts_bootstrap.json")
+    )
     bootstrap_rows = extract_bootstrap_rows(text_items)
     build_stamp = str((report.report_meta or {}).get("build_stamp") or "")
     import_build_stamp = {
@@ -331,27 +491,31 @@ def run_import(pdf_path: str, mode: str = "auto",
     cfg = _mode_config(mode)
     incoming = overrides or {}
     if "text_mode" not in incoming:
-        cfg.text_mode = "labels"
+        cfg.text_mode = "text"
     for key, value in incoming.items():
         if hasattr(cfg, key):
             setattr(cfg, key, value)
+    cfg._result_status = "pending_export"  # noqa: B010
+    cfg._delivered_image_count = 0  # noqa: B010
 
     opts = ExtractionOptions(
         pages=cfg.pages,
         scale=cfg.user_scale,
         flip_y=cfg.flip_y,
         import_text=cfg.import_text,
+        requested_text_representation=str(cfg.text_mode or "text"),
         import_images=not cfg.ignore_images,
         import_mode=cfg.import_mode,
         raster_fallback=cfg.raster_fallback,
         raster_dpi=cfg.raster_dpi,
         detect_arcs=cfg.detect_arcs,
         arc_fit_tol_mm=cfg.arc_fit_tol_mm,
+        arc_sampling_pts=cfg.arc_sampling_pts,
     )
 
     extraction = extract_document(pdf_path, opts)
     run = ImportRun(extraction=extraction, config=cfg)
-    if cfg.import_text and str(cfg.text_mode or "labels") != "none":
+    if cfg.import_text and str(cfg.text_mode or "text") != "none":
         try:
             from pdfcadcore.source_provenance import ensure_import_session_id
 
@@ -361,9 +525,24 @@ def run_import(pdf_path: str, mode: str = "auto",
 
     report_path = incoming.get("import_report_path")
     if report_path:
-        run.import_report_path = write_import_report(run, str(report_path), elapsed_ms=0.0)
+        # Extraction is not acceptance.  Record the caller's intended report
+        # path, but publish evidence only after the DXF candidate is verified.
+        run.import_report_path = str(report_path)
 
     return run
+
+
+def failure_import_report_path(output_path: str, run: ImportRun) -> str:
+    """Return a session-scoped report path that cannot replace accepted evidence."""
+
+    from pdfcadcore.source_provenance import ensure_import_session_id
+
+    session_id = ensure_import_session_id(run.config)
+    token = "".join(ch for ch in session_id if ch.isalnum())[:16] or "unknown"
+    output = Path(output_path).expanduser().resolve()
+    return str(
+        output.with_name(f"{output.stem}_failed_import_report_{token}.json")
+    )
 
 
 def apply_uniform_scale(extraction: DocumentExtraction, factor: float) -> None:
@@ -396,6 +575,30 @@ def apply_uniform_scale(extraction: DocumentExtraction, factor: float) -> None:
                 x0, y0, x1, y1 = txt.bbox
                 txt.bbox = (x0 * factor, y0 * factor, x1 * factor, y1 * factor)
             txt.font_size *= factor
+            if txt.advance_width is not None:
+                txt.advance_width *= factor
+            if txt.target_quad_model is not None:
+                txt.target_quad_model = tuple(
+                    (x * factor, y * factor) for x, y in txt.target_quad_model
+                )
+            txt.glyph_height *= factor
+            txt.baseline_descent *= factor
+            if txt.source_char_layout:
+                txt.source_char_layout = tuple(
+                    replace(
+                        char,
+                        target_origin=(
+                            char.target_origin[0] * factor,
+                            char.target_origin[1] * factor,
+                        ),
+                        target_quad=tuple(
+                            (x * factor, y * factor) for x, y in char.target_quad
+                        ),
+                        advance_width=char.advance_width * factor,
+                        glyph_height=char.glyph_height * factor,
+                    )
+                    for char in txt.source_char_layout
+                )
 
         for image in page.images:
             image.x_mm *= factor

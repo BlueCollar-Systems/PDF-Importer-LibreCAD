@@ -52,7 +52,9 @@ class QAReport:
         return asdict(self)
 
     def to_json(self, indent: int = 2) -> str:
-        return json.dumps(self.to_dict(), indent=indent, sort_keys=False)
+        return json.dumps(
+            self.to_dict(), indent=indent, sort_keys=False, allow_nan=False
+        )
 
     def write_json(self, output_path: str, indent: int = 2) -> None:
         with open(output_path, "w", encoding="utf-8") as f:

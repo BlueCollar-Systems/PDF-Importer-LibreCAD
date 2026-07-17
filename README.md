@@ -2,7 +2,7 @@
 
 **BlueCollar Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.61](https://img.shields.io/badge/Version-1.0.61-blue.svg)
+![Version: 1.0.62](https://img.shields.io/badge/Version-1.0.62-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
@@ -15,7 +15,7 @@ DraftSight, QCAD, and any DXF-compatible CAD software.
 - Text rendering always at maximum fidelity (no quality dials)
 - **Professional import (GUI)**: Auto mode only — picks vector/raster/hybrid per page internally
 - **CLI/batch modes** (BCS-ARCH-001): Auto, Vector, Raster, Hybrid for scripting
-- **2D text (GUI)**: Labels (editable DXF TEXT) or Outlines (skip editable text). LibreCAD has no true 3D text; see [COMPATIBILITY.md](COMPATIBILITY.md)
+- **Text representations (GUI and CLI)**: Text, Labels, 3D Text, Glyphs, Geometry, or Raster; the selected type is verified instead of silently substituted
 - **Maximum fidelity by default** -- no quality tiers, no fast-mode compromises
 - Organizes geometry into DXF layers (per-page and per-OCG)
 - Outputs DXF versions from R12 through R2018
@@ -128,7 +128,8 @@ python pdf2dxf.py input.pdf [output.dxf] [options]
 Options:
   --pages 1,2,3          Pages to convert (default: all)
   --mode MODE            auto | vector | raster | hybrid  (default: auto)
-  --text-mode MODE       labels | 3d_text | glyphs | geometry  (default: labels)
+  --text-mode MODE       text | labels | 3d_text | glyphs | geometry | raster
+                         (default: labels)
   --import-text / --no-import-text  Whether to import text at all (default: on)
   --scale 1.0            Scale factor
   --dxf-version VER      R12 | R2000 | R2004 | R2007 | R2010 | R2013 | R2018
@@ -143,7 +144,9 @@ Per BCS-ARCH-001 Rule 5 the previous quality-tier CLI flags
 `--raster-dpi`, `--no-raster-fallback`, `--no-text`, `--no-arcs`)
 have been removed. Their consolidated values are applied universally
 because every mode targets identical "indistinguishable from source"
-quality.
+quality. This is not a freeze on improvement: a new control is appropriate when
+it represents a genuinely distinct capability, preserves the same quality
+target, and has production-path verification.
 
 ## GUI Usage
 
@@ -163,9 +166,10 @@ python gui.py
 ```
 
 The GUI provides file pickers, **professional single-flow import** (Auto strategy per page),
-text choice (**Labels** or **Outlines** — LibreCAD is 2D-only), page range input,
-option checkboxes, a progress bar, a status log, and optional auto-open in LibreCAD.
-Advanced users can still use CLI `--mode` and `--text-mode` (including `3d_text` as a 2D editable-text alias, or `glyphs` for outline geometry).
+all six distinct text representations, page range input, option checkboxes, a
+progress bar, a status log, the complete report path, and optional auto-open in
+LibreCAD. The CLI exposes the same `text`, `labels`, `3d_text`, `glyphs`,
+`geometry`, and `raster` requests.
 
 Windows no-console options:
 ```
@@ -220,38 +224,59 @@ capabilities. Modes differ only in extraction *strategy*, not quality tier.
 
 ### Text Rendering (orthogonal to mode)
 
-LibreCAD is **2D CAD** — there is no true 3D text in DXF or LibreCAD.
+The six requests remain structurally distinct. A DXF declaration is not enough
+to claim success: the requested semantics and item transform must also survive
+serialization. LibreCAD uses LFF stroke fonts for editable native text, so Text
+and Text uses its broad Unicode LFF face while retaining source content, anchor,
+height, rotation, and advance. That parent-font substitution is reported
+explicitly; it is not misreported as a representation fallback. DXF has no
+native Label entity, so a Labels request records that item-scoped impossibility
+and then reports the closest verified editable Text fallback. Likewise,
+`TEXT` thickness alone does not prove visible/editable 3D text in LibreCAD's 2D
+parent.
 
-| Option | GUI | Behavior in DXF export |
-|--------|-----|------------------------|
-| **labels** | ✅ Default | DXF `TEXT` entities (MTEXT avoided for LibreCAD) |
-| **geometry** | ✅ Outlines | Skips editable TEXT (outline-only workflow) |
-| **3d_text** | CLI only | Same as `labels` in this 2D exporter |
-| **glyphs** | CLI only | Non-editable vector outlines, same export family as `geometry` |
+| Option | GUI | Verified DXF representation |
+|--------|-----|-----------------------------|
+| **text** | ✅ Text | Native editable DXF `TEXT`, verified as the requested Text semantic with source text (or an explicitly reported Unicode compatibility normalization), placement, dimensions, rotation, source identity, parent-native LFF binding, and source-width FIT alignment. |
+| **labels** | ✅ Labels | DXF exposes no native Label entity. The item-scoped Labels attempt fails loudly without creating a wrong-type alias, then the closest editable Text fallback is verified and reported. |
+| **3d_text** | ✅ 3D Text | Attempts DXF `TEXT` with positive thickness and +Z extrusion first. Success additionally requires the parent to verify it as visible/editable 3D text. LibreCAD is 2D, so the exact failed item advances first to verified flat editable Text and reports that transition. |
+| **glyphs** | ✅ Glyphs | One grouped DXF `INSERT` per source text span with outline entities in its owned block definition. This remains structurally distinct from raw Geometry. |
+| **geometry** | ✅ Geometry | Raw modelspace `LWPOLYLINE`/`POLYLINE` glyph edges. No `TEXT`, `MTEXT`, or `INSERT` is accepted as Geometry. |
+| **raster** | ✅ Raster | A source-PDF-bound PNG of only the exact text item, delivered as a verified DXF `IMAGE`; it is a direct result when requested, not a fallback. |
 
 Plus `--import-text` / `--no-import-text` to skip text entirely.
 
 ### Text-Mode Fallback Ladder (TEXTMODE-1)
 
-The requested text mode is the delivered text mode. Alignment, rotation, or
-scaling defects are fixed *inside* the requested mode — never by substituting
-a different mode. Substitution happens only when the requested mode is
-genuinely impossible for this host + option + PDF, walks the documented
-ladder below, always terminates in *some* delivered representation, and is
-always recorded in `import_report.json` (`fallback.text` block with
-`requested`, `delivered`, `reason`, `count`, plus the `text_mode_fallback`
-diagnostics signal) — never silent. (Owner directive 2026-07-13.)
+The requested representation is invariant. Alignment, rotation, width, and
+height are corrected and verified inside that type. A same-type retry is not a
+fallback. A different rung begins only after all safe strategies for the prior
+type fail verification and clean their exact owned DXF handles.
 
-**Peer-family rule:** `glyphs` and `geometry` share the identical `text2path`
-outline engine, so a fallback between them would be a no-op; the ladder
-treats them as a single rung.
+| Requested | Ordered, representation-distinct ladder | Transition proof and verification |
+|-----------|------------------------------------------|-----------------------------------|
+| **text** | Text → Glyphs → Geometry → item Raster | Native `TEXT` must read back source content or its disclosed compatibility normalization, anchor, nominal height, rotation, source advance, parent-native LFF binding, FIT endpoint, and a live unique handle. Labels is not inserted as a peer alias rung. |
+| **labels** | Labels → Text → Glyphs → Geometry → item Raster | The requested Label capability is evaluated for the exact source item. DXF's missing Label entity is recorded before verified editable Text is attempted; a report-only TEXT/MTEXT relabel is rejected. |
+| **glyphs** | Glyphs → Geometry → Text → item Raster | Glyphs try entity-based and independent string-based outline generation before impossibility. Success requires an `INSERT`, nonempty owned outline block, matching bounds, and exact parent/child handles. |
+| **geometry** | Geometry → Glyphs → Text → item Raster | Geometry uses the same two outline-generation strategies but success requires raw modelspace edges and matching bounds; an `INSERT` is not Geometry. |
+| **3d_text** | 3D Text → Text → Glyphs → Geometry → item Raster | The first rung creates the item-specific DXF `TEXT`, applies and reads back thickness/+Z extrusion, then verifies parent font rendering and 3D display semantics. Flat Text is the closest fallback, and a different rung is legal only after the prior attempt is removed with recorded impossibility evidence. |
+| **raster** | item Raster | PyMuPDF renders the exact source bbox. Success requires visible pixels, PNG byte verification, exact model placement/size, a live `IMAGE` handle, and an atomically written uniquely owned asset. |
 
-| Requested | FINAL LibreCAD ladder | Host-limit notes |
-|-----------|----------------------|------------------|
-| **labels** | Glyphs/Geometry outlines → page raster (DXF `IMAGE`) | No second editable form for LibreCAD targets (MTEXT excluded by host bounding-box bugs). |
-| **glyphs / geometry** | peer family (`text2path` outlines) → Labels (`TEXT`, reported `text2path_failed`) → page raster (DXF `IMAGE`) | Labels sits before raster per the audit's interim ruling (no per-span raster patch exists; whole-page raster only). |
-| **3d_text** | **permanent host-limit fallback** → Labels (`TEXT`, reported `host_2d_no_3d_text`), then the Labels ladder | LibreCAD is a 2D DXF host — the first rung always fires and is always reported; delivered behavior is unchanged from the documented alias. |
-| **raster** | terminal — always achievable | — |
+`text2path_failed` means both independent same-representation outline
+strategies failed verification and their owned entities were cleaned before
+the next distinct rung was attempted.
+
+`import_report.json` includes
+`extra.text_representation_delivery` (`bcs.text_representation_delivery/1.0`)
+with every source ID, attempted type/strategy, reason/evidence, created and
+removed handle, cleanup result, final handle, and supersession. The legacy
+`fallback.text` summary remains for UI compatibility. If the terminal Raster
+attempt cannot be verified, no DXF replaces an existing output and the import
+fails explicitly. Raster is never assumed successful.
+
+Auto page classification cannot replace extractable text with Raster while a
+non-raster text representation is requested. Explicit Raster import mode still
+does exactly what it says.
 
 ## DXF Compatibility
 
@@ -261,6 +286,11 @@ treats them as a single rung.
 
 The default R2010 output opens in LibreCAD, AutoCAD 2010+, DraftSight, QCAD,
 and virtually all modern DXF readers.
+
+R12 does not serialize a `BLOCK_RECORD` table. Delivery evidence therefore
+tracks every serialized glyph-block entity/handle but explicitly excludes that
+one parser-generated support record; all R12 `INSERT`, `BLOCK`, `ENDBLK`, and
+outline handles still reconcile after reopening.
 
 ## Project Structure
 
@@ -281,9 +311,9 @@ pdfcadcore/           Shared PDF extraction core
 | Compression filters | Decoding is delegated to PyMuPDF. Malformed or non-standard compressed object streams may fail to parse |
 | Raster-only scans | Pure raster PDFs produce no vector geometry |
 | Clipped/XObject-heavy PDFs | Complex clip stacks and deeply nested form XObjects can produce partial geometry |
-| MTEXT in LibreCAD | LibreCAD has known issues with MTEXT bounding boxes; TEXT fallback is used automatically |
-| Embedded subset fonts | Text using embedded subset fonts may not render correctly |
-| DXF version | R2010 is the recommended default; R12 mode uses TEXT entities only |
+| Native LibreCAD fonts and Labels | Editable Text uses LibreCAD's Unicode LFF face. The report records that font substitution separately from representation fallback; source content and transforms remain verified, but glyph shapes can differ from the embedded PDF font. DXF has no native Label entity, so Labels falls loudly to Text. Choose Glyphs or Geometry when exact source-font outlines matter more than editability. |
+| Damaged or unusable source fonts | Exact-font structural representations fail closed; a different representation is attempted only with item-specific impossibility evidence |
+| DXF version | R2010 is the recommended default; R12 has no serialized `BLOCK_RECORD`, which is explicitly excluded from durable support identity |
 | Legacy hosts | LibreCAD/DXF consumer behavior outside the tested matrix is expected-only until verified |
 
 ## License

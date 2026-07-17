@@ -13,7 +13,7 @@ import os
 import sys
 import time
 
-__version__ = "1.0.61"
+__version__ = "1.0.62"
 
 # ---------------------------------------------------------------------------
 # Ensure project root is on sys.path so ``import pdfcadcore`` resolves
@@ -49,7 +49,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--scale", type=float, default=1.0,
                    help="Scale factor (default: 1.0)")
     p.add_argument("--text-mode", default=None,
-                   choices=["labels", "3d_text", "glyphs", "geometry"],
+                   choices=["text", "labels", "3d_text", "glyphs", "geometry", "raster"],
                    help="Text rendering (orthogonal to --mode)")
     p.add_argument("--import-text",
                    action=argparse.BooleanOptionalAction,
@@ -141,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
     config: ImportConfig = factory()
     config.user_scale = args.scale
     config.verbose = args.verbose
-    config.text_mode = "labels"
+    config.text_mode = "text"
     if args.text_mode is not None:
         config.text_mode = args.text_mode
         config.import_text = True

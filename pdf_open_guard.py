@@ -9,7 +9,7 @@ Host-agnostic; reuses the existing pdfcadcore fitz loader when available.
 """
 from __future__ import annotations
 
-from pdfcadcore.fitz_loader import PdfOpenError, safe_open
+from pdfcadcore.fitz_loader import PdfOpenError as PdfOpenError, safe_open
 
 
 def precheck_pdf(path: str) -> None:

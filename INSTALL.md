@@ -103,12 +103,22 @@ The graphical interface uses **Auto** import only (vector/raster/hybrid chosen p
 
 ### Before you import (text modes)
 
-- **Labels (editable TEXT)** — change text in LibreCAD after import.
-- **Outlines** — vector stroke fidelity; not editable as TEXT.
-- **LibreCAD has no true 3D text** — do not expect SketchUp/FreeCAD 3D-text parity.
+- **Text** — native editable DXF `TEXT`, verified as the requested Text semantic.
+- **Labels** — editable flat DXF `TEXT` using LibreCAD's parent-native Unicode
+  LFF face, with source content and item transform verified after serialization.
+- **3D Text** — attempts DXF `TEXT` with thickness and +Z extrusion first;
+  native success also requires verified 3D display/edit semantics in the parent.
+- **Glyphs** — grouped outline block references.
+- **Geometry** — raw outline edges, not editable as text.
+- **Raster** — source-bound exact item pixels in a verified DXF `IMAGE`.
 - Scale warnings appear in `import_report.json` (`extra.scale_crosscheck` / `human_summary`) when title-block scale is uncertain.
 
-Text options: **Labels (editable TEXT)** or **Outlines** — LibreCAD does not support true 3D text.
+The GUI and CLI expose the same six representation choices. The selected type
+is attempted and verified item by item. For Text and Labels, LibreCAD's required
+LFF font substitution is recorded as a font substitution—not a change to Glyphs
+or Geometry—and DXF FIT alignment preserves the source advance. The result
+dialog, log, and complete report show requested and delivered types. Choose
+Glyphs or Geometry when exact source-font outlines matter more than editability.
 
 ## Modes (BCS-ARCH-001, CLI/batch)
 
@@ -124,7 +134,13 @@ only in extraction strategy, not in quality tier.
 
 ### Text Rendering (orthogonal)
 
-GUI: Labels (default) · Outlines · plus Import text toggle. CLI also accepts `3d_text` as an editable-text alias and `glyphs` / `geometry` as non-editable outline geometry.
+GUI and CLI: `text`, `labels`, `3d_text`, `glyphs`, `geometry`, and `raster` as
+distinct requests, plus the Import text toggle. Text is native `TEXT`; 3D Text
+first attempts native `TEXT` with verified extrusion. DXF has no native Label
+entity, so Labels records that exact item-scoped impossibility and then reports
+the closest verified Text fallback instead of relabeling TEXT/MTEXT. Glyphs are
+grouped block references, Geometry is raw modelspace edges, and requested Raster
+is an exact source-item `IMAGE`.
 
 ## Requirements
 
@@ -153,18 +169,24 @@ Standalone app self-test after install:
 
 **Black screen when opening DXF?** The importer auto-inverts white lines to black for visibility. If you still see a blank screen, try View > Auto Zoom in LibreCAD.
 
-**Missing text?** Auto mode should handle text well. If text is missing, try
-explicitly `--mode vector` and check the text-rendering setting. GUI default is
-**Labels**; CLI default is `labels` (try `glyphs` for symbol-heavy PDFs).
+**Missing text?** Treat that as a failed delivery. Open the complete import
+report, compare `text_source_spans` with `text_representation_delivery`, and
+inspect the exact source-item attempt. Keep the requested representation while
+correcting the source-specific failure.
 
-**Garbled/jumbled text outlines?** Switch GUI text mode from **Outlines** to
-**Labels (editable TEXT)**. Outline mode vectorizes font strokes and can overlap
-on dense BOM tables; Labels export native DXF TEXT with correct rotation.
+**Garbled, shifted, rotated, or scaled text?** Do not manually switch the
+request to hide it. Attach the complete report and correct placement, rotation,
+width, or height inside the requested representation. If the report proves an
+item-specific parent-font incompatibility, inspect the automatic fallback; do
+not remove its gate or relabel parent-native rendering as source-font-exact.
+Keep any same-representation font substitution or Unicode compatibility
+normalization visible in the report.
 
 **Plugin menu says launcher not found?** Install the portable ZIP or source
 package, then use `Plugins > PDF Importer Settings...` to point at
 `LibreCAD-PDF-Importer.exe`, `lcpdf-gui.exe`, or `launch_lcpdf_gui.pyw`. Set
 `BC_LC_IMPORTER_EXE` / `BC_LC_IMPORTER_SCRIPT` for custom paths.
 
-**Geometry looks wrong?** Auto mode should pick the right strategy. If not, try
-`--mode vector` for CAD drawings or `--mode hybrid` for PDFs with embedded raster.
+**Geometry looks wrong?** Check the per-page resolved strategy and exact entity
+evidence in the import report. A strategy change is diagnostic only; it must not
+change or weaken the requested output representation.

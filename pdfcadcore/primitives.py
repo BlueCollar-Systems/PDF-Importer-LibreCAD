@@ -7,7 +7,7 @@ Rule 2: Recognizers must operate on normalized primitives, not host entities.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 _next_id = 0
 def next_id() -> int:
@@ -59,6 +59,21 @@ class Primitive:
 
 
 @dataclass
+class TextCharLayout:
+    """One PDF character with immutable source and model-space placement truth."""
+
+    text: str
+    glyph_id: Optional[int]
+    source_origin_pdf: Tuple[float, float]
+    source_bbox_pdf: Tuple[float, float, float, float]
+    source_quad_pdf: Tuple[Tuple[float, float], ...]
+    target_origin: Tuple[float, float]
+    target_quad: Tuple[Tuple[float, float], ...]
+    advance_width: float
+    glyph_height: float
+
+
+@dataclass
 class NormalizedText:
     id: int
     text: str
@@ -72,6 +87,21 @@ class NormalizedText:
     page_number: int = 0
     generic_tags: List[str] = field(default_factory=list)
     domain_tags: List[dict] = field(default_factory=list)
+    # Raw PDF page coordinates are kept separate from scaled/model coordinates
+    # so item raster clips and provenance never reverse-engineer a transformed
+    # bbox. Quad order is upper-left, upper-right, lower-right, lower-left.
+    source_bbox_pdf: Optional[Tuple[float, float, float, float]] = None
+    source_quad_pdf: Optional[Tuple[Tuple[float, float], ...]] = None
+    target_quad_model: Optional[Tuple[Tuple[float, float], ...]] = None
+    advance_width: float = 0.0  # model millimetres along the baseline
+    glyph_height: float = 0.0   # model millimetres normal to the baseline
+    baseline_descent: float = 0.0  # model mm below the PDF baseline
+    source_char_layout: Tuple[TextCharLayout, ...] = field(default_factory=tuple)
+    requires_individual_positioning: bool = False
+    positioned_character: bool = False
+    source_glyph_id: Optional[int] = None
+    font_asset: Optional[Any] = field(default=None, repr=False, compare=False)
+    font_failure: Optional[Any] = field(default=None, repr=False, compare=False)
 
 
 @dataclass

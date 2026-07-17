@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import math
 from pathlib import Path
 import tempfile
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Sequence
 
 try:
     import pymupdf as fitz  # PyMuPDF >= 1.24 preferred name
@@ -15,7 +15,11 @@ except ImportError:
 from pdfcadcore.document_profiler import profile as profile_page
 from pdfcadcore.fitz_loader import safe_open
 from pdfcadcore.geometry_cleanup import circle_fit
-from pdfcadcore.primitive_extractor import extract_page
+from pdfcadcore.primitive_extractor import (
+    _page_rotation_transform,
+    _transform_pdf_point,
+    extract_page,
+)
 from pdfcadcore.primitives import PageData
 
 MM_PER_PT = 25.4 / 72.0
@@ -64,6 +68,24 @@ class DocumentExtraction:
     pdf_path: str
     pages: List[ExtractedPage] = field(default_factory=list)
     requested_mode: str = "auto"              # BCS-ARCH-001 user request
+    _temporary_image_workspace: Optional[tempfile.TemporaryDirectory] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    def cleanup_temporary_assets(self) -> None:
+        """Reclaim importer-owned source assets without touching caller-owned paths."""
+        workspace = self._temporary_image_workspace
+        self._temporary_image_workspace = None
+        if workspace is not None:
+            workspace.cleanup()
+
+    def __enter__(self) -> "DocumentExtraction":
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        self.cleanup_temporary_assets()
 
     @property
     def primitive_count(self) -> int:
@@ -119,12 +141,14 @@ class ExtractionOptions:
     scale: float = 1.0
     flip_y: bool = True
     import_text: bool = True
+    requested_text_representation: str = "text"
     import_images: bool = True
     import_mode: str = "auto"
     raster_fallback: bool = True
     raster_dpi: int = 200
     detect_arcs: bool = True
     arc_fit_tol_mm: float = 0.20
+    arc_sampling_pts: int = 7
     min_arc_span_deg: float = 8.0
     min_segment_mm: float = 0.0
     max_text_items_per_page: Optional[int] = None
@@ -167,10 +191,17 @@ def _restore_viable_vector_content(
 
 
 def _render_page_raster_safely(page, page_number: int, options: ExtractionOptions,
-                               image_dir: Optional[Path]):
+                               image_dir: Optional[Path],
+                               masked_text_items: Sequence[object] = ()):
     """Return a page raster or a delivery-failure detail for recovery/reporting."""
     try:
-        rendered = _render_page_raster(page, page_number, options, image_dir)
+        rendered = _render_page_raster(
+            page,
+            page_number,
+            options,
+            image_dir,
+            masked_text_items=masked_text_items,
+        )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return None, f"{type(exc).__name__}: {exc}"
     if rendered is None:
@@ -212,13 +243,33 @@ def parse_pages_spec(spec: Optional[Iterable[int] | str], page_count: int) -> Li
     return out or [1]
 
 
-def extract_document(pdf_path: str, options: Optional[ExtractionOptions] = None) -> DocumentExtraction:
+def extract_document(
+    pdf_path: str,
+    options: Optional[ExtractionOptions] = None,
+) -> DocumentExtraction:
+    workspaces: list[tempfile.TemporaryDirectory] = []
+    try:
+        return _extract_document_impl(pdf_path, options, workspaces)
+    except BaseException:
+        for workspace in workspaces:
+            workspace.cleanup()
+        raise
+
+
+def _extract_document_impl(
+    pdf_path: str,
+    options: Optional[ExtractionOptions],
+    workspaces: list[tempfile.TemporaryDirectory],
+) -> DocumentExtraction:
     opts = options or ExtractionOptions()
     pdf_path = str(Path(pdf_path).expanduser().resolve())
 
+    image_workspace = None
     image_dir = Path(opts.image_dir).expanduser().resolve() if opts.image_dir else None
     if opts.import_images and image_dir is None:
-        image_dir = Path(tempfile.mkdtemp(prefix="bc_lc_pdf_images_"))
+        image_workspace = tempfile.TemporaryDirectory(prefix="bc_lc_pdf_images_")
+        workspaces.append(image_workspace)
+        image_dir = Path(image_workspace.name)
     if image_dir is not None:
         image_dir.mkdir(parents=True, exist_ok=True)
 
@@ -256,7 +307,38 @@ def extract_document(pdf_path: str, options: Optional[ExtractionOptions] = None)
             elif mode == "hybrid":
                 resolved_reason = "User forced hybrid mode"
 
-            page_data = extract_page(page, page_number, scale=opts.scale, flip_y=opts.flip_y)
+            page_data = extract_page(
+                page,
+                page_number,
+                scale=opts.scale,
+                flip_y=opts.flip_y,
+                arc_min_pts=max(3, int(opts.arc_sampling_pts)),
+            )
+
+            requested_text_representation = str(
+                opts.requested_text_representation or "text"
+            ).strip().lower()
+            if requested_text_representation == "text3d":
+                requested_text_representation = "3d_text"
+            preserve_requested_text = bool(
+                opts.import_text
+                and requested_text_representation
+                in {"text", "labels", "glyphs", "geometry", "3d_text", "raster"}
+                and page_data.text_items
+            )
+            if preserve_requested_text and effective_mode == "raster":
+                if mode == "auto":
+                    effective_mode = "vector"
+                    resolved_reason = (
+                        f"Requested {requested_text_representation} text representation "
+                        "retained; auto raster preemption disabled."
+                    )
+                else:
+                    effective_mode = "hybrid"
+                    resolved_reason = (
+                        "User-forced raster page retained together with requested "
+                        f"{requested_text_representation} text representation."
+                    )
 
             include_vectors = effective_mode in {"vector", "hybrid"}
             retained_content = None
@@ -272,7 +354,12 @@ def extract_document(pdf_path: str, options: Optional[ExtractionOptions] = None)
                 page_data.primitives = []
                 page_data.text_items = []
 
-            if mode == "auto" and effective_mode != "raster" and opts.raster_fallback:
+            if (
+                mode == "auto"
+                and effective_mode != "raster"
+                and opts.raster_fallback
+                and not preserve_requested_text
+            ):
                 if _looks_like_text_cloud_page(len(page_data.primitives), len(page_data.text_items)):
                     effective_mode = "raster"
                     resolved_reason = "Text-cloud page -- fallback to raster"
@@ -292,7 +379,13 @@ def extract_document(pdf_path: str, options: Optional[ExtractionOptions] = None)
             if opts.import_images:
                 if effective_mode in {"raster", "hybrid"}:
                     rendered, raster_failure_detail = _render_page_raster_safely(
-                        page, page_number, opts, image_dir
+                        page,
+                        page_number,
+                        opts,
+                        image_dir,
+                        masked_text_items=(
+                            page_data.text_items if preserve_requested_text else ()
+                        ),
                     )
                     if rendered is not None:
                         images.append(rendered)
@@ -303,7 +396,13 @@ def extract_document(pdf_path: str, options: Optional[ExtractionOptions] = None)
                     vector_empty = not page_data.primitives and not has_text
                     if opts.raster_fallback and (vector_empty or _looks_like_page_frame_only(page_data)) and not images:
                         rendered, raster_failure_detail = _render_page_raster_safely(
-                            page, page_number, opts, image_dir
+                            page,
+                            page_number,
+                            opts,
+                            image_dir,
+                            masked_text_items=(
+                                page_data.text_items if preserve_requested_text else ()
+                            ),
                         )
                         if rendered is not None:
                             images.append(rendered)
@@ -348,6 +447,7 @@ def extract_document(pdf_path: str, options: Optional[ExtractionOptions] = None)
         pdf_path=pdf_path,
         pages=extracted,
         requested_mode=mode,
+        _temporary_image_workspace=image_workspace,
     )
 
 
@@ -588,31 +688,62 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
         return placements
 
     page_height = float(page.rect.height)
-    seen: set[int] = set()
+    seen: set[tuple[int, int]] = set()
     for img_info in page.get_images(full=True):
         xref = int(img_info[0])
-        if xref in seen:
+        smask = int(img_info[1] or 0)
+        image_key = (xref, smask)
+        if image_key in seen:
             continue
-        seen.add(xref)
+        seen.add(image_key)
 
         try:
-            pix = fitz.Pixmap(doc, xref)
+            base_pix = fitz.Pixmap(doc, xref)
+            pix = base_pix
+            if smask > 0:
+                mask_pix = fitz.Pixmap(doc, smask)
+                if (
+                    int(base_pix.width) != int(mask_pix.width)
+                    or int(base_pix.height) != int(mask_pix.height)
+                ):
+                    raise ValueError(
+                        "embedded image soft-mask dimensions do not match the source image"
+                    )
+                pix = fitz.Pixmap(base_pix, mask_pix)
+
             color_space_n = None
             try:
                 color_space_n = int(getattr(getattr(pix, "colorspace", None), "n", 0))
             except (TypeError, ValueError):
                 color_space_n = None
 
-            needs_rgb = pix.alpha or pix.n != 3 or (color_space_n is not None and color_space_n != 3)
+            needs_rgb = (
+                pix.n not in {3, 4}
+                or (color_space_n is not None and color_space_n != 3)
+            )
             if needs_rgb:
                 pix = fitz.Pixmap(fitz.csRGB, pix)
 
-            img_path = image_dir / f"page_{page_number:03d}_xref_{xref}.png"
-            pix.save(str(img_path))
-        except (RuntimeError, OSError, ValueError, TypeError):
-            continue
+            if pix.alpha:
+                alpha_samples = bytes(pix.samples)[pix.n - 1 :: pix.n]
+                if not any(alpha_samples):
+                    # A fully transparent source image has no visible PDF
+                    # contribution. Emitting an IMAGE entity can expose its
+                    # otherwise invisible boundary in CAD hosts.
+                    continue
 
-        rects = page.get_image_rects(xref)
+            mask_suffix = f"_smask_{smask}" if smask > 0 else ""
+            img_path = image_dir / (
+                f"page_{page_number:03d}_xref_{xref}{mask_suffix}.png"
+            )
+            pix.save(str(img_path))
+            rects = page.get_image_rects(img_info)
+        except (RuntimeError, OSError, ValueError, TypeError) as exc:
+            raise RuntimeError(
+                f"page {page_number} image xref {xref} soft-mask {smask} "
+                f"could not be extracted faithfully: {exc}"
+            ) from exc
+
         for rect in rects:
             x0, y0, x1, y1 = float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)
             left = min(x0, x1)
@@ -640,8 +771,14 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
     return placements
 
 
-def _render_page_raster(page: fitz.Page, page_number: int, options: ExtractionOptions,
-                        image_dir: Optional[Path]) -> Optional[ImagePlacement]:
+def _render_page_raster(
+    page: fitz.Page,
+    page_number: int,
+    options: ExtractionOptions,
+    image_dir: Optional[Path],
+    *,
+    masked_text_items: Sequence[object] = (),
+) -> Optional[ImagePlacement]:
     if image_dir is None:
         return None
 
@@ -650,7 +787,73 @@ def _render_page_raster(page: fitz.Page, page_number: int, options: ExtractionOp
     matrix = fitz.Matrix(zoom, zoom)
 
     try:
-        pix = page.get_pixmap(matrix=matrix, alpha=False)
+        pix = page.get_pixmap(matrix=matrix, alpha=bool(masked_text_items))
+        if masked_text_items:
+            rotation_matrix = _page_rotation_transform(
+                page.rect,
+                getattr(page, "rotation_matrix", None),
+            )
+            for item in masked_text_items:
+                source_bbox = getattr(item, "source_bbox_pdf", None)
+                if not source_bbox or len(source_bbox) < 4:
+                    raise ValueError(
+                        "cannot remove duplicate page-raster text without an exact source bbox"
+                    )
+                x0, y0, x1, y1 = [float(value) for value in source_bbox[:4]]
+                corners = [
+                    _transform_pdf_point(x, y, rotation_matrix)
+                    for x, y in (
+                        (x0, y0),
+                        (x1, y0),
+                        (x1, y1),
+                        (x0, y1),
+                    )
+                ]
+                # One-pixel antialias margin prevents a residual fringe from
+                # backing the separately delivered requested representation.
+                left = max(
+                    0,
+                    int(
+                        math.floor(
+                            (min(point[0] for point in corners) - float(page.rect.x0))
+                            * zoom
+                        )
+                    )
+                    - 1,
+                )
+                top = max(
+                    0,
+                    int(
+                        math.floor(
+                            (min(point[1] for point in corners) - float(page.rect.y0))
+                            * zoom
+                        )
+                    )
+                    - 1,
+                )
+                right = min(
+                    pix.width,
+                    int(
+                        math.ceil(
+                            (max(point[0] for point in corners) - float(page.rect.x0))
+                            * zoom
+                        )
+                    )
+                    + 1,
+                )
+                bottom = min(
+                    pix.height,
+                    int(
+                        math.ceil(
+                            (max(point[1] for point in corners) - float(page.rect.y0))
+                            * zoom
+                        )
+                    )
+                    + 1,
+                )
+                if right <= left or bottom <= top:
+                    raise ValueError("source text bbox maps to an empty raster region")
+                pix.set_rect(fitz.IRect(left, top, right, bottom), (0, 0, 0, 0))
         img_path = image_dir / f"page_{page_number:03d}_raster_{dpi}dpi.png"
         pix.save(str(img_path))
     except (RuntimeError, OSError, ValueError, TypeError):

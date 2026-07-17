@@ -39,7 +39,10 @@ Release portable ZIP bundles Python + PyMuPDF + ezdxf — no system Python requi
 
 ## Legacy hardware notes
 
-- **2D host only** — no 3D text; use Labels or Outlines in GUI.
+- **2D parent** — a 3D Text request creates and reads back item-specific DXF
+  `TEXT` thickness/+Z extrusion, but LibreCAD is not credited with native 3D
+  delivery unless its displayed/editable 3D semantics are also verified. The
+  current verified outcome is a loud nearest-representation fallback.
 - Large PDFs: CLI page ranges (`--pages`) on older PCs; check `import_report.extra.performance_hint`.
 - DXF R2010 default; use `--dxf-version R12` for legacy DXF readers.
 
@@ -76,9 +79,14 @@ Portable users: run `lcpdf-gui.exe` from extracted ZIP — no terminal required.
 
 ### LibreCAD-specific behavior
 
-- **2D only**: Labels are editable DXF TEXT; explicit 3D Text is accepted as the same editable-text alias for cross-importer CLI compatibility.
-- **Outline modes**: Glyphs and Geometry create non-editable outline geometry for visual fidelity.
-- **GUI text options**: Labels (editable TEXT) and Outlines only.
+- **Text**: native editable DXF `TEXT`, with exact source-item binding and the Text semantic verified independently from Labels. Parent-font substitution and any Unicode compatibility normalization are reported and are not described as source-font exactness.
+- **Labels**: DXF exposes no native Label entity. The importer records that exact item-scoped capability failure, creates no report-only TEXT/MTEXT alias, then verifies the closest editable Text fallback. The fallback and LibreCAD Unicode LFF substitution are both reported distinctly.
+- **3D Text**: thickness/+Z extrusion is created and read back for the exact item, but native success additionally requires verified parent 3D display/edit semantics. LibreCAD's 2D parent therefore reports and delivers verified flat editable Text as the closest fallback.
+- **Glyphs**: grouped `INSERT` entities whose owned block definitions contain the outline curves.
+- **Geometry**: exploded raw modelspace outline edges, structurally distinct from Glyphs.
+- **Raster**: an exact source-PDF-bound item crop is a direct result when requested, or a terminal fallback only after every structural rung is proven impossible. Visible pixels, placement, source digest/page/item, `IMAGE` handle, and owned asset bytes must verify.
+- **GUI text options**: Text, Labels, 3D Text, Glyphs, Geometry, and Raster—the same choices as the CLI.
+- **R12 identity**: R12 does not serialize `BLOCK_RECORD`; that single synthetic parser record is excluded from durable support IDs while every serialized glyph entity remains handle-reconciled.
 
 ## DXF consumers (secondary)
 

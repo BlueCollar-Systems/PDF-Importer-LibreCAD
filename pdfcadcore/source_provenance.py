@@ -76,13 +76,15 @@ class SourceProvenanceManifest:
         return asdict(self)
 
     def write_json(self, output_path: str, indent: int = 2) -> str:
-        path = Path(output_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(self.to_dict(), indent=indent, sort_keys=False) + "\n",
-            encoding="utf-8",
+        from .atomic_io import atomic_write_text
+
+        return atomic_write_text(
+            output_path,
+            json.dumps(
+                self.to_dict(), indent=indent, sort_keys=False, allow_nan=False
+            )
+            + "\n",
         )
-        return str(path)
 
 
 def ensure_provenance_bucket(opts: Any) -> List[SourceProvenanceObject]:

@@ -317,8 +317,9 @@ def write_parts_bootstrap_sidecar(
     text_items: Optional[Iterable[Any]] = None,
     import_build_stamp: Optional[Dict[str, Any]] = None,
 ) -> str:
+    from .atomic_io import atomic_write_text
+
     path = Path(output_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     extracted = list(rows or [])
     if not extracted and text_items is not None:
         extracted = extract_bootstrap_rows(text_items)
@@ -328,8 +329,9 @@ def write_parts_bootstrap_sidecar(
         rows=extracted,
         import_build_stamp=import_build_stamp,
     )
-    path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    return str(path)
+    return atomic_write_text(
+        path, json.dumps(manifest, indent=2, allow_nan=False) + "\n"
+    )
 
 
 __all__ = [

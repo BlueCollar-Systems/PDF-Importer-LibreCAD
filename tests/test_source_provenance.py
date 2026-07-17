@@ -84,7 +84,7 @@ class TestLibreCADSourceProvenance(unittest.TestCase):
 
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertIn("source_provenance", report["extra"])
-            sidecar_path = tmp_path / "source_provenance.json"
+            sidecar_path = tmp_path / "import_report_source_provenance.json"
             self.assertTrue(sidecar_path.is_file())
             sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
             self.assertEqual("bcs.source_provenance/1.0", sidecar["schema"])

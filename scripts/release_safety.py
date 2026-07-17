@@ -334,7 +334,6 @@ def evaluate_warning(
     """Return (exit_code, summary, updated_record)."""
     record = copy.deepcopy(record)
     warnings = record.setdefault("warnings", [])
-    key = (repo, tag)
     existing = None
     for w in warnings:
         if w.get("repo") == repo and w.get("tag") == tag:

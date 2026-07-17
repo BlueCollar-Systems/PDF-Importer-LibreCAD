@@ -25,8 +25,7 @@ def _read_version() -> str:
     text = init_path.read_text(encoding="utf-8")
     match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', text)
     if not match:
-        print("Warning: could not read version from pdf2dxf.py, using 0.0.0")
-        return "0.0.0"
+        raise RuntimeError("Could not read __version__ from pdf2dxf.py")
     return match.group(1)
 
 

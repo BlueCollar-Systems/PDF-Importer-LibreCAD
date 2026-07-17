@@ -3,11 +3,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
-from .exporters.dxf_exporter import DxfExportOptions, export_to_dxf
-from .importer import apply_uniform_scale, run_import, write_import_report
+from .exporters.dxf_exporter import (
+    DxfExportOptions,
+    TextRepresentationDeliveryError,
+    export_to_dxf,
+    summarize_text_delivery,
+)
+from .importer import (
+    apply_uniform_scale,
+    failure_import_report_path,
+    run_import,
+    write_import_report,
+)
 from .launchers.librecad_launcher import launch_librecad
 
 
@@ -23,7 +34,8 @@ def build_parser() -> argparse.ArgumentParser:
     Quality-tier flags (--hatch-mode, --arc-mode, --cleanup-level,
     --lineweight-mode, --raster-dpi, --strict-text-fidelity, --no-arcs,
     --no-raster-fallback, --grouping-mode) have been removed — their
-    consolidated defaults apply universally.
+    consolidated defaults apply universally. Distinct future capabilities are
+    still allowed when they preserve maximum fidelity and are production-tested.
     """
     parser = argparse.ArgumentParser(description="Convert PDF vectors into LibreCAD-ready DXF.")
     parser.add_argument("pdf", help="Input PDF path")
@@ -35,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scale", type=float, default=None,
                         help="Manual scale multiplier")
     parser.add_argument("--text-mode", default=None,
-                        choices=["labels", "3d_text", "glyphs", "geometry"],
+                        choices=["text", "labels", "3d_text", "glyphs", "geometry", "raster"],
                         help="Text handling (orthogonal to --mode)")
     parser.add_argument("--import-text",
                         action=argparse.BooleanOptionalAction,
@@ -117,30 +129,53 @@ def main() -> int:
             from pdfcadcore.cli_error_copy import cli_error
 
             print(cli_error("reference_detected_invalid"), file=sys.stderr)
+            run.close()
             return 1
         scale_factor = args.reference_real_mm / args.reference_detected_mm
         apply_uniform_scale(run.extraction, scale_factor)
 
     t_export = time.perf_counter()
-    export = export_to_dxf(
-        run.extraction,
-        str(out_path),
-        DxfExportOptions(
-            # Text export reflects effective config — driven by --import-text
-            # (already applied to run.config.import_text via overrides).
-            include_text=bool(run.config.import_text) and (run.config.text_mode != "none"),
-            text_mode=str(run.config.text_mode or "labels"),
-            include_images=not args.no_images,
-            group_by_page=True,
-            prefer_source_layers=True,
-            attach_metadata=True,
-            dxf_version=args.dxf_version,
-            map_dashes=bool(run.config.map_dashes),
-            page_arrangement=args.page_arrangement,
-            page_gap_ratio=max(0.0, float(args.page_gap_ratio or 0.0)),
-            provenance_opts=run.config,
-        ),
-    )
+    try:
+        export = export_to_dxf(
+            run.extraction,
+            str(out_path),
+            DxfExportOptions(
+                # Text export reflects effective config — driven by --import-text
+                # (already applied to run.config.import_text via overrides).
+                include_text=bool(run.config.import_text)
+                and (run.config.text_mode != "none"),
+                text_mode=str(run.config.text_mode or "text"),
+                include_images=not args.no_images,
+                group_by_page=True,
+                prefer_source_layers=True,
+                attach_metadata=True,
+                dxf_version=args.dxf_version,
+                map_dashes=bool(run.config.map_dashes),
+                page_arrangement=args.page_arrangement,
+                page_gap_ratio=max(0.0, float(args.page_gap_ratio or 0.0)),
+                provenance_opts=run.config,
+            ),
+        )
+    except TextRepresentationDeliveryError as exc:
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        failure_path = failure_import_report_path(str(out_path), run)
+        write_import_report(
+            run,
+            failure_path,
+            elapsed_ms=elapsed_ms,
+            performance_phases={
+                "run_import_ms": run_import_ms,
+                "export_dxf_ms": (time.perf_counter() - t_export) * 1000.0,
+                "total_ms": elapsed_ms,
+            },
+        )
+        exc.failure_report_path = failure_path
+        print(
+            f"Import stopped: {exc}\nComplete failure report: {failure_path}",
+            file=sys.stderr,
+        )
+        run.close()
+        return 2
     export_dxf_ms = (time.perf_counter() - t_export) * 1000.0
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
     import_report_path = _default_import_report_path(out_path)
@@ -163,21 +198,30 @@ def main() -> int:
             "layer_count": export.layer_count,
             "image_count": export.image_count,
             "import_report_path": str(import_report_path),
+            "text_delivery": summarize_text_delivery(
+                str(run.config.text_mode or "none")
+                if run.config.import_text
+                else "none",
+                export.text_deliveries,
+                report_path=str(import_report_path),
+            ),
         },
     }
 
-    print(json.dumps(summary, indent=2))
+    summary_json = json.dumps(summary, indent=2, allow_nan=False)
+    print(summary_json)
 
     if args.json:
         report = Path(args.json).expanduser().resolve()
         report.parent.mkdir(parents=True, exist_ok=True)
-        report.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        report.write_text(summary_json, encoding="utf-8")
         print(f"Wrote report: {report}")
 
     if args.launch:
         ok, message = launch_librecad(export.output_path, executable=args.librecad_exe)
         print(message)
 
+    run.close()
     return 0
 
 

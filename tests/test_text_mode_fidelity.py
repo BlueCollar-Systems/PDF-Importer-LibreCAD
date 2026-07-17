@@ -1,202 +1,145 @@
-"""Production-path TEXTMODE-1 locks for LibreCAD DXF text delivery."""
+"""Production-path owner-directive locks for LibreCAD text delivery."""
 from __future__ import annotations
 
 import json
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import ezdxf
 try:
-    import pymupdf as fitz  # PyMuPDF >= 1.24 preferred name
-except ImportError:  # pragma: no cover - legacy package name
+    import pymupdf as fitz
+except ImportError:  # pragma: no cover
     import fitz  # type: ignore
 
-from librecad_pdf_importer.core.document import DocumentExtraction, ExtractedPage
-from librecad_pdf_importer.exporters.dxf_exporter import DxfExportOptions, export_to_dxf
-from librecad_pdf_importer.importer import ImportRun, write_import_report
-from pdfcadcore.import_config import ImportConfig
-from pdfcadcore.primitives import NormalizedText, PageData
+from librecad_pdf_importer.exporters.dxf_exporter import (
+    DxfExportOptions,
+    TextRepresentationDeliveryError,
+    export_to_dxf,
+)
+from librecad_pdf_importer.importer import run_import, write_import_report
 
 
 class TestLibreCADTextModeFidelity(unittest.TestCase):
-    """Requested modes either produce their family or a loud fallback record."""
+    """Requested types succeed exactly or fail closed without substitution."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="lc_text_mode_fidelity_")
         self.tmp_path = Path(self._tmp.name)
         self.pdf_path = self.tmp_path / "source.pdf"
         document = fitz.open()
-        document.new_page(width=120, height=80)
+        page = document.new_page(width=120, height=80)
+        page.insert_text((12, 24), "M12 BOLT", fontsize=11)
         document.save(str(self.pdf_path))
         document.close()
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def _export_and_report(self, text_mode: str, outline_result: str = "normal"):
-        item = NormalizedText(
-            id=1,
-            text="M12 BOLT",
-            normalized="M12 BOLT",
-            insertion=(12.0, 24.0),
-            bbox=(12.0, 20.0, 42.0, 26.0),
-            font_size=4.0,
-            rotation=0.0,
-            page_number=1,
+    def _run(self, text_mode: str):
+        run = run_import(
+            str(self.pdf_path),
+            mode="vector",
+            overrides={"pages": "1", "import_text": True, "text_mode": text_mode},
         )
-        page = ExtractedPage(
-            page_data=PageData(page_number=1, width=120.0, height=80.0, text_items=[item]),
-            profile=SimpleNamespace(titleblock_likely=False),
-            resolved_mode="vector",
+        dxf_path = self.tmp_path / f"{text_mode}.dxf"
+        result = export_to_dxf(
+            run.extraction,
+            str(dxf_path),
+            DxfExportOptions(
+                include_images=False,
+                text_mode=text_mode,
+                provenance_opts=run.config,
+            ),
         )
-        config = ImportConfig.vector()
-        config.import_text = True
-        config.text_mode = text_mode
-        run = ImportRun(
-            extraction=DocumentExtraction(str(self.pdf_path), pages=[page], requested_mode="vector"),
-            config=config,
-        )
-        suffix = f"{text_mode}_{outline_result}"
-        dxf_path = self.tmp_path / f"{suffix}.dxf"
-        report_path = self.tmp_path / f"{suffix}_import_report.json"
-        options = DxfExportOptions(
-            include_images=False,
-            text_mode=text_mode,
-            provenance_opts=config,
-        )
-
-        if outline_result == "raises":
-            with patch(
-                "dxf_text_builder.text2path.make_paths_from_entity",
-                side_effect=RuntimeError("missing outline font"),
-            ):
-                export_to_dxf(run.extraction, str(dxf_path), options)
-        elif outline_result == "empty":
-            with patch("dxf_text_builder.text2path.make_paths_from_entity", return_value=[]):
-                export_to_dxf(run.extraction, str(dxf_path), options)
-        else:
-            export_to_dxf(run.extraction, str(dxf_path), options)
-
+        report_path = self.tmp_path / f"{text_mode}_import_report.json"
         write_import_report(run, str(report_path), elapsed_ms=1.0)
         report = json.loads(report_path.read_text(encoding="utf-8"))
-        return config, report, ezdxf.readfile(dxf_path)
+        return result, report, ezdxf.readfile(dxf_path)
 
-    def _assert_requested_or_reported_fallback(
-        self,
-        report: dict,
-        *,
-        requested: str,
-        delivered: str,
-        reason: str | None = None,
-    ) -> None:
-        text_fallback = report["fallback"].get("text")
-        if requested == delivered:
-            self.assertIsNone(text_fallback)
-            return
-        self.assertTrue(report["fallback"]["used"])
-        self.assertIsNotNone(text_fallback)
-        self.assertEqual(text_fallback["requested"], requested)
-        self.assertEqual(text_fallback["delivered"], delivered)
-        self.assertTrue(text_fallback["reason"])
-        if reason is not None:
-            self.assertEqual(text_fallback["reason"], reason)
-
-    def test_outline_exception_delivers_text_with_honest_provenance_and_report(self) -> None:
-        config, report, drawing = self._export_and_report("geometry", "raises")
-
-        self.assertIn("TEXT", {entity.dxftype() for entity in drawing.modelspace()})
-        objects = list(getattr(config, "_source_provenance_objects", []))
-        self.assertEqual([entry.created_entity_type for entry in objects], ["dxf_text"])
-        actual = report["extra"]["actual_text_entity_types"]
-        self.assertEqual(actual["dxf_text"], 1)
-        self.assertTrue(actual["font_rendered"])
-        self._assert_requested_or_reported_fallback(
-            report,
-            requested="geometry",
-            delivered="labels",
-            reason="text2path_failed",
-        )
-
-    def test_empty_outline_delivers_text_with_reported_fallback(self) -> None:
-        _, report, drawing = self._export_and_report("glyphs", "empty")
-
-        self.assertIn("TEXT", {entity.dxftype() for entity in drawing.modelspace()})
-        self._assert_requested_or_reported_fallback(
-            report,
-            requested="glyphs",
-            delivered="labels",
-            reason="text2path_failed",
-        )
-
-    def test_3d_text_alias_is_a_reported_host_limit_fallback(self) -> None:
-        _, report, drawing = self._export_and_report("3d_text")
-
-        self.assertIn("TEXT", {entity.dxftype() for entity in drawing.modelspace()})
-        self.assertEqual(report["extra"]["actual_text_entity_types"]["dxf_text"], 1)
-        self._assert_requested_or_reported_fallback(
-            report,
-            requested="3d_text",
-            delivered="labels",
-            reason="host_2d_no_3d_text",
-        )
-
-    @staticmethod
-    def _delivered_family(drawing) -> str:
-        """Classify what the DXF actually delivers for the lone text span."""
-        types = {entity.dxftype() for entity in drawing.modelspace()}
-        if types & {"TEXT", "MTEXT"}:
-            return "labels"
-        if types & {"LWPOLYLINE", "POLYLINE"}:
-            return "outlines"
-        return "none"
-
-    @staticmethod
-    def _requested_family(mode: str) -> str:
-        """Glyphs and Geometry are one peer family (identical text2path engine)."""
-        if mode in {"glyphs", "geometry"}:
-            return "outlines"
-        return mode
-
-    def test_textmode_invariant_requested_or_reported_fallback(self) -> None:
-        """TEXTMODE-1 item 13 invariant: for every LC text mode x forced
-        failure, delivered == requested OR the report records a fallback.text
-        with requested/delivered/reason -- never neither, and never nothing
-        delivered."""
-        modes = ("labels", "glyphs", "geometry", "3d_text")
-        failure_axis = ("normal", "raises", "empty")
-
-        for requested in modes:
-            for outline_result in failure_axis:
-                with self.subTest(requested=requested, outline_result=outline_result):
-                    _, report, drawing = self._export_and_report(
-                        requested, outline_result
+    def test_every_requested_representation_is_exact_or_loudly_falls_back(self) -> None:
+        expected = {
+            "text": ("text", "TEXT", "dxf_text", False),
+            "labels": ("text", "TEXT", "dxf_text", True),
+            "3d_text": ("text", "TEXT", "dxf_text", True),
+            "glyphs": ("glyphs", "INSERT", "outline_curve_or_mesh", False),
+            "geometry": ("geometry", "LWPOLYLINE", "raw_geometry_edges", False),
+        }
+        for mode, (delivered, entity_type, bucket, fallback_used) in expected.items():
+            with self.subTest(mode=mode):
+                result, report, drawing = self._run(mode)
+                delivery = result.text_deliveries[0]
+                self.assertEqual(delivery["requested_representation"], mode)
+                self.assertEqual(delivery["final_representation"], delivered)
+                self.assertTrue(delivery["verified"])
+                self.assertEqual(delivery["fallback_used"], fallback_used)
+                entities = list(drawing.modelspace())
+                self.assertIn(entity_type, {entity.dxftype() for entity in entities})
+                actual = report["extra"]["actual_text_entity_types"]
+                self.assertEqual(actual["entity_type"], delivered)
+                self.assertGreaterEqual(actual[bucket], 1)
+                if fallback_used:
+                    self.assertEqual(report["fallback"]["text"]["requested"], mode)
+                    self.assertEqual(
+                        report["fallback"]["text"]["delivered"], delivered
                     )
-                    delivered_family = self._delivered_family(drawing)
-                    self.assertNotEqual(
-                        delivered_family,
-                        "none",
-                        "text disappeared -- violates 'there will be an option'",
-                    )
-                    text_fallback = report["fallback"].get("text")
-                    if delivered_family == self._requested_family(requested):
-                        self.assertIsNone(
-                            text_fallback,
-                            "requested == delivered must not synthesize a fallback",
-                        )
-                    else:
-                        self.assertIsNotNone(
-                            text_fallback,
-                            f"silent substitution: requested {requested!r}, "
-                            f"delivered {delivered_family!r} with no fallback.text",
-                        )
-                        self.assertTrue(report["fallback"]["used"])
-                        self.assertEqual(text_fallback["requested"], requested)
-                        self.assertEqual(text_fallback["delivered"], delivered_family)
-                        self.assertTrue(text_fallback["reason"])
-                        self.assertGreaterEqual(int(text_fallback["count"]), 1)
+                else:
+                    self.assertIsNone(report["fallback"].get("text"))
+
+    def _assert_unproven_outline_failure_stops(self, mode: str, empty: bool) -> None:
+        run = run_import(
+            str(self.pdf_path),
+            mode="vector",
+            overrides={"pages": "1", "import_text": True, "text_mode": mode},
+        )
+        output = self.tmp_path / f"{mode}_{'empty' if empty else 'raises'}.dxf"
+        prior = b"prior accepted output\r\n"
+        output.write_bytes(prior)
+        side_effect = None if empty else RuntimeError("outline helper failed")
+        return_value = [] if empty else None
+        kwargs = (
+            {"return_value": return_value}
+            if empty
+            else {"side_effect": side_effect}
+        )
+        with (
+            patch("dxf_text_builder.text2path.make_paths_from_entity", **kwargs),
+            patch("dxf_text_builder.text2path.make_paths_from_str", **kwargs),
+        ):
+            with self.assertRaises(TextRepresentationDeliveryError) as raised:
+                export_to_dxf(
+                    run.extraction,
+                    str(output),
+                    DxfExportOptions(
+                        include_images=False,
+                        text_mode=mode,
+                        provenance_opts=run.config,
+                    ),
+                )
+
+        self.assertEqual(output.read_bytes(), prior)
+        delivery = raised.exception.delivery
+        self.assertFalse(delivery.verified)
+        self.assertIsNone(delivery.final_representation)
+        self.assertFalse(delivery.terminal_fallback_authorized)
+        self.assertEqual(
+            [attempt.attempted_representation for attempt in delivery.attempts],
+            [mode, mode],
+        )
+        self.assertTrue(all(attempt.outcome == "failed" for attempt in delivery.attempts))
+        self.assertTrue(all(attempt.cleanup_verified for attempt in delivery.attempts))
+        self.assertFalse(any(attempt.entity_handles for attempt in delivery.attempts))
+
+    def test_outline_exceptions_do_not_authorize_cross_type_fallback(self) -> None:
+        for mode in ("glyphs", "geometry"):
+            with self.subTest(mode=mode):
+                self._assert_unproven_outline_failure_stops(mode, empty=False)
+
+    def test_empty_outline_artifacts_do_not_authorize_cross_type_fallback(self) -> None:
+        for mode in ("glyphs", "geometry"):
+            with self.subTest(mode=mode):
+                self._assert_unproven_outline_failure_stops(mode, empty=True)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ dependencies needed for the release artifact.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -43,12 +44,11 @@ BUILD_REQUIREMENTS = [
 
 def _read_version() -> str:
     """Single source of truth: pdf2dxf.__version__."""
-    try:
-        sys.path.insert(0, str(ROOT))
-        import pdf2dxf  # type: ignore
-        return getattr(pdf2dxf, "__version__", "0.0.0")
-    except Exception:
-        return "0.0.0"
+    text = (ROOT / "pdf2dxf.py").read_text(encoding="utf-8")
+    match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', text)
+    if not match:
+        raise RuntimeError("Could not read __version__ from pdf2dxf.py")
+    return match.group(1)
 
 
 def _build_python() -> Path:

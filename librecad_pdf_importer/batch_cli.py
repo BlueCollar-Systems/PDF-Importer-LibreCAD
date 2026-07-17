@@ -55,6 +55,7 @@ def main() -> int:
         out_dxf = out_root / rel.with_suffix(".dxf")
         out_dxf.parent.mkdir(parents=True, exist_ok=True)
         overrides = {"pages": args.pages}
+        run = None
         try:
             run = run_import(str(pdf), mode=args.mode, overrides=overrides)
             export = export_to_dxf(
@@ -80,13 +81,24 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             aggregate["failed"] += 1
             aggregate["results"].append({"pdf": str(pdf), "status": "FAIL", "error": str(exc)})
+        finally:
+            if run is not None:
+                run.close()
 
-    print(json.dumps({k: v for k, v in aggregate.items() if k != "results"}, indent=2))
+    print(
+        json.dumps(
+            {k: v for k, v in aggregate.items() if k != "results"},
+            indent=2,
+            allow_nan=False,
+        )
+    )
 
     if args.json:
         out = Path(args.json).expanduser().resolve()
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(aggregate, indent=2), encoding="utf-8")
+        out.write_text(
+            json.dumps(aggregate, indent=2, allow_nan=False), encoding="utf-8"
+        )
         print(f"Wrote report: {out}")
 
     return 0 if aggregate["failed"] == 0 else 1

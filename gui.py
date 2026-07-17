@@ -28,11 +28,16 @@ if _PROJECT_ROOT not in sys.path:
 # CLI/batch retain vector | raster | hybrid for power users.
 IMPORT_MODE_AUTO = "auto"
 
-# LibreCAD is 2D CAD. Expose only modes that map to DXF reality; 3d_text and
-# glyphs remain available on CLI (--text-mode) for scripting parity.
+# Every requested representation is available in both GUI and CLI. Each item
+# tries that type first; only item-specific, reported impossibility can advance
+# it to the nearest verified visual representation.
 TEXT_MODES = {
-    "Labels (editable TEXT)": "labels",
-    "Outlines (no editable text)": "geometry",
+    "Text (editable native TEXT)": "text",
+    "Labels (closest Text fallback)": "labels",
+    "3D Text (TEXT with thickness)": "3d_text",
+    "Glyphs (grouped outlines)": "glyphs",
+    "Geometry (raw outlines)": "geometry",
+    "Raster (exact item pixels)": "raster",
 }
 
 DXF_VERSIONS = ("R12", "R2000", "R2004", "R2007", "R2010", "R2013", "R2018")
@@ -117,9 +122,9 @@ class Pdf2DxfApp(tk.Tk):
             row=6, column=1, sticky=tk.W, **pad,
         )
 
-        # ---- Text mode (2D LibreCAD: labels vs outline-only) ----
+        # ---- Requested text representation ----
         ttk.Label(frame, text="Text:").grid(row=7, column=0, sticky=tk.W, **pad)
-        self._var_text_mode = tk.StringVar(value="Labels (editable TEXT)")
+        self._var_text_mode = tk.StringVar(value="Text (editable native TEXT)")
         text_combo = ttk.Combobox(
             frame,
             textvariable=self._var_text_mode,
@@ -130,8 +135,12 @@ class Pdf2DxfApp(tk.Tk):
         text_combo.grid(row=7, column=1, sticky=tk.W, **pad)
         ttk.Label(
             frame,
-            text="LibreCAD is 2D — no true 3D text; exports DXF TEXT entities.",
+            text=(
+                "LibreCAD is 2D. The selected type is attempted item by item; "
+                "any verified fallback is shown in the result and complete report."
+            ),
             font=("Segoe UI", 8),
+            wraplength=420,
         ).grid(row=8, column=1, columnspan=2, sticky=tk.W, padx=8)
 
         # ---- DXF version ----
@@ -235,18 +244,6 @@ class Pdf2DxfApp(tk.Tk):
             output_path = os.path.splitext(input_path)[0] + ".dxf"
             self._var_output.set(output_path)
 
-        text_key = TEXT_MODES.get(self._var_text_mode.get(), "labels")
-        if text_key == "geometry":
-            proceed = messagebox.askokcancel(
-                "Outlines mode — not editable text",
-                "Outlines exports vector geometry only — part marks and BOM text "
-                "will NOT be editable in LibreCAD.\n\n"
-                "For shop drawings with many part marks, choose Labels (editable TEXT).\n\n"
-                "Continue with Outlines?",
-            )
-            if not proceed:
-                return
-
         self._converting = True
         self._btn_convert.configure(state=tk.DISABLED)
         self._progress.start(10)
@@ -280,7 +277,7 @@ class Pdf2DxfApp(tk.Tk):
                 config.user_scale = 1.0
 
             config.import_text = self._var_import_text.get()
-            config.text_mode = TEXT_MODES.get(self._var_text_mode.get(), "labels")
+            config.text_mode = TEXT_MODES.get(self._var_text_mode.get(), "text")
             config.verbose = True
 
             # Parse pages
@@ -320,6 +317,21 @@ class Pdf2DxfApp(tk.Tk):
             self._log(f"  Entities: {stats.get('entities', '?')}")
             self._log(f"  Text:     {stats.get('text_items', 0)}")
             self._log(f"  Output:   {output_path}")
+            text_delivery = dict(stats.get("text_delivery") or {})
+            self._log(
+                "  Text delivery: requested={requested}; delivered={delivered}; "
+                "fallback={fallback}; items={items}".format(
+                    requested=text_delivery.get("requested", "none"),
+                    delivered=text_delivery.get("delivered", "none"),
+                    fallback=(
+                        "yes" if text_delivery.get("fallback_used") else "no"
+                    ),
+                    items=text_delivery.get("item_count", 0),
+                )
+            )
+            self._log(
+                f"  Complete report: {text_delivery.get('report_path', '')}"
+            )
 
             launch_message = ""
             if self._var_launch_librecad.get():
@@ -336,9 +348,14 @@ class Pdf2DxfApp(tk.Tk):
             self.after(0, lambda: messagebox.showinfo(
                 "Done",
                 f"Conversion complete.\n\n"
-                f"Pages: {stats.get('pages', '?')}\n"
-                f"Entities: {stats.get('entities', '?')}\n"
-                f"Output: {output_path}"
+                 f"Pages: {stats.get('pages', '?')}\n"
+                 f"Entities: {stats.get('entities', '?')}\n"
+                 f"Text requested: {text_delivery.get('requested', 'none')}\n"
+                 f"Text delivered: {text_delivery.get('delivered', 'none')}\n"
+                 f"Text fallback used: "
+                 f"{'yes' if text_delivery.get('fallback_used') else 'no'}\n"
+                 f"Complete report: {text_delivery.get('report_path', '')}\n"
+                 f"Output: {output_path}"
                 + (f"\n\n{launch_message}" if launch_message else ""),
             ))
 

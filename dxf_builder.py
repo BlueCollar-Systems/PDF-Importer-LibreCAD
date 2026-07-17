@@ -23,7 +23,7 @@ from pdfcadcore.primitives import PageData, Primitive
 from pdfcadcore.import_config import ImportConfig
 from pdfcadcore.import_bounds import ImportBounds, compute_import_bounds
 
-from dxf_text_builder import build_text
+from dxf_text_builder import TextDeliveryResult, build_text
 
 # ---------------------------------------------------------------------------
 # DXF version string -> ezdxf ``dxfversion`` keyword
@@ -425,6 +425,8 @@ def build_dxf(
 
     entity_count = 0
     text_count = 0
+    text_deliveries = []
+    config._text_representation_deliveries = text_deliveries  # noqa: B010
 
     # Multi-page stacking: shift each page downward by accumulated heights.
     _stack_offset_y = 0.0
@@ -481,8 +483,8 @@ def build_dxf(
             writer = _WRITERS.get(prim.type, _add_polyline)
             entity_count += writer(msp, prim, attribs)
 
-        # Text entities. LibreCAD gets editable TEXT for labels/3d_text and
-        # non-editable outline polylines for glyphs/geometry.
+        # Text requests. Native TEXT is retained only when LibreCAD parent
+        # renderability verifies; otherwise the item-specific ladder advances.
         if config.import_text and config.text_mode != "none":
             for ti in page.text_items:
                 # Apply page stacking offset to text insertion point
@@ -492,7 +494,7 @@ def build_dxf(
                         insertion=(ti.insertion[0], ti.insertion[1] + dy),
                     )
                 layer = page_layer
-                text_count += build_text(
+                delivery = build_text(
                     ti,
                     msp,
                     layer,
@@ -500,7 +502,17 @@ def build_dxf(
                     is_r12,
                     target_app="librecad",
                     dxf_version=dxf_version,
+                    return_delivery_result=True,
                 )
+                if not isinstance(delivery, TextDeliveryResult):
+                    raise RuntimeError("text builder returned no delivery evidence")
+                text_deliveries.append(delivery.to_dict())
+                if not delivery.verified or not delivery.final_representation:
+                    raise RuntimeError(
+                        f"{delivery.source_id or 'unknown text item'}: "
+                        f"{delivery.failure_reason or 'requested representation failed'}"
+                    )
+                text_count += delivery.count
 
         # Advance stacking offset for the next page
         _stack_offset_y -= page.height * _STACK_MULTIPLIER

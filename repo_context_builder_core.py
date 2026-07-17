@@ -22,12 +22,11 @@ import re
 import shutil
 import sqlite3
 import subprocess
-import sys
 import traceback
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, List, Tuple
 
 MAX_FILE_LINES = 3000
 MAX_HEAD_LINES = 2000

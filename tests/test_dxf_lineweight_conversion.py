@@ -4,7 +4,7 @@ Regression guardrail for DXF lineweight conversion in dxf_builder.py.
 Covers:
   - pt->mm conversion (25.4/72) for DXF 1/100mm lineweight units
   - Minimum 5 (0.05mm) and maximum 211 (2.11mm) DXF lineweight range
-  - arc_min_pts forwarded in dxf_import_engine legacy path
+  - arc_min_pts forwarded through the canonical package extraction path
 """
 from __future__ import annotations
 
@@ -13,15 +13,29 @@ import unittest
 from pathlib import Path
 
 _BUILDER = Path(__file__).resolve().parent.parent / "dxf_builder.py"
-_ENGINE = Path(__file__).resolve().parent.parent / "dxf_import_engine.py"
+_DOCUMENT = (
+    Path(__file__).resolve().parent.parent
+    / "librecad_pdf_importer"
+    / "core"
+    / "document.py"
+)
+_IMPORTER = (
+    Path(__file__).resolve().parent.parent
+    / "librecad_pdf_importer"
+    / "importer.py"
+)
 
 
 def _builder_src() -> str:
     return _BUILDER.read_text(encoding="utf-8")
 
 
-def _engine_src() -> str:
-    return _ENGINE.read_text(encoding="utf-8")
+def _document_src() -> str:
+    return _DOCUMENT.read_text(encoding="utf-8")
+
+
+def _importer_src() -> str:
+    return _IMPORTER.read_text(encoding="utf-8")
 
 
 class TestDxfLineweightConversion(unittest.TestCase):
@@ -58,17 +72,18 @@ class TestDxfLineweightConversion(unittest.TestCase):
 
 
 class TestArcMinPtsForwarded(unittest.TestCase):
-    """arc_min_pts must be forwarded in the legacy dxf_import_engine path."""
+    """arc_min_pts must be forwarded in the only production extraction path."""
 
     def test_arc_min_pts_in_extract_page_call(self) -> None:
-        src = _engine_src()
-        self.assertIn("arc_min_pts=", src,
-                      "dxf_import_engine must forward arc_min_pts to extract_page")
+        src = _document_src()
+        self.assertIn("arc_min_pts=max(3, int(opts.arc_sampling_pts))", src)
 
     def test_arc_sampling_pts_used(self) -> None:
-        src = _engine_src()
-        self.assertIn("arc_sampling_pts", src,
-                      "arc_min_pts must be sourced from config.arc_sampling_pts")
+        self.assertIn(
+            "arc_sampling_pts=cfg.arc_sampling_pts",
+            _importer_src(),
+            "canonical importer must forward config.arc_sampling_pts",
+        )
 
 
 class TestLineweightRoundTrip(unittest.TestCase):

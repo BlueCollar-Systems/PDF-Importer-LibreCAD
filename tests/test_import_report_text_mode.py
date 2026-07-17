@@ -59,8 +59,8 @@ def test_performance_phases_optional():
     assert data["extra"]["text_glyph_estimate"] == 14
 
 
-def test_3d_text_alias_reported_as_host_limit_fallback():
-    """TEXTMODE-1 item 10: the 2D alias is a documented host-limit fallback."""
+def test_3d_text_item_specific_impossibility_fallback_is_reported_loudly():
+    """A distinct fallback records the item-specific representation failure."""
     report = build_import_report(
         host_app="librecad",
         pdf_path="plan.pdf",
@@ -70,7 +70,7 @@ def test_3d_text_alias_reported_as_host_limit_fallback():
         text_fallback={
             "requested": "3d_text",
             "delivered": "labels",
-            "reason": "host_2d_no_3d_text",
+            "reason": "requested_representation_failed_verification",
             "count": 2,
         },
     )
@@ -79,7 +79,7 @@ def test_3d_text_alias_reported_as_host_limit_fallback():
     text_block = data["fallback"]["text"]
     assert text_block["requested"] == "3d_text"
     assert text_block["delivered"] == "labels"
-    assert text_block["reason"] == "host_2d_no_3d_text"
+    assert text_block["reason"] == "requested_representation_failed_verification"
     assert text_block["count"] == 2
     extra = data["extra"]
     # The report keeps the REQUESTED mode; the fallback block tells the truth.
@@ -124,4 +124,56 @@ def test_import_report_diagnostics_for_fallback_and_dense_text():
     assert "warnings_present" in diagnostics["signals"]
     assert "source_text_seen_but_no_text_entities_created" in diagnostics["signals"]
     assert "dense_text_glyph_workload" in diagnostics["signals"]
-    assert any("Vector or Hybrid" in action for action in diagnostics["recommended_actions"])
+    assert not any(
+        "Vector or Hybrid" in action
+        or "another text mode" in action.lower()
+        or "Outlines" in action
+        for action in diagnostics["recommended_actions"]
+    )
+    assert any(
+        "requested representation unchanged" in action
+        for action in diagnostics["recommended_actions"]
+    )
+
+
+def test_explicit_raster_report_counts_the_delivered_image_instead_of_calling_it_empty():
+    report = build_import_report(
+        host_app="librecad",
+        pdf_path="scan.pdf",
+        mode="raster",
+        image_count=1,
+        import_text=False,
+    )
+    data = report.to_dict()
+
+    assert data["result"]["images"] == 1
+    assert data["extra"]["diagnostics"]["quality_level"] == "raster"
+    assert "raster_or_image_content_delivered" in data["extra"]["diagnostics"]["signals"]
+    assert "1 raster/image placement" in data["extra"]["human_summary"]
+    assert "No editable geometry was created" not in data["extra"]["human_summary"]
+
+
+def test_failed_delivery_report_cannot_claim_contract_ready_or_imported():
+    report = build_import_report(
+        host_app="librecad",
+        pdf_path="plan.pdf",
+        mode="vector",
+        text_count=1,
+        import_text=True,
+        text_mode="labels",
+        text_source_spans=1,
+        extra={
+            "result_status": "failed",
+            "text_representation_delivery": {
+                "verified": False,
+                "items": [{"source_id": "text_span:1:1", "verified": False}],
+            },
+        },
+    )
+    data = report.to_dict()
+
+    assert data["extra"]["import_contract_ready"]["ready"] is False
+    assert data["extra"]["import_contract_ready"]["checks"]["result_succeeded"] is False
+    assert data["extra"]["import_contract_ready"]["checks"]["text_delivery"] is False
+    assert data["extra"]["human_summary"].startswith("Import failed")
+    assert not data["extra"]["human_summary"].startswith("Imported")

@@ -8,9 +8,9 @@ PREFLIGHT_HEADLINE = (
 )
 
 PREFLIGHT_TEXT_MODES = (
-    "Text modes: Labels = editable text you can change later; "
-    "Outlines / Glyphs / Geometry = vector fidelity (exact strokes, not editable). "
-    "LibreCAD is 2D only — use Labels or Outlines; it has no true 3D text."
+    "The selected text representation is preserved whenever the host can create it. "
+    "A different representation is allowed only after an item-specific impossibility check, "
+    "and every fallback or failure is recorded."
 )
 
 PREFLIGHT_SCALE_NOTE = (
@@ -40,11 +40,24 @@ def preflight_paragraph(host: str = "") -> str:
     parts = [PREFLIGHT_HEADLINE, PREFLIGHT_TEXT_MODES]
     key = str(host or "").strip().lower()
     if key == "librecad":
-        parts.append("LibreCAD: Labels (editable DXF TEXT) or Outlines only — no 3D text.")
-    elif key in {"sketchup", "freecad", "blender"}:
         parts.append(
-            "SketchUp / FreeCAD / Blender: Labels for editable text; "
-            "Outlines or Glyphs for exact visual fidelity; 3D text where the host supports it."
+            "LibreCAD: Text remains editable DXF TEXT. Labels first records that "
+            "DXF has no native Label entity, then tries Text. Parent-native LFF "
+            "substitution is reported and is never called source-font exact. "
+            "Grouped Glyphs, raw Geometry, and Raster remain distinct; flat DXF "
+            "TEXT cannot be reported as delivered 3D Text."
+        )
+    elif key == "blender":
+        parts.append(
+            "Blender: Text = flat editable FONT; 3D Text = extruded FONT; "
+            "Glyphs = CURVE; Geometry = MESH; Raster = an aligned item patch. "
+            "Blender has no persistent model Label entity, so a Labels request records "
+            "that host limitation before trying Text."
+        )
+    elif key in {"sketchup", "freecad"}:
+        parts.append(
+            "SketchUp / FreeCAD: Labels for editable text; "
+            "Text, Glyphs, Geometry, Raster, and 3D Text remain distinct requested results."
         )
     parts.append(PREFLIGHT_SCALE_NOTE)
     return " ".join(parts)

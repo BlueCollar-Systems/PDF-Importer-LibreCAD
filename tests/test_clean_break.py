@@ -131,9 +131,9 @@ class TestRule5GuiCheckboxesRemoved(unittest.TestCase):
         self.assertNotIn("_var_mode", self.source)
         self.assertNotIn('text="Mode:"', self.source)
 
-    def test_gui_text_default_is_labels_for_2d_lc(self) -> None:
-        self.assertIn('tk.StringVar(value="Labels (editable TEXT)")', self.source)
-        self.assertIn('TEXT_MODES.get(self._var_text_mode.get(), "labels")', self.source)
+    def test_gui_text_default_is_native_text_for_2d_lc(self) -> None:
+        self.assertIn('tk.StringVar(value="Text (editable native TEXT)")', self.source)
+        self.assertIn('TEXT_MODES.get(self._var_text_mode.get(), "text")', self.source)
 
 
 class TestTextDefaults(unittest.TestCase):
@@ -146,7 +146,7 @@ class TestTextDefaults(unittest.TestCase):
 
     def test_legacy_pdf2dxf_uses_librecad_2d_default(self) -> None:
         source = PDF2DXF_PY.read_text(encoding="utf-8")
-        self.assertIn('config.text_mode = "labels"', source)
+        self.assertIn('config.text_mode = "text"', source)
 
 
 class TestTextModeLadderDocumented(unittest.TestCase):
@@ -155,7 +155,8 @@ class TestTextModeLadderDocumented(unittest.TestCase):
     def test_readme_documents_final_ladder(self) -> None:
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("Text-Mode Fallback Ladder (TEXTMODE-1)", readme)
-        self.assertIn("host_2d_no_3d_text", readme)
+        self.assertIn("positive thickness", readme)
+        self.assertNotIn("host_2d_no_3d_text", readme)
         self.assertIn("text2path_failed", readme)
 
 

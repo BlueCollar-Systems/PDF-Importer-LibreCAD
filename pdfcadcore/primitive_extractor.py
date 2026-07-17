@@ -11,7 +11,11 @@ import re
 from typing import List, Optional, Tuple
 
 from .primitives import (
-    Primitive, NormalizedText, PageData, next_id
+    NormalizedText,
+    PageData,
+    Primitive,
+    TextCharLayout,
+    next_id,
 )
 from .geometry_cleanup import promote_circular_primitives
 from .text_scale import effective_span_font_size_pt
@@ -135,9 +139,7 @@ def _append_linearized_cubic(
 
 def _quad_to_points(
     quad_obj,
-    page_h: float,
-    flip_y: bool,
-    scale: float,
+    to_model,
 ) -> List[Tuple[float, float]]:
     corners = []
     try:
@@ -155,7 +157,7 @@ def _quad_to_points(
         except (TypeError, ValueError):
             corners = []
 
-    out = [_to_mm(x, y, page_h, flip_y, scale) for x, y in corners]
+    out = [to_model(x, y) for x, y in corners]
     if len(out) >= 4:
         out.append(out[0])
     return out
@@ -214,26 +216,22 @@ def extract_page(
     arc_min_pts: int = 5,
 ) -> PageData:
     """Extract normalized primitives from a PyMuPDF page."""
-    # Determine the effective display dimensions respecting PDF /Rotate.
-    # PyMuPDF applies /Rotate so page.rect already reflects the display
-    # orientation; use that for page_w/h_mm and for the Y-flip baseline.
-    rot = _page_rotation(page)
-    try:
-        mbox = page.mediabox
-        mb_w = float(mbox.width)
-        mb_h = float(mbox.height)
-    except AttributeError:
-        mb_w = float(page.rect.width)
-        mb_h = float(page.rect.height)
+    # ``page.rect`` is the authoritative visible CropBox + UserUnit + /Rotate
+    # extent. PyMuPDF drawing/text coordinates remain crop-local source points;
+    # apply the page rotation matrix once before the model Y flip.
+    page_rect = page.rect
+    page_w_pts = float(page_rect.width)
+    page_h_pts = float(page_rect.height)
+    rotation_matrix = _page_rotation_transform(
+        page_rect,
+        getattr(page, "rotation_matrix", None),
+    )
 
-    if rot in (90, 270):
-        # Display width/height are swapped relative to the raw mediabox
-        page_w_pts, page_h_pts = mb_h, mb_w
-    else:
-        page_w_pts, page_h_pts = mb_w, mb_h
+    def to_model(x, y):
+        return _page_point_to_mm(
+            x, y, rotation_matrix, page_h_pts, flip_y, scale
+        )
 
-    # page_h is the Y-flip baseline in PDF user-space points
-    page_h = page_h_pts
     page_w_mm = page_w_pts * MM_PER_PT * scale
     page_h_mm = page_h_pts * MM_PER_PT * scale
 
@@ -248,6 +246,10 @@ def extract_page(
         stroke = _norm_color(path_group.get("color") or path_group.get("stroke"))
         fill = _norm_color(path_group.get("fill"))
         width = path_group.get("width")
+        try:
+            width = float(width) * MM_PER_PT * scale if width is not None else None
+        except (TypeError, ValueError):
+            width = None
         dashes, dash_phase = _parse_dashes(path_group.get("dashes"))
         close_path = path_group.get("closePath", False)
         layer_name = path_group.get("oc") or path_group.get("layer")
@@ -268,48 +270,49 @@ def extract_page(
             if kind == "m":
                 flush(False)
                 x, y = _parse_point(data)
-                px, py = _to_mm(x, y, page_h, flip_y, scale)
+                px, py = to_model(x, y)
                 current_pts = [(px, py)]
 
             elif kind == "l":
                 if len(data) >= 2 and hasattr(data[0], "x") and hasattr(data[1], "x"):
                     x0, y0 = _xy(data[0])
                     x1, y1 = _xy(data[1])
-                    p0 = _to_mm(x0, y0, page_h, flip_y, scale)
-                    p1 = _to_mm(x1, y1, page_h, flip_y, scale)
+                    p0 = to_model(x0, y0)
+                    p1 = to_model(x1, y1)
                     if not current_pts:
                         current_pts.append(p0)
                     current_pts.append(p1)
                 else:
                     x, y = _parse_point(data)
-                    current_pts.append(_to_mm(x, y, page_h, flip_y, scale))
+                    current_pts.append(to_model(x, y))
 
             elif kind == "c":
                 if len(data) == 4 and all(hasattr(d, "x") for d in data):
                     pts = [_xy(d) for d in data]
                 else:
                     pts = _parse_cubic(data)
-                p0 = _to_mm(pts[0][0], pts[0][1], page_h, flip_y, scale)
-                p1 = _to_mm(pts[1][0], pts[1][1], page_h, flip_y, scale)
-                p2 = _to_mm(pts[2][0], pts[2][1], page_h, flip_y, scale)
-                p3 = _to_mm(pts[3][0] if len(pts) > 3 else pts[2][0],
-                            pts[3][1] if len(pts) > 3 else pts[2][1],
-                            page_h, flip_y, scale)
+                p0 = to_model(pts[0][0], pts[0][1])
+                p1 = to_model(pts[1][0], pts[1][1])
+                p2 = to_model(pts[2][0], pts[2][1])
+                p3 = to_model(
+                    pts[3][0] if len(pts) > 3 else pts[2][0],
+                    pts[3][1] if len(pts) > 3 else pts[2][1],
+                )
                 _append_linearized_cubic(current_pts, p0, p1, p2, p3)
 
             elif kind == "re":
                 flush(False)
                 x, y, w, h = _parse_rect(data)
-                c1 = _to_mm(x, y, page_h, flip_y, scale)
-                c2 = _to_mm(x + w, y, page_h, flip_y, scale)
-                c3 = _to_mm(x + w, y + h, page_h, flip_y, scale)
-                c4 = _to_mm(x, y + h, page_h, flip_y, scale)
+                c1 = to_model(x, y)
+                c2 = to_model(x + w, y)
+                c3 = to_model(x + w, y + h)
+                c4 = to_model(x, y + h)
                 sub_paths.append(([c1, c2, c3, c4, c1], True))
 
             elif kind == "qu":
                 flush(False)
                 quad = data[0] if data else None
-                pts = _quad_to_points(quad, page_h, flip_y, scale) if quad is not None else []
+                pts = _quad_to_points(quad, to_model) if quad is not None else []
                 if len(pts) >= 5:
                     sub_paths.append((pts, True))
 
@@ -323,8 +326,8 @@ def extract_page(
                     ex, ey = _xy(data[1])
                     p0 = current_pts[-1]
                     p1 = p0
-                    p2 = _to_mm(c2x, c2y, page_h, flip_y, scale)
-                    p3 = _to_mm(ex, ey, page_h, flip_y, scale)
+                    p2 = to_model(c2x, c2y)
+                    p3 = to_model(ex, ey)
                     _append_linearized_cubic(current_pts, p0, p1, p2, p3)
 
             elif kind == "y":
@@ -333,8 +336,8 @@ def extract_page(
                     c1x, c1y = _xy(data[0])
                     ex, ey = _xy(data[1])
                     p0 = current_pts[-1]
-                    p1 = _to_mm(c1x, c1y, page_h, flip_y, scale)
-                    p3 = _to_mm(ex, ey, page_h, flip_y, scale)
+                    p1 = to_model(c1x, c1y)
+                    p3 = to_model(ex, ey)
                     p2 = p3
                     _append_linearized_cubic(current_pts, p0, p1, p2, p3)
 
@@ -395,7 +398,14 @@ def extract_page(
         )
         primitives = non_candidates + arc_candidates
 
-    text_items = _extract_text(page, page_h_pts, page_num, flip_y, scale)
+    text_items = _extract_text(
+        page,
+        page_h_pts,
+        page_num,
+        flip_y,
+        scale,
+        to_model=to_model,
+    )
     layers = _collect_page_layers(primitives)
 
     page_data = PageData(
@@ -428,7 +438,12 @@ def _span_baseline_pdf(span: dict, line: dict) -> Tuple[float, float]:
             ox = oy = None
 
     sb = span.get("bbox")
-    size_pt = max(float(span.get("size", 3)), 1.0)
+    try:
+        size_pt = float(span.get("size", 3))
+    except (TypeError, ValueError):
+        size_pt = 3.0
+    if not math.isfinite(size_pt) or size_pt <= 0.0:
+        size_pt = 3.0
     desc = abs(float(span.get("descender", 0.15)))
     baseline_bbox = None
     if sb and len(sb) >= 4:
@@ -454,12 +469,189 @@ def _span_baseline_pdf(span: dict, line: dict) -> Tuple[float, float]:
     return 0.0, 0.0
 
 
-def _extract_text(page, page_h, page_num, flip_y, scale) -> List[NormalizedText]:
-    items = []
+def _span_quad_pdf(line: dict, span: dict):
+    """Return one source span quad as UL, UR, LR, LL coordinates."""
     try:
-        tdict = page.get_text("dict")
-    except (RuntimeError, TypeError, ValueError):
-        return items
+        try:
+            import pymupdf as fitz
+        except ImportError:  # pragma: no cover
+            import fitz  # type: ignore
+        quad = fitz.recover_quad(line.get("dir", (1.0, 0.0)), span)
+        return tuple(_xy(point) for point in (quad.ul, quad.ur, quad.lr, quad.ll))
+    except (AttributeError, ImportError, KeyError, RuntimeError, TypeError, ValueError):
+        bbox = span.get("bbox")
+        if bbox and len(bbox) >= 4:
+            x0, y0, x1, y1 = map(float, bbox[:4])
+            return (
+                (min(x0, x1), min(y0, y1)),
+                (max(x0, x1), min(y0, y1)),
+                (max(x0, x1), max(y0, y1)),
+                (min(x0, x1), max(y0, y1)),
+            )
+    return None
+
+
+def _quad_points(value):
+    """Normalize a PyMuPDF Quad or a four/flat-eight point sequence."""
+    if value is None:
+        return None
+    try:
+        if all(hasattr(value, name) for name in ("ul", "ur", "lr", "ll")):
+            return tuple(_xy(getattr(value, name)) for name in ("ul", "ur", "lr", "ll"))
+        values = list(value)
+        if len(values) == 4:
+            points = tuple(_xy(point) for point in values)
+            if all(len(point) == 2 for point in points):
+                return points
+        if len(values) == 8:
+            return tuple(
+                (float(values[index]), float(values[index + 1]))
+                for index in range(0, 8, 2)
+            )
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return None
+
+
+def _char_quad_pdf(line: dict, span: dict, char: dict):
+    explicit = _quad_points(char.get("quad"))
+    if explicit is not None:
+        return explicit
+    try:
+        try:
+            import pymupdf as fitz
+        except ImportError:  # pragma: no cover
+            import fitz  # type: ignore
+        quad = fitz.recover_char_quad(line.get("dir", (1.0, 0.0)), span, char)
+        recovered = _quad_points(quad)
+        if recovered is not None:
+            return recovered
+    except (AttributeError, ImportError, KeyError, RuntimeError, TypeError, ValueError):
+        pass
+    bbox = char.get("bbox")
+    if bbox and len(bbox) >= 4:
+        x0, y0, x1, y1 = map(float, bbox[:4])
+        return (
+            (min(x0, x1), min(y0, y1)),
+            (max(x0, x1), min(y0, y1)),
+            (max(x0, x1), max(y0, y1)),
+            (min(x0, x1), max(y0, y1)),
+        )
+    return None
+
+
+def _trace_glyph_queues(page):
+    """Bind raw characters to the PDF glyph IDs from this exact page trace."""
+    queues = {}
+    try:
+        traces = page.get_texttrace()
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return queues
+    for trace in traces or ():
+        font = str(trace.get("font", "") or "")
+        for entry in trace.get("chars", ()) or ():
+            try:
+                if isinstance(entry, dict):
+                    raw_unicode = entry.get("unicode", entry.get("c"))
+                    raw_glyph = entry.get("glyph", entry.get("gid"))
+                    codepoint = ord(raw_unicode) if isinstance(raw_unicode, str) else int(raw_unicode)
+                    glyph_id = int(raw_glyph)
+                else:
+                    codepoint = int(entry[0])
+                    glyph_id = int(entry[1])
+            except (IndexError, TypeError, ValueError):
+                continue
+            queues.setdefault((font, codepoint), []).append(glyph_id)
+    return queues
+
+
+def _pop_trace_glyph_id(queues, font: str, text: str):
+    if not text:
+        return None
+    key = (str(font or ""), ord(text[0]))
+    candidates = queues.get(key)
+    if not candidates:
+        return None
+    return candidates.pop(0)
+
+
+def _span_text_and_chars(span: dict):
+    chars = tuple(span.get("chars", ()) or ())
+    if chars:
+        return "".join(str(char.get("c", "") or "") for char in chars), chars
+    return str(span.get("text", "") or ""), ()
+
+
+def _character_layout(line, span, font, to_model, glyph_queues):
+    layouts = []
+    for char in tuple(span.get("chars", ()) or ()):
+        text = str(char.get("c", "") or "")
+        if text == "":
+            continue
+        quad = _char_quad_pdf(line, span, char)
+        bbox = char.get("bbox")
+        if not bbox or len(bbox) < 4 or quad is None:
+            continue
+        x0, y0, x1, y1 = map(float, bbox[:4])
+        source_bbox = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+        origin = char.get("origin")
+        if origin and len(origin) >= 2:
+            source_origin = (float(origin[0]), float(origin[1]))
+        else:
+            source_origin = tuple(quad[3])
+        target_quad = tuple(to_model(x, y) for x, y in quad)
+        target_origin = to_model(*source_origin)
+        layouts.append(TextCharLayout(
+            text=text,
+            glyph_id=_pop_trace_glyph_id(glyph_queues, font, text),
+            source_origin_pdf=source_origin,
+            source_bbox_pdf=source_bbox,
+            source_quad_pdf=tuple(quad),
+            target_origin=tuple(target_origin),
+            target_quad=target_quad,
+            advance_width=_dist(target_quad[0], target_quad[1]),
+            glyph_height=_dist(target_quad[0], target_quad[3]),
+        ))
+    return tuple(layouts)
+
+
+def _extract_text(
+    page,
+    page_h,
+    page_num,
+    flip_y,
+    scale,
+    *,
+    page_w=None,
+    rotation=0,
+    to_model=None,
+) -> List[NormalizedText]:
+    items = []
+    if to_model is None:
+        raw_page_w = float(page_w if page_w is not None else 0.0)
+        to_model = lambda x, y: _to_mm(  # noqa: E731
+            x,
+            y,
+            page_h,
+            flip_y,
+            scale,
+            page_w=raw_page_w,
+            rotation=rotation,
+        )
+    try:
+        tdict = page.get_text("rawdict")
+    except (AssertionError, RuntimeError, TypeError, ValueError):
+        try:
+            tdict = page.get_text("dict")
+        except (RuntimeError, TypeError, ValueError):
+            return items
+    try:
+        from .embedded_fonts import EmbeddedFontCatalog
+
+        font_catalog = EmbeddedFontCatalog.from_page(page, page_num)
+    except (ImportError, RuntimeError, TypeError, ValueError):
+        font_catalog = None
+    glyph_queues = _trace_glyph_queues(page)
 
     for block in tdict.get("blocks", []):
         if block.get("type") != 0:
@@ -476,51 +668,97 @@ def _extract_text(page, page_h, page_num, flip_y, scale) -> List[NormalizedText]
                 dx = 0.0
             if abs(dy) < 1e-7:
                 dy = 0.0
-            angle = -math.degrees(math.atan2(dy, dx))
+            origin_model = to_model(0.0, 0.0)
+            direction_model = to_model(dx, dy)
+            angle = math.degrees(
+                math.atan2(
+                    direction_model[1] - origin_model[1],
+                    direction_model[0] - origin_model[0],
+                )
+            )
 
             # Process individual spans to preserve per-glyph positioning.
             # CAD PDFs often store a visual "line" as multiple positioned
             # spans; collapsing them into one string at the first-span
             # origin causes alignment drift and label overlap in viewers.
             for span in spans:
-                text = str(span.get("text", "")).strip()
-                if not text:
+                text, raw_chars = _span_text_and_chars(span)
+                if text == "":
                     continue
 
                 x, y = _span_baseline_pdf(span, line)
-                px, py = _to_mm(x, y, page_h, flip_y, scale)
+                px, py = to_model(x, y)
                 size_pt = effective_span_font_size_pt(span, angle)
-                size = max(size_pt, 1.0) * MM_PER_PT * scale
+                size = size_pt * MM_PER_PT * scale
                 font = str(span.get("font", ""))
+                try:
+                    descender_ratio = float(span.get("descender", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    descender_ratio = 0.0
+                baseline_descent = max(0.0, -descender_ratio) * size
 
                 # Extract text color from span
                 text_color = _norm_color(span.get("color"))
 
                 bbox_mm = None
+                source_bbox_pdf = None
                 sb = span.get("bbox")
                 if sb and len(sb) >= 4:
                     x0, y0, x1, y1 = map(float, sb[:4])
-                    if flip_y:
-                        by0 = (page_h - max(y0, y1)) * MM_PER_PT * scale
-                        by1 = (page_h - min(y0, y1)) * MM_PER_PT * scale
-                    else:
-                        by0 = min(y0, y1) * MM_PER_PT * scale
-                        by1 = max(y0, y1) * MM_PER_PT * scale
-                    bx0 = min(x0, x1) * MM_PER_PT * scale
-                    bx1 = max(x0, x1) * MM_PER_PT * scale
-                    bbox_mm = (bx0, by0, bx1, by1)
+                    source_bbox_pdf = (
+                        min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)
+                    )
+
+                source_quad_pdf = _span_quad_pdf(line, span)
+                model_quad = (
+                    tuple(to_model(xq, yq) for xq, yq in source_quad_pdf)
+                    if source_quad_pdf
+                    else None
+                )
+                if model_quad:
+                    qxs = [point[0] for point in model_quad]
+                    qys = [point[1] for point in model_quad]
+                    bbox_mm = (min(qxs), min(qys), max(qxs), max(qys))
+                    advance_width = _dist(model_quad[0], model_quad[1])
+                    glyph_height = _dist(model_quad[0], model_quad[3])
+                else:
+                    advance_width = 0.0
+                    glyph_height = 0.0
+
+                font_asset = font_catalog.for_span(font) if font_catalog else None
+                font_failure = (
+                    None
+                    if font_asset is not None
+                    else font_catalog.failure_for_span(font) if font_catalog else None
+                )
 
                 normalized = text.upper().replace("  ", " ").strip()
                 generic_tags = _classify_generic(text)
+                char_layout = (
+                    _character_layout(line, span, font, to_model, glyph_queues)
+                    if raw_chars
+                    else ()
+                )
 
                 items.append(NormalizedText(
-                    id=next_id(), text=text, normalized=normalized,
+                    # Text identity is page-local source order. It must not
+                    # change with vector density or earlier imported documents.
+                    id=len(items) + 1, text=text, normalized=normalized,
                     insertion=(px, py), bbox=bbox_mm,
                     font_size=size, rotation=angle, font_name=font,
                     color=text_color,
-                    page_number=page_num, generic_tags=generic_tags
+                    page_number=page_num, generic_tags=generic_tags,
+                    source_bbox_pdf=source_bbox_pdf,
+                    source_quad_pdf=source_quad_pdf,
+                    target_quad_model=model_quad,
+                    advance_width=advance_width,
+                    glyph_height=glyph_height,
+                    baseline_descent=baseline_descent,
+                    source_char_layout=char_layout,
+                    requires_individual_positioning=bool(char_layout),
+                    font_asset=font_asset,
+                    font_failure=font_failure,
                 ))
-    items = _merge_stacked_fractions(items)
     return items
 
 
@@ -1009,9 +1247,105 @@ def _classify_generic(text: str) -> list:
 
 # ── Coordinate helpers ──
 
-def _to_mm(x, y, page_h, flip_y, scale):
+
+def _matrix_components(matrix) -> Tuple[float, float, float, float, float, float]:
+    if matrix is None:
+        return 1.0, 0.0, 0.0, 1.0, 0.0, 0.0
+    try:
+        return tuple(float(getattr(matrix, key)) for key in "abcdef")  # type: ignore[return-value]
+    except (AttributeError, TypeError, ValueError):
+        try:
+            values = tuple(float(value) for value in matrix)
+        except (TypeError, ValueError):
+            return 1.0, 0.0, 0.0, 1.0, 0.0, 0.0
+        if len(values) >= 6:
+            return values[:6]  # type: ignore[return-value]
+        return 1.0, 0.0, 0.0, 1.0, 0.0, 0.0
+
+
+def _page_rotation_transform(page_rect, rotation_matrix):
+    """Return one crop-local source-to-display affine transform.
+
+    Some PyMuPDF versions expose matrix translation in default user-space
+    units even though extracted coordinates and ``page.rect`` already include
+    ``/UserUnit``. Preserve the matrix's linear rotation and derive the finite
+    crop-local translation from the visible rectangle.
+    """
+
+    a, b, c, d, _e, _f = _matrix_components(rotation_matrix)
+    width = float(page_rect.width)
+    height = float(page_rect.height)
+    swaps_axes = abs(b) + abs(c) > abs(a) + abs(d)
+    source_width = height if swaps_axes else width
+    source_height = width if swaps_axes else height
+    linear_corners = (
+        (0.0, 0.0),
+        (a * source_width, b * source_width),
+        (c * source_height, d * source_height),
+        (
+            a * source_width + c * source_height,
+            b * source_width + d * source_height,
+        ),
+    )
+    min_x = min(point[0] for point in linear_corners)
+    min_y = min(point[1] for point in linear_corners)
+    return (
+        a,
+        b,
+        c,
+        d,
+        float(getattr(page_rect, "x0", 0.0)) - min_x,
+        float(getattr(page_rect, "y0", 0.0)) - min_y,
+    )
+
+
+def _transform_pdf_point(x, y, rotation_matrix) -> Tuple[float, float]:
+    a, b, c, d, e, f = _matrix_components(rotation_matrix)
+    return a * float(x) + c * float(y) + e, b * float(x) + d * float(y) + f
+
+
+def _transform_pdf_vector(dx, dy, rotation_matrix) -> Tuple[float, float]:
+    a, b, c, d, _e, _f = _matrix_components(rotation_matrix)
+    return a * float(dx) + c * float(dy), b * float(dx) + d * float(dy)
+
+
+def _page_point_to_mm(x, y, rotation_matrix, page_h, flip_y, scale):
+    display_x, display_y = _transform_pdf_point(x, y, rotation_matrix)
     if flip_y:
-        y = page_h - y
+        display_y = float(page_h) - display_y
+    factor = MM_PER_PT * float(scale)
+    return display_x * factor, display_y * factor
+
+
+def _to_mm(
+    x,
+    y,
+    page_h,
+    flip_y,
+    scale,
+    *,
+    page_w=None,
+    rotation=0,
+):
+    """Map unrotated PyMuPDF page coordinates to model millimetres once."""
+    x = float(x)
+    y = float(y)
+    raw_h = float(page_h)
+    raw_w = float(page_w if page_w is not None and page_w > 0 else 0.0)
+    rot = int(rotation or 0) % 360
+    if rot == 90:
+        x, y = raw_h - y, x
+        display_h = raw_w
+    elif rot == 180:
+        x, y = raw_w - x, raw_h - y
+        display_h = raw_h
+    elif rot == 270:
+        x, y = y, raw_w - x
+        display_h = raw_w
+    else:
+        display_h = raw_h
+    if flip_y:
+        y = display_h - y
     return x * MM_PER_PT * scale, y * MM_PER_PT * scale
 
 
