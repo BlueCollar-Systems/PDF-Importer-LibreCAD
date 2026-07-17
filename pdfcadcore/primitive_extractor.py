@@ -759,6 +759,18 @@ def _extract_text(
                     font_asset=font_asset,
                     font_failure=font_failure,
                 ))
+    # Stacked-fraction spans ("7" over "16", or "716" + "/") ARE the
+    # dimension value 7/16 on fabrication drawings; extraction owns this
+    # semantic merge (RB-16 cross-host golden, stacked-fraction-extract).
+    # Representation modes govern HOW a delivered value renders, never WHAT
+    # the value is — the render stage must not alter it further.
+    items = _merge_stacked_fractions(items)
+    # Text identity is page-local source order (see the id note above). The
+    # merger allocates replacement ids from the global counter, so re-index
+    # after merging to keep ids deterministic and dense regardless of global
+    # counter state or earlier imported documents.
+    for index, item in enumerate(items):
+        item.id = index + 1
     return items
 
 
@@ -827,6 +839,62 @@ def _split_concatenated_fraction(digits: str):
     return None
 
 
+def _merged_fraction_fidelity(parts: List[NormalizedText]) -> dict:
+    """Fidelity fields for a merged stacked-fraction replacement item.
+
+    The merged text (e.g. "7/16") is a semantic value whose characters no
+    longer map 1:1 onto any single source span, so per-character layout is
+    intentionally dropped and the merged item positions as a whole string at
+    the slash insertion (the documented legacy merged-fraction path).
+    Source/target quads are the unscaled union of the constituent spans;
+    font identity follows the numerator digits (``parts[0]``) with the
+    remaining parts as fallback.
+    """
+    fields: dict = {
+        "source_char_layout": (),
+        "requires_individual_positioning": False,
+    }
+
+    src_union = _merged_bbox(*[part.source_bbox_pdf for part in parts])
+    if src_union is not None:
+        x0, y0, x1, y1 = src_union
+        fields["source_bbox_pdf"] = src_union
+        # UL, UR, LR, LL in PDF space (y grows downward).
+        fields["source_quad_pdf"] = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+
+    points = [
+        point
+        for part in parts
+        if part.target_quad_model
+        for point in part.target_quad_model
+    ]
+    if points:
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+        # UL, UR, LR, LL in model space (y grows upward); q0->q1 spans the
+        # baseline direction and q0->q3 the vertical extent, matching
+        # ``_extract_text``.
+        quad = ((x0, y1), (x1, y1), (x1, y0), (x0, y0))
+        fields["target_quad_model"] = quad
+        fields["advance_width"] = _dist(quad[0], quad[1])
+        fields["glyph_height"] = _dist(quad[0], quad[3])
+
+    fields["baseline_descent"] = max(
+        [part.baseline_descent for part in parts] or [0.0]
+    )
+    for part in parts:
+        if part.font_asset is not None:
+            fields["font_asset"] = part.font_asset
+            break
+    if fields.get("font_asset") is None:
+        for part in parts:
+            if part.font_failure is not None:
+                fields["font_failure"] = part.font_failure
+                break
+    return fields
+
+
 def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText]:
     """Merge stacked fraction spans into one.
 
@@ -837,6 +905,9 @@ def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText
        Only matched when neither digit item is itself a concatenated fraction.
 
     NOTE: Merged fractions use reduced font_size (~0.6x) to match stacked footprint.
+    Replacement items take ids from the global counter; ``_extract_text``
+    re-indexes its output afterwards so pipeline ids stay page-local and
+    deterministic.
     """
     if len(items) < 2:
         return items
@@ -923,6 +994,7 @@ def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText
                         color=slash.color or first.color,
                         page_number=page_num,
                         generic_tags=_classify_generic(merged_text),
+                        **_merged_fraction_fidelity(selected + [slash]),
                     )
                     merged_indices.update(selected_indices + [si])
                     replacements[si] = merged_item
@@ -1009,6 +1081,7 @@ def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText
                             color=slash.color or numer.color,
                             page_number=page_num,
                             generic_tags=_classify_generic(merged_text),
+                            **_merged_fraction_fidelity([numer, slash, denom]),
                         )
                         merged_indices.update([numer_idx, si, denom_idx])
                         replacements[si] = merged_item
@@ -1066,6 +1139,7 @@ def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText
                                 color=slash.color or numer.color,
                                 page_number=page_num,
                                 generic_tags=_classify_generic(merged_text),
+                                **_merged_fraction_fidelity([numer, slash, denom]),
                             )
                             merged_indices.update([numer_idx, si, denom_idx])
                             replacements[si] = merged_item
