@@ -866,18 +866,25 @@ def _verify_parent_native_text_delivery(
         source_visual_ok = bool(
             source_content_whitespace_only or not bool(parent_font_substituted)
         )
+        parent_delivery_ok = source_visual_ok
         evidence.update(
             {
                 "parent_native_font_required_format": None,
                 "parent_native_font_format_verified": True,
                 "parent_native_font_renderability_verified": True,
-                "parent_native_text_delivery_verified": True,
+                "parent_native_text_delivery_verified": parent_delivery_ok,
                 "parent_native_3d_display_verified": True,
                 "parent_visual_fidelity_verified": source_visual_ok,
-                "fallback_authorized_for_this_item": False,
+                "fallback_authorized_for_this_item": not parent_delivery_ok,
             }
         )
-        return True, evidence, ""
+        reason = ""
+        if not parent_delivery_ok:
+            reason = (
+                "the parent font is a substitute and exact source-font visual "
+                "equivalence is not verified for this visible item"
+            )
+        return parent_delivery_ok, evidence, reason
 
     font_ok = candidate_format == "lff" and bool(str(style_font or "").strip())
     # A whitespace-only PDF span has no font pixels to reproduce.  A native
@@ -887,7 +894,6 @@ def _verify_parent_native_text_delivery(
     font_rendering_required = not source_content_whitespace_only
     font_requirement_ok = bool(font_ok or not font_rendering_required)
     native_3d_ok = not is_3d_text
-    parent_delivery_ok = bool(font_requirement_ok and native_3d_ok)
     source_visual_ok = bool(
         native_3d_ok
         and (
@@ -895,6 +901,7 @@ def _verify_parent_native_text_delivery(
             or (font_ok and not bool(parent_font_substituted))
         )
     )
+    parent_delivery_ok = bool(font_requirement_ok and source_visual_ok)
     evidence.update(
         {
             "parent_native_font_required_format": "lff",
@@ -913,6 +920,15 @@ def _verify_parent_native_text_delivery(
         reasons.append(
             "the exact source font program is "
             f"{candidate_format}, not a LibreCAD-renderable LFF program"
+        )
+    elif (
+        font_rendering_required
+        and font_ok
+        and bool(parent_font_substituted)
+    ):
+        reasons.append(
+            "the LibreCAD-renderable LFF candidate is a substitute and cannot "
+            "reproduce the embedded source face for this visible item"
         )
     if not native_3d_ok:
         reasons.append(
@@ -1021,7 +1037,17 @@ def _attempt_labels(
                 or font_resolution.resolution_source
                 or ""
             ).strip().lower()
-            parent_font_substituted = source_origin != "embedded_pdf_font"
+            # The embedded program is source-authoritative.  The repository's
+            # deterministic fixture is likewise the source program for its
+            # synthetic item; an installed family/name match is not.
+            source_authoritative_origins = {
+                "embedded_pdf_font",
+                "test_fixture",
+            }
+            parent_font_substituted = not bool(
+                font_resolution.exact
+                and source_origin in source_authoritative_origins
+            )
             preferred_style_name = None
         height, cap_height_ratio = _delivery_cap_height(
             source_em_height, font_resolution
