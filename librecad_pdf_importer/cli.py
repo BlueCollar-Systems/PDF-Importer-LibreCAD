@@ -76,10 +76,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print pre-import guidance (text modes, scale trust) and exit",
     )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Verify all bundled runtime dependencies and exit",
+    )
     return parser
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        from .runtime_self_test import run_runtime_self_test
+
+        return run_runtime_self_test()
+
     args = build_parser().parse_args()
 
     if args.preflight:

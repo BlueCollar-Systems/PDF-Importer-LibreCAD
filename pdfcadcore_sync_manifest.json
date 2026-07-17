@@ -6,7 +6,7 @@
   "cli_error_copy.py": "cc656dbe2518bd267204513a30580af8f8332e889921f97a757c898585bedb28",
   "dimension_parser.py": "a8a5b53d5a10a07b3fafe6683d832f7d0bfbbff74e11ba7d31b9fb3581066989",
   "document_profiler.py": "d423c6a2c980a712e91cb698e7a1fe199b883ec38f93dc87b01d87a2b8b4e877",
-  "embedded_fonts.py": "e401291e98bf6aea500c6de54005fe2d454f0eace9c6feb5a0850e0d97109d1a",
+  "embedded_fonts.py": "73684a5425c5cb68a9e977ef24ad8dc618b884612bc61581c3bc8e75c12b1a2b",
   "fitz_loader.py": "190241667080e0d06d5c62e3587531a38ee6a73e8a3ec08c5e529d546cadf34a",
   "generic_classifier.py": "a3920341cde7ddea96463fbc1d88943b3ef7a1625a6352abe4f79875a18fec5e",
   "generic_recognizer.py": "1784218d428ce1c897e8936695ddab16ce57734452515b1d2adb07d2f9a6123f",
@@ -30,6 +30,6 @@
   "streaming.py": "0347e795ea7508fcc56f9ace572e25f5a3fc47843abf99c1e2634b32ff9e8e00",
   "text_scale.py": "c0fdfda5e4f3c4fd3745b44830ee3b75ccbdbbc1de22da8e4f3742e4919574f1",
   "validation.py": "0510e4367e8fd4214e2ea3d42e933e60e8b33961eeb1ecda5125728e80fd7142",
-  "repo_context_builder_core.py": "9a60276c5367f8e9a3ccef6ff66025773a2db43201e3453deabcacb0170c53de",
+  "repo_context_builder_core.py": "f3c6d5abbfa8d422a2562c1a645548fee9330290307edf02c7f10deb38daceb4",
   "pdfcadcore_sync_check.py": "b024d8c37707fa3f323149790f3cf20c787e412407316af4cb10081eb6c5853e"
 }

@@ -16,6 +16,7 @@ jobs:
   syntax-check:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
@@ -39,18 +40,10 @@ jobs:
         run: ruff check --select F,B pdf2dxf.py dxf_builder.py dxf_text_builder.py dxf_import_engine.py gui.py pdfcadcore/
 
       - name: Install dependencies
-        run: pip install "PyMuPDF>=1.24,<2.0" ezdxf pytest
+        run: pip install -e . pytest
 
       - name: Verify pdfcadcore sync manifest
         run: python pdfcadcore_sync_check.py --skip-cross-repo
-
-      - name: Run pdfcadcore unit tests
-        run: |
-          cd pdfcadcore
-          python -m pytest tests/ -v || echo "No tests yet"
-
-      - name: Run unit tests
-        run: python -m pytest tests/ -v
 
       # Corpus gate (R21-15c): token-clone pattern from FC 1a9df9f, one matrix
       # leg only. Replaces the former path-secret gate, which could never
@@ -85,6 +78,9 @@ jobs:
             echo "::notice::ruby not on PATH; SketchUp conformance legs visible-skip (R4-2, D-4)"
           fi
         id: corpus
+
+      - name: Run unit tests
+        run: python -m pytest tests/ -v
 
       - name: Corpus schema + conformance-vector gate
         if: matrix.python-version == '3.12' && steps.corpus.outputs.corpus_available == 'true'
@@ -137,3 +133,22 @@ jobs:
               sys.exit(1)
           print(f'PASS: {len(modes)} BCS-ARCH-001 modes verified')
           "
+
+  minimum-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up minimum supported Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+
+      - name: Install exact lower-bound runtime dependencies
+        run: |
+          python -m pip install "PyMuPDF==1.24.0" "ezdxf==1.0.0" "fonttools==4.50.0" pytest
+          python -m pip install --no-deps -e .
+
+      - name: Run unit tests at declared lower bounds
+        run: python -m pytest tests/ -v

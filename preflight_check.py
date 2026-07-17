@@ -22,7 +22,7 @@ def main() -> int:
     parser.add_argument(
         "--install",
         action="store_true",
-        help="Install PyMuPDF and ezdxf into ./lib (no admin required)",
+        help="Install PyMuPDF, ezdxf, and FontTools into ./lib (no admin required)",
     )
     args = parser.parse_args()
 

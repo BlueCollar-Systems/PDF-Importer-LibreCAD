@@ -13,7 +13,7 @@ import os
 import sys
 import time
 
-__version__ = "1.0.62"
+__version__ = "1.0.63"
 
 # ---------------------------------------------------------------------------
 # Ensure project root is on sys.path so ``import pdfcadcore`` resolves
@@ -66,6 +66,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print pre-import guidance (text modes, scale trust) and exit",
     )
+    p.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Verify all bundled runtime dependencies and exit",
+    )
     p.add_argument("--version", action="version",
                    version=f"%(prog)s {__version__}")
     return p
@@ -96,6 +101,11 @@ def main(argv: list[str] | None = None) -> int:
 
         print(preflight_paragraph("librecad"))
         return 0
+
+    if args.self_test:
+        from librecad_pdf_importer.runtime_self_test import run_runtime_self_test
+
+        return run_runtime_self_test()
 
     # --gui: hand off to tkinter frontend
     if args.gui:

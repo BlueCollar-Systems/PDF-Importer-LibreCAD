@@ -64,7 +64,7 @@ def _item(
         bbox=(10.0, 20.0, 22.0, 28.0),
         font_size=height,
         rotation=rotation,
-        font_name="Arial",
+        font_name="BCS Deterministic Test",
         page_number=3,
         advance_width=width,
     )
@@ -726,7 +726,7 @@ def test_shared_text_scale_preserves_subpoint_source_size_without_floor() -> Non
                                     {
                                         "text": "A",
                                         "size": 0.25,
-                                        "font": "Arial",
+                                        "font": "BCS Deterministic Test",
                                         "origin": (10.0, 10.0),
                                         "bbox": (10.0, 9.7, 10.5, 10.1),
                                         "ascender": 0.8,
@@ -1538,10 +1538,9 @@ def test_terminal_raster_rejects_partially_clipped_source_bbox(tmp_path) -> None
 def test_real_embedded_chart_fonts_drive_the_requested_dxf_representation(
     tmp_path,
     mode: str,
+    welding_symbol_chart,
 ) -> None:
-    chart = Path(
-        r"C:\Users\Rowdy Payton\Desktop\PDFTest Files\Welding-Symbol-Chart.pdf"
-    )
+    chart = welding_symbol_chart
     run = run_import(
         str(chart),
         mode="vector",
@@ -1660,10 +1659,11 @@ def test_real_embedded_chart_fonts_drive_the_requested_dxf_representation(
     assert not list(tmp_path.rglob("*.tmp"))
 
 
-def test_real_welding_chart_requested_item_raster_is_source_bound(tmp_path) -> None:
-    chart = Path(
-        r"C:\Users\Rowdy Payton\Desktop\PDFTest Files\Welding-Symbol-Chart.pdf"
-    )
+def test_real_welding_chart_requested_item_raster_is_source_bound(
+    tmp_path,
+    welding_symbol_chart,
+) -> None:
+    chart = welding_symbol_chart
     run = run_import(
         str(chart),
         mode="vector",
@@ -1703,8 +1703,11 @@ def test_real_welding_chart_requested_item_raster_is_source_bound(tmp_path) -> N
     assert Path(evidence["asset_path"]).is_file()
 
 
-def test_real_image_only_chart_explicit_page_raster_survives_source_cleanup(tmp_path) -> None:
-    chart = Path(r"C:\Users\Rowdy Payton\Desktop\PDFTest Files\AWSWeldSymbolchart.pdf")
+def test_real_image_only_chart_explicit_page_raster_survives_source_cleanup(
+    tmp_path,
+    aws_weld_symbol_chart,
+) -> None:
+    chart = aws_weld_symbol_chart
     run = run_import(
         str(chart),
         mode="raster",

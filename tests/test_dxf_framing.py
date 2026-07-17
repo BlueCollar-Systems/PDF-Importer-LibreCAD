@@ -44,7 +44,7 @@ class TestDxfFraming(unittest.TestCase):
                     insertion=(20.0, 70.0),
                     bbox=(18.0, 68.0, 40.0, 72.0),
                     font_size=3.0,
-                    font_name="Arial",
+                    font_name="BCS Deterministic Test",
                     advance_width=22.0,
                     page_number=1,
                 )

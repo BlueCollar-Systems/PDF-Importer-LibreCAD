@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import Counter
 from io import BytesIO
-from pathlib import Path
 from unittest.mock import patch
 
 import pymupdf
@@ -21,11 +20,6 @@ from pdfcadcore.embedded_fonts import (
 from pdfcadcore.primitive_extractor import extract_page
 
 
-WELDING_SYMBOL_CHART = Path(
-    r"C:\Users\Rowdy Payton\Desktop\PDFTest Files\Welding-Symbol-Chart.pdf"
-)
-
-
 def _load_font(data: bytes) -> TTFont:
     font = TTFont(BytesIO(data), lazy=False, recalcTimestamp=False)
     # Force all referenced table payloads to be decoded while the in-memory
@@ -35,10 +29,10 @@ def _load_font(data: bytes) -> TTFont:
     return font
 
 
-def test_real_chart_maps_each_span_font_to_its_exact_distinct_embedded_asset():
-    assert WELDING_SYMBOL_CHART.is_file(), "required supplied regression fixture is missing"
-
-    with pymupdf.open(WELDING_SYMBOL_CHART) as document:
+def test_real_chart_maps_each_span_font_to_its_exact_distinct_embedded_asset(
+    welding_symbol_chart,
+):
+    with pymupdf.open(welding_symbol_chart) as document:
         page_data = extract_page(document[0], page_num=0, detect_arcs=False)
 
     counts = Counter(item.font_name for item in page_data.text_items)
@@ -84,8 +78,10 @@ def test_real_chart_maps_each_span_font_to_its_exact_distinct_embedded_asset():
         assert font.getGlyphOrder()
 
 
-def test_raw_cff_conversion_is_deterministic_and_loadable_without_disk_sidecars():
-    with pymupdf.open(WELDING_SYMBOL_CHART) as document:
+def test_raw_cff_conversion_is_deterministic_and_loadable_without_disk_sidecars(
+    welding_symbol_chart,
+):
+    with pymupdf.open(welding_symbol_chart) as document:
         first = EmbeddedFontCatalog.from_page(document[0], page_number=0)
         second = EmbeddedFontCatalog.from_page(document[0], page_number=0)
 
@@ -110,8 +106,10 @@ def test_raw_cff_conversion_is_deterministic_and_loadable_without_disk_sidecars(
         )
 
 
-def test_unknown_span_font_stays_unresolved_instead_of_substituting_another_asset():
-    with pymupdf.open(WELDING_SYMBOL_CHART) as document:
+def test_unknown_span_font_stays_unresolved_instead_of_substituting_another_asset(
+    welding_symbol_chart,
+):
+    with pymupdf.open(welding_symbol_chart) as document:
         catalog = EmbeddedFontCatalog.from_page(document[0], page_number=0)
 
     assert catalog.for_span("Definitely-Not-In-The-PDF") is None
@@ -144,8 +142,10 @@ def test_unexpected_embedded_font_programming_error_is_not_swallowed():
         EmbeddedFontCatalog.from_page(Page(), page_number=7)
 
 
-def test_text_trace_failure_rejects_even_a_font_with_an_existing_cmap():
-    with pymupdf.open(WELDING_SYMBOL_CHART) as document:
+def test_text_trace_failure_rejects_even_a_font_with_an_existing_cmap(
+    welding_symbol_chart,
+):
+    with pymupdf.open(welding_symbol_chart) as document:
         arial_bytes = bytes(document.extract_font(7)[3])
 
     class Document:
@@ -235,8 +235,10 @@ def test_page_font_inventory_failure_is_bound_to_each_span_and_never_becomes_abs
     assert failure.proof_category == "runtime_inventory_unavailable_for_item"
 
 
-def test_multiple_different_embedded_programs_with_same_name_remain_ambiguous():
-    with pymupdf.open(WELDING_SYMBOL_CHART) as document:
+def test_multiple_different_embedded_programs_with_same_name_remain_ambiguous(
+    welding_symbol_chart,
+):
+    with pymupdf.open(welding_symbol_chart) as document:
         arial_bytes = document.extract_font(7)[3]
         siwa_asset = EmbeddedFontCatalog.from_page(document[0], page_number=0).for_span(
             "Siwa-Regular"
@@ -331,8 +333,8 @@ def test_normalized_text_keeps_raw_source_whitespace_and_exact_font_identity():
     assert item.font_asset is None
 
 
-def test_usable_fonts_preserve_the_pdf_unicode_to_glyph_mapping():
-    with pymupdf.open(WELDING_SYMBOL_CHART) as document:
+def test_usable_fonts_preserve_the_pdf_unicode_to_glyph_mapping(welding_symbol_chart):
+    with pymupdf.open(welding_symbol_chart) as document:
         catalog = EmbeddedFontCatalog.from_page(document[0], page_number=1)
         traces = document[0].get_texttrace()
 
@@ -376,3 +378,41 @@ def test_pdf_base14_text_uses_the_local_pdf_renderer_font_without_substitution(
     assert item.font_asset.usable_format == "otf"
     font = _load_font(item.font_asset.usable_bytes)
     assert font.getBestCmap()
+
+
+def test_generated_pdf_matches_a_truetype_postscript_span_to_its_embedded_font(
+    deterministic_exact_font,
+    tmp_path,
+):
+    pdf_path = tmp_path / "deterministic-embedded-ttf.pdf"
+    document = pymupdf.open()
+    page = document.new_page(width=240, height=120)
+    page.insert_font(fontname="BCSTest", fontfile=str(deterministic_exact_font))
+    page.insert_text(
+        (24, 60),
+        "AB x!",
+        fontsize=14,
+        fontname="BCSTest",
+    )
+    document.save(pdf_path)
+    document.close()
+
+    with pymupdf.open(pdf_path) as document:
+        page_data = extract_page(document[0], page_num=0, detect_arcs=False)
+
+    assert len(page_data.text_items) == 1
+    item = page_data.text_items[0]
+    assert item.font_name == "BCSDeterministicTest-Regular"
+    assert item.font_failure is None
+    assert item.font_asset is not None
+    assert item.font_asset.span_font_name == item.font_name
+    assert item.font_asset.base_font_name == "BCS Deterministic Test Regular"
+    assert item.font_asset.source_origin == "embedded_pdf_font"
+    assert item.font_asset.source_format == "ttf"
+    font = _load_font(item.font_asset.usable_bytes)
+    cmap = font.getBestCmap()
+    glyphs = font["glyf"]
+    assert cmap[ord("A")] != cmap[ord("B")]
+    assert tuple(glyphs[cmap[ord("A")]].getCoordinates(glyphs)[0]) != tuple(
+        glyphs[cmap[ord("B")]].getCoordinates(glyphs)[0]
+    )

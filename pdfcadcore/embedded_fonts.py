@@ -469,6 +469,63 @@ def _sfnt_has_table(data: bytes, tag: bytes) -> bool:
     return False
 
 
+def _font_program_name_aliases(data: bytes, source_format: str) -> set[str]:
+    """Return exact family/full/PostScript names declared by an SFNT program."""
+
+    if str(source_format).lower().lstrip(".") not in {"ttf", "otf"}:
+        return set()
+    from fontTools.ttLib import TTFont, TTLibError
+
+    font = None
+    try:
+        font = TTFont(BytesIO(data), lazy=False, recalcTimestamp=False)
+        _validate_font_work_bounds(
+            data,
+            glyph_count=len(font.getGlyphOrder()),
+            table_count=len(tuple(font.reader.keys())),
+        )
+        if "name" not in font:
+            return set()
+        aliases = set()
+        for record in font["name"].names:
+            if int(record.nameID) not in {1, 4, 6, 16, 17}:
+                continue
+            try:
+                name = _without_subset_prefix(record.toUnicode()).strip()
+            except (UnicodeDecodeError, UnicodeError, ValueError):
+                continue
+            if name:
+                aliases.add(name)
+        return aliases
+    except (AttributeError, KeyError, OSError, TTLibError, TypeError, ValueError):
+        return set()
+    finally:
+        if font is not None:
+            font.close()
+
+
+def _merged_trace_glyph_map(
+    aliases: set[str],
+    glyph_maps: Mapping[str, Mapping[int, int]],
+    ambiguous_maps: set[str],
+) -> tuple[dict[int, int], tuple[str, ...]]:
+    trace_names = tuple(sorted(name for name in aliases if name in glyph_maps))
+    if any(name in ambiguous_maps for name in trace_names):
+        raise ExactFontSourceImpossible(
+            "PDF Unicode maps one character to multiple glyph ids"
+        )
+    merged: dict[int, int] = {}
+    for name in trace_names:
+        for codepoint, glyph_id in glyph_maps[name].items():
+            previous = merged.get(int(codepoint))
+            if previous is not None and previous != int(glyph_id):
+                raise ExactFontSourceImpossible(
+                    "font-name aliases disagree on PDF Unicode glyph identity"
+                )
+            merged[int(codepoint)] = int(glyph_id)
+    return merged, trace_names
+
+
 def _base14_renderer_program(base_font_name: str) -> bytes:
     code = _BASE14_FONT_CODES.get(base_font_name)
     if not code:
@@ -627,21 +684,26 @@ class EmbeddedFontCatalog:
                     extracted_format = "cff"
                     extracted_type = "Base14 renderer Type1"
                 extracted_base = _without_subset_prefix(extracted_name)
-                if extracted_base and extracted_base != base_name:
+                name_aliases = {base_name}
+                name_aliases.update(
+                    _font_program_name_aliases(source_bytes, extracted_format or source_format)
+                )
+                if extracted_base and extracted_base not in name_aliases:
                     raise ExactFontSourceImpossible(
                         f"font inventory/extraction identity mismatch: {base_name!r} != {extracted_base!r}"
                     )
+                if extracted_base:
+                    name_aliases.add(extracted_base)
                 source_format = str(extracted_format or source_format).lower().lstrip(".")
                 source_type = str(extracted_type or source_type)
-                if base_name in ambiguous_maps:
-                    raise ExactFontSourceImpossible(
-                        "PDF Unicode maps one character to multiple glyph ids"
-                    )
+                unicode_map, trace_names = _merged_trace_glyph_map(
+                    name_aliases, glyph_maps, ambiguous_maps
+                )
                 usable_format, usable_bytes, cmap_installed = _usable_font(
                     source_bytes,
                     source_format,
                     base_name,
-                    glyph_maps.get(base_name, {}),
+                    unicode_map,
                 )
                 source_sha = _digest(source_bytes)
                 usable_sha = _digest(usable_bytes)
@@ -691,18 +753,24 @@ class EmbeddedFontCatalog:
                     "runtime_capability_unavailable_for_item",
                 )
                 continue
-            previous = assets.get(base_name)
-            if previous is not None and previous.asset_id != asset.asset_id:
-                assets.pop(base_name, None)
-                ambiguous_names.add(base_name)
-                failures[base_name] = EmbeddedFontFailure(
-                    int(page_number), base_name,
-                    "ambiguous_exact_embedded_font_match", xref,
-                    proof_category="source_font_ambiguous_for_item",
+            delivery_names = trace_names or (base_name,)
+            for delivery_name in delivery_names:
+                previous = assets.get(delivery_name)
+                if previous is not None and previous.asset_id != asset.asset_id:
+                    assets.pop(delivery_name, None)
+                    ambiguous_names.add(delivery_name)
+                    failures[delivery_name] = EmbeddedFontFailure(
+                        int(page_number), delivery_name,
+                        "ambiguous_exact_embedded_font_match", xref,
+                        proof_category="source_font_ambiguous_for_item",
+                    )
+                    continue
+                assets[delivery_name] = replace(
+                    asset, span_font_name=delivery_name
                 )
-                continue
-            assets[base_name] = replace(asset, span_font_name=base_name)
-            failures.pop(base_name, None)
+                failures.pop(delivery_name, None)
+            if base_name not in ambiguous_names:
+                failures.pop(base_name, None)
         return cls(page_number, assets, failures)
 
 

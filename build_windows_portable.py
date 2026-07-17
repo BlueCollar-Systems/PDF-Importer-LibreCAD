@@ -11,6 +11,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from release_notices import copy_python_distribution_notices, copy_release_notices
+from runtime_requirements import load_runtime_requirements
+
 
 ROOT = Path(__file__).resolve().parent
 BUILD_ROOT = ROOT / "build" / "pyinstaller_entrypoints"
@@ -21,7 +24,7 @@ ENTRYPOINTS = {
     "pdf2dxf": ("pdf2dxf", "main", "console"),
     "lcpdf-import": ("librecad_pdf_importer.cli", "main", "console"),
     "lcpdf-batch": ("librecad_pdf_importer.batch_cli", "main", "console"),
-    "lcpdf-gui": ("gui", "launch_gui", "windowed"),
+    "lcpdf-gui": ("standalone_app", "main", "windowed"),
 }
 
 HIDDEN_IMPORTS = [
@@ -35,11 +38,10 @@ HIDDEN_IMPORTS = [
     "tkinter",
 ]
 
-BUILD_REQUIREMENTS = [
-    "pyinstaller",
-    "PyMuPDF>=1.24,<2.0",
-    "ezdxf>=1.0",
-]
+COLLECT_ALL = ["fontTools"]
+COPY_METADATA = ["fonttools"]
+
+BUILD_REQUIREMENTS = ["pyinstaller", *load_runtime_requirements(ROOT)]
 
 
 def read_version() -> str:
@@ -114,6 +116,10 @@ def run_pyinstaller(name: str, entrypoint: Path, mode: str, python_exe: Path) ->
         cmd.append("--windowed")
     for hidden in HIDDEN_IMPORTS:
         cmd.extend(["--hidden-import", hidden])
+    for package in COLLECT_ALL:
+        cmd.extend(["--collect-all", package])
+    for distribution in COPY_METADATA:
+        cmd.extend(["--copy-metadata", distribution])
     cmd.append(str(entrypoint))
     print("Running:", " ".join(cmd))
     env = dict(os.environ)
@@ -140,6 +146,12 @@ def build() -> Path:
     for name, (module, function, mode) in ENTRYPOINTS.items():
         entrypoint = write_entrypoint(name, module, function)
         run_pyinstaller(name, entrypoint, mode, python_exe)
+
+    copy_release_notices(ROOT, DIST_ROOT)
+    copy_python_distribution_notices(
+        python_exe.parent.parent / "Lib" / "site-packages",
+        DIST_ROOT,
+    )
 
     archive_base = ROOT / "dist" / f"LibreCAD-PDF-Importer-Windows-Portable_v{version}"
     archive_path = shutil.make_archive(str(archive_base), "zip", DIST_ROOT)

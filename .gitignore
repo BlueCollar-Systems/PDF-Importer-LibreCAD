@@ -34,3 +34,7 @@ dist/pyinstaller_specs/
 installer/Output/
 
 _LLM_CONTROL_PACK/
+# Private vendored runtime and transaction workspaces.
+/lib/
+/lib.stage.*/
+/lib.backup.*/

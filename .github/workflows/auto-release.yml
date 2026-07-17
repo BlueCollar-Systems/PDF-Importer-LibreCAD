@@ -100,7 +100,7 @@ jobs:
         run: python build_windows_portable.py
 
       - name: Smoke Windows portable zip
-        run: python scripts/smoke_portable_zip.py "dist/LibreCAD-PDF-Importer-Windows-Portable_v*.zip"
+        run: python scripts/smoke_portable_zip.py "dist/LibreCAD-PDF-Importer-Windows-Portable_v*.zip" --source-zip "dist/LibreCAD-PDF-Importer_v*.zip"
 
       - name: Create release
         id: mint

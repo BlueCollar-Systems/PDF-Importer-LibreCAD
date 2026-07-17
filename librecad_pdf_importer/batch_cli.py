@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 
 from .exporters.dxf_exporter import DxfExportOptions, export_to_dxf
 from .importer import run_import
@@ -33,10 +34,20 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Gap ratio used when --page-arrangement=compact")
     p.add_argument("--recursive", action="store_true", help="Include subfolders")
     p.add_argument("--json", default=None, help="Write aggregate JSON report")
+    p.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Verify all bundled runtime dependencies and exit",
+    )
     return p
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        from .runtime_self_test import run_runtime_self_test
+
+        return run_runtime_self_test()
+
     args = build_parser().parse_args()
     root = Path(args.input_dir).expanduser().resolve()
     out_root = Path(args.output_dir).expanduser().resolve()

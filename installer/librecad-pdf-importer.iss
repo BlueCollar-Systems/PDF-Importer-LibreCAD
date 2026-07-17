@@ -1,6 +1,6 @@
 ; Inno Setup script -- standalone LibreCAD PDF Importer (no Python required)
 ; 1) Build the app:   python build_standalone.py
-; 2) Compile this:    iscc installer\librecad-pdf-importer.iss
+; 2) Compile this:    iscc /DAppVersion=X.Y.Z installer\librecad-pdf-importer.iss
 ;    (Inno Setup 6: https://jrsoftware.org/isinfo.php)
 ; Produces: installer\Output\LibreCAD-PDF-Importer-Setup_vX.Y.Z.exe
 
@@ -8,7 +8,7 @@
 #define AppPublisher "BlueCollar Systems"
 #define AppExeName "LibreCAD-PDF-Importer.exe"
 #ifndef AppVersion
-  #define AppVersion "1.0.25"
+  #error AppVersion must be supplied with /DAppVersion=X.Y.Z
 #endif
 #define DistDir "..\dist\LibreCAD-PDF-Importer"
 

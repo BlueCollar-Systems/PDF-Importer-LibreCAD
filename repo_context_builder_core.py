@@ -16,6 +16,7 @@ Features:
 from __future__ import annotations
 
 import argparse
+from fnmatch import fnmatchcase
 import json
 import os
 import re
@@ -151,9 +152,11 @@ class ContextBuilder:
     def is_excluded_dir(self, path: Path) -> bool:
         name = path.name
         for pattern in self.exclude_dir_names:
-            if pattern.startswith("*.") and name.endswith(pattern[1:]):
-                return True
             if name == pattern:
+                return True
+            if any(token in pattern for token in ("*", "?", "[")) and fnmatchcase(
+                name, pattern
+            ):
                 return True
         return False
 
@@ -230,8 +233,13 @@ class ContextBuilder:
                 continue
             if child.is_dir():
                 count = 0
-                for _, dirs, files in os.walk(child):
-                    dirs[:] = [d for d in dirs if d not in self.exclude_dir_names]
+                for current_root, dirs, files in os.walk(child):
+                    root_path = Path(current_root)
+                    dirs[:] = [
+                        directory
+                        for directory in dirs
+                        if not self.is_excluded_dir(root_path / directory)
+                    ]
                     count += len(files)
                 rows.append((child.name + "/", count, True))
             else:
@@ -255,7 +263,6 @@ class ContextBuilder:
     def _build_tree_lines(self):
         root = self.project_root
         lines = [f"{root.name}/"]
-        excluded = self.exclude_dir_names
         def add_dir(dir_path: Path, prefix: str = ""):
             try:
                 rel_parts = dir_path.relative_to(root).parts
@@ -264,7 +271,7 @@ class ContextBuilder:
             entries = []
             try:
                 for p in sorted(dir_path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
-                    if p.is_dir() and p.name in excluded:
+                    if p.is_dir() and self.is_excluded_dir(p):
                         continue
                     entries.append(p)
             except Exception:

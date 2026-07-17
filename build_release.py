@@ -3,7 +3,7 @@
 # Copyright (c) 2024-2026 BlueCollar Systems -- BUILT. NOT BOUGHT.
 # Licensed under the MIT License. See LICENSE for details.
 """
-Packages the PDF-to-DXF converter into a distributable zip file.
+Packages the PDF-to-DXF converter into a source-only distributable zip file.
 Output: LibreCAD-PDF-Importer_vX.Y.Z.zip.
 Includes all Python source files and the pdfcadcore library.
 Excludes ``__pycache__``, ``.pyc``, and ``tests/``.
@@ -34,6 +34,12 @@ def _should_include(rel_path: str) -> bool:
     parts = rel_path.replace("\\", "/").split("/")
 
     if "_archived" in parts:
+        return False
+
+    # Runtime wheels are never opportunistically copied into the source ZIP.
+    # Users install the complete declared dependency set with preflight_check;
+    # portable builds use the fail-closed PyInstaller builders instead.
+    if parts and parts[0] == "lib":
         return False
 
     # Exclude hidden directories
@@ -101,7 +107,15 @@ def build(output_dir: str | None = None) -> Path:
                 files_to_add.append((item, rel))
 
     # Walk package and auxiliary directories
-    for package_dir_name in ("pdfcadcore", "librecad_pdf_importer", "plugin", "lib"):
+    for package_dir_name in (
+        "pdfcadcore",
+        "librecad_pdf_importer",
+        "plugin",
+        "tools",
+        "third_party",
+        "installer",
+        "scripts",
+    ):
         package_dir = _PROJECT_ROOT / package_dir_name
         if not package_dir.is_dir():
             continue

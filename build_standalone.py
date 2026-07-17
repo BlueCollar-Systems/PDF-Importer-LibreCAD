@@ -5,7 +5,7 @@
 """
 Build a fully self-contained Windows app for the LibreCAD PDF Importer.
 
-Freezes the Tkinter GUI together with CPython, PyMuPDF, ezdxf, pdfcadcore,
+Freezes the Tkinter GUI together with CPython, PyMuPDF, ezdxf, FontTools, pdfcadcore,
 and librecad_pdf_importer so the END USER needs NO system Python and NO pip
 installs. Output: dist/LibreCAD-PDF-Importer/ (one-folder app). Wrap it with
 installer/librecad-pdf-importer.iss (Inno Setup 6) to produce a double-click
@@ -26,6 +26,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from release_notices import copy_python_distribution_notices, copy_release_notices
+from runtime_requirements import load_runtime_requirements
+
 ROOT = Path(__file__).resolve().parent
 APP_NAME = "LibreCAD-PDF-Importer"
 ENTRY = ROOT / "standalone_app.py"
@@ -35,11 +38,7 @@ WORK_ROOT = ROOT / "build" / "pyinstaller_standalone"
 SPEC_ROOT = ROOT / "build" / "pyinstaller_standalone_specs"
 DIST_ROOT = ROOT / "dist"
 APP_DIST = DIST_ROOT / APP_NAME
-BUILD_REQUIREMENTS = [
-    "pyinstaller",
-    "PyMuPDF>=1.24,<2.0",
-    "ezdxf>=1.0",
-]
+BUILD_REQUIREMENTS = ["pyinstaller", *load_runtime_requirements(ROOT)]
 
 
 def _read_version() -> str:
@@ -69,15 +68,35 @@ def _build_python() -> Path:
     return python_exe
 
 
+def _remove_tree_strict(path: Path, *, allowed_parent: Path) -> None:
+    """Remove a stale build tree or stop before producing a mixed artifact."""
+
+    resolved = path.resolve()
+    parent = allowed_parent.resolve()
+    if resolved.parent != parent:
+        raise RuntimeError(f"refusing to remove path outside build root: {resolved}")
+    if not path.exists():
+        return
+    try:
+        shutil.rmtree(path)
+    except OSError as exc:
+        raise RuntimeError(f"could not remove stale build path: {resolved}: {exc}") from exc
+    if path.exists():
+        raise RuntimeError(f"could not remove stale build path: {resolved}")
+
+
 def main() -> int:
     version = _read_version()
     print(f"Building {APP_NAME} v{version}")
 
     python_exe = _build_python()
 
-    for p in (APP_DIST, WORK_ROOT, SPEC_ROOT):
-        if p.exists():
-            shutil.rmtree(p, ignore_errors=True)
+    for path, allowed_parent in (
+        (APP_DIST, DIST_ROOT),
+        (WORK_ROOT, WORK_ROOT.parent),
+        (SPEC_ROOT, SPEC_ROOT.parent),
+    ):
+        _remove_tree_strict(path, allowed_parent=allowed_parent)
 
     cmd = [
         str(python_exe), "-m", "PyInstaller",
@@ -90,6 +109,8 @@ def main() -> int:
         "--specpath", str(SPEC_ROOT),
         "--collect-all", "pymupdf",         # PyMuPDF binaries + data (embeds MuPDF)
         "--collect-data", "ezdxf",          # ezdxf resource data only (avoids optional PIL/matplotlib drawing addon)
+        "--collect-all", "fontTools",       # exact embedded-font parsing and outline conversion
+        "--copy-metadata", "fonttools",     # preserve upstream licenses and package metadata
         "--hidden-import", "fitz",          # PyMuPDF compat shim
         "--hidden-import", "pymupdf",
         "--collect-submodules", "pdfcadcore",
@@ -109,8 +130,34 @@ def main() -> int:
         print("PyInstaller build FAILED", file=sys.stderr)
         return result.returncode
 
+    copy_release_notices(ROOT, APP_DIST)
+    copy_python_distribution_notices(
+        python_exe.parent.parent / "Lib" / "site-packages",
+        APP_DIST,
+    )
+    executable = APP_DIST / f"{APP_NAME}.exe"
+    if not executable.is_file():
+        print(f"PyInstaller build FAILED: missing {executable}", file=sys.stderr)
+        return 1
+    try:
+        smoke = subprocess.run(
+            [str(executable), "--self-test"],
+            cwd=str(APP_DIST),
+            env=env,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        print("PyInstaller runtime self-test TIMED OUT after 60s", file=sys.stderr)
+        return 1
+    if smoke.returncode != 0:
+        print("PyInstaller runtime self-test FAILED", file=sys.stderr)
+        return smoke.returncode or 1
+
     print(f"\nBuild complete: {APP_DIST}")
-    print("Next: compile installer/librecad-pdf-importer.iss with Inno Setup 6 (iscc).")
+    print(
+        "Next: compile with Inno Setup 6: "
+        f"iscc /DAppVersion={version} installer/librecad-pdf-importer.iss"
+    )
     return 0
 
 

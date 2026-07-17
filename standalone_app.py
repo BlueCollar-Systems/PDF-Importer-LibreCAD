@@ -6,7 +6,7 @@
 Entry point for the frozen, standalone LibreCAD PDF Importer.
 
 This wraps gui.launch_gui so PyInstaller can bundle CPython + PyMuPDF +
-ezdxf + pdfcadcore + librecad_pdf_importer into a single app that needs no
+ezdxf + FontTools + pdfcadcore + librecad_pdf_importer into a single app that needs no
 system Python and no pip installs. See build_standalone.py.
 """
 from __future__ import annotations
@@ -17,19 +17,9 @@ import sys
 
 def self_test() -> int:
     """Verify the frozen app can load its bundled runtime dependencies."""
-    try:
-        import ezdxf  # noqa: F401
-        import pdfcadcore  # noqa: F401
-        import librecad_pdf_importer  # noqa: F401
-        try:
-            import pymupdf as fitz  # noqa: F401
-        except ImportError:
-            import fitz  # noqa: F401
-    except Exception as exc:
-        print(f"LibreCAD PDF Importer self-test FAILED: {exc}")
-        return 1
-    print("LibreCAD PDF Importer self-test OK")
-    return 0
+    from librecad_pdf_importer.runtime_self_test import run_runtime_self_test
+
+    return run_runtime_self_test()
 
 
 def main() -> int:
