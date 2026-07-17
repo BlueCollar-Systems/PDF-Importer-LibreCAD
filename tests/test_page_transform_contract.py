@@ -5,11 +5,13 @@ from pathlib import Path
 
 import pytest
 
-fitz = pytest.importorskip("pymupdf")
-
 from librecad_pdf_importer.core.document import DocumentExtraction, ExtractedPage
 from librecad_pdf_importer.importer import apply_uniform_scale
+from pdfcadcore.fitz_loader import import_fitz
 from pdfcadcore.primitive_extractor import MM_PER_PT, _extract_text, extract_page
+
+
+fitz = import_fitz()
 
 
 _CROP = fitz.Rect(20.0, 10.0, 180.0, 90.0)

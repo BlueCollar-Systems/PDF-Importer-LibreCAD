@@ -2,7 +2,7 @@
 
 **BlueCollar Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.65](https://img.shields.io/badge/Version-1.0.65-blue.svg)
+![Version: 1.0.66](https://img.shields.io/badge/Version-1.0.66-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.

@@ -45,12 +45,24 @@ def test_lower_bound_tests_never_bypass_the_pymupdf_import_fallback() -> None:
     for path in sorted((ROOT / "tests").rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
-                continue
-            if node.func.id != "__import__" or not node.args:
+            if not isinstance(node, ast.Call) or not node.args:
                 continue
             module_name = node.args[0]
-            if isinstance(module_name, ast.Constant) and module_name.value == "pymupdf":
+            if not (
+                isinstance(module_name, ast.Constant)
+                and module_name.value == "pymupdf"
+            ):
+                continue
+            bypasses_fallback = (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "__import__"
+            ) or (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "pytest"
+                and node.func.attr == "importorskip"
+            )
+            if bypasses_fallback:
                 offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
 
     assert offenders == []

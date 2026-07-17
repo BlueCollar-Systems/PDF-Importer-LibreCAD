@@ -39,6 +39,25 @@ def test_geometry_mode_skips_import_text_flag_still_recorded():
     assert extra["import_text"] is False
 
 
+def test_import_contract_ready_ignores_source_spans_when_text_is_disabled():
+    report = build_import_report(
+        host_app="librecad",
+        importer_version="1.0.66",
+        pdf_path="drawing.pdf",
+        mode="vector",
+        pages=1,
+        primitive_count=40,
+        import_text=False,
+        text_mode="none",
+        text_source_spans=7,
+    )
+
+    ready = report.extra.get("import_contract_ready")
+    assert isinstance(ready, dict)
+    assert ready["ready"] is True
+    assert ready["checks"]["text_delivery"] is True
+
+
 def test_performance_phases_optional():
     report = build_import_report(
         host_app="librecad",

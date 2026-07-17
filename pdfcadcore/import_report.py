@@ -520,9 +520,18 @@ def build_import_contract_ready(report: "ImportReport") -> Dict[str, Any]:
         "pending_export",
     } and terminal_failure is None
     source_spans = int(extra.get("text_source_spans") or 0)
+    import_text_enabled = extra.get("import_text") is not False
     delivery = extra.get("text_representation_delivery")
-    text_delivery_ok = source_spans <= 0 or (
-        isinstance(delivery, dict) and delivery.get("verified") is True
+    text_delivery_ok = (
+        not import_text_enabled
+        or source_spans <= 0
+        or (
+            isinstance(delivery, dict)
+            and (
+                delivery.get("required") is False
+                or delivery.get("verified") is True
+            )
+        )
     )
     ready = (
         has_stamp
