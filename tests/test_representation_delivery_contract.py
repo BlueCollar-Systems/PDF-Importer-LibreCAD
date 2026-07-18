@@ -281,6 +281,36 @@ def test_outline_verification_rejects_post_construction_affine_corruption(
     assert all(attempt.outcome == "failed" for attempt in result.attempts)
 
 
+@pytest.mark.parametrize("mode", ["glyphs", "geometry"])
+def test_outline_verification_rejects_source_to_path_affine_corruption(mode) -> None:
+    """Pre-entity paths must remain bound to source placement, not themselves."""
+
+    original = dxf_text_builder._source_bound_string_path_expectation
+
+    def corrupt_source_to_path(*args, **kwargs):
+        paths, expected_bbox, advance, scale = original(*args, **kwargs)
+        corruption = ezdxf.math.Matrix44.translate(47.0, -31.0, 0.0)
+        corrupted = [path.transform(corruption) for path in paths]
+        return corrupted, expected_bbox, advance, scale
+
+    with (
+        patch(
+            "dxf_text_builder.text2path.make_paths_from_entity",
+            side_effect=RuntimeError("force the source-layout string route"),
+        ),
+        patch(
+            "dxf_text_builder._source_bound_string_path_expectation",
+            side_effect=corrupt_source_to_path,
+        ),
+    ):
+        _, msp, result = _deliver(mode)
+
+    assert result.verified is False, [attempt.to_dict() for attempt in result.attempts]
+    assert result.final_representation is None
+    assert list(msp) == []
+    assert all(attempt.cleanup_verified for attempt in result.attempts)
+
+
 @pytest.mark.parametrize("requested", ["glyphs", "labels"])
 def test_positioned_repeated_characters_keep_source_order_origin_and_rotation(
     requested,

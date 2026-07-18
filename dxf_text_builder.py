@@ -1714,6 +1714,60 @@ def _make_scaled_string_paths(
     return paths, delivered_advance, width_scale
 
 
+def _source_bound_string_path_expectation(
+    text: str,
+    face: FontFace,
+    *,
+    height: float,
+    target_advance: Optional[float],
+    rotation_degrees: float,
+    translation: Tuple[float, float],
+) -> Tuple[
+    List[Any],
+    Optional[Tuple[float, float, float, float]],
+    float,
+    float,
+]:
+    """Generate an independent source-derived ink bound before actual paths."""
+
+    font = text2path.get_font(face)
+    natural_advance = float(font.text_width(text)) * height
+    if not math.isfinite(natural_advance) or natural_advance < 0.0:
+        raise ValueError("font returned an invalid expected source advance")
+    if target_advance is None:
+        width_scale = 1.0
+        delivered_advance = natural_advance
+    elif natural_advance > 0.0:
+        width_scale = target_advance / natural_advance
+        delivered_advance = natural_advance * width_scale
+    elif _visible_ink_expected(text):
+        raise ValueError("visible source character has no expected font advance")
+    else:
+        width_scale = 1.0
+        delivered_advance = 0.0
+    if not math.isfinite(width_scale) or width_scale <= 0.0:
+        raise ValueError("expected font baseline scale is invalid")
+    transform = (
+        Matrix44.scale(width_scale, 1.0, 1.0)
+        * Matrix44.z_rotate(math.radians(rotation_degrees))
+        * Matrix44.translate(translation[0], translation[1], 0.0)
+    )
+    expected_paths = list(
+        text2path.make_paths_from_str(
+            text,
+            face,
+            size=height,
+            m=transform,
+        )
+    )
+    return (
+        expected_paths,
+        _path_bbox_tuple(expected_paths),
+        delivered_advance,
+        width_scale,
+    )
+
+
 def _outline_expectation(
     text_item: NormalizedText,
     *,
@@ -2122,9 +2176,22 @@ def _attempt_outline_entity(
             raise ValueError(
                 "outline source text failed content, anchor, size, rotation, or width verification"
             )
+        rotation_degrees = _finite_float(getattr(text_item, "rotation", 0.0) or 0.0)
+        if rotation_degrees is None:
+            raise _RepresentationImpossible("source rotation is missing or non-finite")
+        _, expected_path_bbox, expected_advance, expected_scale = (
+            _source_bound_string_path_expectation(
+                str(text_item.text),
+                FontFace(filename=font_resolution.filename),
+                height=height,
+                target_advance=target_width,
+                rotation_degrees=rotation_degrees,
+                translation=source_insert,
+            )
+        )
         paths = list(text2path.make_paths_from_entity(source))
-        expected_path_bbox = _path_bbox_tuple(paths)
-        if expected_path_bbox is None:
+        actual_path_bbox = _path_bbox_tuple(paths)
+        if expected_path_bbox is None or actual_path_bbox is None:
             if str(text_item.text) and not str(text_item.text).strip():
                 attempt.evidence.update(
                     {
@@ -2138,6 +2205,16 @@ def _attempt_outline_entity(
                     "whitespace-only source item has no outline ink"
                 )
             raise ValueError("visible source text produced no finite outline paths")
+        if not _bbox_matches(expected_path_bbox, actual_path_bbox):
+            raise ValueError("entity text2path output is not bound to source geometry")
+        attempt.evidence.update(
+            {
+                "source_bound_expected_advance": expected_advance,
+                "source_bound_expected_scale": expected_scale,
+                "source_bound_expected_path_bbox": list(expected_path_bbox),
+                "pre_entity_actual_path_bbox": list(actual_path_bbox),
+            }
+        )
         expectation = _outline_expectation(
             text_item,
             representation=representation,
@@ -2265,16 +2342,21 @@ def _attempt_outline_string(
                 else:
                     translation = character.target_origin
                 if character.visible_ink_expected:
-                    character_paths, character_advance, character_scale = (
-                        _make_scaled_string_paths(
-                            character.text,
-                            face,
-                            height=height,
-                            target_advance=character.advance_width,
-                            rotation_degrees=character.rotation_degrees,
-                            translation=translation,
-                        )
+                    (
+                        character_paths,
+                        expected_character_bbox,
+                        expected_character_advance,
+                        expected_character_scale,
+                    ) = _source_bound_string_path_expectation(
+                        character.text,
+                        face,
+                        height=height,
+                        target_advance=character.advance_width,
+                        rotation_degrees=character.rotation_degrees,
+                        translation=translation,
                     )
+                    character_advance = expected_character_advance
+                    character_scale = expected_character_scale
                 else:
                     # A source space/control/zero-width format character owns
                     # placement and advance but deliberately owns no ink.  Do
@@ -2282,6 +2364,9 @@ def _attempt_outline_string(
                     character_paths = []
                     character_advance = character.advance_width
                     character_scale = None
+                    expected_character_bbox = None
+                    expected_character_advance = character.advance_width
+                    expected_character_scale = None
                 character_bbox = _path_bbox_tuple(character_paths)
                 if character.visible_ink_expected and character_bbox is None:
                     raise ValueError(
@@ -2290,6 +2375,25 @@ def _attempt_outline_string(
                 if not character.visible_ink_expected and character_bbox is not None:
                     raise ValueError(
                         f"zero-ink source character {character.index} produced visible paths"
+                    )
+                if character.visible_ink_expected and (
+                    expected_character_bbox is None
+                    or not _bbox_matches(expected_character_bbox, character_bbox)
+                    or not math.isclose(
+                        character_advance,
+                        expected_character_advance,
+                        rel_tol=1e-9,
+                        abs_tol=1e-9,
+                    )
+                    or not math.isclose(
+                        character_scale,
+                        expected_character_scale,
+                        rel_tol=1e-9,
+                        abs_tol=1e-9,
+                    )
+                ):
+                    raise ValueError(
+                        f"source character {character.index} path transform is not source-bound"
                     )
                 character_outlines = _to_outline_entities(
                     character_paths,
@@ -2312,7 +2416,7 @@ def _attempt_outline_string(
                         glyph_height=character.glyph_height,
                         rotation_degrees=character.rotation_degrees,
                         visible_ink_expected=character.visible_ink_expected,
-                        expected_bbox=character_bbox,
+                        expected_bbox=expected_character_bbox,
                         outlines=character_outlines,
                         fills=character_fills,
                     )
@@ -2352,7 +2456,12 @@ def _attempt_outline_string(
             attempt.evidence["positioned_character_metrics"] = character_metrics
         else:
             translation = insertion if representation == "geometry" else (0.0, 0.0)
-            paths, delivered_advance, baseline_scale = _make_scaled_string_paths(
+            (
+                paths,
+                expected_path_bbox,
+                expected_delivered_advance,
+                expected_baseline_scale,
+            ) = _source_bound_string_path_expectation(
                 str(text_item.text),
                 face,
                 height=height,
@@ -2360,8 +2469,10 @@ def _attempt_outline_string(
                 rotation_degrees=rotation_degrees,
                 translation=translation,
             )
-            expected_path_bbox = _path_bbox_tuple(paths)
-            if expected_path_bbox is None:
+            delivered_advance = expected_delivered_advance
+            baseline_scale = expected_baseline_scale
+            actual_path_bbox = _path_bbox_tuple(paths)
+            if expected_path_bbox is None or actual_path_bbox is None:
                 if str(text_item.text) and not str(text_item.text).strip():
                     attempt.evidence.update(
                         {
@@ -2375,6 +2486,28 @@ def _attempt_outline_string(
                         "whitespace-only source item has no outline ink"
                     )
                 raise ValueError("visible source text produced no finite outline paths")
+            if (
+                not _bbox_matches(expected_path_bbox, actual_path_bbox)
+                or not math.isclose(
+                    delivered_advance,
+                    expected_delivered_advance,
+                    rel_tol=1e-9,
+                    abs_tol=1e-9,
+                )
+                or not math.isclose(
+                    baseline_scale,
+                    expected_baseline_scale,
+                    rel_tol=1e-9,
+                    abs_tol=1e-9,
+                )
+            ):
+                raise ValueError("string text2path output is not bound to source geometry")
+            attempt.evidence.update(
+                {
+                    "source_bound_expected_path_bbox": list(expected_path_bbox),
+                    "pre_entity_actual_path_bbox": list(actual_path_bbox),
+                }
+            )
             expectation = _outline_expectation(
                 text_item,
                 representation=representation,
