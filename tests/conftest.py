@@ -84,12 +84,46 @@ def _build_deterministic_test_font(path: Path) -> None:
     builder.save(str(path))
 
 
+def _build_deterministic_librecad_font(path: Path) -> None:
+    """Create a tiny exact LFF fixture with visible metric glyphs and no space ink."""
+
+    path.write_text(
+        "\n".join(
+            (
+                "# Format:            LibreCAD Font 1",
+                "# Name:              Unicode",
+                "# Encoding:          UTF-8",
+                "# LetterSpacing:     3",
+                "# WordSpacing:       6.75",
+                "# LineSpacingFactor: 1",
+                "",
+                "[0041] A",
+                "0,0;3,9;6,0",
+                "0.8,2.5;5.2,2.5",
+                "",
+                "[0078] x",
+                "0,0;5,5",
+                "0,5;5,0",
+                "",
+                "[0070] p",
+                "0,-3;0,5;4,5;4,0;0,0",
+                "",
+            )
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
 @pytest.fixture(scope="session", autouse=True)
 def deterministic_exact_font(tmp_path_factory):
     """Resolve synthetic delivery items without relying on host fonts."""
 
     font_path = tmp_path_factory.mktemp("bcs_test_font") / "bcs-test-regular.ttf"
     _build_deterministic_test_font(font_path)
+    librecad_font_dir = font_path.parent / "librecad-fonts"
+    librecad_font_dir.mkdir()
+    _build_deterministic_librecad_font(librecad_font_dir / "unicode.lff")
 
     from dxf_text_builder import _ExactFontResolution, _resolve_exact_font
 
@@ -109,7 +143,13 @@ def deterministic_exact_font(tmp_path_factory):
             )
         return original_resolver(font_name)
 
-    with patch("dxf_text_builder._resolve_exact_font", side_effect=resolve):
+    with (
+        patch("dxf_text_builder._resolve_exact_font", side_effect=resolve),
+        patch.dict(
+            os.environ,
+            {"LIBRECAD_FONT_DIR": str(librecad_font_dir)},
+        ),
+    ):
         yield font_path
 
 

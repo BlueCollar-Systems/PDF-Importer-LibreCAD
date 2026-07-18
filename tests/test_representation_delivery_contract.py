@@ -13,6 +13,7 @@ import ezdxf
 import pytest
 import dxf_text_builder
 from ezdxf.tools.text_size import text_size
+from fontTools.ttLib import TTFont
 
 from dxf_text_builder import (
     TextDeliveryAttempt,
@@ -186,6 +187,7 @@ def _deliver(
     item: NormalizedText | None = None,
     *,
     target_app: str = "generic",
+    config: ImportConfig | None = None,
 ):
     doc = ezdxf.new("R2010")
     msp = doc.modelspace()
@@ -193,7 +195,7 @@ def _deliver(
         item or _item(),
         msp,
         "TEXT",
-        ImportConfig(text_mode=mode),
+        config or ImportConfig(text_mode=mode),
         target_app=target_app,
         dxf_version="R2010",
         return_delivery_result=True,
@@ -948,6 +950,188 @@ def test_labels_preserve_whitespace_only_source_text_as_text() -> None:
     assert text_size(entity).width == pytest.approx(0.0)
     assert result.attempts[-1].evidence["physical_zero_ink_verified"] is True
     assert result.attempts[-1].evidence["source_zero_ink_physically_proven"] is True
+
+
+def test_librecad_empty_source_glyph_does_not_waive_visible_parent_lff() -> None:
+    """A source-empty glyph cannot make a visible unicode.lff glyph disappear."""
+
+    item = __import__("dataclasses").replace(
+        _item(width=2.5, rotation=17.0),
+        text="A",
+        normalized="A",
+        source_glyph_id=1,
+    )
+
+    _, msp, result = _deliver("text", item, target_app="librecad")
+
+    assert result.verified is False
+    assert result.final_representation is None
+    assert result.terminal_fallback_authorized is True
+    assert list(msp) == []
+    native = next(
+        attempt
+        for attempt in result.attempts
+        if attempt.attempted_representation == "text"
+    )
+    assert native.outcome == "impossible"
+    assert native.cleanup_verified is True
+    assert native.evidence["source_zero_ink_physically_proven"] is True
+    assert native.evidence["parent_delivered_lff_zero_ink_proven"] is False
+    assert native.evidence["parent_native_lff_ink_proof_valid"] is True
+    assert native.evidence["parent_native_lff_ink_proof"]["status"] == "visible"
+    assert native.evidence["fallback_authorized_for_this_item"] is True
+
+
+def test_librecad_space_bound_to_visible_source_glyph_uses_exact_glyph_geometry(
+    deterministic_exact_font,
+    tmp_path,
+) -> None:
+    font = TTFont(str(deterministic_exact_font), lazy=False, recalcTimestamp=False)
+    try:
+        glyph_id = font.getGlyphOrder().index(font.getBestCmap()[ord("A")])
+    finally:
+        font.close()
+    item = __import__("dataclasses").replace(
+        _item(width=2.5, rotation=17.0),
+        text=" ",
+        normalized="",
+        source_glyph_id=glyph_id,
+    )
+
+    doc, msp, result = _deliver("text", item, target_app="librecad")
+
+    assert result.verified is True
+    assert result.final_representation == "glyphs"
+    assert result.fallback_used is True
+    native = result.attempts[0]
+    assert native.attempted_representation == "text"
+    assert native.outcome == "impossible"
+    assert native.evidence["source_zero_ink_physically_proven"] is False
+    assert native.evidence["parent_native_lff_ink_proof"]["status"] == "empty"
+    assert native.evidence["parent_delivered_lff_zero_ink_proven"] is True
+    assert native.evidence["parent_visual_fidelity_verified"] is False
+    assert [entity.dxftype() for entity in msp] == ["INSERT"]
+
+    output = tmp_path / "space-bound-to-visible-source-glyph.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_parent_lff_proof_rejects_missing_exact_asset() -> None:
+    config = ImportConfig(text_mode="text")
+    config._librecad_lff_font_paths = {  # noqa: SLF001
+        "unicode": r"C:\definitely-missing-bcs-review\unicode.lff"
+    }
+    item = __import__("dataclasses").replace(
+        _item(width=2.5, rotation=17.0),
+        text=" ",
+        normalized="",
+        source_glyph_id=1,
+    )
+
+    _, msp, result = _deliver(
+        "text",
+        item,
+        target_app="librecad",
+        config=config,
+    )
+
+    assert result.verified is False
+    assert result.terminal_fallback_authorized is True
+    assert list(msp) == []
+    native = result.attempts[0]
+    assert native.outcome == "impossible"
+    assert native.evidence["parent_native_lff_ink_proof_valid"] is False
+    assert native.evidence["parent_native_lff_ink_proof"]["status"] == "unproven"
+    assert "unavailable" in native.evidence["parent_native_lff_ink_proof"]["reason"]
+
+
+def test_serialized_native_zero_ink_revalidates_exact_parent_lff_asset(
+    deterministic_exact_font,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    source_lff = deterministic_exact_font.parent / "librecad-fonts" / "unicode.lff"
+    delivered_lff = tmp_path / "unicode.lff"
+    delivered_lff.write_bytes(source_lff.read_bytes())
+    monkeypatch.setenv("LIBRECAD_FONT_DIR", str(tmp_path))
+    item = __import__("dataclasses").replace(
+        _item(width=2.5, rotation=17.0),
+        text=" ",
+        normalized="",
+        source_glyph_id=1,
+    )
+    doc, _, result = _deliver("text", item, target_app="librecad")
+    output = tmp_path / "native-zero-ink.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+
+    _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+    delivered_lff.write_bytes(delivered_lff.read_bytes() + b"\n# tampered\n")
+    with pytest.raises(RuntimeError, match="zero-ink proof"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_serialized_native_zero_ink_rejects_rewritten_parent_lff_evidence(
+    deterministic_exact_font,
+    tmp_path,
+) -> None:
+    item = __import__("dataclasses").replace(
+        _item(width=2.5, rotation=17.0),
+        text=" ",
+        normalized="",
+        source_glyph_id=1,
+    )
+    doc, _, result = _deliver("text", item, target_app="librecad")
+    output = tmp_path / "native-zero-ink-rewritten-proof.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    delivery = result.to_dict()
+    final = next(
+        attempt for attempt in delivery["attempts"] if attempt["outcome"] == "verified"
+    )
+    proof = final["evidence"]["parent_native_lff_ink_proof"]
+    alternate_dir = tmp_path / "not-the-parent-font-directory"
+    alternate_dir.mkdir()
+    alternate_asset = alternate_dir / "unicode.lff"
+    alternate_asset.write_bytes(
+        (deterministic_exact_font.parent / "librecad-fonts" / "unicode.lff").read_bytes()
+    )
+    proof["font_asset_path"] = str(alternate_asset)
+    proof.pop("proof_sha256")
+    proof["proof_sha256"] = dxf_text_builder._canonical_sha256(proof)  # noqa: SLF001
+
+    with pytest.raises(RuntimeError, match="zero-ink proof"):
+        _verify_serialized_text_deliveries(reopened, [delivery])
+
+
+def test_parent_lff_asset_is_parsed_once_per_exact_content(
+    deterministic_exact_font,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    source_lff = deterministic_exact_font.parent / "librecad-fonts" / "unicode.lff"
+    font_dir = tmp_path / "large-parent-font"
+    font_dir.mkdir()
+    (font_dir / "unicode.lff").write_bytes(source_lff.read_bytes())
+    monkeypatch.setenv("LIBRECAD_FONT_DIR", str(font_dir))
+    item = __import__("dataclasses").replace(
+        _item(width=2.5, rotation=17.0),
+        text=" ",
+        normalized="",
+        source_glyph_id=1,
+    )
+    from ezdxf.fonts import lff
+
+    with patch("ezdxf.fonts.lff.loads", wraps=lff.loads) as load_lff:
+        first = _deliver("text", item, target_app="librecad")[2]
+        second = _deliver("text", item, target_app="librecad")[2]
+
+    assert first.verified is True
+    assert second.verified is True
+    assert load_lff.call_count == 1
 
 
 @pytest.mark.parametrize(
@@ -2420,6 +2604,79 @@ def _real_text_extraction(tmp_path):
     run = run_import(str(pdf_path), mode="vector", overrides={"pages": "1"})
     assert run.extraction.text_count == 1
     return run
+
+
+def test_visible_unicode_bound_to_empty_source_glyph_reaches_transparent_raster(
+    tmp_path,
+) -> None:
+    run = _real_text_extraction(tmp_path)
+    original = run.extraction.pages[0].page_data.text_items[0]
+    source_empty = __import__("dataclasses").replace(
+        original,
+        text="A",
+        normalized="A",
+        font_name="BCS Deterministic Test",
+        source_char_layout=(),
+        requires_individual_positioning=False,
+        positioned_character=False,
+        source_glyph_id=1,
+        font_asset=None,
+        font_failure=None,
+    )
+    run.extraction.pages[0].page_data.text_items = [source_empty]
+    output = tmp_path / "source-empty-parent-visible.dxf"
+
+    result = export_to_dxf(
+        run.extraction,
+        str(output),
+        DxfExportOptions(
+            include_images=False,
+            text_mode="text",
+            provenance_opts=run.config,
+        ),
+    )
+
+    assert output.is_file()
+    assert result.text_fallbacks == [
+        {
+            "requested": "text",
+            "delivered": "raster",
+            "reason": "structural_representations_failed_verification",
+            "count": 1,
+        }
+    ]
+    delivery = result.text_deliveries[0]
+    assert delivery["requested_representation"] == "text"
+    assert delivery["final_representation"] == "raster"
+    assert delivery["fallback_used"] is True
+    assert delivery["verified"] is True
+    structural = [
+        attempt
+        for attempt in delivery["attempts"]
+        if attempt["attempted_representation"] != "raster"
+    ]
+    assert structural
+    assert all(attempt["outcome"] == "impossible" for attempt in structural)
+    assert all(attempt["cleanup_verified"] is True for attempt in structural)
+    native = structural[0]
+    assert native["attempted_representation"] == "text"
+    assert native["evidence"]["source_zero_ink_physically_proven"] is True
+    assert native["evidence"]["parent_native_lff_ink_proof"]["status"] == "visible"
+    raster = delivery["attempts"][-1]
+    assert raster["attempted_representation"] == "raster"
+    assert raster["strategy"] == "sealed_physical_zero_ink_png"
+    assert raster["evidence"]["source_zero_ink_physically_proven"] is True
+    assert raster["evidence"]["source_pixels_sampled"] is False
+    asset = Path(raster["evidence"]["asset_path"])
+    pixmap = fitz.Pixmap(str(asset))
+    assert (pixmap.width, pixmap.height) == (1, 1)
+    assert bool(pixmap.alpha) is True
+    assert pixmap.pixel(0, 0)[-1] == 0
+
+    drawing = ezdxf.readfile(output)
+    assert [entity.dxftype() for entity in drawing.modelspace()] == ["IMAGE"]
+    _verify_serialized_text_deliveries(drawing, result.text_deliveries)
+    run.close()
 
 
 def test_explicit_item_raster_is_verified_without_being_reported_as_fallback(

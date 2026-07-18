@@ -22,6 +22,7 @@ import hashlib
 from io import BytesIO
 import json
 import math
+import os
 from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
@@ -490,6 +491,19 @@ def _source_font_program_is_authoritative(resolution: _ExactFontResolution) -> b
 
 
 _PHYSICAL_GLYPH_INK_PROOF_SCHEMA = "bcs.pdf-source-glyph-ink/v1"
+_PARENT_LFF_INK_PROOF_SCHEMA = "bcs.librecad-delivered-lff-ink/v1"
+
+
+@dataclass(frozen=True)
+class _ParentLffResolution:
+    style_token: str
+    filename: str = ""
+    exact: bool = False
+    reason: str = ""
+
+
+_PARENT_LFF_FONT_CACHE: Dict[Tuple[str, str], Any] = {}
+_PARENT_LFF_FONT_CACHE_LIMIT = 8
 
 
 def _canonical_sha256(value: Any) -> str:
@@ -501,6 +515,307 @@ def _canonical_sha256(value: Any) -> str:
         allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _load_parent_lff_asset(
+    path: Path,
+    *,
+    expected_sha256: str = "",
+) -> Tuple[str, Any]:
+    """Hash every read, but parse unchanged exact LFF content only once."""
+
+    resolved = path.resolve(strict=True)
+    content = resolved.read_bytes()
+    digest = hashlib.sha256(content).hexdigest()
+    if expected_sha256 and digest != expected_sha256:
+        raise ValueError("delivered LibreCAD LFF asset digest changed")
+    cache_key = (os.path.normcase(str(resolved)), digest)
+    cached = _PARENT_LFF_FONT_CACHE.pop(cache_key, None)
+    if cached is not None:
+        _PARENT_LFF_FONT_CACHE[cache_key] = cached
+        return digest, cached
+
+    from ezdxf.fonts.lff import loads as load_lff
+
+    font = load_lff(content.decode("utf-8-sig"))
+    _PARENT_LFF_FONT_CACHE[cache_key] = font
+    while len(_PARENT_LFF_FONT_CACHE) > _PARENT_LFF_FONT_CACHE_LIMIT:
+        oldest_key = next(iter(_PARENT_LFF_FONT_CACHE))
+        del _PARENT_LFF_FONT_CACHE[oldest_key]
+    return digest, font
+
+
+def _lff_style_token(value: Any) -> str:
+    name = Path(str(value or "").strip()).name
+    return Path(name).stem.strip().lower()
+
+
+def _resolve_parent_lff_font(
+    style_font: str,
+    config: Optional[ImportConfig] = None,
+) -> _ParentLffResolution:
+    """Resolve the exact local LFF asset that LibreCAD will use for a style."""
+
+    token = _lff_style_token(style_font)
+    if not token:
+        return _ParentLffResolution(token, reason="LibreCAD LFF style token is empty")
+
+    configured = dict(
+        getattr(config, "_librecad_lff_font_paths", {}) or {}
+    ) if config is not None else {}
+    configured_path = str(
+        configured.get(str(style_font), configured.get(token, "")) or ""
+    ).strip()
+    if configured_path:
+        candidates = [Path(configured_path).expanduser()]
+        source = "configured exact LibreCAD LFF asset"
+    else:
+        configured_dir = str(os.environ.get("LIBRECAD_FONT_DIR", "") or "").strip()
+        if configured_dir:
+            candidates = [Path(configured_dir).expanduser() / f"{token}.lff"]
+            source = "LIBRECAD_FONT_DIR exact LFF asset"
+        else:
+            candidates = []
+            librecad_home = str(os.environ.get("LIBRECAD_HOME", "") or "").strip()
+            if librecad_home:
+                candidates.append(
+                    Path(librecad_home).expanduser() / "resources" / "fonts" / f"{token}.lff"
+                )
+            for environment_name in ("ProgramFiles", "ProgramFiles(x86)"):
+                root = str(os.environ.get(environment_name, "") or "").strip()
+                if root:
+                    candidates.append(
+                        Path(root) / "LibreCAD" / "resources" / "fonts" / f"{token}.lff"
+                    )
+            candidates.extend(
+                (
+                    Path(r"C:\Program Files\LibreCAD\resources\fonts") / f"{token}.lff",
+                    Path(r"C:\Program Files (x86)\LibreCAD\resources\fonts") / f"{token}.lff",
+                )
+            )
+            source = "installed LibreCAD LFF asset"
+
+    existing: List[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        key = os.path.normcase(str(resolved))
+        if key in seen or not resolved.is_file():
+            continue
+        seen.add(key)
+        existing.append(resolved)
+    if not existing:
+        return _ParentLffResolution(
+            token,
+            reason=f"exact delivered LibreCAD {token}.lff asset is unavailable",
+        )
+    if any(_lff_style_token(path.name) != token for path in existing):
+        return _ParentLffResolution(
+            token,
+            reason="configured LibreCAD LFF asset does not match the delivered style token",
+        )
+    digests: Dict[str, List[Path]] = {}
+    try:
+        for path in existing:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            digests.setdefault(digest, []).append(path)
+    except OSError as exc:
+        return _ParentLffResolution(
+            token,
+            reason=f"exact delivered LibreCAD LFF asset cannot be read: {exc}",
+        )
+    if len(digests) != 1:
+        return _ParentLffResolution(
+            token,
+            reason="multiple different installed LibreCAD LFF assets are ambiguous",
+        )
+    return _ParentLffResolution(
+        token,
+        filename=str(existing[0]),
+        exact=True,
+        reason=source,
+    )
+
+
+def _lff_glyph_physical_record(font: Any, codepoint: int) -> Dict[str, Any]:
+    """Record exact stroke ink selected by LibreCAD's LFF renderer."""
+
+    renderer_source = "font_glyph"
+    rendered_codepoint: Optional[int] = int(codepoint)
+    glyph = None
+    if codepoint <= 32:
+        renderer_source = "librecad_nonprinting_character"
+        rendered_codepoint = None
+    else:
+        glyph = font.get(int(codepoint))
+        if glyph is None:
+            renderer_source = "librecad_missing_glyph_box"
+            rendered_codepoint = ord("A")
+            glyph = font.get(rendered_codepoint)
+
+    polylines: List[Any] = []
+    if glyph is not None:
+        polylines = [
+            [[float(value) for value in vertex] for vertex in polyline]
+            for polyline in glyph.polylines
+        ]
+    vertex_count = sum(len(polyline) for polyline in polylines)
+    draw_segment_count = sum(max(0, len(polyline) - 1) for polyline in polylines)
+    if renderer_source == "librecad_missing_glyph_box" and glyph is None:
+        status = "unproven"
+    elif draw_segment_count > 0:
+        status = "visible"
+    else:
+        status = "empty"
+    return {
+        "character_codepoint": int(codepoint),
+        "renderer_source": renderer_source,
+        "rendered_glyph_codepoint": rendered_codepoint,
+        "polyline_count": len(polylines),
+        "vertex_count": int(vertex_count),
+        "draw_segment_count": int(draw_segment_count),
+        "outline_sha256": _canonical_sha256(polylines),
+        "status": status,
+    }
+
+
+def _build_parent_lff_ink_proof(
+    text: str,
+    style_font: str,
+    config: Optional[ImportConfig] = None,
+) -> Dict[str, Any]:
+    """Measure the exact glyphs the local LibreCAD LFF renderer will deliver."""
+
+    delivered_text = str(text or "")
+    resolution = _resolve_parent_lff_font(style_font, config)
+    proof: Dict[str, Any] = {
+        "schema": _PARENT_LFF_INK_PROOF_SCHEMA,
+        "renderer": "librecad_lff",
+        "style_token": resolution.style_token,
+        "delivered_text_sha256": hashlib.sha256(
+            delivered_text.encode("utf-8")
+        ).hexdigest(),
+        "delivered_text_length": len(delivered_text),
+        "font_asset_path": resolution.filename,
+        "font_asset_sha256": "",
+        "font_asset_exact": bool(resolution.exact),
+        "glyphs": [],
+        "status": "unproven",
+        "reason": resolution.reason,
+    }
+
+    def finish() -> Dict[str, Any]:
+        glyphs = list(proof.get("glyphs") or [])
+        statuses = [str(row.get("status") or "unproven") for row in glyphs]
+        if delivered_text and statuses and any(value == "visible" for value in statuses):
+            proof["status"] = "visible"
+        elif delivered_text and len(statuses) == len(delivered_text) and all(
+            value == "empty" for value in statuses
+        ):
+            proof["status"] = "empty"
+        else:
+            proof["status"] = "unproven"
+        return _seal_physical_glyph_ink_proof(proof)
+
+    if not delivered_text or not resolution.exact or not resolution.filename:
+        return finish()
+    path = Path(resolution.filename)
+    try:
+        digest, font = _load_parent_lff_asset(path)
+        metric_records = [
+            _lff_glyph_physical_record(font, codepoint)
+            for codepoint in (ord("A"), ord("x"), ord("p"))
+        ]
+        if any(row["status"] != "visible" for row in metric_records):
+            proof["reason"] = "delivered LibreCAD LFF metric glyphs are incomplete"
+            return finish()
+        proof["font_asset_sha256"] = digest
+        proof["glyphs"] = [
+            {
+                "index": index,
+                **_lff_glyph_physical_record(font, ord(character)),
+            }
+            for index, character in enumerate(delivered_text)
+        ]
+    except (OSError, UnicodeError, IndexError, KeyError, TypeError, ValueError) as exc:
+        proof["reason"] = f"delivered LibreCAD LFF glyphs cannot be measured: {exc}"
+    return finish()
+
+
+def _validate_parent_lff_ink_proof(
+    proof: Any,
+    *,
+    expected_text: str,
+    expected_style_font: str,
+    config: Optional[ImportConfig] = None,
+) -> bool:
+    """Re-read the parent asset and bind the proof to the delivered entity text."""
+
+    if not isinstance(proof, dict):
+        return False
+    supplied_seal = str(proof.get("proof_sha256") or "")
+    payload = dict(proof)
+    payload.pop("proof_sha256", None)
+    try:
+        if supplied_seal != _canonical_sha256(payload):
+            return False
+    except (TypeError, ValueError):
+        return False
+    delivered_text = str(expected_text or "")
+    style_token = _lff_style_token(expected_style_font)
+    if (
+        payload.get("schema") != _PARENT_LFF_INK_PROOF_SCHEMA
+        or payload.get("renderer") != "librecad_lff"
+        or payload.get("style_token") != style_token
+        or payload.get("font_asset_exact") is not True
+        or payload.get("delivered_text_length") != len(delivered_text)
+        or payload.get("delivered_text_sha256")
+        != hashlib.sha256(delivered_text.encode("utf-8")).hexdigest()
+        or payload.get("status") not in {"empty", "visible"}
+        or not isinstance(payload.get("glyphs"), list)
+        or len(payload["glyphs"]) != len(delivered_text)
+    ):
+        return False
+    asset_path = Path(str(payload.get("font_asset_path") or ""))
+    digest = str(payload.get("font_asset_sha256") or "")
+    if _lff_style_token(asset_path.name) != style_token or not re.fullmatch(
+        r"[0-9a-f]{64}", digest
+    ):
+        return False
+    try:
+        expected_asset = _resolve_parent_lff_font(expected_style_font, config)
+        if not expected_asset.exact or not expected_asset.filename:
+            return False
+        resolved_asset = asset_path.resolve(strict=True)
+        resolved_expected_asset = Path(expected_asset.filename).resolve(strict=True)
+        if os.path.normcase(str(resolved_asset)) != os.path.normcase(
+            str(resolved_expected_asset)
+        ):
+            return False
+        _, font = _load_parent_lff_asset(
+            resolved_asset,
+            expected_sha256=digest,
+        )
+        if any(
+            _lff_glyph_physical_record(font, codepoint)["status"] != "visible"
+            for codepoint in (ord("A"), ord("x"), ord("p"))
+        ):
+            return False
+        measured = [
+            {
+                "index": index,
+                **_lff_glyph_physical_record(font, ord(character)),
+            }
+            for index, character in enumerate(delivered_text)
+        ]
+    except (OSError, UnicodeError, IndexError, KeyError, TypeError, ValueError):
+        return False
+    statuses = [str(row.get("status") or "unproven") for row in measured]
+    status = "visible" if any(value == "visible" for value in statuses) else "empty"
+    return payload["glyphs"] == measured and payload.get("status") == status
 
 
 def _font_glyph_physical_record(font: Any, glyph_id: int) -> Dict[str, Any]:
@@ -2500,6 +2815,9 @@ def _verify_parent_native_text_delivery(
     style_handle: str,
     is_3d_text: bool,
     source_zero_ink_proven: bool,
+    parent_lff_ink_proof: Optional[Dict[str, Any]] = None,
+    parent_lff_ink_proof_valid: bool = False,
+    parent_delivered_lff_zero_ink_proven: bool = False,
 ) -> Tuple[bool, Dict[str, Any], str]:
     """Verify native editable delivery without inventing source-font equivalence.
 
@@ -2550,17 +2868,26 @@ def _verify_parent_native_text_delivery(
         return parent_delivery_ok, evidence, reason
 
     font_ok = candidate_format == "lff" and bool(str(style_font or "").strip())
-    # Only exact font bytes plus exact source glyph identity may waive parent
-    # rendering. Unicode whitespace/default-ignorable properties are not ink
-    # evidence because a PDF cmap can bind those characters to real contours.
-    font_rendering_required = not source_zero_ink_proven
-    font_requirement_ok = bool(font_ok or not font_rendering_required)
+    delivered_zero_ink_matches_source = bool(
+        source_zero_ink_proven
+        and parent_lff_ink_proof_valid
+        and parent_delivered_lff_zero_ink_proven
+    )
+    # Source glyph emptiness is not delivery glyph emptiness. LibreCAD resolves
+    # TEXT through the selected LFF cmap, so the exact delivered LFF bytes and
+    # code points must independently prove zero ink before rendering is waived.
+    font_rendering_required = not delivered_zero_ink_matches_source
+    font_asset_verified = bool(font_ok and parent_lff_ink_proof_valid)
+    font_requirement_ok = bool(
+        delivered_zero_ink_matches_source
+        or (font_asset_verified and not bool(parent_font_substituted))
+    )
     native_3d_ok = not is_3d_text
     source_visual_ok = bool(
         native_3d_ok
         and (
-            not font_rendering_required
-            or (font_ok and not bool(parent_font_substituted))
+            delivered_zero_ink_matches_source
+            or (font_asset_verified and not bool(parent_font_substituted))
         )
     )
     parent_delivery_ok = bool(font_requirement_ok and source_visual_ok)
@@ -2568,9 +2895,18 @@ def _verify_parent_native_text_delivery(
         {
             "parent_native_font_required_format": "lff",
             "parent_native_font_format_verified": font_ok,
-            "parent_native_font_renderability_verified": font_ok,
+            "parent_native_font_renderability_verified": font_asset_verified,
+            "parent_native_font_candidate_asset_verified": font_asset_verified,
             "parent_native_font_rendering_required": font_rendering_required,
             "source_zero_ink_physically_proven": source_zero_ink_proven,
+            "parent_native_lff_ink_proof": parent_lff_ink_proof,
+            "parent_native_lff_ink_proof_valid": parent_lff_ink_proof_valid,
+            "parent_delivered_lff_zero_ink_proven": (
+                parent_delivered_lff_zero_ink_proven
+            ),
+            "source_and_parent_zero_ink_match_verified": (
+                delivered_zero_ink_matches_source
+            ),
             "parent_native_3d_display_verified": native_3d_ok,
             "parent_native_text_delivery_verified": parent_delivery_ok,
             "parent_visual_fidelity_verified": source_visual_ok,
@@ -2578,10 +2914,15 @@ def _verify_parent_native_text_delivery(
         }
     )
     reasons: List[str] = []
-    if not font_requirement_ok:
+    if source_zero_ink_proven and not delivered_zero_ink_matches_source:
         reasons.append(
-            "the exact source font program is "
-            f"{candidate_format}, not a LibreCAD-renderable LFF program"
+            "the exact source glyphs contain no ink but the exact delivered "
+            "LibreCAD LFF glyphs are visible or unproven"
+        )
+    elif not font_requirement_ok:
+        reasons.append(
+            "the exact delivered LibreCAD LFF asset or source-font equivalence "
+            "is not verified for this item"
         )
     elif (
         font_rendering_required
@@ -2752,6 +3093,41 @@ def _attempt_labels(
         # fillers to different code points even though DXF can preserve the
         # original Unicode string exactly.
         delivered_text = str(text_item.text)
+        parent_lff_ink_proof: Optional[Dict[str, Any]] = None
+        parent_lff_ink_proof_valid = False
+        parent_delivered_lff_zero_ink_proven = False
+        if parent == "librecad":
+            parent_lff_ink_proof = _build_parent_lff_ink_proof(
+                delivered_text,
+                style_font,
+                config,
+            )
+            parent_lff_ink_proof_valid = _validate_parent_lff_ink_proof(
+                parent_lff_ink_proof,
+                expected_text=delivered_text,
+                expected_style_font=style_font,
+                config=config,
+            )
+            parent_delivered_lff_zero_ink_proven = bool(
+                parent_lff_ink_proof_valid
+                and parent_lff_ink_proof.get("status") == "empty"
+            )
+            attempt.evidence.update(
+                {
+                    "parent_native_lff_ink_proof": parent_lff_ink_proof,
+                    "parent_native_lff_ink_proof_valid": parent_lff_ink_proof_valid,
+                    "parent_delivered_lff_zero_ink_proven": (
+                        parent_delivered_lff_zero_ink_proven
+                    ),
+                }
+            )
+        delivered_zero_ink_proven = bool(
+            source_zero_ink_proven
+            and (
+                parent != "librecad"
+                or parent_delivered_lff_zero_ink_proven
+            )
+        )
         if len(delivered_text) > _MTEXT_THRESHOLD and not force_text:
             mtext_attribs = dict(attribs)
             mtext_attribs.pop("height", None)
@@ -2775,7 +3151,7 @@ def _attempt_labels(
             entity,
             target_width,
             parent_fit_alignment=parent == "librecad",
-            zero_ink_proven=source_zero_ink_proven,
+            zero_ink_proven=delivered_zero_ink_proven,
         )
         type_ok, visual_ok, evidence = _verify_label(
             entity,
@@ -2785,7 +3161,7 @@ def _attempt_labels(
             measured_width=measured_width,
             width_source=width_source,
             expected_content=delivered_text,
-            zero_ink_proven=source_zero_ink_proven,
+            zero_ink_proven=delivered_zero_ink_proven,
         )
         attempt.type_verified = type_ok
         attempt.visual_verified = visual_ok
@@ -2838,6 +3214,11 @@ def _attempt_labels(
                 style_handle=style_handle,
                 is_3d_text=is_3d_text,
                 source_zero_ink_proven=source_zero_ink_proven,
+                parent_lff_ink_proof=parent_lff_ink_proof,
+                parent_lff_ink_proof_valid=parent_lff_ink_proof_valid,
+                parent_delivered_lff_zero_ink_proven=(
+                    parent_delivered_lff_zero_ink_proven
+                ),
             )
         )
         attempt.evidence.update(parent_evidence)

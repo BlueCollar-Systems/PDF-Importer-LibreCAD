@@ -34,6 +34,7 @@ from dxf_text_builder import (
     _glyph_block_name_binds_source,
     _outline_reference_handles,
     _source_identity_sha256,
+    _validate_parent_lff_ink_proof,
     _validate_physical_glyph_ink_proof,
     _visible_ink_expected,
     build_text,
@@ -401,12 +402,33 @@ def _verify_serialized_text_deliveries(
                     f"serialized text delivery {source_id}: content or transform changed"
                 )
 
+            style = doc.styles.get(str(native.dxf.style or ""))
             parent_font = str(evidence.get("parent_native_font_candidate") or "")
             if parent_font:
-                style = doc.styles.get(str(native.dxf.style or ""))
                 if str(style.dxf.font or "").strip().lower() != parent_font.lower():
                     raise RuntimeError(
                         f"serialized text delivery {source_id}: parent font binding changed"
+                    )
+
+            if str(evidence.get("target_app") or "").strip().lower() == "librecad":
+                parent_lff_proof = evidence.get("parent_native_lff_ink_proof")
+                actual_style_font = str(style.dxf.font or "")
+                parent_lff_valid = _validate_parent_lff_ink_proof(
+                    parent_lff_proof,
+                    expected_text=actual_content,
+                    expected_style_font=actual_style_font,
+                )
+                if (
+                    not parent_lff_valid
+                    or evidence.get("parent_native_lff_ink_proof_valid") is not True
+                    or evidence.get("source_zero_ink_physically_proven") is not True
+                    or evidence.get("parent_delivered_lff_zero_ink_proven") is not True
+                    or evidence.get("source_and_parent_zero_ink_match_verified") is not True
+                    or parent_lff_proof.get("status") != "empty"
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: native LibreCAD "
+                        "TEXT lacks exact source-and-delivered zero-ink proof"
                     )
 
             if evidence.get("fit_alignment_verified"):
