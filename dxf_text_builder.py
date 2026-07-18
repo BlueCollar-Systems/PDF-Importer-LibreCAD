@@ -24,7 +24,6 @@ import json
 import math
 from pathlib import Path
 import re
-import unicodedata
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import ezdxf
@@ -1531,6 +1530,21 @@ _DEFAULT_IGNORABLE_CODE_POINT_RANGES = (
     (0xE0000, 0xE0FFF),
 )
 
+# Exact White_Space ranges from Unicode 17's PropList.txt:
+# https://www.unicode.org/Public/17.0.0/ucd/PropList.txt
+_WHITE_SPACE_CODE_POINT_RANGES = (
+    (0x0009, 0x000D),
+    (0x0020, 0x0020),
+    (0x0085, 0x0085),
+    (0x00A0, 0x00A0),
+    (0x1680, 0x1680),
+    (0x2000, 0x200A),
+    (0x2028, 0x2029),
+    (0x202F, 0x202F),
+    (0x205F, 0x205F),
+    (0x3000, 0x3000),
+)
+
 
 def _is_default_ignorable_code_point(character: str) -> bool:
     code_point = ord(character)
@@ -1540,10 +1554,17 @@ def _is_default_ignorable_code_point(character: str) -> bool:
     )
 
 
+def _is_unicode_white_space(character: str) -> bool:
+    code_point = ord(character)
+    return any(
+        first <= code_point <= last
+        for first, last in _WHITE_SPACE_CODE_POINT_RANGES
+    )
+
+
 def _visible_ink_expected(text: str) -> bool:
     return any(
-        not character.isspace()
-        and unicodedata.category(character) != "Cc"
+        not _is_unicode_white_space(character)
         and not _is_default_ignorable_code_point(character)
         for character in text
     )
@@ -2872,15 +2893,46 @@ def _outline_expectation(
     )
 
 
+def _source_identity_sha256(source_id: str) -> str:
+    return hashlib.sha256(str(source_id).encode("utf-8")).hexdigest()
+
+
+def _glyph_block_identity_base(source_id: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_]+", "_", str(source_id)).strip("_") or "ITEM"
+    digest = _source_identity_sha256(source_id)[:16]
+    return f"BCS_GLYPH_{slug[:180]}_{digest}"
+
+
+def _glyph_block_name_binds_source(block_name: str, source_id: str) -> bool:
+    base = _glyph_block_identity_base(source_id)
+    if block_name == base:
+        return True
+    if not block_name.startswith(f"{base}_"):
+        return False
+    suffix = block_name[len(base) + 1 :]
+    return bool(suffix.isdigit() and int(suffix) >= 2 and str(int(suffix)) == suffix)
+
+
+def _block_reference_handles(doc: Any, block_name: str) -> List[str]:
+    references: List[str] = []
+    expected = str(block_name).casefold()
+    for layout in doc.blocks:
+        for entity in layout:
+            if (
+                entity.dxftype() == "INSERT"
+                and str(entity.dxf.name or "").casefold() == expected
+            ):
+                references.append(_handle(entity))
+    return references
+
+
 def _unique_block_name(doc: ezdxf.document.Drawing, source_id: str) -> str:
-    base = "BCS_GLYPH_" + re.sub(r"[^A-Za-z0-9_]+", "_", source_id).strip("_")
-    if not base or base == "BCS_GLYPH_":
-        base = "BCS_GLYPH_ITEM"
-    candidate = base[:240]
+    base = _glyph_block_identity_base(source_id)
+    candidate = base
     suffix = 1
     while candidate in doc.blocks:
         suffix += 1
-        candidate = f"{base[:230]}_{suffix}"
+        candidate = f"{base}_{suffix}"
     return candidate
 
 
@@ -3079,6 +3131,11 @@ def _commit_outlines(
         )
         return
 
+    expected_layer_name = str(outlines[0].dxf.layer or "0")
+    if not doc.layers.has_entry(expected_layer_name):
+        doc.layers.add(expected_layer_name)
+    layer_record = doc.layers.get(expected_layer_name)
+    layer_handle = _handle(layer_record)
     block_name = _unique_block_name(doc, attempt.source_id)
     block = doc.blocks.new(name=block_name)
     attempt.owned_block_names.append(block_name)
@@ -3094,7 +3151,7 @@ def _commit_outlines(
         block.add_entity(entity)
         attempt.created_entity_handles.append(_handle(entity))
     block_attribs: Dict[str, Any] = {
-        "layer": str(outlines[0].dxf.layer or "0"),
+        "layer": expected_layer_name,
     }
     # LibreCAD resolves a block reference's display color before child entity
     # true-color in several export/render paths.  Carry the exact source color
@@ -3114,6 +3171,8 @@ def _commit_outlines(
     attempt.support_entity_handles = block_structure_handles + [
         _handle(entity) for entity in outlines + fills
     ]
+    if layer_handle not in attempt.referenced_entity_handles:
+        attempt.referenced_entity_handles.append(layer_handle)
     actual_bbox = _bbox_tuple(outlines)
     expected_insert = (float(insertion[0]), float(insertion[1]), 0.0)
     expected_rotation = 0.0
@@ -3272,6 +3331,37 @@ def _commit_outlines(
             and int(actual_true_color) == int(expected_true_color)
         )
     )
+    source_identity_sha256 = _source_identity_sha256(attempt.source_id)
+    source_identity_physical_verified = _glyph_block_name_binds_source(
+        block_name,
+        attempt.source_id,
+    )
+    actual_layer_name = str(block_ref.dxf.layer or "")
+    actual_layer_on = bool(layer_record.is_on())
+    actual_layer_frozen = bool(layer_record.is_frozen())
+    insert_layer_verified = bool(
+        actual_layer_name == expected_layer_name
+        and actual_layer_on
+        and not actual_layer_frozen
+    )
+    raw_invisible = block_ref.dxf.get("invisible", 0)
+    invisible_state_verified = bool(
+        not isinstance(raw_invisible, bool)
+        and isinstance(raw_invisible, int)
+        and raw_invisible == 0
+    )
+    actual_transparency = float(block_ref.transparency)
+    transparency_verified = bool(
+        math.isfinite(actual_transparency)
+        and math.isclose(actual_transparency, 0.0, rel_tol=0.0, abs_tol=1e-12)
+    )
+    modelspace_verified = str(block_ref.dxf.owner or "") == str(msp.layout_key)
+    visible_attribute_count = len(block_ref.attribs)
+    attached_content_verified = visible_attribute_count == 0
+    actual_reference_handles = _block_reference_handles(doc, block_name)
+    block_reference_ownership_verified = actual_reference_handles == [
+        _handle(block_ref)
+    ]
     attempt.type_verified = (
         block_ref.dxftype() == "INSERT"
         and bool(attempt.support_entity_handles)
@@ -3291,6 +3381,13 @@ def _commit_outlines(
         insert_verified
         and insert_transform_verified
         and insert_color_verified
+        and source_identity_physical_verified
+        and insert_layer_verified
+        and invisible_state_verified
+        and transparency_verified
+        and modelspace_verified
+        and attached_content_verified
+        and block_reference_ownership_verified
         and expectation.source_geometry_verified
         and outline_geometry_verified
         and fill_geometry_verified
@@ -3304,6 +3401,8 @@ def _commit_outlines(
     attempt.evidence.update(
         {
             "block_name": block_name,
+            "source_identity_sha256": source_identity_sha256,
+            "source_identity_physical_verified": source_identity_physical_verified,
             "nonserializable_support_roles": ["BLOCK_RECORD"] if is_r12 else [],
             "expected_outline_bbox": list(expectation.path_bbox),
             "actual_outline_bbox": list(actual_bbox) if actual_bbox else None,
@@ -3333,6 +3432,29 @@ def _commit_outlines(
             "block_insert_transform_verified": insert_transform_verified,
             "block_insert_color_verified": insert_color_verified,
             "block_insert_true_color": expected_true_color,
+            "expected_block_layer": expected_layer_name,
+            "actual_block_layer": actual_layer_name,
+            "expected_block_layer_handle": layer_handle,
+            "expected_block_layer_on": True,
+            "actual_block_layer_on": actual_layer_on,
+            "expected_block_layer_frozen": False,
+            "actual_block_layer_frozen": actual_layer_frozen,
+            "block_insert_layer_verified": insert_layer_verified,
+            "expected_block_invisible": 0,
+            "actual_block_invisible": raw_invisible,
+            "block_insert_invisible_state_verified": invisible_state_verified,
+            "expected_block_transparency": 0.0,
+            "actual_block_transparency": actual_transparency,
+            "block_insert_transparency_verified": transparency_verified,
+            "expected_block_in_modelspace": True,
+            "actual_block_in_modelspace": modelspace_verified,
+            "block_insert_modelspace_verified": modelspace_verified,
+            "expected_visible_attached_attribute_count": 0,
+            "actual_visible_attached_attribute_count": visible_attribute_count,
+            "block_insert_attached_content_verified": attached_content_verified,
+            "expected_block_reference_count": 1,
+            "actual_block_reference_handles": actual_reference_handles,
+            "block_reference_ownership_verified": block_reference_ownership_verified,
             "outline_character_ownership": ownership,
             "outline_character_ownership_verified": ownership_verified,
         }

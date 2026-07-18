@@ -1210,6 +1210,244 @@ def test_serialized_glyph_verifier_rejects_reopened_block_base_point_corruption(
         _verify_serialized_text_deliveries(reopened, [result.to_dict()])
 
 
+def test_serialized_glyph_verifier_rejects_hidden_parent_layer(
+    tmp_path,
+) -> None:
+    """Moving the INSERT onto an off layer must not retain visual acceptance."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "glyphs-hidden-parent-layer.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    hidden = reopened.layers.add("BCS_HIDDEN_REVIEW_LAYER")
+    hidden.off()
+    next(iter(reopened.modelspace())).dxf.layer = hidden.dxf.name
+
+    with pytest.raises(RuntimeError, match="visual|layer|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_serialized_glyph_verifier_rejects_a_different_visible_parent_layer(
+    tmp_path,
+) -> None:
+    """Layer identity is exact even when both table entries remain visible."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "glyphs-different-visible-parent-layer.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    visible = reopened.layers.add("BCS_VISIBLE_REVIEW_LAYER")
+    next(iter(reopened.modelspace())).dxf.layer = visible.dxf.name
+
+    with pytest.raises(RuntimeError, match="visual|layer|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_serialized_glyph_verifier_rejects_expected_layer_turned_off(
+    tmp_path,
+) -> None:
+    """Layer-table visibility is part of the persisted visual state."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "glyphs-expected-layer-off.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    insert = next(iter(reopened.modelspace()))
+    layer_name = str(insert.dxf.layer)
+    if layer_name not in reopened.layers:
+        reopened.layers.add(layer_name)
+    reopened.layers.get(layer_name).off()
+
+    with pytest.raises(RuntimeError, match="visual|layer|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_serialized_glyph_verifier_rejects_expected_layer_frozen(
+    tmp_path,
+) -> None:
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "glyphs-expected-layer-frozen.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    insert = next(iter(reopened.modelspace()))
+    layer_name = str(insert.dxf.layer)
+    if layer_name not in reopened.layers:
+        reopened.layers.add(layer_name)
+    reopened.layers.get(layer_name).freeze()
+
+    with pytest.raises(RuntimeError, match="visual|layer|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_serialized_glyph_verifier_rejects_invisible_parent_insert(
+    tmp_path,
+) -> None:
+    """The entity-level invisible flag cannot preserve visual acceptance."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "glyphs-invisible-parent-insert.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    next(iter(reopened.modelspace())).dxf.invisible = 1
+
+    with pytest.raises(RuntimeError, match="visual|visible|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_serialized_glyph_verifier_rejects_transparent_parent_insert(
+    tmp_path,
+) -> None:
+    """A fully transparent parent is not visually equivalent delivery."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "glyphs-transparent-parent-insert.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    next(iter(reopened.modelspace())).transparency = 1.0
+
+    with pytest.raises(RuntimeError, match="visual|transparent|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_serialized_glyph_verifier_rejects_partially_transparent_parent_insert(
+    tmp_path,
+) -> None:
+    """Persisted opacity is exact, not merely nonzero."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "glyphs-partially-transparent-parent-insert.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    next(iter(reopened.modelspace())).transparency = 0.5
+
+    with pytest.raises(RuntimeError, match="visual|transparent|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_serialized_glyph_verifier_requires_the_parent_in_modelspace(
+    tmp_path,
+) -> None:
+    """A live INSERT in paper space is not delivered model geometry."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "glyphs-moved-to-paperspace.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    insert = next(iter(reopened.modelspace()))
+    reopened.modelspace().move_to_layout(insert, reopened.layout())
+    assert list(reopened.modelspace()) == []
+
+    with pytest.raises(RuntimeError, match="model|space|ownership|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_serialized_glyph_verifier_allows_a_nonrendering_attached_attribute(
+    tmp_path,
+) -> None:
+    """Nonrendering metadata does not become a future visual roadblock."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "glyphs-hidden-attached-attrib.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    insert = next(iter(reopened.modelspace()))
+    attribute = insert.add_attrib(
+        "BCS_REVIEW_METADATA",
+        "HIDDEN METADATA",
+        insert=insert.dxf.insert,
+        dxfattribs={"height": 2.5},
+    )
+    attribute.dxf.invisible = 1
+
+    _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_serialized_glyph_verifier_rejects_visible_attached_attribute(
+    tmp_path,
+) -> None:
+    """Unexpected ATTRIB text attached to the INSERT changes rendered content."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "glyphs-visible-attached-attrib.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    insert = next(iter(reopened.modelspace()))
+    insert.add_attrib(
+        "BCS_REVIEW_INTRUDER",
+        "VISIBLE INTRUDER",
+        insert=insert.dxf.insert,
+        dxfattribs={"height": 2.5},
+    )
+    assert len(insert.attribs) == 1
+
+    with pytest.raises(RuntimeError, match="content|attribute|support|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_serialized_glyph_verifier_rejects_attribute_with_invalid_invisibility(
+    tmp_path,
+) -> None:
+    """Only the defined invisible state can prove attached text nonrendering."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "glyphs-invalid-invisible-attached-attrib.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    insert = next(iter(reopened.modelspace()))
+    attribute = insert.add_attrib(
+        "BCS_REVIEW_INTRUDER",
+        "UNCERTAIN INTRUDER",
+        insert=insert.dxf.insert,
+        dxfattribs={"height": 2.5},
+    )
+    attribute.dxf.invisible = 2
+
+    with pytest.raises(RuntimeError, match="content|attribute|support|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_serialized_glyph_verifier_rejects_attribute_on_an_undefined_layer(
+    tmp_path,
+) -> None:
+    """A missing layer table entry is not proof that attached text is hidden."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "glyphs-undefined-layer-attached-attrib.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    insert = next(iter(reopened.modelspace()))
+    attribute = insert.add_attrib(
+        "BCS_REVIEW_INTRUDER",
+        "UNCERTAIN INTRUDER",
+        insert=insert.dxf.insert,
+        dxfattribs={"height": 2.5},
+    )
+    attribute.dxf.layer = "BCS_UNDEFINED_REVIEW_LAYER"
+    assert not reopened.layers.has_entry(attribute.dxf.layer)
+
+    with pytest.raises(RuntimeError, match="content|attribute|support|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_serialized_glyph_verifier_rejects_an_unowned_duplicate_reference(
+    tmp_path,
+) -> None:
+    """A second reference to the owned glyph block duplicates visible content."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "glyphs-unowned-duplicate-reference.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    insert = next(iter(reopened.modelspace()))
+    duplicate = insert.copy()
+    duplicate.dxf.insert = (99.0, 99.0, 0.0)
+    reopened.modelspace().add_entity(duplicate)
+    assert len(list(reopened.modelspace().query("INSERT"))) == 2
+
+    with pytest.raises(RuntimeError, match="duplicate|ownership|reference|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
 def test_serialized_delivery_binds_verified_attempt_to_the_same_source_id(
     tmp_path,
 ) -> None:
@@ -1223,6 +1461,46 @@ def test_serialized_delivery_binds_verified_attempt_to_the_same_source_id(
     delivery["source_id"] = "text_span:3:999"
 
     with pytest.raises(RuntimeError, match="source|attempt"):
+        _verify_serialized_text_deliveries(reopened, [delivery])
+
+
+def test_serialized_glyph_identity_cannot_be_rewritten_with_its_attempt(
+    tmp_path,
+) -> None:
+    """The physical block name must remain bound to the exact source identity."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "glyphs-rewritten-source-identity.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    delivery = result.to_dict()
+    delivery["source_id"] = "text_span:3:999"
+    for attempt in delivery["attempts"]:
+        attempt["source_id"] = "text_span:3:999"
+
+    with pytest.raises(RuntimeError, match="source|identity|block"):
+        _verify_serialized_text_deliveries(reopened, [delivery])
+
+
+def test_serialized_glyph_identity_remains_physical_if_all_report_ids_are_rewritten(
+    tmp_path,
+) -> None:
+    """Rewriting every report-side identity field cannot rewrite the DXF block."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "glyphs-fully-rewritten-report-identity.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    delivery = result.to_dict()
+    rewritten = "text_span:3:999"
+    delivery["source_id"] = rewritten
+    for attempt in delivery["attempts"]:
+        attempt["source_id"] = rewritten
+        attempt["evidence"]["source_identity_sha256"] = hashlib.sha256(
+            rewritten.encode("utf-8")
+        ).hexdigest()
+
+    with pytest.raises(RuntimeError, match="source|identity|block"):
         _verify_serialized_text_deliveries(reopened, [delivery])
 
 
@@ -1530,6 +1808,49 @@ def test_zero_ink_format_source_uses_the_same_truthful_zero_ink_path(
 )
 def test_default_ignorable_detection_preserves_real_combining_ink(content) -> None:
     assert dxf_text_builder._visible_ink_expected(content) is True
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "\x00",  # NULL is a control, but not Unicode Default_Ignorable_Code_Point.
+        "\x07",  # BELL is a control, but not Unicode Default_Ignorable_Code_Point.
+        "\x1b",  # ESCAPE is a control, but not Unicode Default_Ignorable_Code_Point.
+    ],
+)
+def test_non_default_ignorable_controls_do_not_self_certify_as_zero_ink(
+    content,
+) -> None:
+    """Only whitespace/default-ignorables have affirmative zero-ink authority."""
+
+    assert dxf_text_builder._visible_ink_expected(content) is True
+
+
+def test_zero_ink_authority_uses_exact_unicode_17_white_space_membership() -> None:
+    white_space = [
+        *range(0x0009, 0x000E),
+        0x0020,
+        0x0085,
+        0x00A0,
+        0x1680,
+        *range(0x2000, 0x200B),
+        0x2028,
+        0x2029,
+        0x202F,
+        0x205F,
+        0x3000,
+    ]
+
+    assert all(
+        dxf_text_builder._visible_ink_expected(chr(code_point)) is False
+        for code_point in white_space
+    )
+    # Python classifies these information separators as whitespace, but the
+    # Unicode 17 White_Space property deliberately does not.
+    assert all(
+        dxf_text_builder._visible_ink_expected(chr(code_point)) is True
+        for code_point in range(0x001C, 0x0020)
+    )
 
 
 def test_outline_cannot_self_certify_when_source_text_parameters_fail() -> None:

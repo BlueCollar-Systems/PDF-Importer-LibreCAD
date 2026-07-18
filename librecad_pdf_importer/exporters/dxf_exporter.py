@@ -29,6 +29,9 @@ from pdfcadcore.primitive_extractor import (
 from dxf_text_builder import (
     TextDeliveryAttempt,
     TextDeliveryResult,
+    _block_reference_handles,
+    _glyph_block_name_binds_source,
+    _source_identity_sha256,
     _visible_ink_expected,
     build_text,
     reset_text_styles,
@@ -203,6 +206,43 @@ def _strict_finite_vector(value: Any, *, length: int) -> Optional[Tuple[Any, ...
     return values
 
 
+def _attached_attribute_is_visible(doc: Any, attribute: Any) -> bool:
+    raw_invisible = attribute.dxf.get("invisible", 0)
+    if (
+        isinstance(raw_invisible, bool)
+        or not isinstance(raw_invisible, int)
+        or raw_invisible not in (0, 1)
+    ):
+        return True
+    if raw_invisible == 1:
+        return False
+    if bool(getattr(attribute, "is_invisible", False)):
+        return False
+    try:
+        transparency = float(attribute.transparency)
+    except (TypeError, ValueError):
+        transparency = 0.0
+    if math.isfinite(transparency) and math.isclose(
+        transparency,
+        1.0,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        return False
+    try:
+        layer = doc.layers.get(str(attribute.dxf.layer or "0"))
+    except Exception:
+        return True
+    if not layer.is_on() or layer.is_frozen():
+        return False
+    if not _visible_ink_expected(str(attribute.dxf.text or "")):
+        return False
+    raw_height = attribute.dxf.get("height", None)
+    if _strict_finite_number(raw_height) and float(raw_height) <= 0.0:
+        return False
+    return True
+
+
 def _verify_serialized_text_deliveries(
     doc: Any,
     deliveries: List[Dict[str, Any]],
@@ -294,6 +334,8 @@ def _verify_serialized_text_deliveries(
             entity_handles
         ) or set(map(str, final_attempt.get("support_entity_handles") or [])) != set(
             support_handles
+        ) or set(map(str, final_attempt.get("referenced_entity_handles") or [])) != set(
+            referenced_handles
         ):
             raise RuntimeError(
                 f"serialized text delivery {source_id}: attempt handles disagree"
@@ -420,6 +462,127 @@ def _verify_serialized_text_deliveries(
                     )
                 evidence = dict(final_attempt.get("evidence") or {})
                 expected_block_name = str(evidence.get("block_name") or "")
+                expected_source_digest = str(
+                    evidence.get("source_identity_sha256") or ""
+                )
+                owned_block_names = list(final_attempt.get("owned_block_names") or [])
+                if (
+                    evidence.get("source_identity_physical_verified") is not True
+                    or expected_source_digest != _source_identity_sha256(source_id)
+                    or not _glyph_block_name_binds_source(
+                        expected_block_name,
+                        source_id,
+                    )
+                    or owned_block_names != [expected_block_name]
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: physical block source "
+                        "identity changed"
+                    )
+                actual_reference_handles = _block_reference_handles(
+                    doc,
+                    expected_block_name,
+                )
+                recorded_reference_handles = list(
+                    evidence.get("actual_block_reference_handles") or []
+                )
+                if (
+                    evidence.get("expected_block_reference_count") != 1
+                    or evidence.get("block_reference_ownership_verified") is not True
+                    or recorded_reference_handles != [str(insert.dxf.handle or "")]
+                    or actual_reference_handles != [str(insert.dxf.handle or "")]
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: duplicate or unowned "
+                        "glyph block reference"
+                    )
+                expected_layer_name = str(evidence.get("expected_block_layer") or "")
+                expected_layer_handle = str(
+                    evidence.get("expected_block_layer_handle") or ""
+                )
+                if (
+                    not expected_layer_name
+                    or not expected_layer_handle
+                    or expected_layer_handle not in referenced_handles
+                    or evidence.get("expected_block_layer_on") is not True
+                    or evidence.get("expected_block_layer_frozen") is not False
+                    or evidence.get("block_insert_layer_verified") is not True
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: glyph layer evidence "
+                        "incomplete"
+                    )
+                try:
+                    layer_record = doc.layers.get(expected_layer_name)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: expected glyph layer missing"
+                    ) from exc
+                if (
+                    str(insert.dxf.layer or "") != expected_layer_name
+                    or str(layer_record.dxf.handle or "") != expected_layer_handle
+                    or not layer_record.is_on()
+                    or layer_record.is_frozen()
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: glyph parent layer "
+                        "identity or visual state changed"
+                    )
+                if (
+                    evidence.get("expected_block_in_modelspace") is not True
+                    or evidence.get("block_insert_modelspace_verified") is not True
+                    or str(insert.dxf.owner or "") != str(doc.modelspace().layout_key)
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: glyph parent is not "
+                        "owned by modelspace"
+                    )
+                raw_expected_invisible = evidence.get("expected_block_invisible")
+                raw_actual_invisible = insert.dxf.get("invisible", 0)
+                if (
+                    evidence.get("block_insert_invisible_state_verified") is not True
+                    or isinstance(raw_expected_invisible, bool)
+                    or not isinstance(raw_expected_invisible, int)
+                    or raw_expected_invisible != 0
+                    or isinstance(raw_actual_invisible, bool)
+                    or not isinstance(raw_actual_invisible, int)
+                    or raw_actual_invisible != raw_expected_invisible
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: glyph parent visible "
+                        "state changed"
+                    )
+                expected_transparency = evidence.get("expected_block_transparency")
+                actual_transparency = insert.transparency
+                if (
+                    evidence.get("block_insert_transparency_verified") is not True
+                    or not _strict_finite_number(expected_transparency)
+                    or not _strict_finite_number(actual_transparency)
+                    or not math.isclose(
+                        float(actual_transparency),
+                        float(expected_transparency),
+                        rel_tol=0.0,
+                        abs_tol=1e-12,
+                    )
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: glyph parent transparent "
+                        "visual state changed"
+                    )
+                visible_attributes = [
+                    attribute
+                    for attribute in insert.attribs
+                    if _attached_attribute_is_visible(doc, attribute)
+                ]
+                if (
+                    evidence.get("expected_visible_attached_attribute_count") != 0
+                    or evidence.get("block_insert_attached_content_verified") is not True
+                    or visible_attributes
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: unexpected visible "
+                        "attached attribute content"
+                    )
                 raw_expected_insert = _strict_finite_vector(
                     evidence.get("expected_block_insert") or (),
                     length=3,
