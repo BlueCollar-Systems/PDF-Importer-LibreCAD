@@ -250,6 +250,10 @@ def _attached_attribute_is_visible(doc: Any, attribute: Any) -> bool:
 def _verify_serialized_text_deliveries(
     doc: Any,
     deliveries: List[Dict[str, Any]],
+    *,
+    expected_source_pdf_path: Optional[Path] = None,
+    expected_source_pdf_sha256: str = "",
+    expected_text_sources: Optional[Dict[str, Tuple[Any, ImportConfig]]] = None,
 ) -> None:
     """Reconcile accepted item evidence against the re-opened DXF candidate."""
 
@@ -263,6 +267,7 @@ def _verify_serialized_text_deliveries(
     }
     source_ids: set[str] = set()
     main_handles: set[str] = set()
+    source_digest_cache: Dict[str, str] = {}
     for delivery in deliveries:
         source_id = str(delivery.get("source_id") or "")
         representation = str(delivery.get("final_representation") or "")
@@ -344,6 +349,37 @@ def _verify_serialized_text_deliveries(
             raise RuntimeError(
                 f"serialized text delivery {source_id}: attempt handles disagree"
             )
+
+        evidence = dict(final_attempt.get("evidence") or {})
+        expected_source = (
+            expected_text_sources.get(source_id)
+            if expected_text_sources is not None
+            else None
+        )
+        if expected_text_sources is not None and expected_source is None:
+            raise RuntimeError(
+                f"serialized text delivery {source_id}: source identity is unbound"
+            )
+        physical_proof = evidence.get("physical_glyph_ink_proof")
+        physical_proof_valid: Optional[bool] = None
+        if physical_proof is not None:
+            physical_proof_valid = _validate_physical_glyph_ink_proof(
+                physical_proof,
+                expected_text_item=(
+                    expected_source[0] if expected_source is not None else None
+                ),
+                expected_config=(
+                    expected_source[1] if expected_source is not None else None
+                ),
+            )
+            if (
+                not physical_proof_valid
+                or evidence.get("physical_glyph_ink_proof_valid") is not True
+            ):
+                raise RuntimeError(
+                    f"serialized text delivery {source_id}: physical glyph proof "
+                    "is not bound to the selected source"
+                )
 
         if representation in {"text", "labels", "3d_text"}:
             if len(entities) != 1 or entities[0].dxftype() not in {"TEXT", "MTEXT"}:
@@ -915,6 +951,55 @@ def _verify_serialized_text_deliveries(
 
         if representation == "raster":
             evidence = dict(final_attempt.get("evidence") or {})
+            source_match = re.fullmatch(r"text_span:([0-9]+):([0-9]+)", source_id)
+            evidence_page = evidence.get("source_page_number")
+            evidence_bbox = _strict_finite_vector(
+                evidence.get("source_bbox_pdf"),
+                length=4,
+            )
+            proof_bbox = _strict_finite_vector(
+                physical_proof.get("source_bbox_pdf")
+                if isinstance(physical_proof, dict)
+                else None,
+                length=4,
+            )
+            selected_item = expected_source[0] if expected_source is not None else None
+            selected_page = (
+                getattr(selected_item, "page_number", None)
+                if selected_item is not None
+                else int(source_match.group(1)) if source_match is not None else None
+            )
+            selected_bbox = (
+                _strict_finite_vector(
+                    getattr(selected_item, "source_bbox_pdf", None),
+                    length=4,
+                )
+                if selected_item is not None
+                else proof_bbox
+            )
+            if (
+                source_match is None
+                or isinstance(evidence_page, bool)
+                or not isinstance(evidence_page, int)
+                or isinstance(selected_page, bool)
+                or not isinstance(selected_page, int)
+                or evidence.get("source_id") != source_id
+                or evidence_page != selected_page
+                or int(source_match.group(1)) != selected_page
+                or physical_proof_valid is not True
+                or not isinstance(physical_proof, dict)
+                or physical_proof.get("source_id") != source_id
+                or physical_proof.get("source_page_number") != selected_page
+                or evidence_bbox is None
+                or proof_bbox is None
+                or selected_bbox is None
+                or tuple(evidence_bbox) != tuple(proof_bbox)
+                or tuple(evidence_bbox) != tuple(selected_bbox)
+            ):
+                raise RuntimeError(
+                    f"serialized text delivery {source_id}: source-derived raster "
+                    "mismatch (selected source page or item binding changed)"
+                )
             source_pixels_sampled = evidence.get("source_pixels_sampled") is True
             if source_pixels_sampled:
                 source_clip = list(evidence.get("source_clip_pdf") or [])
@@ -927,13 +1012,12 @@ def _verify_serialized_text_deliveries(
                         "evidence is incomplete"
                     )
             else:
-                physical_proof = evidence.get("physical_glyph_ink_proof")
                 if (
                     final_attempt.get("strategy") != "sealed_physical_zero_ink_png"
                     or evidence.get("source_zero_ink_physically_proven") is not True
                     or evidence.get("zero_ink_verified") is not True
                     or evidence.get("visible_ink_verified") is not False
-                    or not _validate_physical_glyph_ink_proof(physical_proof)
+                    or physical_proof_valid is not True
                     or physical_proof.get("status") != "empty"
                 ):
                     raise RuntimeError(
@@ -950,6 +1034,112 @@ def _verify_serialized_text_deliveries(
                 raise RuntimeError(
                     f"serialized text delivery {source_id}: raster asset hash mismatch"
                 )
+            if source_pixels_sampled:
+                evidence_source = Path(
+                    str(evidence.get("source_pdf_path") or "")
+                ).expanduser().resolve()
+                bound_source = (
+                    Path(expected_source_pdf_path).expanduser().resolve()
+                    if expected_source_pdf_path is not None
+                    else evidence_source
+                )
+                if evidence_source != bound_source or not bound_source.is_file():
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: source-derived raster "
+                        "mismatch (source PDF binding changed)"
+                    )
+                proof_source_path = Path(
+                    str(physical_proof.get("source_pdf_path") or "")
+                ).expanduser().resolve()
+                if (
+                    proof_source_path != evidence_source
+                    or str(physical_proof.get("source_pdf_sha256") or "")
+                    != str(evidence.get("source_pdf_sha256") or "")
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: source-derived raster "
+                        "mismatch (physical proof PDF binding changed)"
+                    )
+                source_key = str(bound_source)
+                actual_source_sha = source_digest_cache.get(source_key)
+                if actual_source_sha is None:
+                    actual_source_sha = _file_sha256(bound_source)
+                    source_digest_cache[source_key] = actual_source_sha
+                reported_source_sha = str(evidence.get("source_pdf_sha256") or "")
+                if (
+                    not reported_source_sha
+                    or reported_source_sha != actual_source_sha
+                    or (
+                        expected_source_pdf_sha256
+                        and actual_source_sha != expected_source_pdf_sha256
+                    )
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: source-derived raster "
+                        "mismatch (source PDF digest changed)"
+                    )
+                try:
+                    page_number = int(evidence.get("source_page_number"))
+                    raster_dpi = int(evidence.get("raster_dpi"))
+                    if (
+                        isinstance(evidence.get("source_page_number"), bool)
+                        or isinstance(evidence.get("raster_dpi"), bool)
+                        or page_number <= 0
+                        or raster_dpi < 72
+                    ):
+                        raise ValueError("invalid page or DPI")
+                    fresh, fresh_clip, fresh_rotation = _render_source_text_clip(
+                        bound_source,
+                        page_number=page_number,
+                        source_bbox_pdf=evidence.get("source_bbox_pdf"),
+                        raster_dpi=raster_dpi,
+                    )
+                    staged = fitz.Pixmap(str(asset_path))
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: source-derived raster "
+                        f"mismatch ({exc})"
+                    ) from exc
+                reported_clip = [
+                    float(value) for value in evidence.get("source_clip_pdf") or []
+                ]
+                reported_rotation = [
+                    float(value)
+                    for value in evidence.get("source_to_display_rotation") or []
+                ]
+                geometry_matches = bool(
+                    len(reported_clip) == len(fresh_clip) == 4
+                    and len(reported_rotation) == len(fresh_rotation)
+                    and all(
+                        math.isclose(left, right, rel_tol=0.0, abs_tol=1e-9)
+                        for left, right in zip(
+                            reported_clip,
+                            fresh_clip,
+                            strict=True,
+                        )
+                    )
+                    and all(
+                        math.isclose(left, right, rel_tol=0.0, abs_tol=1e-9)
+                        for left, right in zip(
+                            reported_rotation,
+                            fresh_rotation,
+                            strict=True,
+                        )
+                    )
+                )
+                pixels_match = bool(
+                    staged.width == fresh.width
+                    and staged.height == fresh.height
+                    and int(staged.n) == int(fresh.n)
+                    and bool(staged.alpha) is bool(fresh.alpha)
+                    and bytes(staged.samples) == bytes(fresh.samples)
+                    and evidence.get("source_render_samples_sha256")
+                    == hashlib.sha256(bytes(fresh.samples)).hexdigest()
+                )
+                if not geometry_matches or not pixels_match:
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: source-derived raster mismatch"
+                    )
             if len(entities) != 1:
                 raise RuntimeError(
                     f"serialized text delivery {source_id}: raster must own one IMAGE"
@@ -1326,6 +1516,84 @@ def _pixmap_contains_ink(pixmap: Any) -> bool:
     return False
 
 
+def _render_source_text_clip(
+    source_pdf: Path,
+    *,
+    page_number: int,
+    source_bbox_pdf: Any,
+    raster_dpi: int,
+) -> Tuple[Any, List[float], List[float]]:
+    """Render one exact raw-PDF text bbox through the source page transform."""
+
+    if isinstance(page_number, bool) or int(page_number) <= 0:
+        raise ValueError("source page number is invalid")
+    if isinstance(raster_dpi, bool) or int(raster_dpi) < 72:
+        raise ValueError("terminal raster DPI is invalid")
+    bbox = list(source_bbox_pdf or [])
+    if len(bbox) != 4:
+        raise ValueError("terminal raster source bbox is incomplete")
+    sx0, sy0, sx1, sy1 = [float(value) for value in bbox]
+    if not all(math.isfinite(value) for value in (sx0, sy0, sx1, sy1)):
+        raise ValueError("terminal raster source bbox is non-finite")
+    if math.isclose(sx0, sx1) or math.isclose(sy0, sy1):
+        raise ValueError("terminal raster source bbox is empty")
+
+    with fitz.open(str(source_pdf)) as source_doc:
+        page = source_doc.load_page(int(page_number) - 1)
+        rotation_matrix = _page_rotation_transform(
+            page.rect,
+            getattr(page, "rotation_matrix", None),
+        )
+        source_corners = [
+            _transform_pdf_point(x, y, rotation_matrix)
+            for x, y in (
+                (sx0, sy0),
+                (sx1, sy0),
+                (sx1, sy1),
+                (sx0, sy1),
+            )
+        ]
+        requested_clip = fitz.Rect(
+            min(point[0] for point in source_corners),
+            min(point[1] for point in source_corners),
+            max(point[0] for point in source_corners),
+            max(point[1] for point in source_corners),
+        )
+        clip = requested_clip & page.rect
+        if clip.is_empty or clip.is_infinite:
+            raise ValueError("terminal raster clip is outside the source page")
+        containment_tolerance = max(
+            1e-6,
+            max(float(page.rect.width), float(page.rect.height), 1.0) * 1e-7,
+        )
+        if any(
+            not math.isclose(left, right, rel_tol=0.0, abs_tol=containment_tolerance)
+            for left, right in zip(
+                (
+                    requested_clip.x0,
+                    requested_clip.y0,
+                    requested_clip.x1,
+                    requested_clip.y1,
+                ),
+                (clip.x0, clip.y0, clip.x1, clip.y1),
+                strict=True,
+            )
+        ):
+            raise ValueError(
+                "terminal raster source bbox is not fully contained by the source page"
+            )
+        pixmap = page.get_pixmap(
+            matrix=fitz.Matrix(int(raster_dpi) / 72.0, int(raster_dpi) / 72.0),
+            clip=clip,
+            alpha=True,
+        )
+    return (
+        pixmap,
+        [float(clip.x0), float(clip.y0), float(clip.x1), float(clip.y1)],
+        [float(value) for value in rotation_matrix],
+    )
+
+
 def _entitydb_handles(doc: Any) -> set[str]:
     return {str(handle) for handle in doc.entitydb.keys() if handle}
 
@@ -1470,12 +1738,15 @@ def _attempt_terminal_text_raster(
     attempts = list(delivery.attempts)
     for prior in attempts:
         prior.superseded = True
+    proof_config = config or ImportConfig.auto()
     physical_ink_proof = _build_physical_glyph_ink_proof(
         source_text,
-        config or ImportConfig.auto(),
+        proof_config,
     )
     physical_ink_proof_valid = _validate_physical_glyph_ink_proof(
-        physical_ink_proof
+        physical_ink_proof,
+        expected_text_item=source_text,
+        expected_config=proof_config,
     )
     source_zero_ink_proven = bool(
         physical_ink_proof_valid and physical_ink_proof.get("status") == "empty"
@@ -1526,6 +1797,7 @@ def _attempt_terminal_text_raster(
         source_pixels_sampled = False
         visible_ink_verified = False
         zero_ink_verified = False
+        dpi = max(72, int(raster_dpi or 300))
         if source_zero_ink_proven:
             pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 1, 1), True)
             pixmap.clear_with(0)
@@ -1535,70 +1807,14 @@ def _attempt_terminal_text_raster(
             if not zero_ink_verified:
                 raise ValueError("terminal raster zero-ink asset contains visible pixels")
         else:
-            with fitz.open(extraction.pdf_path) as source_doc:
-                page = source_doc.load_page(int(page_number) - 1)
-                rotation_matrix = _page_rotation_transform(
-                    page.rect,
-                    getattr(page, "rotation_matrix", None),
-                )
-                source_corners = [
-                    _transform_pdf_point(x, y, rotation_matrix)
-                    for x, y in (
-                        (sx0, sy0),
-                        (sx1, sy0),
-                        (sx1, sy1),
-                        (sx0, sy1),
-                    )
-                ]
-                requested_clip = fitz.Rect(
-                    min(point[0] for point in source_corners),
-                    min(point[1] for point in source_corners),
-                    max(point[0] for point in source_corners),
-                    max(point[1] for point in source_corners),
-                )
-                clip = requested_clip & page.rect
-                if clip.is_empty or clip.is_infinite:
-                    raise ValueError("terminal raster clip is outside the source page")
-                containment_tolerance = max(
-                    1e-6,
-                    max(float(page.rect.width), float(page.rect.height), 1.0) * 1e-7,
-                )
-                if any(
-                    not math.isclose(
-                        left,
-                        right,
-                        rel_tol=0.0,
-                        abs_tol=containment_tolerance,
-                    )
-                    for left, right in zip(
-                        (
-                            requested_clip.x0,
-                            requested_clip.y0,
-                            requested_clip.x1,
-                            requested_clip.y1,
-                        ),
-                        (clip.x0, clip.y0, clip.x1, clip.y1),
-                        strict=True,
-                    )
-                ):
-                    raise ValueError(
-                        "terminal raster source bbox is not fully contained by the source page"
-                    )
-                dpi = max(72, int(raster_dpi or 300))
-                pixmap = page.get_pixmap(
-                    matrix=fitz.Matrix(dpi / 72.0, dpi / 72.0),
-                    clip=clip,
-                    alpha=True,
-                )
-                png = bytes(pixmap.tobytes("png"))
-                source_clip = [
-                    float(clip.x0),
-                    float(clip.y0),
-                    float(clip.x1),
-                    float(clip.y1),
-                ]
-                source_rotation = [float(value) for value in rotation_matrix]
-                source_pixels_sampled = True
+            pixmap, source_clip, source_rotation = _render_source_text_clip(
+                Path(extraction.pdf_path).expanduser().resolve(),
+                page_number=int(page_number),
+                source_bbox_pdf=(sx0, sy0, sx1, sy1),
+                raster_dpi=dpi,
+            )
+            png = bytes(pixmap.tobytes("png"))
+            source_pixels_sampled = True
 
             visible_ink_verified = _pixmap_contains_ink(pixmap)
             zero_ink_verified = not visible_ink_verified
@@ -1674,6 +1890,12 @@ def _attempt_terminal_text_raster(
             "source_clip_pdf": source_clip,
             "source_bbox_pdf": [sx0, sy0, sx1, sy1],
             "source_to_display_rotation": source_rotation,
+            "raster_dpi": dpi,
+            "source_render_samples_sha256": (
+                hashlib.sha256(bytes(pixmap.samples)).hexdigest()
+                if source_pixels_sampled
+                else ""
+            ),
             "target_bbox_model": [
                 min(px0, px1),
                 min(py0, py1),
@@ -1808,6 +2030,7 @@ def _export_to_dxf_impl(
     text_fallbacks: List[Dict[str, Any]] = []
     delivered_text_entity_counts: Dict[str, int] = {}
     text_deliveries: List[Dict[str, Any]] = []
+    serialized_text_sources: Dict[str, Tuple[Any, ImportConfig]] = {}
     seen_text_source_ids: set[str] = set()
     seen_text_entity_handles: set[str] = set()
     serialized_image_expectations: List[_SerializedImageExpectation] = []
@@ -1973,9 +2196,13 @@ def _export_to_dxf_impl(
                 entity_count += 1
 
         if opts.include_text and opts.text_mode != "none":
+            if source_pdf_sha256 is None:
+                source_pdf_sha256 = _file_sha256(source_pdf)
             text_cfg = ImportConfig.auto()
             text_cfg.text_mode = opts.text_mode
             text_cfg._embedded_font_asset_paths = dict(embedded_font_paths)  # noqa: B010
+            text_cfg._source_pdf_path = str(source_pdf)  # noqa: B010
+            text_cfg._source_pdf_sha256 = source_pdf_sha256  # noqa: B010
             for text in page.page_data.text_items:
                 layer = _layer_name(page.page_data.page_number, "TEXT", None, opts)
                 _ensure_layer(doc, layer, None)
@@ -2060,6 +2287,7 @@ def _export_to_dxf_impl(
                     )
                 seen_text_source_ids.add(delivery.source_id)
                 seen_text_entity_handles.update(delivery.entity_handles)
+                serialized_text_sources[delivery.source_id] = (text, text_cfg)
                 text_deliveries.append(delivery.to_dict())
 
                 delivered_kind = delivery.delivered_kind
@@ -2240,7 +2468,13 @@ def _export_to_dxf_impl(
                 "serialized DXF candidate failed audit with "
                 f"{len(auditor.errors)} error(s)"
             )
-        _verify_serialized_text_deliveries(candidate, text_deliveries)
+        _verify_serialized_text_deliveries(
+            candidate,
+            text_deliveries,
+            expected_source_pdf_path=source_pdf,
+            expected_source_pdf_sha256=str(source_pdf_sha256 or ""),
+            expected_text_sources=serialized_text_sources,
+        )
         _verify_serialized_image_assets(candidate, serialized_image_expectations)
         temp_output.replace(output)
     except Exception:

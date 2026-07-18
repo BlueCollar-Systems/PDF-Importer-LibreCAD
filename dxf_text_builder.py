@@ -919,7 +919,7 @@ def _source_glyph_identity_rows(
             len(str(getattr(row, "text", "") or "")) != 1 for row in layout
         ):
             return [(character, None, "missing") for character in text]
-        return [
+        layout_rows = [
             (
                 str(getattr(row, "text", "") or ""),
                 getattr(row, "glyph_id", None),
@@ -927,6 +927,21 @@ def _source_glyph_identity_rows(
             )
             for row in layout
         ]
+        source_glyph_id = getattr(text_item, "source_glyph_id", None)
+        if source_glyph_id is not None:
+            layout_glyph_id = layout_rows[0][1] if len(layout_rows) == 1 else None
+            if (
+                len(layout_rows) != 1
+                or isinstance(source_glyph_id, bool)
+                or not isinstance(source_glyph_id, int)
+                or source_glyph_id < 0
+                or isinstance(layout_glyph_id, bool)
+                or not isinstance(layout_glyph_id, int)
+                or layout_glyph_id < 0
+                or source_glyph_id != layout_glyph_id
+            ):
+                return [(character, None, "missing") for character in text]
+        return layout_rows
     source_glyph_id = getattr(text_item, "source_glyph_id", None)
     if len(text) == 1 and source_glyph_id is not None:
         return [(text, source_glyph_id, "source_glyph_id")]
@@ -958,8 +973,50 @@ def _build_physical_glyph_ink_proof(
     resolved = resolution or _resolve_item_font(text_item, config)
     asset = getattr(text_item, "font_asset", None)
     rows = _source_glyph_identity_rows(text_item, text)
+    source_id = _source_id(text_item)
+    raw_page_number = getattr(text_item, "page_number", None)
+    raw_item_id = getattr(text_item, "id", None)
+    source_page_number = (
+        int(raw_page_number)
+        if isinstance(raw_page_number, int) and not isinstance(raw_page_number, bool)
+        else None
+    )
+    source_item_id = (
+        int(raw_item_id)
+        if isinstance(raw_item_id, int) and not isinstance(raw_item_id, bool)
+        else None
+    )
+    raw_source_bbox = getattr(text_item, "source_bbox_pdf", None)
+    try:
+        source_bbox_pdf = (
+            [float(value) for value in raw_source_bbox[:4]]
+            if raw_source_bbox is not None and len(raw_source_bbox) >= 4
+            else None
+        )
+    except (TypeError, ValueError):
+        source_bbox_pdf = None
+    if source_bbox_pdf is not None and not all(
+        math.isfinite(value) for value in source_bbox_pdf
+    ):
+        source_bbox_pdf = None
+    configured_source_pdf = str(
+        getattr(config, "_source_pdf_path", "") or ""
+    ).strip()
+    source_pdf_path = (
+        str(Path(configured_source_pdf).expanduser().resolve())
+        if configured_source_pdf
+        else ""
+    )
     proof: Dict[str, Any] = {
         "schema": _PHYSICAL_GLYPH_INK_PROOF_SCHEMA,
+        "source_id": source_id,
+        "source_page_number": source_page_number,
+        "source_item_id": source_item_id,
+        "source_bbox_pdf": source_bbox_pdf,
+        "source_pdf_path": source_pdf_path,
+        "source_pdf_sha256": str(
+            getattr(config, "_source_pdf_sha256", "") or ""
+        ),
         "source_text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         "source_text_length": len(text),
         "font_program_path": str(resolved.filename or ""),
@@ -969,6 +1026,18 @@ def _build_physical_glyph_ink_proof(
         "font_source_sha256": str(resolved.source_sha256 or ""),
         "font_source_origin": str(
             resolved.source_origin or resolved.resolution_source or ""
+        ),
+        "font_resolution_source": str(resolved.resolution_source or ""),
+        "font_resolution_source_name": str(resolved.source_name or ""),
+        "font_resolution_family": str(resolved.family or ""),
+        "font_resolution_style": str(resolved.style or ""),
+        "font_asset_page_number": getattr(asset, "page_number", None),
+        "font_asset_source_xref": getattr(asset, "source_xref", None),
+        "font_asset_resource_name": str(
+            getattr(asset, "resource_name", "") or ""
+        ),
+        "font_asset_span_font_name": str(
+            getattr(asset, "span_font_name", "") or ""
         ),
         "font_source_authoritative": _source_font_program_is_authoritative(resolved),
         "font_unicode_map_installed": bool(
@@ -998,19 +1067,33 @@ def _build_physical_glyph_ink_proof(
         proof["reason"] = reason
         return _seal_physical_glyph_ink_proof(proof)
 
+    def unmeasured_source_rows() -> List[Dict[str, Any]]:
+        result: List[Dict[str, Any]] = []
+        for index, (character, raw_glyph_id, selection_source) in enumerate(rows):
+            source_glyph_id = (
+                raw_glyph_id
+                if isinstance(raw_glyph_id, int)
+                and not isinstance(raw_glyph_id, bool)
+                and raw_glyph_id >= 0
+                else None
+            )
+            result.append(
+                {
+                    "index": index,
+                    "character_codepoint": ord(character),
+                    "glyph_id": source_glyph_id,
+                    "selection_source": (
+                        selection_source if source_glyph_id is not None else "missing"
+                    ),
+                    "status": "unproven",
+                }
+            )
+        return result
+
     if not text:
         return finish("source text is empty")
+    proof["glyphs"] = unmeasured_source_rows()
     if not resolved.exact or not _source_font_program_is_authoritative(resolved):
-        proof["glyphs"] = [
-            {
-                "index": index,
-                "character_codepoint": ord(character),
-                "glyph_id": None,
-                "selection_source": "missing",
-                "status": "unproven",
-            }
-            for index, (character, _, _) in enumerate(rows)
-        ]
         return finish("exact source-authoritative font program is unavailable")
 
     font_path = Path(str(resolved.filename or ""))
@@ -1039,15 +1122,17 @@ def _build_physical_glyph_ink_proof(
         cmap = font.getBestCmap() or {}
         glyphs: List[Dict[str, Any]] = []
         for index, (character, raw_glyph_id, selection_source) in enumerate(rows):
+            source_glyph_id = (
+                raw_glyph_id
+                if isinstance(raw_glyph_id, int)
+                and not isinstance(raw_glyph_id, bool)
+                and raw_glyph_id >= 0
+                else None
+            )
             glyph_id: Optional[int] = None
-            if raw_glyph_id is not None:
-                if not isinstance(raw_glyph_id, bool):
-                    try:
-                        candidate = int(raw_glyph_id)
-                    except (TypeError, ValueError):
-                        candidate = -1
-                    if candidate == raw_glyph_id and 0 <= candidate < len(glyph_order):
-                        glyph_id = candidate
+            if source_glyph_id is not None:
+                if source_glyph_id < len(glyph_order):
+                    glyph_id = source_glyph_id
             elif proof["font_unicode_map_installed"] and proof[
                 "font_source_authoritative"
             ]:
@@ -1063,8 +1148,12 @@ def _build_physical_glyph_ink_proof(
             row: Dict[str, Any] = {
                 "index": index,
                 "character_codepoint": ord(character),
-                "glyph_id": glyph_id,
-                "selection_source": selection_source if glyph_id is not None else "missing",
+                "glyph_id": glyph_id if glyph_id is not None else source_glyph_id,
+                "selection_source": (
+                    selection_source
+                    if glyph_id is not None or source_glyph_id is not None
+                    else "missing"
+                ),
                 "status": "unproven",
             }
             if glyph_id is not None:
@@ -1081,7 +1170,13 @@ def _build_physical_glyph_ink_proof(
     return finish()
 
 
-def _validate_physical_glyph_ink_proof(proof: Any) -> bool:
+def _validate_physical_glyph_ink_proof(
+    proof: Any,
+    *,
+    expected_text_item: Optional[NormalizedText] = None,
+    expected_config: Optional[ImportConfig] = None,
+    expected_resolution: Optional[_ExactFontResolution] = None,
+) -> bool:
     """Recompute the sealed physical facts before trusting an empty glyph."""
 
     if not isinstance(proof, dict):
@@ -1118,25 +1213,256 @@ def _validate_physical_glyph_ink_proof(proof: Any) -> bool:
         )
     ):
         return False
-    if status == "empty" and (
-        source_length <= 0
-        or any(row.get("status") != "empty" for row in glyphs)
+    reconstructed_text = "".join(chr(row["character_codepoint"]) for row in glyphs)
+    if payload.get("source_text_sha256") != hashlib.sha256(
+        reconstructed_text.encode("utf-8")
+    ).hexdigest():
+        return False
+    allowed_selection_sources = {
+        "source_glyph_id",
+        "source_char_layout_glyph_id",
+        "installed_pdf_unicode_cmap",
+        "test_fixture_unicode_cmap",
+        "missing",
+    }
+    physical_fields = (
+        "glyph_name",
+        "bounds",
+        "contour_count",
+        "draw_command_count",
+        "outline_sha256",
+    )
+    for row in glyphs:
+        glyph_id = row.get("glyph_id")
+        selection_source = row.get("selection_source")
+        row_status = row.get("status")
+        if (
+            selection_source not in allowed_selection_sources
+            or row_status not in {"empty", "visible", "unproven"}
+        ):
+            return False
+        if glyph_id is None:
+            if selection_source != "missing" or row_status != "unproven":
+                return False
+        elif (
+            isinstance(glyph_id, bool)
+            or not isinstance(glyph_id, int)
+            or glyph_id < 0
+            or selection_source == "missing"
+        ):
+            return False
+        present_physical_fields = [field_name in row for field_name in physical_fields]
+        if any(present_physical_fields) != all(present_physical_fields) or (
+            not any(present_physical_fields) and row_status != "unproven"
+        ):
+            return False
+    statuses = [str(row["status"]) for row in glyphs]
+    aggregate_status = (
+        "visible"
+        if any(value == "visible" for value in statuses)
+        else (
+            "empty"
+            if source_length > 0 and all(value == "empty" for value in statuses)
+            else "unproven"
+        )
+    )
+    if status != aggregate_status:
+        return False
+    source_page_number = payload.get("source_page_number")
+    source_item_id = payload.get("source_item_id")
+    source_id = str(payload.get("source_id") or "")
+    source_bbox_pdf = payload.get("source_bbox_pdf")
+    if (
+        isinstance(source_page_number, bool)
+        or not isinstance(source_page_number, int)
+        or source_page_number < 0
+        or isinstance(source_item_id, bool)
+        or not isinstance(source_item_id, int)
+        or source_item_id < 0
+        or source_id != f"text_span:{source_page_number}:{source_item_id}"
+        or not (
+            source_bbox_pdf is None
+            or (
+                isinstance(source_bbox_pdf, list)
+                and len(source_bbox_pdf) == 4
+                and all(
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and math.isfinite(float(value))
+                    for value in source_bbox_pdf
+                )
+            )
+        )
     ):
         return False
-    if status == "visible" and not any(
-        row.get("status") == "visible" for row in glyphs
+    proof_source_pdf_path = str(payload.get("source_pdf_path") or "")
+    proof_source_pdf_sha = str(payload.get("source_pdf_sha256") or "")
+    if bool(proof_source_pdf_path) != bool(proof_source_pdf_sha) or (
+        proof_source_pdf_sha
+        and not re.fullmatch(r"[0-9a-f]{64}", proof_source_pdf_sha)
     ):
         return False
+
+    if expected_text_item is not None:
+        expected_text = str(getattr(expected_text_item, "text", "") or "")
+        expected_source_id = _source_id(expected_text_item)
+        raw_expected_bbox = getattr(expected_text_item, "source_bbox_pdf", None)
+        if raw_expected_bbox is None:
+            expected_bbox = None
+        else:
+            try:
+                expected_bbox = [float(value) for value in raw_expected_bbox[:4]]
+            except (IndexError, TypeError, ValueError):
+                return False
+        if (
+            not expected_source_id
+            or source_id != expected_source_id
+            or payload.get("source_text_length") != len(expected_text)
+            or payload.get("source_text_sha256")
+            != hashlib.sha256(expected_text.encode("utf-8")).hexdigest()
+            or reconstructed_text != expected_text
+            or source_bbox_pdf != expected_bbox
+        ):
+            return False
+
+        expected_rows = _source_glyph_identity_rows(expected_text_item, expected_text)
+        if len(expected_rows) != len(glyphs):
+            return False
+        for row, (character, raw_glyph_id, identity_source) in zip(
+            glyphs,
+            expected_rows,
+            strict=True,
+        ):
+            expected_glyph_id = (
+                int(raw_glyph_id)
+                if isinstance(raw_glyph_id, int)
+                and not isinstance(raw_glyph_id, bool)
+                and raw_glyph_id >= 0
+                else None
+            )
+            selection_source = row.get("selection_source")
+            if row.get("character_codepoint") != ord(character):
+                return False
+            if selection_source in {
+                "source_glyph_id",
+                "source_char_layout_glyph_id",
+            }:
+                if (
+                    expected_glyph_id is None
+                    or identity_source != selection_source
+                    or row.get("glyph_id") != expected_glyph_id
+                ):
+                    return False
+            elif selection_source in {
+                "installed_pdf_unicode_cmap",
+                "test_fixture_unicode_cmap",
+            }:
+                if expected_glyph_id is not None:
+                    return False
+            elif selection_source == "missing":
+                if expected_glyph_id is not None or row.get("glyph_id") is not None:
+                    return False
+            else:
+                return False
+
+        expected_asset = getattr(expected_text_item, "font_asset", None)
+        expected_asset_fields = {
+            "font_asset_page_number": getattr(expected_asset, "page_number", None),
+            "font_asset_source_xref": getattr(expected_asset, "source_xref", None),
+            "font_asset_resource_name": str(
+                getattr(expected_asset, "resource_name", "") or ""
+            ),
+            "font_asset_span_font_name": str(
+                getattr(expected_asset, "span_font_name", "") or ""
+            ),
+        }
+        for field_name, expected_value in expected_asset_fields.items():
+            actual_value = payload.get(field_name)
+            if isinstance(actual_value, bool) or actual_value != expected_value:
+                return False
+
+        resolution = expected_resolution
+        if resolution is None and expected_config is not None:
+            try:
+                resolution = _resolve_item_font(expected_text_item, expected_config)
+            except (OSError, TypeError, ValueError):
+                return False
+        if resolution is None:
+            return False
+        expected_font_path = str(resolution.filename or "")
+        try:
+            actual_font_path = str(
+                Path(str(payload.get("font_program_path") or ""))
+                .expanduser()
+                .resolve()
+            )
+            resolved_expected_font_path = str(
+                Path(expected_font_path).expanduser().resolve()
+            )
+        except (OSError, RuntimeError):
+            return False
+        expected_origin = str(
+            resolution.source_origin or resolution.resolution_source or ""
+        )
+        if (
+            os.path.normcase(actual_font_path)
+            != os.path.normcase(resolved_expected_font_path)
+            or payload.get("font_asset_id") != str(resolution.asset_id or "")
+            or payload.get("font_asset_sha256")
+            != str(resolution.asset_sha256 or "")
+            or payload.get("font_source_sha256")
+            != str(resolution.source_sha256 or "")
+            or payload.get("font_source_origin") != expected_origin
+            or payload.get("font_resolution_source")
+            != str(resolution.resolution_source or "")
+            or payload.get("font_resolution_source_name")
+            != str(resolution.source_name or "")
+            or payload.get("font_resolution_family") != str(resolution.family or "")
+            or payload.get("font_resolution_style") != str(resolution.style or "")
+        ):
+            return False
+
+    if expected_config is not None:
+        configured_source_path = str(
+            getattr(expected_config, "_source_pdf_path", "") or ""
+        ).strip()
+        configured_source_sha = str(
+            getattr(expected_config, "_source_pdf_sha256", "") or ""
+        )
+        expected_source_path = (
+            str(Path(configured_source_path).expanduser().resolve())
+            if configured_source_path
+            else ""
+        )
+        if (
+            proof_source_pdf_path != expected_source_path
+            or proof_source_pdf_sha != configured_source_sha
+        ):
+            return False
+        if expected_source_path:
+            try:
+                actual_source_sha = hashlib.sha256(
+                    Path(expected_source_path).read_bytes()
+                ).hexdigest()
+            except OSError:
+                return False
+            if actual_source_sha != configured_source_sha:
+                return False
+
     font_path = Path(str(payload.get("font_program_path") or ""))
     font_digest = str(payload.get("font_program_sha256") or "")
-    resolved_rows = [row for row in glyphs if row.get("glyph_id") is not None]
-    if not resolved_rows:
-        return status == "unproven"
+    measured_rows = [
+        row for row in glyphs if all(field_name in row for field_name in physical_fields)
+    ]
     origin = str(payload.get("font_source_origin") or "").strip().lower()
-    if (
-        payload.get("font_source_authoritative") is not True
-        or origin not in _SOURCE_AUTHORITATIVE_FONT_ORIGINS
-    ):
+    if payload.get("font_source_authoritative") is not True:
+        return bool(
+            not measured_rows
+            and not font_digest
+            and status == "unproven"
+            and all(row.get("status") == "unproven" for row in glyphs)
+        )
+    if origin not in _SOURCE_AUTHORITATIVE_FONT_ORIGINS:
         return False
     try:
         font_bytes = font_path.read_bytes()
@@ -1155,8 +1481,22 @@ def _validate_physical_glyph_ink_proof(proof: Any) -> bool:
         font = TTFont(BytesIO(font_bytes), lazy=False, recalcTimestamp=False)
         glyph_order = tuple(font.getGlyphOrder())
         cmap = font.getBestCmap() or {}
-        for row in resolved_rows:
-            glyph_id = int(row["glyph_id"])
+        for row in glyphs:
+            raw_glyph_id = row.get("glyph_id")
+            row_is_measured = all(
+                field_name in row for field_name in physical_fields
+            )
+            if raw_glyph_id is None:
+                if row_is_measured or row.get("status") != "unproven":
+                    return False
+                continue
+            glyph_id = int(raw_glyph_id)
+            if glyph_id >= len(glyph_order):
+                if row_is_measured or row.get("status") != "unproven":
+                    return False
+                continue
+            if not row_is_measured:
+                return False
             measured = _font_glyph_physical_record(font, glyph_id)
             for field_name in (
                 "glyph_id",
@@ -3021,7 +3361,10 @@ def _attempt_labels(
             resolution=font_resolution,
         )
         physical_ink_proof_valid = _validate_physical_glyph_ink_proof(
-            physical_ink_proof
+            physical_ink_proof,
+            expected_text_item=text_item,
+            expected_config=config,
+            expected_resolution=font_resolution,
         )
         source_zero_ink_proven = bool(
             physical_ink_proof_valid
@@ -4731,7 +5074,10 @@ def _attempt_outline_entity(
             resolution=font_resolution,
         )
         physical_ink_proof_valid = _validate_physical_glyph_ink_proof(
-            physical_ink_proof
+            physical_ink_proof,
+            expected_text_item=text_item,
+            expected_config=config,
+            expected_resolution=font_resolution,
         )
         attempt.evidence.update(
             {
@@ -4745,7 +5091,7 @@ def _attempt_outline_entity(
             row.get("glyph_id") is None or row.get("status") == "unproven"
             for row in physical_ink_proof.get("glyphs") or []
         ):
-            raise ValueError(
+            raise _RepresentationImpossible(
                 "exact source glyph identity or contour evidence is incomplete"
             )
         if (
@@ -4993,7 +5339,10 @@ def _attempt_outline_string(
             resolution=font_resolution,
         )
         physical_ink_proof_valid = _validate_physical_glyph_ink_proof(
-            physical_ink_proof
+            physical_ink_proof,
+            expected_text_item=text_item,
+            expected_config=config,
+            expected_resolution=font_resolution,
         )
         attempt.evidence.update(
             {
@@ -5007,7 +5356,7 @@ def _attempt_outline_string(
             row.get("glyph_id") is None or row.get("status") == "unproven"
             for row in physical_ink_proof.get("glyphs") or []
         ):
-            raise ValueError(
+            raise _RepresentationImpossible(
                 "exact source glyph identity or contour evidence is incomplete"
             )
         if (

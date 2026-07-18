@@ -32,6 +32,7 @@ from librecad_pdf_importer.exporters.dxf_exporter import (
     DxfExportOptions,
     TextRepresentationDeliveryError,
     _attempt_terminal_text_raster,
+    _render_source_text_clip,
     _verify_serialized_text_deliveries,
     export_to_dxf,
 )
@@ -2151,7 +2152,7 @@ def test_visible_zero_advance_combining_contour_is_delivered(mode) -> None:
 def test_non_default_ignorable_controls_do_not_self_certify_as_zero_ink(
     content,
 ) -> None:
-    """Only whitespace/default-ignorables have affirmative zero-ink authority."""
+    """Unicode categories never self-certify zero ink; physical glyph proof does."""
 
     assert dxf_text_builder._visible_ink_expected(content) is True
 
@@ -2679,6 +2680,67 @@ def test_visible_unicode_bound_to_empty_source_glyph_reaches_transparent_raster(
     run.close()
 
 
+def test_missing_source_glyph_identity_reaches_source_sampled_terminal_raster(
+    deterministic_exact_font,
+    tmp_path,
+) -> None:
+    run = _real_text_extraction(tmp_path)
+    original = run.extraction.pages[0].page_data.text_items[0]
+    missing_identity = __import__("dataclasses").replace(
+        original,
+        source_char_layout=(),
+        requires_individual_positioning=False,
+        positioned_character=False,
+        source_glyph_id=None,
+        font_asset=None,
+        font_failure=None,
+    )
+    run.extraction.pages[0].page_data.text_items = [missing_identity]
+    resolution = _ExactFontResolution(
+        source_name="BCS missing-identity fixture",
+        family="BCS missing-identity fixture",
+        style="Regular",
+        filename=str(deterministic_exact_font),
+        exact=True,
+        reason="exact font bytes without an installed PDF cmap",
+        resolution_source="test_fixture",
+        source_origin="test_fixture",
+        unicode_map_installed=False,
+    )
+    output = tmp_path / "missing-glyph-identity-terminal-raster.dxf"
+
+    with patch("dxf_text_builder._resolve_item_font", return_value=resolution):
+        result = export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(
+                include_images=False,
+                text_mode="geometry",
+                provenance_opts=run.config,
+            ),
+        )
+
+    delivery = result.text_deliveries[0]
+    assert delivery["requested_representation"] == "geometry"
+    assert delivery["final_representation"] == "raster"
+    assert delivery["fallback_used"] is True
+    collapsed_attempts = []
+    for attempt in delivery["attempts"]:
+        attempted = attempt["attempted_representation"]
+        if not collapsed_attempts or collapsed_attempts[-1] != attempted:
+            collapsed_attempts.append(attempted)
+    assert collapsed_attempts == _representation_ladder("geometry") + ["raster"]
+    structural = delivery["attempts"][:-1]
+    assert all(attempt["outcome"] == "impossible" for attempt in structural)
+    assert all(attempt["cleanup_verified"] is True for attempt in structural)
+    raster = delivery["attempts"][-1]
+    assert raster["strategy"] == "pymupdf_item_clip"
+    assert raster["outcome"] == "verified"
+    assert raster["evidence"]["source_pixels_sampled"] is True
+    assert Path(raster["evidence"]["asset_path"]).is_file()
+    run.close()
+
+
 def test_explicit_item_raster_is_verified_without_being_reported_as_fallback(
     tmp_path,
 ) -> None:
@@ -2720,6 +2782,99 @@ def test_explicit_item_raster_is_verified_without_being_reported_as_fallback(
     assert report["fallback"]["used"] is False
     assert "text" not in report["fallback"]
     assert report["extra"]["actual_text_entity_types"]["entity_type"] == "raster"
+
+
+def test_serialized_raster_rejects_jointly_rewritten_png_and_hash(tmp_path) -> None:
+    run = _real_text_extraction(tmp_path)
+    output = tmp_path / "jointly-rewritten-raster.dxf"
+    result = export_to_dxf(
+        run.extraction,
+        str(output),
+        DxfExportOptions(
+            include_images=False,
+            text_mode="raster",
+            provenance_opts=run.config,
+        ),
+    )
+    drawing = ezdxf.readfile(output)
+    delivery = json.loads(json.dumps(result.text_deliveries[0]))
+    attempt = delivery["attempts"][-1]
+    evidence = attempt["evidence"]
+    assert evidence["source_pixels_sampled"] is True
+    asset = Path(evidence["asset_path"])
+    original = fitz.Pixmap(str(asset))
+    wrong = fitz.Pixmap(
+        fitz.csRGB,
+        fitz.IRect(0, 0, original.width, original.height),
+        True,
+    )
+    wrong.clear_with(255)
+    wrong_png = bytes(wrong.tobytes("png"))
+    assert hashlib.sha256(wrong_png).hexdigest() != evidence["asset_sha256"]
+    asset.write_bytes(wrong_png)
+    evidence["asset_sha256"] = hashlib.sha256(wrong_png).hexdigest()
+
+    with pytest.raises(RuntimeError, match="source-derived raster mismatch"):
+        _verify_serialized_text_deliveries(drawing, [delivery])
+    run.close()
+
+
+def test_serialized_raster_rejects_fresh_pixels_from_a_different_page(
+    tmp_path,
+) -> None:
+    pdf_path = tmp_path / "two-page-raster-source.pdf"
+    pdf = fitz.open()
+    first = pdf.new_page(width=240, height=160)
+    first.insert_text((36, 72), "W12X30", fontsize=12)
+    second = pdf.new_page(width=240, height=160)
+    second.insert_text((36, 72), "IIIIII", fontsize=12)
+    pdf.save(str(pdf_path))
+    pdf.close()
+    run = run_import(str(pdf_path), mode="vector", overrides={"pages": "1"})
+    assert run.extraction.text_count == 1
+    output = tmp_path / "page-rebound-raster.dxf"
+    result = export_to_dxf(
+        run.extraction,
+        str(output),
+        DxfExportOptions(
+            include_images=False,
+            text_mode="raster",
+            provenance_opts=run.config,
+        ),
+    )
+    drawing = ezdxf.readfile(output)
+    delivery = json.loads(json.dumps(result.text_deliveries[0]))
+    evidence = delivery["attempts"][-1]["evidence"]
+    asset = Path(evidence["asset_path"])
+    original_sha = evidence["asset_sha256"]
+    fresh, fresh_clip, fresh_rotation = _render_source_text_clip(
+        pdf_path,
+        page_number=2,
+        source_bbox_pdf=evidence["source_bbox_pdf"],
+        raster_dpi=evidence["raster_dpi"],
+    )
+    replacement_png = bytes(fresh.tobytes("png"))
+    replacement_sha = hashlib.sha256(replacement_png).hexdigest()
+    assert replacement_sha != original_sha
+    asset.write_bytes(replacement_png)
+    evidence["source_page_number"] = 2
+    evidence["source_clip_pdf"] = fresh_clip
+    evidence["source_to_display_rotation"] = fresh_rotation
+    evidence["source_render_samples_sha256"] = hashlib.sha256(
+        bytes(fresh.samples)
+    ).hexdigest()
+    evidence["asset_sha256"] = replacement_sha
+
+    with pytest.raises(RuntimeError, match="selected source page"):
+        _verify_serialized_text_deliveries(
+            drawing,
+            [delivery],
+            expected_source_pdf_path=pdf_path,
+            expected_source_pdf_sha256=hashlib.sha256(
+                pdf_path.read_bytes()
+            ).hexdigest(),
+        )
+    run.close()
 
 
 def test_explicit_raster_and_requested_labels_are_both_retained(tmp_path) -> None:
