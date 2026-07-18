@@ -1018,6 +1018,63 @@ def test_serialized_outline_verifier_rejects_reopened_contour_corruption(
         _verify_serialized_text_deliveries(reopened, [result.to_dict()])
 
 
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    [("rotation", 47.0), ("xscale", 2.0), ("yscale", 0.5)],
+)
+def test_serialized_glyph_verifier_rejects_reopened_parent_transform_corruption(
+    tmp_path,
+    attribute,
+    value,
+) -> None:
+    """Persisted block contours cannot certify a transformed parent INSERT."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / f"glyphs-corrupted-parent-{attribute}.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+
+    insert = next(iter(reopened.modelspace()))
+    setattr(insert.dxf, attribute, value)
+
+    with pytest.raises(RuntimeError, match="transform|geometry|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_serialized_glyph_verifier_rejects_reopened_block_base_point_corruption(
+    tmp_path,
+) -> None:
+    """A changed BLOCK base point moves every glyph despite intact children."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "glyphs-corrupted-block-base-point.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+
+    insert = next(iter(reopened.modelspace()))
+    block = reopened.blocks.get(insert.dxf.name)
+    block.block.dxf.base_point = (123.0, -47.0, 0.0)
+
+    with pytest.raises(RuntimeError, match="transform|geometry|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_serialized_delivery_binds_verified_attempt_to_the_same_source_id(
+    tmp_path,
+) -> None:
+    """A delivery cannot borrow valid attempt evidence from another source item."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "glyphs-mismatched-attempt-source.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    delivery = result.to_dict()
+    delivery["source_id"] = "text_span:3:999"
+
+    with pytest.raises(RuntimeError, match="source|attempt"):
+        _verify_serialized_text_deliveries(reopened, [delivery])
+
+
 def test_glyph_block_reference_carries_source_color_for_librecad_parent() -> None:
     item = __import__("dataclasses").replace(
         _item(),
@@ -1220,7 +1277,19 @@ def test_whitespace_only_source_falls_back_to_nearest_exact_zero_ink_text(mode) 
 
 
 @pytest.mark.parametrize("mode", ["glyphs", "geometry"])
-@pytest.mark.parametrize("content", ["\u200b", "\u2060"])
+@pytest.mark.parametrize(
+    "content",
+    [
+        "\u200b",  # ZERO WIDTH SPACE
+        "\u2060",  # WORD JOINER
+        "\u2061",  # FUNCTION APPLICATION
+        "\u2062",  # INVISIBLE TIMES
+        "\u2063",  # INVISIBLE SEPARATOR
+        "\u2064",  # INVISIBLE PLUS
+        "\ufe0e",  # VARIATION SELECTOR-15
+        "\ufe0f",  # VARIATION SELECTOR-16
+    ],
+)
 def test_zero_ink_format_source_uses_the_same_truthful_zero_ink_path(
     mode,
     content,

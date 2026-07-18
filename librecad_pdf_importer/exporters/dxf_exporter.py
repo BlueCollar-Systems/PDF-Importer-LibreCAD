@@ -268,6 +268,10 @@ def _verify_serialized_text_deliveries(
                 f"serialized text delivery {source_id}: expected one verified attempt"
             )
         final_attempt = verified_attempts[0]
+        if str(final_attempt.get("source_id") or "") != source_id:
+            raise RuntimeError(
+                f"serialized text delivery {source_id}: verified attempt source mismatch"
+            )
         if set(map(str, final_attempt.get("entity_handles") or [])) != set(
             entity_handles
         ) or set(map(str, final_attempt.get("support_entity_handles") or [])) != set(
@@ -429,6 +433,76 @@ def _verify_serialized_text_deliveries(
                 ):
                     raise RuntimeError(
                         f"serialized text delivery {source_id}: glyph outline color changed"
+                    )
+                expected_transform_values = [
+                    evidence.get("expected_block_rotation"),
+                    evidence.get("expected_block_xscale"),
+                    evidence.get("expected_block_yscale"),
+                ]
+                expected_base_point = evidence.get("expected_block_base_point")
+                if (
+                    evidence.get("block_insert_transform_verified") is not True
+                    or any(
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not math.isfinite(float(value))
+                        for value in expected_transform_values
+                    )
+                    or not isinstance(expected_base_point, (list, tuple))
+                    or len(expected_base_point) != 3
+                    or any(
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not math.isfinite(float(value))
+                        for value in expected_base_point
+                    )
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: glyph transform "
+                        "evidence incomplete"
+                    )
+                expected_rotation, expected_xscale, expected_yscale = map(
+                    float,
+                    expected_transform_values,
+                )
+                actual_rotation = float(insert.dxf.get("rotation", 0.0))
+                actual_xscale = float(insert.dxf.get("xscale", 1.0))
+                actual_yscale = float(insert.dxf.get("yscale", 1.0))
+                actual_base_point = tuple(
+                    float(value) for value in block.block.dxf.base_point
+                )
+                if (
+                    not all(
+                        math.isfinite(value)
+                        for value in (
+                            actual_rotation,
+                            actual_xscale,
+                            actual_yscale,
+                            *actual_base_point,
+                        )
+                    )
+                    or not all(
+                        math.isclose(left, right, rel_tol=0.0, abs_tol=1e-12)
+                        for left, right in zip(
+                            (
+                                actual_rotation,
+                                actual_xscale,
+                                actual_yscale,
+                                *actual_base_point,
+                            ),
+                            (
+                                expected_rotation,
+                                expected_xscale,
+                                expected_yscale,
+                                *(float(value) for value in expected_base_point),
+                            ),
+                            strict=True,
+                        )
+                    )
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: glyph outline "
+                        "transform changed"
                     )
                 outline_delivery_entities = list(block)
 

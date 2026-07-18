@@ -1502,6 +1502,12 @@ def _visible_ink_expected(text: str) -> bool:
         "\u200c",
         "\u200d",
         "\u2060",
+        "\u2061",
+        "\u2062",
+        "\u2063",
+        "\u2064",
+        "\ufe0e",
+        "\ufe0f",
         "\ufeff",
     }
     return any(
@@ -3083,6 +3089,50 @@ def _commit_outlines(
         math.isclose(left, right, rel_tol=0.0, abs_tol=1e-12)
         for left, right in zip(actual_insert, insertion, strict=True)
     )
+    expected_rotation = 0.0
+    expected_xscale = 1.0
+    expected_yscale = 1.0
+    expected_base_point = (0.0, 0.0, 0.0)
+    actual_rotation = float(block_ref.dxf.get("rotation", 0.0))
+    actual_xscale = float(block_ref.dxf.get("xscale", 1.0))
+    actual_yscale = float(block_ref.dxf.get("yscale", 1.0))
+    actual_base_point = tuple(float(value) for value in block.block.dxf.base_point)
+    transform_values = (
+        actual_rotation,
+        actual_xscale,
+        actual_yscale,
+        *actual_base_point,
+    )
+    insert_transform_verified = bool(
+        len(actual_base_point) == 3
+        and all(math.isfinite(value) for value in transform_values)
+        and math.isclose(
+            actual_rotation,
+            expected_rotation,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        and math.isclose(
+            actual_xscale,
+            expected_xscale,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        and math.isclose(
+            actual_yscale,
+            expected_yscale,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        and all(
+            math.isclose(left, right, rel_tol=0.0, abs_tol=1e-12)
+            for left, right in zip(
+                actual_base_point,
+                expected_base_point,
+                strict=True,
+            )
+        )
+    )
     expected_true_color = block_attribs.get("true_color")
     actual_true_color = (
         block_ref.dxf.true_color
@@ -3113,6 +3163,7 @@ def _commit_outlines(
     )
     attempt.visual_verified = bool(
         insert_verified
+        and insert_transform_verified
         and insert_color_verified
         and expectation.source_geometry_verified
         and outline_geometry_verified
@@ -3133,6 +3184,15 @@ def _commit_outlines(
             "expected_block_insert": list(insertion),
             "actual_block_insert": list(actual_insert),
             "block_insert_verified": insert_verified,
+            "expected_block_rotation": expected_rotation,
+            "actual_block_rotation": actual_rotation,
+            "expected_block_xscale": expected_xscale,
+            "actual_block_xscale": actual_xscale,
+            "expected_block_yscale": expected_yscale,
+            "actual_block_yscale": actual_yscale,
+            "expected_block_base_point": list(expected_base_point),
+            "actual_block_base_point": list(actual_base_point),
+            "block_insert_transform_verified": insert_transform_verified,
             "block_insert_color_verified": insert_color_verified,
             "block_insert_true_color": expected_true_color,
             "outline_character_ownership": ownership,
