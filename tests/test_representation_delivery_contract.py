@@ -408,6 +408,31 @@ def test_outline_verification_rejects_bbox_preserving_shape_corruption(mode) -> 
     assert all(attempt.cleanup_verified for attempt in result.attempts)
 
 
+@pytest.mark.parametrize("mode", ["glyphs", "geometry"])
+def test_outline_verification_rejects_corrupted_solid_fourth_vertex(mode) -> None:
+    """A SOLID triangle's persisted fourth vertex is part of its visible fill."""
+
+    original = dxf_text_builder._to_solid_fill_entities
+
+    def corrupt_fourth_vertex(paths, *, is_r12, attribs):
+        entities = original(paths, is_r12=is_r12, attribs=attribs)
+        fill = entities[0]
+        point = fill.dxf.vtx3
+        fill.dxf.vtx3 = (point.x + 47.0, point.y - 31.0, point.z)
+        return entities
+
+    with patch(
+        "dxf_text_builder._to_solid_fill_entities",
+        side_effect=corrupt_fourth_vertex,
+    ):
+        _, msp, result = _deliver(mode)
+
+    assert result.verified is False, [attempt.to_dict() for attempt in result.attempts]
+    assert result.final_representation is None
+    assert list(msp) == []
+    assert all(attempt.cleanup_verified for attempt in result.attempts)
+
+
 def test_outline_verification_rejects_large_relative_error_below_flattening_floor() -> None:
     """A fixed curve tolerance cannot hide an 11.9% shift of straight glyphs."""
 
@@ -497,6 +522,45 @@ def test_positioned_layout_never_concatenates_visible_source_characters() -> Non
 
     assert result.verified is True
     assert calls == ["A", "A"]
+
+
+def test_positioned_layout_rejects_one_entry_that_concatenates_source_characters() -> None:
+    """One ownership row cannot silently stand in for two positioned characters."""
+
+    item = _positioned_repeated_item()
+    combined_quad = tuple(item.target_quad_model)
+    combined = TextCharLayout(
+        text="AA",
+        glyph_id=None,
+        source_origin_pdf=(10.0, 20.0),
+        source_bbox_pdf=(10.0, 18.0, 22.0, 33.0),
+        source_quad_pdf=combined_quad,
+        target_origin=(10.0, 20.0),
+        target_quad=combined_quad,
+        advance_width=12.0,
+        glyph_height=15.0,
+    )
+    item = __import__("dataclasses").replace(
+        item,
+        source_char_layout=(combined,),
+    )
+    calls = []
+    original = dxf_text_builder.text2path.make_paths_from_str
+
+    def record_source_text(text, *args, **kwargs):
+        calls.append(text)
+        return original(text, *args, **kwargs)
+
+    with patch(
+        "dxf_text_builder.text2path.make_paths_from_str",
+        side_effect=record_source_text,
+    ):
+        _, msp, result = _deliver("glyphs", item)
+
+    assert result.verified is False, [attempt.to_dict() for attempt in result.attempts]
+    assert result.final_representation is None
+    assert list(msp) == []
+    assert "AA" not in calls
 
 
 def test_positioned_layout_records_explicit_zero_ink_character_without_artifacts() -> None:
@@ -919,6 +983,41 @@ def test_glyphs_are_block_references_and_geometry_is_raw_edges() -> None:
     assert "INSERT" not in {entity.dxftype() for entity in geometry_msp}
 
 
+@pytest.mark.parametrize("mode", ["glyphs", "geometry"])
+def test_serialized_outline_verifier_rejects_reopened_contour_corruption(
+    tmp_path,
+    mode,
+) -> None:
+    """Persisted handles and entity types cannot certify changed source ink."""
+
+    doc, _, result = _deliver(mode)
+    output = tmp_path / f"{mode}-corrupted-after-reopen.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+
+    if mode == "glyphs":
+        insert = next(iter(reopened.modelspace()))
+        entities = list(reopened.blocks.get(insert.dxf.name))
+    else:
+        entities = list(reopened.modelspace())
+    outline = next(
+        entity
+        for entity in entities
+        if entity.dxftype() in {"LWPOLYLINE", "POLYLINE"}
+    )
+    if outline.dxftype() == "LWPOLYLINE":
+        points = list(outline.get_points(format="xyseb"))
+        points[0] = (points[0][0] + 47.0, *points[0][1:])
+        outline.set_points(points, format="xyseb")
+    else:
+        vertex = next(iter(outline.vertices))
+        location = vertex.dxf.location
+        vertex.dxf.location = (location.x + 47.0, location.y, location.z)
+
+    with pytest.raises(RuntimeError, match="geometry|contour|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
 def test_glyph_block_reference_carries_source_color_for_librecad_parent() -> None:
     item = __import__("dataclasses").replace(
         _item(),
@@ -1118,6 +1217,33 @@ def test_whitespace_only_source_falls_back_to_nearest_exact_zero_ink_text(mode) 
     assert result.attempts[-1].evidence["parent_native_font_rendering_required"] is False
     assert [entity.dxftype() for entity in msp] == ["TEXT"]
     assert next(iter(msp)).dxf.text == "   "
+
+
+@pytest.mark.parametrize("mode", ["glyphs", "geometry"])
+@pytest.mark.parametrize("content", ["\u200b", "\u2060"])
+def test_zero_ink_format_source_uses_the_same_truthful_zero_ink_path(
+    mode,
+    content,
+) -> None:
+    item = _item(width=4.0)
+    item.text = content
+    item.normalized = ""
+
+    _, msp, result = _deliver(mode, item, target_app="librecad")
+
+    assert result.verified is True, [attempt.to_dict() for attempt in result.attempts]
+    assert result.final_representation == "text"
+    assert result.fallback_used is True
+    assert all(
+        attempt.cleanup_verified
+        for attempt in result.attempts
+        if attempt.attempted_representation in {"glyphs", "geometry"}
+    )
+    final = result.attempts[-1]
+    assert final.evidence["parent_visual_fidelity_verified"] is True
+    assert final.evidence["parent_native_font_rendering_required"] is False
+    assert [entity.dxftype() for entity in msp] == ["TEXT"]
+    assert next(iter(msp)).dxf.text == content
 
 
 def test_outline_cannot_self_certify_when_source_text_parameters_fail() -> None:

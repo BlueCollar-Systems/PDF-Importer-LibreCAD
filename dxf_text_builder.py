@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, replace
 import hashlib
 from io import BytesIO
+import json
 import math
 from pathlib import Path
 import re
@@ -854,6 +855,10 @@ def _point_pair(value: Any) -> Tuple[float, float]:
     return (float(value[0]), float(value[1]))
 
 
+def _point_triple(value: Any) -> Tuple[float, float, float]:
+    return (float(value[0]), float(value[1]), float(value[2]))
+
+
 def _path_geometry_expectations(
     paths: Sequence[Any],
     *,
@@ -892,6 +897,21 @@ def _points_match(
         len(expected) == len(actual)
         and all(
             math.hypot(left[0] - right[0], left[1] - right[1]) <= tolerance
+            for left, right in zip(expected, actual, strict=True)
+        )
+    )
+
+
+def _points3_match(
+    expected: Sequence[Tuple[float, float, float]],
+    actual: Sequence[Tuple[float, float, float]],
+    *,
+    tolerance: float,
+) -> bool:
+    return bool(
+        len(expected) == len(actual)
+        and all(
+            math.dist(left, right) <= tolerance
             for left, right in zip(expected, actual, strict=True)
         )
     )
@@ -1006,7 +1026,8 @@ def _outline_entities_match(
     return bool(
         len(expected) == len(entities)
         and all(
-            _points_match(
+            bool(path.is_closed) == bool(getattr(entity, "is_closed", False))
+            and _points_match(
                 path.flattened_vertices,
                 _outline_entity_vertices(entity),
                 tolerance=tolerance,
@@ -1047,21 +1068,395 @@ def _fill_entities_match(
     tolerance: float,
 ) -> bool:
     actual = tuple(
-        (
-            _point_pair(entity.dxf.vtx0),
-            _point_pair(entity.dxf.vtx1),
-            _point_pair(entity.dxf.vtx2),
+        tuple(
+            _point_triple(getattr(entity.dxf, f"vtx{index}"))
+            for index in range(4)
         )
         for entity in fills
         if entity.dxftype() == "SOLID"
     )
+    expected_with_four_vertices = tuple(
+        tuple((point[0], point[1], 0.0) for point in triangle)
+        + ((triangle[-1][0], triangle[-1][1], 0.0),)
+        for triangle in expected
+        if len(triangle) == 3
+    )
     return bool(
-        len(actual) == len(fills) == len(expected)
+        len(actual) == len(fills) == len(expected_with_four_vertices) == len(expected)
         and all(
-            _points_match(left, right, tolerance=tolerance)
-            for left, right in zip(expected, actual, strict=True)
+            _points3_match(left, right, tolerance=tolerance)
+            for left, right in zip(expected_with_four_vertices, actual, strict=True)
         )
     )
+
+
+_OUTLINE_GEOMETRY_EVIDENCE_SCHEMA = "bcs-source-bound-outline-v1"
+
+
+def _geometry_digest_quantum(tolerance: float) -> float:
+    value = float(tolerance)
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError("outline geometry tolerance is invalid")
+    return max(value, 1e-12)
+
+
+def _geometry_digest_number(value: Any, *, quantum: float) -> int:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("outline geometry contains a non-finite coordinate")
+    return int(round(number / quantum))
+
+
+def _geometry_digest_point(value: Any, *, quantum: float) -> List[int]:
+    return [
+        _geometry_digest_number(value[0], quantum=quantum),
+        _geometry_digest_number(value[1], quantum=quantum),
+    ]
+
+
+def _geometry_digest_point3(value: Any, *, quantum: float) -> List[int]:
+    return [
+        _geometry_digest_number(value[0], quantum=quantum),
+        _geometry_digest_number(value[1], quantum=quantum),
+        _geometry_digest_number(value[2], quantum=quantum),
+    ]
+
+
+def _geometry_digest_scalar(value: Any) -> str:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("outline geometry contains a non-finite scalar")
+    if number == 0.0:
+        number = 0.0
+    return format(number, ".17g")
+
+
+def _serialized_visual_attributes(entity: Any) -> Dict[str, Any]:
+    return {
+        "layer": str(entity.dxf.get("layer", "0") or "0"),
+        "color": int(entity.dxf.get("color", 256) or 0),
+        "true_color": (
+            int(entity.dxf.true_color) if entity.dxf.hasattr("true_color") else None
+        ),
+        "linetype": str(entity.dxf.get("linetype", "BYLAYER") or "BYLAYER"),
+        "lineweight": int(entity.dxf.get("lineweight", -1)),
+    }
+
+
+def _canonical_source_outline_payload(
+    expectation: _OutlineExpectation,
+) -> Dict[str, Any]:
+    """Return immutable source path truth, including curve control topology."""
+
+    quantum = _geometry_digest_quantum(expectation.geometry_tolerance)
+    paths = []
+    command_count = 0
+    control_point_count = 0
+    flattened_vertex_count = 0
+    for path in expectation.path_geometry:
+        commands = []
+        for command_name, control_points in path.commands:
+            command_count += 1
+            control_point_count += len(control_points)
+            commands.append(
+                [
+                    str(command_name),
+                    [
+                        _geometry_digest_point(point, quantum=quantum)
+                        for point in control_points
+                    ],
+                ]
+            )
+        flattened_vertex_count += len(path.flattened_vertices)
+        paths.append(
+            {
+                "start": _geometry_digest_point(path.start, quantum=quantum),
+                "commands": commands,
+                "flattened_vertices": [
+                    _geometry_digest_point(point, quantum=quantum)
+                    for point in path.flattened_vertices
+                ],
+                "closed": bool(path.is_closed),
+            }
+        )
+    fills = [
+        [
+            *[
+                _geometry_digest_point(point, quantum=quantum)
+                for point in triangle
+            ],
+            _geometry_digest_point(triangle[-1], quantum=quantum),
+        ]
+        for triangle in expectation.fill_geometry
+    ]
+    characters = [
+        {
+            "index": int(group.index),
+            "text": group.text,
+            "glyph_id": group.glyph_id,
+            "visible_ink_expected": bool(group.visible_ink_expected),
+            "path_count": len(group.expected_path_geometry),
+            "fill_count": len(group.expected_fill_geometry),
+            "advance_width": _geometry_digest_number(
+                group.advance_width,
+                quantum=quantum,
+            ),
+            "glyph_height": _geometry_digest_number(
+                group.glyph_height,
+                quantum=quantum,
+            ),
+            "rotation_degrees": _geometry_digest_number(
+                group.rotation_degrees,
+                quantum=quantum,
+            ),
+            "target_origin": _geometry_digest_point(
+                group.target_origin,
+                quantum=quantum,
+            ),
+            "target_quad": [
+                _geometry_digest_point(point, quantum=quantum)
+                for point in group.target_quad
+            ],
+        }
+        for group in expectation.character_groups
+    ]
+    return {
+        "schema": _OUTLINE_GEOMETRY_EVIDENCE_SCHEMA,
+        "quantum": format(quantum, ".17g"),
+        "source_geometry_verified": bool(expectation.source_geometry_verified),
+        "source_envelope_source": expectation.source_envelope_source,
+        "source_envelope": [
+            _geometry_digest_point(point, quantum=quantum)
+            for point in expectation.source_envelope
+        ],
+        "path_bbox": [
+            _geometry_digest_number(value, quantum=quantum)
+            for value in expectation.path_bbox
+        ],
+        "paths": paths,
+        "fills": fills,
+        "characters": characters,
+        "path_count": len(paths),
+        "command_count": command_count,
+        "control_point_count": control_point_count,
+        "flattened_vertex_count": flattened_vertex_count,
+        "fill_count": len(fills),
+    }
+
+
+def _serialized_outline_payload(
+    entities: Sequence[Any],
+    *,
+    tolerance: float,
+) -> Dict[str, Any]:
+    """Capture ordered persisted contour/fill geometry, including SOLID vtx3."""
+
+    quantum = _geometry_digest_quantum(tolerance)
+    serialized: List[Dict[str, Any]] = []
+    for entity in entities:
+        entity_type = entity.dxftype()
+        if entity_type == "LWPOLYLINE":
+            elevation = float(entity.dxf.get("elevation", 0.0) or 0.0)
+            serialized.append(
+                {
+                    "kind": "outline",
+                    "type": entity_type,
+                    "closed": bool(getattr(entity, "is_closed", False)),
+                    "vertices": [
+                        {
+                            "location": _geometry_digest_point3(
+                                (point[0], point[1], elevation),
+                                quantum=quantum,
+                            ),
+                            "start_width": _geometry_digest_scalar(point[2]),
+                            "end_width": _geometry_digest_scalar(point[3]),
+                            "bulge": _geometry_digest_scalar(point[4]),
+                        }
+                        for point in entity.get_points(format="xyseb")
+                    ],
+                    "const_width": _geometry_digest_scalar(
+                        entity.dxf.get("const_width", 0.0) or 0.0
+                    ),
+                    "extrusion": _geometry_digest_point3(
+                        entity.dxf.get("extrusion", (0.0, 0.0, 1.0)),
+                        quantum=quantum,
+                    ),
+                    "visual": _serialized_visual_attributes(entity),
+                }
+            )
+        elif entity_type == "POLYLINE":
+            serialized.append(
+                {
+                    "kind": "outline",
+                    "type": entity_type,
+                    "closed": bool(getattr(entity, "is_closed", False)),
+                    "flags": int(entity.dxf.get("flags", 0) or 0),
+                    "vertices": [
+                        {
+                            "location": _geometry_digest_point3(
+                                vertex.dxf.location,
+                                quantum=quantum,
+                            ),
+                            "start_width": _geometry_digest_scalar(
+                                vertex.dxf.get("start_width", 0.0) or 0.0
+                            ),
+                            "end_width": _geometry_digest_scalar(
+                                vertex.dxf.get("end_width", 0.0) or 0.0
+                            ),
+                            "bulge": _geometry_digest_scalar(
+                                vertex.dxf.get("bulge", 0.0) or 0.0
+                            ),
+                            "flags": int(vertex.dxf.get("flags", 0) or 0),
+                        }
+                        for vertex in entity.vertices
+                    ],
+                    "elevation": _geometry_digest_point3(
+                        entity.dxf.get("elevation", (0.0, 0.0, 0.0)),
+                        quantum=quantum,
+                    ),
+                    "extrusion": _geometry_digest_point3(
+                        entity.dxf.get("extrusion", (0.0, 0.0, 1.0)),
+                        quantum=quantum,
+                    ),
+                    "visual": _serialized_visual_attributes(entity),
+                }
+            )
+        elif entity_type == "SOLID":
+            serialized.append(
+                {
+                    "kind": "fill",
+                    "type": entity_type,
+                    "vertices": [
+                        _geometry_digest_point3(
+                            getattr(entity.dxf, f"vtx{index}"),
+                            quantum=quantum,
+                        )
+                        for index in range(4)
+                    ],
+                    "extrusion": _geometry_digest_point3(
+                        entity.dxf.get("extrusion", (0.0, 0.0, 1.0)),
+                        quantum=quantum,
+                    ),
+                    "visual": _serialized_visual_attributes(entity),
+                }
+            )
+        else:
+            raise ValueError(f"unsupported serialized outline entity: {entity_type}")
+    return {
+        "schema": _OUTLINE_GEOMETRY_EVIDENCE_SCHEMA,
+        "quantum": format(quantum, ".17g"),
+        "entities": serialized,
+    }
+
+
+def _geometry_payload_sha256(payload: Dict[str, Any]) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _record_outline_geometry_evidence(
+    attempt: TextDeliveryAttempt,
+    expectation: _OutlineExpectation,
+    entities: Sequence[Any],
+) -> None:
+    source_payload = _canonical_source_outline_payload(expectation)
+    serialized_payload = _serialized_outline_payload(
+        entities,
+        tolerance=expectation.geometry_tolerance,
+    )
+    attempt.evidence.update(
+        {
+            "outline_geometry_evidence_schema": _OUTLINE_GEOMETRY_EVIDENCE_SCHEMA,
+            "canonical_source_outline_geometry_sha256": _geometry_payload_sha256(
+                source_payload
+            ),
+            "canonical_source_outline_path_count": source_payload["path_count"],
+            "canonical_source_outline_command_count": source_payload["command_count"],
+            "canonical_source_outline_control_point_count": source_payload[
+                "control_point_count"
+            ],
+            "canonical_source_outline_flattened_vertex_count": source_payload[
+                "flattened_vertex_count"
+            ],
+            "canonical_source_solid_fill_count": source_payload["fill_count"],
+            "serialized_outline_geometry_sha256": _geometry_payload_sha256(
+                serialized_payload
+            ),
+            "serialized_outline_geometry_entity_count": len(entities),
+        }
+    )
+
+
+def verify_serialized_outline_geometry(
+    entities: Sequence[Any],
+    evidence: Dict[str, Any],
+) -> bool:
+    """Verify reopened contour/fill bytes against source-bound delivery evidence."""
+
+    if evidence.get("outline_geometry_evidence_schema") != _OUTLINE_GEOMETRY_EVIDENCE_SCHEMA:
+        return False
+    count_keys = (
+        "serialized_outline_geometry_entity_count",
+        "canonical_source_outline_path_count",
+        "canonical_source_outline_command_count",
+        "canonical_source_outline_control_point_count",
+        "canonical_source_outline_flattened_vertex_count",
+        "canonical_source_solid_fill_count",
+    )
+    try:
+        raw_tolerance = evidence["outline_geometry_tolerance"]
+        if isinstance(raw_tolerance, bool) or not isinstance(raw_tolerance, (int, float)):
+            return False
+        tolerance = float(raw_tolerance)
+        counts = []
+        for key in count_keys:
+            value = evidence[key]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                return False
+            counts.append(value)
+    except (KeyError, TypeError, ValueError):
+        return False
+    (
+        expected_entity_count,
+        expected_path_count,
+        expected_command_count,
+        expected_control_point_count,
+        expected_flattened_vertex_count,
+        expected_fill_count,
+    ) = counts
+    if (
+        not math.isfinite(tolerance)
+        or tolerance < 0.0
+        or expected_entity_count != len(entities)
+        or expected_path_count < 1
+        or expected_command_count < expected_path_count
+        or expected_control_point_count < expected_command_count
+        or expected_flattened_vertex_count < expected_path_count
+        or expected_fill_count < 1
+        or expected_path_count + expected_fill_count != expected_entity_count
+        or evidence.get("source_outline_geometry_verified") is not True
+        or evidence.get("outline_topology_control_geometry_verified") is not True
+        or evidence.get("solid_fill_geometry_verified") is not True
+    ):
+        return False
+    source_digest = str(evidence.get("canonical_source_outline_geometry_sha256") or "")
+    serialized_digest = str(evidence.get("serialized_outline_geometry_sha256") or "")
+    if not (
+        re.fullmatch(r"[0-9a-f]{64}", source_digest)
+        and re.fullmatch(r"[0-9a-f]{64}", serialized_digest)
+    ):
+        return False
+    try:
+        actual_payload = _serialized_outline_payload(entities, tolerance=tolerance)
+    except (TypeError, ValueError, AttributeError):
+        return False
+    return _geometry_payload_sha256(actual_payload) == serialized_digest
 
 
 def _path_geometry_within_envelope(
@@ -1208,9 +1603,10 @@ def _validate_character_layout(
     validated: List[_ValidatedCharacterLayout] = []
     for index, item in enumerate(raw_layout):
         character = str(getattr(item, "text", "") or "")
-        if not character:
+        if len(character) != 1:
             raise _RepresentationImpossible(
-                f"source character layout entry {index} has empty text"
+                f"source character layout entry {index} must own exactly one "
+                "source character"
             )
         source_quad = _validated_quad(
             getattr(item, "source_quad_pdf", None),
@@ -1521,6 +1917,11 @@ def _fit_text_advance(
     *,
     parent_fit_alignment: bool = False,
 ) -> Optional[float]:
+    actual_text = str(getattr(entity.dxf, "text", "") or "")
+    if entity.dxftype() == "TEXT" and actual_text and not _visible_ink_expected(
+        actual_text
+    ):
+        return 0.0
     if target_width is None or entity.dxftype() != "TEXT":
         return None
     if parent_fit_alignment:
@@ -1536,10 +1937,6 @@ def _fit_text_advance(
         return target_width
     measured = float(text_size(entity).width)
     if not math.isfinite(measured) or measured <= 0.0:
-        if str(getattr(entity.dxf, "text", "") or "") and not str(
-            getattr(entity.dxf, "text", "") or ""
-        ).strip():
-            return 0.0
         raise ValueError("DXF text width could not be measured")
     width_factor = target_width / measured
     if not math.isfinite(width_factor) or width_factor <= 0.0:
@@ -1585,7 +1982,7 @@ def _verify_label(
         actual_rotation, expected_rotation, rel_tol=0.0, abs_tol=1e-9
     )
     whitespace_zero_ink = bool(
-        actual_text and not actual_text.strip() and measured_width == 0.0
+        actual_text and not _visible_ink_expected(actual_text) and measured_width == 0.0
     )
     fit_alignment_verified = False
     if entity_type == "TEXT" and int(entity.dxf.halign or 0) == 5 and target_width:
@@ -1973,8 +2370,8 @@ def _attempt_labels(
                 style_name=style_name,
                 style_handle=style_handle,
                 is_3d_text=is_3d_text,
-                source_content_whitespace_only=not bool(
-                    str(getattr(text_item, "text", "") or "").strip()
+                source_content_whitespace_only=not _visible_ink_expected(
+                    str(getattr(text_item, "text", "") or "")
                 ),
             )
         )
@@ -2032,7 +2429,7 @@ def _to_outline_entities(
 ) -> List[Any]:
     distance = _flattening_error(paths)
     if is_r12:
-        return list(
+        entities = list(
             ezdxf_path.to_polylines2d(
                 paths,
                 distance=distance,
@@ -2040,14 +2437,19 @@ def _to_outline_entities(
                 dxfattribs=attribs,
             )
         )
-    return list(
-        ezdxf_path.to_lwpolylines(
-            paths,
-            distance=distance,
-            segments=4,
-            dxfattribs=attribs,
+    else:
+        entities = list(
+            ezdxf_path.to_lwpolylines(
+                paths,
+                distance=distance,
+                segments=4,
+                dxfattribs=attribs,
+            )
         )
-    )
+    if len(entities) == len(paths):
+        for path, entity in zip(paths, entities, strict=True):
+            entity.close(bool(path.is_closed))
+    return entities
 
 
 def _to_solid_fill_entities(
@@ -2111,14 +2513,42 @@ def _solid_fill_verified(fills: Sequence[Any], *, is_r12: bool) -> bool:
     if any(entity.dxftype() != expected_type for entity in fills):
         return False
     for entity in fills:
-        p0 = (float(entity.dxf.vtx0.x), float(entity.dxf.vtx0.y))
-        p1 = (float(entity.dxf.vtx1.x), float(entity.dxf.vtx1.y))
-        p2 = (float(entity.dxf.vtx2.x), float(entity.dxf.vtx2.y))
+        points = tuple(
+            _point_triple(getattr(entity.dxf, f"vtx{index}"))
+            for index in range(4)
+        )
+        if not all(math.isfinite(value) for point in points for value in point):
+            return False
+        p0, p1, p2, p3 = points
         area2 = abs(
             (p1[0] - p0[0]) * (p2[1] - p0[1])
             - (p1[1] - p0[1]) * (p2[0] - p0[0])
         )
-        if not math.isfinite(area2) or area2 <= 1e-14:
+        coordinate_scale = max(1.0, *(abs(value) for point in points for value in point))
+        if (
+            not math.isfinite(area2)
+            or area2 <= 1e-14
+            or not _points_match(
+                ((p2[0], p2[1]),),
+                ((p3[0], p3[1]),),
+                tolerance=coordinate_scale * 1e-12,
+            )
+            or not math.isclose(
+                p2[2],
+                p3[2],
+                rel_tol=0.0,
+                abs_tol=coordinate_scale * 1e-12,
+            )
+            or any(
+                not math.isclose(
+                    point[2],
+                    0.0,
+                    rel_tol=0.0,
+                    abs_tol=coordinate_scale * 1e-12,
+                )
+                for point in points
+            )
+        ):
             return False
     return True
 
@@ -2605,6 +3035,11 @@ def _commit_outlines(
                 "outline_character_ownership_verified": ownership_verified,
             }
         )
+        _record_outline_geometry_evidence(
+            attempt,
+            expectation,
+            [*outlines, *fills],
+        )
         return
 
     block_name = _unique_block_name(doc, attempt.source_id)
@@ -2704,6 +3139,11 @@ def _commit_outlines(
             "outline_character_ownership_verified": ownership_verified,
         }
     )
+    _record_outline_geometry_evidence(
+        attempt,
+        expectation,
+        [*outlines, *fills],
+    )
 
 
 def _rollback_outline_attempt(attempt: TextDeliveryAttempt, msp: Any) -> None:
@@ -2763,6 +3203,19 @@ def _attempt_outline_entity(
     style_handle = ""
     style_created = False
     try:
+        source_text = str(getattr(text_item, "text", "") or "")
+        if source_text and not _visible_ink_expected(source_text):
+            attempt.evidence.update(
+                {
+                    "source_content_whitespace_only": True,
+                    "visible_ink_expected": False,
+                    "zero_outline_result_verified": True,
+                    "item_specific_creation_attempted": True,
+                }
+            )
+            raise _RepresentationImpossible(
+                "zero-ink source item has no truthful outline geometry"
+            )
         requires_individual = bool(
             getattr(text_item, "requires_individual_positioning", False)
         )
@@ -2878,7 +3331,7 @@ def _attempt_outline_entity(
         if expected_path_bbox != independent_path_bbox:
             raise ValueError("independent source path expectation mutated")
         if expected_path_bbox is None or actual_path_bbox is None:
-            if str(text_item.text) and not str(text_item.text).strip():
+            if str(text_item.text) and not _visible_ink_expected(str(text_item.text)):
                 attempt.evidence.update(
                     {
                         "source_content_whitespace_only": True,
@@ -2888,7 +3341,7 @@ def _attempt_outline_entity(
                     }
                 )
                 raise _RepresentationImpossible(
-                    "whitespace-only source item has no outline ink"
+                    "zero-ink source item has no outline ink"
                 )
             raise ValueError("visible source text produced no finite outline paths")
         if not pre_entity_paths_verified:
@@ -2978,6 +3431,19 @@ def _attempt_outline_string(
     )
     doc = msp.doc
     try:
+        source_text = str(getattr(text_item, "text", "") or "")
+        if source_text and not _visible_ink_expected(source_text):
+            attempt.evidence.update(
+                {
+                    "source_content_whitespace_only": True,
+                    "visible_ink_expected": False,
+                    "zero_outline_result_verified": True,
+                    "item_specific_creation_attempted": True,
+                }
+            )
+            raise _RepresentationImpossible(
+                "zero-ink source item has no truthful outline geometry"
+            )
         requires_individual = bool(
             getattr(text_item, "requires_individual_positioning", False)
         )
@@ -3194,7 +3660,9 @@ def _attempt_outline_string(
             if expected_path_bbox is None:
                 attempt.evidence.update(
                     {
-                        "source_content_whitespace_only": not str(text_item.text).strip(),
+                        "source_content_whitespace_only": not _visible_ink_expected(
+                            str(text_item.text)
+                        ),
                         "visible_ink_expected": False,
                         "zero_outline_result_verified": True,
                         "item_specific_creation_attempted": True,
@@ -3261,7 +3729,9 @@ def _attempt_outline_string(
             if expected_path_bbox != independent_path_bbox:
                 raise ValueError("independent source path expectation mutated")
             if expected_path_bbox is None or actual_path_bbox is None:
-                if str(text_item.text) and not str(text_item.text).strip():
+                if str(text_item.text) and not _visible_ink_expected(
+                    str(text_item.text)
+                ):
                     attempt.evidence.update(
                         {
                             "source_content_whitespace_only": True,
@@ -3271,7 +3741,7 @@ def _attempt_outline_string(
                         }
                     )
                     raise _RepresentationImpossible(
-                        "whitespace-only source item has no outline ink"
+                        "zero-ink source item has no outline ink"
                     )
                 raise ValueError("visible source text produced no finite outline paths")
             if (

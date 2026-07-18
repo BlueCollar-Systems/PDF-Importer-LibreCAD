@@ -29,8 +29,10 @@ from pdfcadcore.primitive_extractor import (
 from dxf_text_builder import (
     TextDeliveryAttempt,
     TextDeliveryResult,
+    _visible_ink_expected,
     build_text,
     reset_text_styles,
+    verify_serialized_outline_geometry,
 )
 
 
@@ -366,7 +368,12 @@ def _verify_serialized_text_deliveries(
                         f"serialized text delivery {source_id}: FIT width changed"
                     )
 
+        outline_delivery_entities: List[Any] = []
         if representation == "glyphs":
+            if len(entities) != 1:
+                raise RuntimeError(
+                    f"serialized text delivery {source_id}: glyph outline parent mismatch"
+                )
             support_set = set(support_handles)
             for insert in entities:
                 try:
@@ -375,7 +382,7 @@ def _verify_serialized_text_deliveries(
                     raise RuntimeError(
                         f"serialized text delivery {source_id}: glyph block missing"
                     ) from exc
-                exact_support = {
+                exact_support = [
                     str(value.dxf.handle or "")
                     for value in (
                         *(() if doc.dxfversion == "AC1009" else (block.block_record,)),
@@ -384,11 +391,64 @@ def _verify_serialized_text_deliveries(
                         *list(block),
                     )
                     if str(value.dxf.handle or "")
-                }
-                if exact_support != support_set:
+                ]
+                if set(exact_support) != support_set or exact_support != support_handles:
                     raise RuntimeError(
                         f"serialized text delivery {source_id}: glyph support mismatch"
                     )
+                evidence = dict(final_attempt.get("evidence") or {})
+                expected_block_name = str(evidence.get("block_name") or "")
+                expected_insert = tuple(
+                    float(value) for value in evidence.get("expected_block_insert") or []
+                )
+                actual_insert = tuple(float(value) for value in tuple(insert.dxf.insert)[:2])
+                if (
+                    not expected_block_name
+                    or str(insert.dxf.name) != expected_block_name
+                    or len(expected_insert) != 2
+                    or not all(
+                        math.isclose(left, right, rel_tol=0.0, abs_tol=1e-12)
+                        for left, right in zip(
+                            actual_insert,
+                            expected_insert,
+                            strict=True,
+                        )
+                    )
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: glyph outline transform changed"
+                    )
+                expected_true_color = evidence.get("block_insert_true_color")
+                actual_true_color = (
+                    int(insert.dxf.true_color)
+                    if insert.dxf.hasattr("true_color")
+                    else None
+                )
+                if expected_true_color is not None and actual_true_color != int(
+                    expected_true_color
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: glyph outline color changed"
+                    )
+                outline_delivery_entities = list(block)
+
+        if representation == "geometry":
+            if support_handles:
+                raise RuntimeError(
+                    f"serialized text delivery {source_id}: geometry has unexpected support"
+                )
+            outline_delivery_entities = entities
+
+        if representation in {"glyphs", "geometry"}:
+            evidence = dict(final_attempt.get("evidence") or {})
+            if not verify_serialized_outline_geometry(
+                outline_delivery_entities,
+                evidence,
+            ):
+                raise RuntimeError(
+                    f"serialized text delivery {source_id}: source-bound outline "
+                    "geometry, contour topology, or solid fill changed"
+                )
 
         if representation == "raster":
             evidence = dict(final_attempt.get("evidence") or {})
@@ -921,8 +981,8 @@ def _attempt_terminal_text_raster(
     attempts = list(delivery.attempts)
     for prior in attempts:
         prior.superseded = True
-    source_content_whitespace_only = not bool(
-        str(getattr(source_text, "text", "") or "").strip()
+    source_content_whitespace_only = not _visible_ink_expected(
+        str(getattr(source_text, "text", "") or "")
     )
     attempt = TextDeliveryAttempt(
         source_id=delivery.source_id,
