@@ -141,8 +141,22 @@ class _OutlineCharacterGroup:
     rotation_degrees: float
     visible_ink_expected: bool
     expected_bbox: Optional[Tuple[float, float, float, float]]
+    expected_path_geometry: Tuple["_PathGeometryExpectation", ...] = ()
+    expected_fill_geometry: Tuple[Tuple[Tuple[float, float], ...], ...] = ()
+    flattening_error: float = 0.0
+    geometry_tolerance: float = 0.0
     outlines: List[Any] = field(default_factory=list)
     fills: List[Any] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _PathGeometryExpectation:
+    """Immutable source-font path topology captured before entity creation."""
+
+    start: Tuple[float, float]
+    commands: Tuple[Tuple[str, Tuple[Tuple[float, float], ...]], ...]
+    flattened_vertices: Tuple[Tuple[float, float], ...]
+    is_closed: bool
 
 
 @dataclass(frozen=True)
@@ -152,6 +166,11 @@ class _OutlineExpectation:
     path_bbox: Tuple[float, float, float, float]
     source_envelope: Tuple[Tuple[float, float], ...]
     source_envelope_source: str
+    path_geometry: Tuple[_PathGeometryExpectation, ...]
+    fill_geometry: Tuple[Tuple[Tuple[float, float], ...], ...]
+    flattening_error: float
+    geometry_tolerance: float
+    source_geometry_verified: bool
     character_groups: Tuple[_OutlineCharacterGroup, ...] = ()
 
 
@@ -166,6 +185,7 @@ class _ValidatedCharacterLayout:
     glyph_height: float
     rotation_degrees: float
     visible_ink_expected: bool
+    source_to_target_linear: Tuple[float, float, float, float]
 
 
 @dataclass(frozen=True)
@@ -571,9 +591,21 @@ def _normalized_mode(value: Any) -> str:
 
 
 def _source_id(text_item: NormalizedText) -> str:
-    page = int(getattr(text_item, "page_number", 0) or 0)
-    item_id = getattr(text_item, "id", None)
-    if item_id is None or str(item_id).strip() == "":
+    def exact_integer(value: Any) -> Optional[int]:
+        if value is None or isinstance(value, (bool, str, bytes)):
+            return None
+        try:
+            number = float(value)
+            integer = int(value)
+        except (OverflowError, TypeError, ValueError):
+            return None
+        if not math.isfinite(number) or number != float(integer):
+            return None
+        return integer
+
+    page = exact_integer(getattr(text_item, "page_number", None))
+    item_id = exact_integer(getattr(text_item, "id", None))
+    if page is None or item_id is None:
         return ""
     return f"text_span:{page}:{item_id}"
 
@@ -782,6 +814,293 @@ def _bbox_union(
     )
 
 
+def _geometry_scale(
+    bbox: Optional[Tuple[float, float, float, float]],
+) -> float:
+    if bbox is None:
+        return 1e-9
+    return max(abs(bbox[2] - bbox[0]), abs(bbox[3] - bbox[1]), 1e-9)
+
+
+def _flattening_error(paths: Sequence[Any]) -> float:
+    """Choose curve error from source size, never a fixed drawing-unit floor."""
+
+    bbox = _path_bbox_tuple(paths)
+    if bbox is None:
+        # There is no geometric scale to preserve for zero-ink input.  Retain
+        # ezdxf's established no-geometry triangulation setting; visible source
+        # paths always take the source-scaled branch below.
+        return 0.01
+    scale = _geometry_scale(bbox)
+    return min(0.01, max(scale * 1e-4, 1e-9))
+
+
+def _geometry_comparison_tolerance(
+    bbox: Optional[Tuple[float, float, float, float]],
+    *,
+    flattening_error: float,
+) -> float:
+    scale = _geometry_scale(bbox)
+    coordinate_scale = max((1.0, *(abs(value) for value in bbox or ())))
+    return (
+        scale * 1e-8
+        + max(float(flattening_error), 0.0) * 1e-4
+        + coordinate_scale * 1e-12
+        + 1e-12
+    )
+
+
+def _point_pair(value: Any) -> Tuple[float, float]:
+    return (float(value[0]), float(value[1]))
+
+
+def _path_geometry_expectations(
+    paths: Sequence[Any],
+    *,
+    flattening_error: float,
+) -> Tuple[_PathGeometryExpectation, ...]:
+    expectations: List[_PathGeometryExpectation] = []
+    for path in paths:
+        commands: List[Tuple[str, Tuple[Tuple[float, float], ...]]] = []
+        for command in path.commands():
+            points = tuple(
+                _point_pair(getattr(command, field_name))
+                for field_name in getattr(command, "_fields", ())
+            )
+            commands.append((type(command).__name__, points))
+        expectations.append(
+            _PathGeometryExpectation(
+                start=_point_pair(path.start),
+                commands=tuple(commands),
+                flattened_vertices=tuple(
+                    _point_pair(point)
+                    for point in path.flattening(flattening_error, segments=4)
+                ),
+                is_closed=bool(path.is_closed),
+            )
+        )
+    return tuple(expectations)
+
+
+def _points_match(
+    expected: Sequence[Tuple[float, float]],
+    actual: Sequence[Tuple[float, float]],
+    *,
+    tolerance: float,
+) -> bool:
+    return bool(
+        len(expected) == len(actual)
+        and all(
+            math.hypot(left[0] - right[0], left[1] - right[1]) <= tolerance
+            for left, right in zip(expected, actual, strict=True)
+        )
+    )
+
+
+def _path_geometry_matches(
+    expected: Sequence[_PathGeometryExpectation],
+    actual_paths: Sequence[Any],
+    *,
+    flattening_error: float,
+    tolerance: float,
+) -> bool:
+    actual = _path_geometry_expectations(
+        actual_paths,
+        flattening_error=flattening_error,
+    )
+    if len(expected) != len(actual):
+        return False
+    for expected_path, actual_path in zip(expected, actual, strict=True):
+        if (
+            expected_path.is_closed != actual_path.is_closed
+            or not _points_match(
+                (expected_path.start,),
+                (actual_path.start,),
+                tolerance=tolerance,
+            )
+            or len(expected_path.commands) != len(actual_path.commands)
+        ):
+            return False
+        for expected_command, actual_command in zip(
+            expected_path.commands,
+            actual_path.commands,
+            strict=True,
+        ):
+            if expected_command[0] != actual_command[0] or not _points_match(
+                expected_command[1],
+                actual_command[1],
+                tolerance=tolerance,
+            ):
+                return False
+        if not _points_match(
+            expected_path.flattened_vertices,
+            actual_path.flattened_vertices,
+            tolerance=tolerance,
+        ):
+            return False
+    return True
+
+
+def _pre_entity_paths_verified(
+    expected_paths: Sequence[Any],
+    actual_paths: Sequence[Any],
+) -> Tuple[
+    bool,
+    Optional[Tuple[float, float, float, float]],
+    Optional[Tuple[float, float, float, float]],
+    float,
+    float,
+]:
+    expected_bbox = _path_bbox_tuple(expected_paths)
+    actual_bbox = _path_bbox_tuple(actual_paths)
+    flattening_error = _flattening_error(expected_paths)
+    tolerance = _geometry_comparison_tolerance(
+        expected_bbox,
+        flattening_error=flattening_error,
+    )
+    verified = bool(
+        _bbox_matches(
+            expected_bbox,
+            actual_bbox,
+            flattening_error=flattening_error,
+        )
+        and _path_geometry_matches(
+            _path_geometry_expectations(
+                expected_paths,
+                flattening_error=flattening_error,
+            ),
+            actual_paths,
+            flattening_error=flattening_error,
+            tolerance=tolerance,
+        )
+    )
+    return (
+        verified,
+        expected_bbox,
+        actual_bbox,
+        flattening_error,
+        tolerance,
+    )
+
+
+def _outline_entity_vertices(entity: Any) -> Tuple[Tuple[float, float], ...]:
+    if entity.dxftype() == "LWPOLYLINE":
+        return tuple(
+            (float(point[0]), float(point[1]))
+            for point in entity.get_points(format="xy")
+        )
+    if entity.dxftype() == "POLYLINE":
+        return tuple(
+            (float(vertex.dxf.location.x), float(vertex.dxf.location.y))
+            for vertex in entity.vertices
+        )
+    return ()
+
+
+def _outline_entities_match(
+    expected: Sequence[_PathGeometryExpectation],
+    entities: Sequence[Any],
+    *,
+    tolerance: float,
+) -> bool:
+    return bool(
+        len(expected) == len(entities)
+        and all(
+            _points_match(
+                path.flattened_vertices,
+                _outline_entity_vertices(entity),
+                tolerance=tolerance,
+            )
+            for path, entity in zip(expected, entities, strict=True)
+        )
+    )
+
+
+def _triangulated_geometry(
+    paths: Sequence[Any],
+    *,
+    flattening_error: float,
+) -> Tuple[Tuple[Tuple[float, float], ...], ...]:
+    triangles: List[Tuple[Tuple[float, float], ...]] = []
+    for triangle in ezdxf_path.triangulate(
+        paths,
+        max_sagitta=flattening_error,
+        min_segments=2,
+    ):
+        points = tuple(_point_pair(point) for point in triangle)
+        if len(points) != 3:
+            continue
+        p0, p1, p2 = points
+        area2 = abs(
+            (p1[0] - p0[0]) * (p2[1] - p0[1])
+            - (p1[1] - p0[1]) * (p2[0] - p0[0])
+        )
+        if math.isfinite(area2) and area2 > 1e-14:
+            triangles.append(points)
+    return tuple(triangles)
+
+
+def _fill_entities_match(
+    expected: Sequence[Tuple[Tuple[float, float], ...]],
+    fills: Sequence[Any],
+    *,
+    tolerance: float,
+) -> bool:
+    actual = tuple(
+        (
+            _point_pair(entity.dxf.vtx0),
+            _point_pair(entity.dxf.vtx1),
+            _point_pair(entity.dxf.vtx2),
+        )
+        for entity in fills
+        if entity.dxftype() == "SOLID"
+    )
+    return bool(
+        len(actual) == len(fills) == len(expected)
+        and all(
+            _points_match(left, right, tolerance=tolerance)
+            for left, right in zip(expected, actual, strict=True)
+        )
+    )
+
+
+def _path_geometry_within_envelope(
+    geometry: Sequence[_PathGeometryExpectation],
+    envelope: Tuple[Tuple[float, float], ...],
+    *,
+    tolerance: float,
+) -> bool:
+    """Verify geometry in the authoritative affine coordinate frame.
+
+    A PDF/text quad is an advance/layout frame, not an ink clipping boundary.
+    Exact fonts may have negative bearings, overshoots, swashes, or combining
+    marks outside that frame.  Rejecting those source-authentic contours would
+    silently make faithful Glyphs/Geometry delivery impossible.  The immutable
+    independent path expectation and the later topology/control/vertex checks
+    establish exact geometry; this check establishes that every expected point
+    is finite and expressible relative to the authoritative source frame.
+    """
+
+    advance, height = _quad_dimensions(envelope)
+    if not all(math.isfinite(value) and value > 0.0 for value in (advance, height)):
+        return False
+    geometry_seen = False
+    for path in geometry:
+        # Control points are verified exactly against the independent font
+        # contour later.  Use visible flattened vertices here to establish the
+        # expected ink in the authoritative affine coordinate frame.
+        points = list(path.flattened_vertices)
+        for point in points:
+            geometry_seen = True
+            try:
+                horizontal, vertical = _quad_coordinates(point, envelope)
+            except _RepresentationImpossible:
+                return False
+            if not all(math.isfinite(value) for value in (horizontal, vertical)):
+                return False
+    return geometry_seen and math.isfinite(tolerance) and tolerance >= 0.0
+
+
 def _visible_ink_expected(text: str) -> bool:
     zero_width_format_characters = {
         "\u200b",
@@ -815,6 +1134,63 @@ def _quad_coordinates(
     )
 
 
+def _quad_linear_map(
+    source_quad: Tuple[Tuple[float, float], ...],
+    target_quad: Tuple[Tuple[float, float], ...],
+) -> Tuple[float, float, float, float]:
+    source_baseline = (
+        source_quad[1][0] - source_quad[0][0],
+        source_quad[1][1] - source_quad[0][1],
+    )
+    source_vertical = (
+        source_quad[3][0] - source_quad[0][0],
+        source_quad[3][1] - source_quad[0][1],
+    )
+    target_baseline = (
+        target_quad[1][0] - target_quad[0][0],
+        target_quad[1][1] - target_quad[0][1],
+    )
+    target_vertical = (
+        target_quad[3][0] - target_quad[0][0],
+        target_quad[3][1] - target_quad[0][1],
+    )
+    determinant = (
+        source_baseline[0] * source_vertical[1]
+        - source_baseline[1] * source_vertical[0]
+    )
+    scale = max(
+        abs(source_baseline[0]),
+        abs(source_baseline[1]),
+        abs(source_vertical[0]),
+        abs(source_vertical[1]),
+        1e-9,
+    )
+    if abs(determinant) <= scale * scale * 1e-12:
+        raise _RepresentationImpossible("source character quad is singular")
+    return (
+        (
+            target_baseline[0] * source_vertical[1]
+            - target_vertical[0] * source_baseline[1]
+        )
+        / determinant,
+        (
+            -target_baseline[0] * source_vertical[0]
+            + target_vertical[0] * source_baseline[0]
+        )
+        / determinant,
+        (
+            target_baseline[1] * source_vertical[1]
+            - target_vertical[1] * source_baseline[1]
+        )
+        / determinant,
+        (
+            -target_baseline[1] * source_vertical[0]
+            + target_vertical[1] * source_baseline[0]
+        )
+        / determinant,
+    )
+
+
 def _validate_character_layout(
     text_item: NormalizedText,
 ) -> Tuple[_ValidatedCharacterLayout, ...]:
@@ -829,7 +1205,6 @@ def _validate_character_layout(
         raise _RepresentationImpossible(
             "source character layout text/order does not match the source item"
         )
-
     validated: List[_ValidatedCharacterLayout] = []
     for index, item in enumerate(raw_layout):
         character = str(getattr(item, "text", "") or "")
@@ -932,9 +1307,69 @@ def _validate_character_layout(
                 glyph_height=glyph_height,
                 rotation_degrees=rotation_degrees,
                 visible_ink_expected=_visible_ink_expected(character),
+                source_to_target_linear=_quad_linear_map(source_quad, target_quad),
             )
         )
+    reference_linear = validated[0].source_to_target_linear
+    linear_scale = max(1.0, *(abs(value) for value in reference_linear))
+    linear_tolerance = linear_scale * 1e-7 + 1e-12
+    for item in validated[1:]:
+        if any(
+            not math.isclose(left, right, rel_tol=0.0, abs_tol=linear_tolerance)
+            for left, right in zip(
+                reference_linear,
+                item.source_to_target_linear,
+                strict=True,
+            )
+        ):
+            raise _RepresentationImpossible(
+                "source character target affine transforms are inconsistent"
+            )
     return tuple(validated)
+
+
+def _validate_item_source_geometry(text_item: NormalizedText) -> None:
+    """Reject contradictory source truth before any representation can claim it."""
+
+    raw_quad = getattr(text_item, "target_quad_model", None)
+    if raw_quad is not None:
+        quad = _validated_quad(raw_quad, field_name="target_quad_model")
+        insertion = _finite_point(getattr(text_item, "insertion", None))
+        if insertion is None:
+            raise _RepresentationImpossible("source insertion is missing or non-finite")
+        advance, height = _quad_dimensions(quad)
+        tolerance = max(advance, height, 1e-9) * 1e-7 + 1e-12
+        horizontal, vertical = _quad_coordinates(insertion, quad)
+        if abs(horizontal) > max(tolerance / advance, 1e-8) or not (
+            0.0 - max(tolerance / height, 1e-8)
+            <= vertical
+            <= 1.0 + max(tolerance / height, 1e-8)
+        ):
+            raise _RepresentationImpossible(
+                "source insertion is not bound to target_quad_model"
+            )
+        explicit_advance = _positive_finite(getattr(text_item, "advance_width", None))
+        explicit_height = _positive_finite(getattr(text_item, "glyph_height", None))
+        if explicit_advance is not None and not math.isclose(
+            explicit_advance,
+            advance,
+            rel_tol=0.0,
+            abs_tol=tolerance,
+        ):
+            raise _RepresentationImpossible(
+                "source advance does not match target_quad_model"
+            )
+        if explicit_height is not None and not math.isclose(
+            explicit_height,
+            height,
+            rel_tol=0.0,
+            abs_tol=tolerance,
+        ):
+            raise _RepresentationImpossible(
+                "source height does not match target_quad_model"
+            )
+    if bool(getattr(text_item, "requires_individual_positioning", False)):
+        _validate_character_layout(text_item)
 
 
 def _handle(entity: Any) -> str:
@@ -1031,6 +1466,7 @@ def _bbox_matches(
     actual: Optional[Tuple[float, float, float, float]],
     *,
     offset: Tuple[float, float] = (0.0, 0.0),
+    flattening_error: float = 0.0,
 ) -> bool:
     if expected is None or actual is None:
         return False
@@ -1040,14 +1476,16 @@ def _bbox_matches(
         expected[2] + offset[0],
         expected[3] + offset[1],
     )
-    scale = max(1.0, *(abs(value) for value in shifted + actual))
-    # ``ezdxf.path.to_*polylines`` flattens Bézier curves with a documented
-    # maximum 0.01 drawing-unit sagitta.  Compare the independently calculated
-    # curve bounds within that conversion error; any later affine translation,
-    # rotation, or scale remains far outside this narrow construction tolerance.
-    tolerance = max(0.010001, scale * 1e-8)
+    tolerance = _geometry_comparison_tolerance(
+        shifted,
+        flattening_error=flattening_error,
+    )
+    # Exact curve extents and their flattened polyline extents may differ by up
+    # to the chosen source-scaled sagitta.  This remains far below the old fixed
+    # drawing-unit floor and cannot hide a large relative error on a small glyph.
+    tolerance = max(tolerance, max(float(flattening_error), 0.0))
     return all(
-        math.isclose(left, right, rel_tol=1e-8, abs_tol=tolerance)
+        math.isclose(left, right, rel_tol=0.0, abs_tol=tolerance)
         for left, right in zip(shifted, actual, strict=True)
     )
 
@@ -1592,9 +2030,24 @@ def _to_outline_entities(
     is_r12: bool,
     attribs: Dict[str, Any],
 ) -> List[Any]:
+    distance = _flattening_error(paths)
     if is_r12:
-        return list(ezdxf_path.to_polylines2d(paths, dxfattribs=attribs))
-    return list(ezdxf_path.to_lwpolylines(paths, dxfattribs=attribs))
+        return list(
+            ezdxf_path.to_polylines2d(
+                paths,
+                distance=distance,
+                segments=4,
+                dxfattribs=attribs,
+            )
+        )
+    return list(
+        ezdxf_path.to_lwpolylines(
+            paths,
+            distance=distance,
+            segments=4,
+            dxfattribs=attribs,
+        )
+    )
 
 
 def _to_solid_fill_entities(
@@ -1615,7 +2068,7 @@ def _to_solid_fill_entities(
     fills: List[Any] = []
     for triangle in ezdxf_path.triangulate(
         paths,
-        max_sagitta=0.01,
+        max_sagitta=_flattening_error(paths),
         # The sagitta bound is the visual-accuracy oracle. Requiring sixteen
         # segments for every Bézier inflated real drawings by hundreds of MB
         # without improving that bound; two prevents pathological under-sampling
@@ -1678,6 +2131,7 @@ def _make_scaled_string_paths(
     target_advance: Optional[float],
     rotation_degrees: float,
     translation: Tuple[float, float] = (0.0, 0.0),
+    source_transform: Optional[Matrix44] = None,
 ) -> Tuple[List[Any], float, float]:
     """Create source paths with an explicit baseline scale and placement."""
 
@@ -1698,20 +2152,130 @@ def _make_scaled_string_paths(
         delivered_advance = 0.0
     if not math.isfinite(width_scale) or width_scale <= 0.0:
         raise ValueError("font baseline scale is invalid")
-    transform = (
+    transform = source_transform or (
         Matrix44.scale(width_scale, 1.0, 1.0)
         * Matrix44.z_rotate(math.radians(rotation_degrees))
         * Matrix44.translate(translation[0], translation[1], 0.0)
     )
+    render_height = 1.0 if source_transform is not None else height
     paths = list(
         text2path.make_paths_from_str(
             text,
             face,
-            size=height,
+            size=render_height,
             m=transform,
         )
     )
     return paths, delivered_advance, width_scale
+
+
+def _independent_font_paths(
+    text: str,
+    face: FontFace,
+    *,
+    height: float,
+    transform: Matrix44,
+) -> List[Any]:
+    """Read exact font contours without calling the delivery renderer wrapper."""
+
+    font = text2path.get_font(face)
+    path = font.text_path_ex(text, cap_height=height).to_path()
+    return list(path.transform(transform).sub_paths())
+
+
+def _authoritative_quad_transform(
+    text: str,
+    face: FontFace,
+    *,
+    target_quad: Tuple[Tuple[float, float], ...],
+    target_origin: Tuple[float, float],
+    target_advance: float,
+    target_height: float,
+) -> Tuple[Matrix44, float, float]:
+    """Map exact source-font contours through the authoritative affine quad."""
+
+    quad = _validated_quad(target_quad, field_name="authoritative target quad")
+    quad_advance, quad_height = _quad_dimensions(quad)
+    metric_scale = max(quad_advance, quad_height, target_advance, target_height, 1e-9)
+    metric_tolerance = metric_scale * 1e-7 + 1e-12
+    if not (
+        math.isclose(target_advance, quad_advance, rel_tol=0.0, abs_tol=metric_tolerance)
+        and math.isclose(target_height, quad_height, rel_tol=0.0, abs_tol=metric_tolerance)
+    ):
+        raise _RepresentationImpossible(
+            "authoritative target metrics do not match the target quad"
+        )
+
+    horizontal, vertical = _quad_coordinates(target_origin, quad)
+    normalized_tolerance = max(metric_tolerance / quad_advance, 1e-8)
+    if abs(horizontal) > normalized_tolerance or not (
+        normalized_tolerance < vertical <= 1.0 + normalized_tolerance
+    ):
+        raise _RepresentationImpossible(
+            "source baseline origin is not bound to the authoritative target quad"
+        )
+
+    font = text2path.get_font(face)
+    natural_advance = float(font.text_width(text))
+    if not math.isfinite(natural_advance) or natural_advance < 0.0:
+        raise ValueError("font returned an invalid authoritative source advance")
+    if natural_advance <= 0.0:
+        if _visible_ink_expected(text):
+            raise ValueError("visible source text has no authoritative font advance")
+        natural_advance = target_advance
+
+    baseline = (
+        quad[1][0] - quad[0][0],
+        quad[1][1] - quad[0][1],
+    )
+    vertical_axis = (
+        quad[3][0] - quad[0][0],
+        quad[3][1] - quad[0][1],
+    )
+    transform = Matrix44.ucs(
+        ux=(baseline[0] / natural_advance, baseline[1] / natural_advance, 0.0),
+        uy=(-vertical_axis[0] * vertical, -vertical_axis[1] * vertical, 0.0),
+        uz=(0.0, 0.0, 1.0),
+        origin=(target_origin[0], target_origin[1], 0.0),
+    )
+    return transform, target_advance, target_advance / natural_advance
+
+
+def _item_authoritative_transform(
+    text_item: NormalizedText,
+    face: FontFace,
+    *,
+    representation: str,
+) -> Optional[Tuple[Matrix44, float, float]]:
+    raw_quad = getattr(text_item, "target_quad_model", None)
+    if raw_quad is None:
+        return None
+    quad = _validated_quad(raw_quad, field_name="target_quad_model")
+    insertion = _finite_point(getattr(text_item, "insertion", None))
+    if insertion is None:
+        raise _RepresentationImpossible("source insertion is missing or non-finite")
+    target_advance = _positive_finite(getattr(text_item, "advance_width", None))
+    target_height = _positive_finite(getattr(text_item, "glyph_height", None))
+    quad_advance, quad_height = _quad_dimensions(quad)
+    if target_advance is None:
+        target_advance = quad_advance
+    if target_height is None:
+        target_height = quad_height
+    if representation == "glyphs":
+        quad = tuple(
+            (point[0] - insertion[0], point[1] - insertion[1]) for point in quad
+        )
+        target_origin = (0.0, 0.0)
+    else:
+        target_origin = insertion
+    return _authoritative_quad_transform(
+        str(getattr(text_item, "text", "") or ""),
+        face,
+        target_quad=quad,
+        target_origin=target_origin,
+        target_advance=target_advance,
+        target_height=target_height,
+    )
 
 
 def _source_bound_string_path_expectation(
@@ -1722,6 +2286,9 @@ def _source_bound_string_path_expectation(
     target_advance: Optional[float],
     rotation_degrees: float,
     translation: Tuple[float, float],
+    source_transform: Optional[Matrix44] = None,
+    delivered_advance_override: Optional[float] = None,
+    width_scale_override: Optional[float] = None,
 ) -> Tuple[
     List[Any],
     Optional[Tuple[float, float, float, float]],
@@ -1747,24 +2314,25 @@ def _source_bound_string_path_expectation(
         delivered_advance = 0.0
     if not math.isfinite(width_scale) or width_scale <= 0.0:
         raise ValueError("expected font baseline scale is invalid")
-    transform = (
+    transform = source_transform or (
         Matrix44.scale(width_scale, 1.0, 1.0)
         * Matrix44.z_rotate(math.radians(rotation_degrees))
         * Matrix44.translate(translation[0], translation[1], 0.0)
     )
-    expected_paths = list(
-        text2path.make_paths_from_str(
-            text,
-            face,
-            size=height,
-            m=transform,
-        )
+    render_height = 1.0 if source_transform is not None else height
+    expected_paths = _independent_font_paths(
+        text,
+        face,
+        height=render_height,
+        transform=transform,
     )
     return (
         expected_paths,
         _path_bbox_tuple(expected_paths),
-        delivered_advance,
-        width_scale,
+        delivered_advance_override
+        if delivered_advance_override is not None
+        else delivered_advance,
+        width_scale_override if width_scale_override is not None else width_scale,
     )
 
 
@@ -1773,6 +2341,7 @@ def _outline_expectation(
     *,
     representation: str,
     path_bbox: Optional[Tuple[float, float, float, float]],
+    expected_paths: Sequence[Any],
     character_groups: Sequence[_OutlineCharacterGroup] = (),
 ) -> _OutlineExpectation:
     if path_bbox is None:
@@ -1781,10 +2350,57 @@ def _outline_expectation(
         text_item,
         representation=representation,
     )
+    if character_groups:
+        # Each positioned character is flattened through its own authoritative
+        # affine and source scale.  Re-flattening the aggregate at the span scale
+        # changes vertex and triangulation sampling, so preserve the immutable
+        # per-character expectations in the same ownership order as the output.
+        flattening_error = max(
+            (group.flattening_error for group in character_groups),
+            default=0.0,
+        )
+        geometry_tolerance = max(
+            (group.geometry_tolerance for group in character_groups),
+            default=0.0,
+        )
+        path_geometry = tuple(
+            path
+            for group in character_groups
+            for path in group.expected_path_geometry
+        )
+        fill_geometry = tuple(
+            triangle
+            for group in character_groups
+            for triangle in group.expected_fill_geometry
+        )
+    else:
+        flattening_error = _flattening_error(expected_paths)
+        geometry_tolerance = _geometry_comparison_tolerance(
+            path_bbox,
+            flattening_error=flattening_error,
+        )
+        path_geometry = _path_geometry_expectations(
+            expected_paths,
+            flattening_error=flattening_error,
+        )
+        fill_geometry = _triangulated_geometry(
+            expected_paths,
+            flattening_error=flattening_error,
+        )
+    source_geometry_verified = _path_geometry_within_envelope(
+        path_geometry,
+        envelope,
+        tolerance=geometry_tolerance,
+    )
     return _OutlineExpectation(
         path_bbox=path_bbox,
         source_envelope=envelope,
         source_envelope_source=envelope_source,
+        path_geometry=path_geometry,
+        fill_geometry=fill_geometry,
+        flattening_error=flattening_error,
+        geometry_tolerance=geometry_tolerance,
+        source_geometry_verified=source_geometry_verified,
         character_groups=tuple(character_groups),
     )
 
@@ -1838,15 +2454,33 @@ def _verify_outline_character_ownership(
         owned_handles.extend(entity_handles)
         actual_bbox = _bbox_tuple(group.outlines)
         if group.visible_ink_expected:
+            outline_geometry_verified = _outline_entities_match(
+                group.expected_path_geometry,
+                group.outlines,
+                tolerance=group.geometry_tolerance,
+            )
+            fill_geometry_verified = _fill_entities_match(
+                group.expected_fill_geometry,
+                group.fills,
+                tolerance=group.geometry_tolerance,
+            )
             group_verified = bool(
                 outline_handles
                 and fill_handles
                 and all(entity_handles)
                 and _solid_fill_verified(group.fills, is_r12=is_r12)
-                and _bbox_matches(group.expected_bbox, actual_bbox)
+                and _bbox_matches(
+                    group.expected_bbox,
+                    actual_bbox,
+                    flattening_error=group.flattening_error,
+                )
+                and outline_geometry_verified
+                and fill_geometry_verified
             )
             zero_ink_verified = False
         else:
+            outline_geometry_verified = not group.expected_path_geometry
+            fill_geometry_verified = not group.expected_fill_geometry
             group_verified = bool(
                 not group.outlines
                 and not group.fills
@@ -1873,6 +2507,8 @@ def _verify_outline_character_ownership(
                     list(group.expected_bbox) if group.expected_bbox else None
                 ),
                 "actual_outline_bbox": list(actual_bbox) if actual_bbox else None,
+                "outline_topology_control_geometry_verified": outline_geometry_verified,
+                "solid_fill_geometry_verified": fill_geometry_verified,
                 "group_verified": group_verified,
             }
         )
@@ -1900,6 +2536,16 @@ def _commit_outlines(
     if not outlines:
         raise ValueError("outline strategy returned zero entities")
     fill_verified = _solid_fill_verified(fills, is_r12=is_r12)
+    outline_geometry_verified = _outline_entities_match(
+        expectation.path_geometry,
+        outlines,
+        tolerance=expectation.geometry_tolerance,
+    )
+    fill_geometry_verified = _fill_entities_match(
+        expectation.fill_geometry,
+        fills,
+        tolerance=expectation.geometry_tolerance,
+    )
     attempt.evidence.update(
         {
             "solid_fill_entity_type": "SOLID",
@@ -1910,6 +2556,11 @@ def _commit_outlines(
             ],
             "source_outline_envelope_source": expectation.source_envelope_source,
             "pre_entity_path_expectation": list(expectation.path_bbox),
+            "source_outline_geometry_verified": expectation.source_geometry_verified,
+            "outline_topology_control_geometry_verified": outline_geometry_verified,
+            "solid_fill_geometry_verified": fill_geometry_verified,
+            "outline_flattening_error": expectation.flattening_error,
+            "outline_geometry_tolerance": expectation.geometry_tolerance,
         }
     )
     if not fill_verified:
@@ -1936,7 +2587,15 @@ def _commit_outlines(
             is_r12=is_r12,
         )
         attempt.visual_verified = bool(
-            _bbox_matches(expectation.path_bbox, actual_bbox) and ownership_verified
+            expectation.source_geometry_verified
+            and outline_geometry_verified
+            and fill_geometry_verified
+            and _bbox_matches(
+                expectation.path_bbox,
+                actual_bbox,
+                flattening_error=expectation.flattening_error,
+            )
+            and ownership_verified
         )
         attempt.evidence.update(
             {
@@ -2020,7 +2679,14 @@ def _commit_outlines(
     attempt.visual_verified = bool(
         insert_verified
         and insert_color_verified
-        and _bbox_matches(expectation.path_bbox, actual_bbox)
+        and expectation.source_geometry_verified
+        and outline_geometry_verified
+        and fill_geometry_verified
+        and _bbox_matches(
+            expectation.path_bbox,
+            actual_bbox,
+            flattening_error=expectation.flattening_error,
+        )
         and ownership_verified
     )
     attempt.evidence.update(
@@ -2179,18 +2845,38 @@ def _attempt_outline_entity(
         rotation_degrees = _finite_float(getattr(text_item, "rotation", 0.0) or 0.0)
         if rotation_degrees is None:
             raise _RepresentationImpossible("source rotation is missing or non-finite")
-        _, expected_path_bbox, expected_advance, expected_scale = (
+        face = FontFace(filename=font_resolution.filename)
+        source_transform = _item_authoritative_transform(
+            text_item,
+            face,
+            representation=representation,
+        )
+        transform_matrix = source_transform[0] if source_transform else None
+        delivered_override = source_transform[1] if source_transform else None
+        scale_override = source_transform[2] if source_transform else None
+        expected_paths, expected_path_bbox, expected_advance, expected_scale = (
             _source_bound_string_path_expectation(
                 str(text_item.text),
-                FontFace(filename=font_resolution.filename),
+                face,
                 height=height,
                 target_advance=target_width,
                 rotation_degrees=rotation_degrees,
                 translation=source_insert,
+                source_transform=transform_matrix,
+                delivered_advance_override=delivered_override,
+                width_scale_override=scale_override,
             )
         )
         paths = list(text2path.make_paths_from_entity(source))
-        actual_path_bbox = _path_bbox_tuple(paths)
+        (
+            pre_entity_paths_verified,
+            independent_path_bbox,
+            actual_path_bbox,
+            pre_entity_flattening_error,
+            pre_entity_geometry_tolerance,
+        ) = _pre_entity_paths_verified(expected_paths, paths)
+        if expected_path_bbox != independent_path_bbox:
+            raise ValueError("independent source path expectation mutated")
         if expected_path_bbox is None or actual_path_bbox is None:
             if str(text_item.text) and not str(text_item.text).strip():
                 attempt.evidence.update(
@@ -2205,7 +2891,7 @@ def _attempt_outline_entity(
                     "whitespace-only source item has no outline ink"
                 )
             raise ValueError("visible source text produced no finite outline paths")
-        if not _bbox_matches(expected_path_bbox, actual_path_bbox):
+        if not pre_entity_paths_verified:
             raise ValueError("entity text2path output is not bound to source geometry")
         attempt.evidence.update(
             {
@@ -2213,13 +2899,19 @@ def _attempt_outline_entity(
                 "source_bound_expected_scale": expected_scale,
                 "source_bound_expected_path_bbox": list(expected_path_bbox),
                 "pre_entity_actual_path_bbox": list(actual_path_bbox),
+                "pre_entity_path_topology_control_geometry_verified": True,
+                "pre_entity_flattening_error": pre_entity_flattening_error,
+                "pre_entity_geometry_tolerance": pre_entity_geometry_tolerance,
             }
         )
         expectation = _outline_expectation(
             text_item,
             representation=representation,
             path_bbox=expected_path_bbox,
+            expected_paths=expected_paths,
         )
+        if not expectation.source_geometry_verified:
+            raise ValueError("source outline paths fall outside the authoritative envelope")
         outlines = _to_outline_entities(
             paths, is_r12=is_r12, attribs=_outline_attributes(attribs)
         )
@@ -2332,42 +3024,92 @@ def _attempt_outline_string(
             )
             outlines: List[Any] = []
             fills: List[Any] = []
+            expected_paths: List[Any] = []
             character_metrics: List[Dict[str, Any]] = []
             for character in positioned_layout:
                 if representation == "glyphs":
-                    translation = (
+                    target_origin = (
                         character.target_origin[0] - insertion[0],
                         character.target_origin[1] - insertion[1],
                     )
+                    target_quad = tuple(
+                        (point[0] - insertion[0], point[1] - insertion[1])
+                        for point in character.target_quad
+                    )
                 else:
-                    translation = character.target_origin
+                    target_origin = character.target_origin
+                    target_quad = character.target_quad
                 if character.visible_ink_expected:
                     (
-                        character_paths,
+                        character_transform,
+                        authoritative_character_advance,
+                        authoritative_character_scale,
+                    ) = _authoritative_quad_transform(
+                        character.text,
+                        face,
+                        target_quad=target_quad,
+                        target_origin=target_origin,
+                        target_advance=character.advance_width,
+                        target_height=character.glyph_height,
+                    )
+                    (
+                        expected_character_paths,
                         expected_character_bbox,
                         expected_character_advance,
                         expected_character_scale,
                     ) = _source_bound_string_path_expectation(
                         character.text,
                         face,
-                        height=height,
+                        height=1.0,
                         target_advance=character.advance_width,
                         rotation_degrees=character.rotation_degrees,
-                        translation=translation,
+                        translation=target_origin,
+                        source_transform=character_transform,
+                        delivered_advance_override=authoritative_character_advance,
+                        width_scale_override=authoritative_character_scale,
                     )
-                    character_advance = expected_character_advance
-                    character_scale = expected_character_scale
+                    (
+                        character_paths,
+                        character_advance,
+                        character_scale,
+                    ) = _make_scaled_string_paths(
+                        character.text,
+                        face,
+                        height=1.0,
+                        target_advance=character.advance_width,
+                        rotation_degrees=character.rotation_degrees,
+                        translation=target_origin,
+                        source_transform=character_transform,
+                    )
+                    (
+                        character_paths_verified,
+                        independent_character_bbox,
+                        character_bbox,
+                        character_flattening_error,
+                        character_geometry_tolerance,
+                    ) = _pre_entity_paths_verified(
+                        expected_character_paths,
+                        character_paths,
+                    )
+                    if expected_character_bbox != independent_character_bbox:
+                        raise ValueError(
+                            f"source character {character.index} expectation mutated"
+                        )
                 else:
                     # A source space/control/zero-width format character owns
                     # placement and advance but deliberately owns no ink.  Do
                     # not let a font's .notdef glyph invent visible geometry.
                     character_paths = []
+                    expected_character_paths = []
                     character_advance = character.advance_width
                     character_scale = None
                     expected_character_bbox = None
                     expected_character_advance = character.advance_width
                     expected_character_scale = None
-                character_bbox = _path_bbox_tuple(character_paths)
+                    character_bbox = None
+                    character_paths_verified = True
+                    character_flattening_error = 0.0
+                    character_geometry_tolerance = 0.0
                 if character.visible_ink_expected and character_bbox is None:
                     raise ValueError(
                         f"visible source character {character.index} produced no outline paths"
@@ -2378,7 +3120,7 @@ def _attempt_outline_string(
                     )
                 if character.visible_ink_expected and (
                     expected_character_bbox is None
-                    or not _bbox_matches(expected_character_bbox, character_bbox)
+                    or not character_paths_verified
                     or not math.isclose(
                         character_advance,
                         expected_character_advance,
@@ -2417,10 +3159,21 @@ def _attempt_outline_string(
                         rotation_degrees=character.rotation_degrees,
                         visible_ink_expected=character.visible_ink_expected,
                         expected_bbox=expected_character_bbox,
+                        expected_path_geometry=_path_geometry_expectations(
+                            expected_character_paths,
+                            flattening_error=character_flattening_error,
+                        ),
+                        expected_fill_geometry=_triangulated_geometry(
+                            expected_character_paths,
+                            flattening_error=character_flattening_error,
+                        ),
+                        flattening_error=character_flattening_error,
+                        geometry_tolerance=character_geometry_tolerance,
                         outlines=character_outlines,
                         fills=character_fills,
                     )
                 )
+                expected_paths.extend(expected_character_paths)
                 outlines.extend(character_outlines)
                 fills.extend(character_fills)
                 character_metrics.append(
@@ -2429,6 +3182,10 @@ def _attempt_outline_string(
                         "expected_advance_width": character.advance_width,
                         "delivered_advance_width": character_advance,
                         "baseline_scale": character_scale,
+                        "target_height": character.glyph_height,
+                        "pre_entity_path_topology_control_geometry_verified": (
+                            character_paths_verified
+                        ),
                     }
                 )
             expected_path_bbox = _bbox_union(
@@ -2451,13 +3208,26 @@ def _attempt_outline_string(
                 text_item,
                 representation=representation,
                 path_bbox=expected_path_bbox,
+                expected_paths=expected_paths,
                 character_groups=character_groups,
             )
+            if not expectation.source_geometry_verified:
+                raise ValueError(
+                    "positioned source paths fall outside the authoritative span envelope"
+                )
             attempt.evidence["positioned_character_metrics"] = character_metrics
         else:
             translation = insertion if representation == "geometry" else (0.0, 0.0)
+            source_transform = _item_authoritative_transform(
+                text_item,
+                face,
+                representation=representation,
+            )
+            transform_matrix = source_transform[0] if source_transform else None
+            delivered_override = source_transform[1] if source_transform else None
+            scale_override = source_transform[2] if source_transform else None
             (
-                paths,
+                expected_paths,
                 expected_path_bbox,
                 expected_delivered_advance,
                 expected_baseline_scale,
@@ -2468,10 +3238,28 @@ def _attempt_outline_string(
                 target_advance=target_width,
                 rotation_degrees=rotation_degrees,
                 translation=translation,
+                source_transform=transform_matrix,
+                delivered_advance_override=delivered_override,
+                width_scale_override=scale_override,
             )
-            delivered_advance = expected_delivered_advance
-            baseline_scale = expected_baseline_scale
-            actual_path_bbox = _path_bbox_tuple(paths)
+            paths, delivered_advance, baseline_scale = _make_scaled_string_paths(
+                str(text_item.text),
+                face,
+                height=1.0 if source_transform else height,
+                target_advance=target_width,
+                rotation_degrees=rotation_degrees,
+                translation=translation,
+                source_transform=transform_matrix,
+            )
+            (
+                pre_entity_paths_verified,
+                independent_path_bbox,
+                actual_path_bbox,
+                pre_entity_flattening_error,
+                pre_entity_geometry_tolerance,
+            ) = _pre_entity_paths_verified(expected_paths, paths)
+            if expected_path_bbox != independent_path_bbox:
+                raise ValueError("independent source path expectation mutated")
             if expected_path_bbox is None or actual_path_bbox is None:
                 if str(text_item.text) and not str(text_item.text).strip():
                     attempt.evidence.update(
@@ -2487,7 +3275,7 @@ def _attempt_outline_string(
                     )
                 raise ValueError("visible source text produced no finite outline paths")
             if (
-                not _bbox_matches(expected_path_bbox, actual_path_bbox)
+                not pre_entity_paths_verified
                 or not math.isclose(
                     delivered_advance,
                     expected_delivered_advance,
@@ -2506,13 +3294,21 @@ def _attempt_outline_string(
                 {
                     "source_bound_expected_path_bbox": list(expected_path_bbox),
                     "pre_entity_actual_path_bbox": list(actual_path_bbox),
+                    "pre_entity_path_topology_control_geometry_verified": True,
+                    "pre_entity_flattening_error": pre_entity_flattening_error,
+                    "pre_entity_geometry_tolerance": pre_entity_geometry_tolerance,
                 }
             )
             expectation = _outline_expectation(
                 text_item,
                 representation=representation,
                 path_bbox=expected_path_bbox,
+                expected_paths=expected_paths,
             )
+            if not expectation.source_geometry_verified:
+                raise ValueError(
+                    "source outline paths fall outside the authoritative envelope"
+                )
             outlines = _to_outline_entities(
                 paths,
                 is_r12=is_r12,
@@ -2629,7 +3425,6 @@ def _build_delivery(
             verified=False,
             failure_reason="source text item is empty",
         )
-
     ladder = _representation_ladder(requested)
     if not ladder:
         return TextDeliveryResult(
@@ -2682,8 +3477,20 @@ def _build_delivery(
             terminal=True,
         )
 
+    authoritative_source_error: Optional[str] = None
+    try:
+        _validate_item_source_geometry(text_item)
+    except (TypeError, ValueError) as exc:
+        authoritative_source_error = f"invalid authoritative source geometry: {exc}"
+
     for representation in ladder:
         representation_start = len(attempts)
+        if authoritative_source_error and representation in {"3d_text", "labels", "text"}:
+            # Outline attempts validate and record the item-specific source
+            # contradiction themselves.  A semantic/native rung must never
+            # erase that failure by certifying concatenated or otherwise less
+            # constrained text against invalid authoritative geometry.
+            return unverified_result(authoritative_source_error)
         if representation == "3d_text":
             attempt = _attempt_labels(
                 text_item,

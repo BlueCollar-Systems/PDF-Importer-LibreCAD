@@ -311,6 +311,140 @@ def test_outline_verification_rejects_source_to_path_affine_corruption(mode) -> 
     assert all(attempt.cleanup_verified for attempt in result.attempts)
 
 
+@pytest.mark.parametrize("mode", ["glyphs", "geometry"])
+def test_outline_verification_rejects_corrupted_underlying_string_renderer(
+    mode,
+) -> None:
+    """Renderer output cannot also be the oracle that certifies that output."""
+
+    original = dxf_text_builder.text2path.make_paths_from_str
+    corruption = ezdxf.math.Matrix44.translate(47.0, -31.0, 0.0)
+
+    def corrupt_renderer_output(*args, **kwargs):
+        paths = list(original(*args, **kwargs))
+        return [path.transform(corruption) for path in paths]
+
+    with (
+        patch(
+            "dxf_text_builder.text2path.make_paths_from_entity",
+            side_effect=RuntimeError("force the source-layout string route"),
+        ),
+        patch(
+            "dxf_text_builder.text2path.make_paths_from_str",
+            side_effect=corrupt_renderer_output,
+        ),
+    ):
+        _, msp, result = _deliver(mode)
+
+    assert result.verified is False, [attempt.to_dict() for attempt in result.attempts]
+    assert result.final_representation is None
+    assert list(msp) == []
+    assert all(attempt.cleanup_verified for attempt in result.attempts)
+
+
+@pytest.mark.parametrize("mode", ["glyphs", "geometry"])
+def test_outline_verification_enforces_authoritative_target_quad(mode) -> None:
+    item = _item(rotation=0.0)
+    item.target_quad_model = (
+        (112.25, 24.58),
+        (119.75, 24.58),
+        (119.75, 24.50),
+        (112.25, 24.50),
+    )
+
+    _, msp, result = _deliver(mode, item)
+
+    assert result.verified is False, [attempt.to_dict() for attempt in result.attempts]
+    assert result.final_representation is None
+    assert list(msp) == []
+    assert all(attempt.cleanup_verified for attempt in result.attempts)
+
+
+@pytest.mark.parametrize("mode", ["glyphs", "geometry"])
+def test_outline_verification_rejects_bbox_preserving_shape_corruption(mode) -> None:
+    """Matching extents cannot certify the outline's interior source geometry."""
+
+    original_outlines = dxf_text_builder._to_outline_entities
+    original_fills = dxf_text_builder._to_solid_fill_entities
+    reflection = {}
+
+    def reflect_outlines(paths, *, is_r12, attribs):
+        entities = original_outlines(paths, is_r12=is_r12, attribs=attribs)
+        bbox = dxf_text_builder._bbox_tuple(entities)
+        assert bbox is not None
+        center_x = (bbox[0] + bbox[2]) / 2.0
+        transform = (
+            ezdxf.math.Matrix44.translate(-center_x, 0.0, 0.0)
+            * ezdxf.math.Matrix44.scale(-1.0, 1.0, 1.0)
+            * ezdxf.math.Matrix44.translate(center_x, 0.0, 0.0)
+        )
+        reflection["transform"] = transform
+        for entity in entities:
+            entity.transform(transform)
+        return entities
+
+    def reflect_fills(paths, *, is_r12, attribs):
+        entities = original_fills(paths, is_r12=is_r12, attribs=attribs)
+        transform = reflection["transform"]
+        for entity in entities:
+            entity.transform(transform)
+        return entities
+
+    with (
+        patch(
+            "dxf_text_builder._to_outline_entities",
+            side_effect=reflect_outlines,
+        ),
+        patch(
+            "dxf_text_builder._to_solid_fill_entities",
+            side_effect=reflect_fills,
+        ),
+    ):
+        _, msp, result = _deliver(mode)
+
+    assert result.verified is False, [attempt.to_dict() for attempt in result.attempts]
+    assert result.final_representation is None
+    assert list(msp) == []
+    assert all(attempt.cleanup_verified for attempt in result.attempts)
+
+
+def test_outline_verification_rejects_large_relative_error_below_flattening_floor() -> None:
+    """A fixed curve tolerance cannot hide an 11.9% shift of straight glyphs."""
+
+    original_outlines = dxf_text_builder._to_outline_entities
+    original_fills = dxf_text_builder._to_solid_fill_entities
+    corruption = ezdxf.math.Matrix44.translate(0.0095, 0.0, 0.0)
+
+    def shift_outlines(paths, *, is_r12, attribs):
+        entities = original_outlines(paths, is_r12=is_r12, attribs=attribs)
+        for entity in entities:
+            entity.transform(corruption)
+        return entities
+
+    def shift_fills(paths, *, is_r12, attribs):
+        entities = original_fills(paths, is_r12=is_r12, attribs=attribs)
+        for entity in entities:
+            entity.transform(corruption)
+        return entities
+
+    with (
+        patch(
+            "dxf_text_builder._to_outline_entities",
+            side_effect=shift_outlines,
+        ),
+        patch(
+            "dxf_text_builder._to_solid_fill_entities",
+            side_effect=shift_fills,
+        ),
+    ):
+        _, msp, result = _deliver("geometry", _item(height=0.08))
+
+    assert result.verified is False, [attempt.to_dict() for attempt in result.attempts]
+    assert result.final_representation is None
+    assert list(msp) == []
+    assert all(attempt.cleanup_verified for attempt in result.attempts)
+
+
 @pytest.mark.parametrize("requested", ["glyphs", "labels"])
 def test_positioned_repeated_characters_keep_source_order_origin_and_rotation(
     requested,
@@ -400,6 +534,41 @@ def test_positioned_layout_records_explicit_zero_ink_character_without_artifacts
     assert ownership[1]["entity_handles"] == []
     assert ownership[1]["visible_ink_expected"] is False
     assert ownership[1]["zero_ink_verified"] is True
+
+
+@pytest.mark.parametrize("mode", ["glyphs", "geometry"])
+def test_positioned_layout_enforces_each_character_target_height(mode) -> None:
+    item = _positioned_repeated_item()
+    taller = __import__("dataclasses").replace(
+        item.source_char_layout[1],
+        target_origin=(22.0, 30.0),
+        target_quad=((18.0, 30.0), (18.0, 33.0), (26.0, 33.0), (26.0, 30.0)),
+        glyph_height=8.0,
+    )
+    item = __import__("dataclasses").replace(
+        item,
+        bbox=(10.0, 18.0, 26.0, 33.0),
+        source_char_layout=(item.source_char_layout[0], taller),
+    )
+
+    _, msp, result = _deliver(mode, item)
+
+    assert result.verified is False, [attempt.to_dict() for attempt in result.attempts]
+    assert result.final_representation is None
+    assert list(msp) == []
+    assert all(attempt.cleanup_verified for attempt in result.attempts)
+
+
+def test_fractional_source_page_cannot_be_truncated_into_an_existing_identity() -> None:
+    item = _item()
+    item.page_number = 3.75
+
+    _, msp, result = _deliver("geometry", item)
+
+    assert result.verified is False, [attempt.to_dict() for attempt in result.attempts]
+    assert result.final_representation is None
+    assert result.source_id == ""
+    assert list(msp) == []
 
 
 def test_positioned_layout_rejects_mismatched_source_truth_before_path_creation() -> None:
