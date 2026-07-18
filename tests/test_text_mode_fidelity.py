@@ -124,6 +124,7 @@ class TestLibreCADTextModeFidelity(unittest.TestCase):
         with (
             patch("dxf_text_builder.text2path.make_paths_from_entity", **kwargs),
             patch("dxf_text_builder.text2path.make_paths_from_str", **kwargs),
+            patch("dxf_text_builder._make_paths_from_source_glyph_id", **kwargs),
         ):
             with self.assertRaises(TextRepresentationDeliveryError) as raised:
                 export_to_dxf(

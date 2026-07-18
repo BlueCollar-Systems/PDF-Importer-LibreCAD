@@ -30,9 +30,11 @@ from dxf_text_builder import (
     TextDeliveryAttempt,
     TextDeliveryResult,
     _block_reference_handles,
+    _build_physical_glyph_ink_proof,
     _glyph_block_name_binds_source,
     _outline_reference_handles,
     _source_identity_sha256,
+    _validate_physical_glyph_ink_proof,
     _visible_ink_expected,
     build_text,
     reset_text_styles,
@@ -891,6 +893,31 @@ def _verify_serialized_text_deliveries(
 
         if representation == "raster":
             evidence = dict(final_attempt.get("evidence") or {})
+            source_pixels_sampled = evidence.get("source_pixels_sampled") is True
+            if source_pixels_sampled:
+                source_clip = list(evidence.get("source_clip_pdf") or [])
+                if len(source_clip) != 4 or not all(
+                    isinstance(value, (int, float)) and math.isfinite(float(value))
+                    for value in source_clip
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: sampled source clip "
+                        "evidence is incomplete"
+                    )
+            else:
+                physical_proof = evidence.get("physical_glyph_ink_proof")
+                if (
+                    final_attempt.get("strategy") != "sealed_physical_zero_ink_png"
+                    or evidence.get("source_zero_ink_physically_proven") is not True
+                    or evidence.get("zero_ink_verified") is not True
+                    or evidence.get("visible_ink_verified") is not False
+                    or not _validate_physical_glyph_ink_proof(physical_proof)
+                    or physical_proof.get("status") != "empty"
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: transparent raster "
+                        "lacks sealed physical empty-glyph proof"
+                    )
             asset_path = Path(str(evidence.get("asset_path") or ""))
             expected_sha = str(evidence.get("asset_sha256") or "")
             if not asset_path.is_file() or not expected_sha:
@@ -1415,21 +1442,29 @@ def _attempt_terminal_text_raster(
     asset_root: Path,
     raster_dpi: int,
     source_pdf_sha256: str,
+    config: Optional[ImportConfig] = None,
 ) -> Tuple[TextDeliveryResult, Optional[_PendingRasterAsset]]:
     """Attempt a real item crop as requested or after proven structural failure."""
     attempts = list(delivery.attempts)
     for prior in attempts:
         prior.superseded = True
-    source_content_whitespace_only = not _visible_ink_expected(
-        str(getattr(source_text, "text", "") or "")
+    physical_ink_proof = _build_physical_glyph_ink_proof(
+        source_text,
+        config or ImportConfig.auto(),
+    )
+    physical_ink_proof_valid = _validate_physical_glyph_ink_proof(
+        physical_ink_proof
+    )
+    source_zero_ink_proven = bool(
+        physical_ink_proof_valid and physical_ink_proof.get("status") == "empty"
     )
     attempt = TextDeliveryAttempt(
         source_id=delivery.source_id,
         requested_representation=delivery.requested_representation,
         attempted_representation="raster",
         strategy=(
-            "source_bound_zero_ink_png"
-            if source_content_whitespace_only
+            "sealed_physical_zero_ink_png"
+            if source_zero_ink_proven
             else "pymupdf_item_clip"
         ),
     )
@@ -1469,7 +1504,7 @@ def _attempt_terminal_text_raster(
         source_pixels_sampled = False
         visible_ink_verified = False
         zero_ink_verified = False
-        if source_content_whitespace_only:
+        if source_zero_ink_proven:
             pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 1, 1), True)
             pixmap.clear_with(0)
             pixmap.set_alpha(bytes([0]))
@@ -1544,8 +1579,7 @@ def _attempt_terminal_text_raster(
                 source_pixels_sampled = True
 
             visible_ink_verified = _pixmap_contains_ink(pixmap)
-            if not visible_ink_verified:
-                raise ValueError("terminal raster crop contains no visible source ink")
+            zero_ink_verified = not visible_ink_verified
 
         if pixmap.width <= 0 or pixmap.height <= 0:
             raise ValueError("terminal raster rendered zero pixels")
@@ -1598,8 +1632,8 @@ def _attempt_terminal_text_raster(
         )
         ink_contract_verified = (
             zero_ink_verified
-            if source_content_whitespace_only
-            else visible_ink_verified
+            if source_zero_ink_proven
+            else source_pixels_sampled
         )
         attempt.type_verified = image.dxftype() == "IMAGE"
         attempt.visual_verified = insert_ok and size_ok and ink_contract_verified
@@ -1625,8 +1659,10 @@ def _attempt_terminal_text_raster(
                 max(py0, py1),
             ],
             "pixel_size": [int(pixmap.width), int(pixmap.height)],
-            "source_content_whitespace_only": source_content_whitespace_only,
-            "visible_ink_expected": not source_content_whitespace_only,
+            "physical_glyph_ink_proof": physical_ink_proof,
+            "physical_glyph_ink_proof_valid": physical_ink_proof_valid,
+            "source_zero_ink_physically_proven": source_zero_ink_proven,
+            "visible_ink_expected": not source_zero_ink_proven,
             "visible_ink_verified": visible_ink_verified,
             "zero_ink_verified": zero_ink_verified,
             "source_pixels_sampled": source_pixels_sampled,
@@ -1974,6 +2010,7 @@ def _export_to_dxf_impl(
                             else 300
                         ),
                         source_pdf_sha256=source_pdf_sha256,
+                        config=text_cfg,
                     )
                     if pending_asset is not None:
                         pending_raster_assets.append(pending_asset)

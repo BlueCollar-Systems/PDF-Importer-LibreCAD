@@ -521,7 +521,12 @@ def test_positioned_layout_never_concatenates_visible_source_characters() -> Non
         _, _, result = _deliver("glyphs", _positioned_repeated_item())
 
     assert result.verified is True
-    assert calls == ["A", "A"]
+    assert calls == []
+    final = next(attempt for attempt in result.attempts if attempt.outcome == "verified")
+    assert [
+        row["selection_source"]
+        for row in final.evidence["physical_glyph_ink_proof"]["glyphs"]
+    ] == ["source_char_layout_glyph_id", "source_char_layout_glyph_id"]
 
 
 def test_positioned_layout_rejects_one_entry_that_concatenates_source_characters() -> None:
@@ -563,7 +568,7 @@ def test_positioned_layout_rejects_one_entry_that_concatenates_source_characters
     assert "AA" not in calls
 
 
-def test_positioned_layout_records_explicit_zero_ink_character_without_artifacts() -> None:
+def test_positioned_layout_uses_contoured_source_glyph_bound_to_unicode_space() -> None:
     item = _positioned_repeated_item()
     space = __import__("dataclasses").replace(
         item.source_char_layout[1],
@@ -590,7 +595,36 @@ def test_positioned_layout_records_explicit_zero_ink_character_without_artifacts
         _, _, result = _deliver("glyphs", item)
 
     assert result.verified is True
-    assert calls == ["A"]
+    assert calls == []
+    final = next(attempt for attempt in result.attempts if attempt.outcome == "verified")
+    ownership = final.evidence["outline_character_ownership"]
+    assert ownership[0]["entity_handles"]
+    assert ownership[0]["visible_ink_expected"] is True
+    assert ownership[1]["entity_handles"]
+    assert ownership[1]["visible_ink_expected"] is True
+    assert ownership[1]["zero_ink_verified"] is False
+    proof = final.evidence["physical_glyph_ink_proof"]
+    assert proof["glyphs"][1]["glyph_id"] == 32
+    assert proof["glyphs"][1]["status"] == "visible"
+
+
+def test_positioned_layout_records_physically_empty_source_glyph_without_artifacts() -> None:
+    item = _positioned_repeated_item()
+    space = __import__("dataclasses").replace(
+        item.source_char_layout[1],
+        text=" ",
+        glyph_id=1,
+    )
+    item = __import__("dataclasses").replace(
+        item,
+        text="A ",
+        normalized="A",
+        source_char_layout=(item.source_char_layout[0], space),
+    )
+
+    _, _, result = _deliver("glyphs", item)
+
+    assert result.verified is True
     final = next(attempt for attempt in result.attempts if attempt.outcome == "verified")
     ownership = final.evidence["outline_character_ownership"]
     assert ownership[0]["entity_handles"]
@@ -598,6 +632,9 @@ def test_positioned_layout_records_explicit_zero_ink_character_without_artifacts
     assert ownership[1]["entity_handles"] == []
     assert ownership[1]["visible_ink_expected"] is False
     assert ownership[1]["zero_ink_verified"] is True
+    proof = final.evidence["physical_glyph_ink_proof"]
+    assert proof["glyphs"][1]["glyph_id"] == 1
+    assert proof["glyphs"][1]["status"] == "empty"
 
 
 @pytest.mark.parametrize("mode", ["glyphs", "geometry"])
@@ -896,8 +933,9 @@ def test_label_fallback_to_text_preserves_transform_and_source_advance(
 def test_labels_preserve_whitespace_only_source_text_as_text() -> None:
     item = __import__("dataclasses").replace(
         _item(width=2.5, rotation=17.0),
-        text="   ",
+        text=" ",
         normalized="",
+        source_glyph_id=1,
     )
     _, msp, result = _deliver("labels", item)
 
@@ -906,9 +944,10 @@ def test_labels_preserve_whitespace_only_source_text_as_text() -> None:
     assert result.fallback_used is True
     entity = next(iter(msp))
     assert entity.dxftype() == "TEXT"
-    assert entity.dxf.text == "   "
+    assert entity.dxf.text == " "
     assert text_size(entity).width == pytest.approx(0.0)
-    assert result.attempts[-1].evidence["whitespace_zero_ink_verified"] is True
+    assert result.attempts[-1].evidence["physical_zero_ink_verified"] is True
+    assert result.attempts[-1].evidence["source_zero_ink_physically_proven"] is True
 
 
 @pytest.mark.parametrize(
@@ -925,8 +964,9 @@ def test_librecad_whitespace_preserves_native_text_without_borrowed_font_pixels(
 ) -> None:
     item = __import__("dataclasses").replace(
         _item(width=2.5, rotation=17.0),
-        text="   ",
+        text=" ",
         normalized="",
+        source_glyph_id=1,
     )
     _, msp, result = _deliver(mode, item, target_app="librecad")
 
@@ -938,11 +978,11 @@ def test_librecad_whitespace_preserves_native_text_without_borrowed_font_pixels(
     )
     final = result.attempts[-1]
     assert final.outcome == "verified"
-    assert final.evidence["source_content_whitespace_only"] is True
+    assert final.evidence["source_zero_ink_physically_proven"] is True
     assert final.evidence["parent_native_font_rendering_required"] is False
     assert final.evidence["parent_visual_fidelity_verified"] is True
     assert [entity.dxftype() for entity in msp] == ["TEXT"]
-    assert next(iter(msp)).dxf.text == "   "
+    assert next(iter(msp)).dxf.text == " "
 
 
 def test_glyphs_are_block_references_and_geometry_is_raw_edges() -> None:
@@ -1821,8 +1861,9 @@ def test_failed_outline_strategies_stop_without_cross_type_fallback() -> None:
 @pytest.mark.parametrize("mode", ["glyphs", "geometry"])
 def test_whitespace_only_source_falls_back_to_nearest_exact_zero_ink_text(mode) -> None:
     item = _item(width=4.0)
-    item.text = "   "
+    item.text = " "
     item.normalized = ""
+    item.source_glyph_id = 1
     doc = ezdxf.new("R2010")
     msp = doc.modelspace()
     result = build_text(
@@ -1849,7 +1890,7 @@ def test_whitespace_only_source_falls_back_to_nearest_exact_zero_ink_text(mode) 
     assert all(attempt.outcome == "impossible" for attempt in outline_attempts)
     assert all(attempt.cleanup_verified for attempt in outline_attempts)
     assert all(
-        attempt.evidence["source_content_whitespace_only"] is True
+        attempt.evidence["source_zero_ink_physically_proven"] is True
         and attempt.evidence["zero_outline_result_verified"] is True
         and attempt.evidence["item_specific_creation_attempted"] is True
         for attempt in outline_attempts
@@ -1857,63 +1898,34 @@ def test_whitespace_only_source_falls_back_to_nearest_exact_zero_ink_text(mode) 
     assert result.attempts[-1].attempted_representation == "text"
     assert result.attempts[-1].outcome == "verified"
     assert result.attempts[-1].evidence["parent_visual_fidelity_verified"] is True
-    assert result.attempts[-1].evidence["source_content_whitespace_only"] is True
+    assert result.attempts[-1].evidence["source_zero_ink_physically_proven"] is True
     assert result.attempts[-1].evidence["parent_native_font_rendering_required"] is False
     assert [entity.dxftype() for entity in msp] == ["TEXT"]
-    assert next(iter(msp)).dxf.text == "   "
+    assert next(iter(msp)).dxf.text == " "
 
 
-@pytest.mark.parametrize("mode", ["glyphs", "geometry"])
 @pytest.mark.parametrize(
     "content",
     [
         "\u200b",  # ZERO WIDTH SPACE
-        "\u2060",  # WORD JOINER
         "\u00ad",  # SOFT HYPHEN
         "\u034f",  # COMBINING GRAPHEME JOINER
-        "\u061c",  # ARABIC LETTER MARK
-        "\u115f",  # HANGUL CHOSEONG FILLER
-        "\u180b",  # MONGOLIAN FREE VARIATION SELECTOR ONE
-        "\u200e",  # LEFT-TO-RIGHT MARK
-        "\u202a",  # LEFT-TO-RIGHT EMBEDDING
-        "\u2061",  # FUNCTION APPLICATION
-        "\u2062",  # INVISIBLE TIMES
-        "\u2063",  # INVISIBLE SEPARATOR
-        "\u2064",  # INVISIBLE PLUS
-        "\u2066",  # LEFT-TO-RIGHT ISOLATE
-        "\u3164",  # HANGUL FILLER
-        "\ufe0e",  # VARIATION SELECTOR-15
         "\ufe0f",  # VARIATION SELECTOR-16
-        "\uffa0",  # HALFWIDTH HANGUL FILLER
-        "\U0001bca0",  # SHORTHAND FORMAT LETTER OVERLAP
-        "\U0001d173",  # MUSICAL SYMBOL BEGIN BEAM
-        "\U000e0001",  # LANGUAGE TAG
-        "\U000e0100",  # VARIATION SELECTOR-17
     ],
 )
-def test_zero_ink_format_source_uses_the_same_truthful_zero_ink_path(
-    mode,
-    content,
-) -> None:
+def test_default_ignorable_codepoint_does_not_self_certify_zero_ink(content) -> None:
     item = _item(width=4.0)
     item.text = content
     item.normalized = ""
 
-    _, msp, result = _deliver(mode, item, target_app="librecad")
-
-    assert result.verified is True, [attempt.to_dict() for attempt in result.attempts]
-    assert result.final_representation == "text"
-    assert result.fallback_used is True
-    assert all(
-        attempt.cleanup_verified
-        for attempt in result.attempts
-        if attempt.attempted_representation in {"glyphs", "geometry"}
+    proof = dxf_text_builder._build_physical_glyph_ink_proof(
+        item,
+        ImportConfig.auto(),
     )
-    final = result.attempts[-1]
-    assert final.evidence["parent_visual_fidelity_verified"] is True
-    assert final.evidence["parent_native_font_rendering_required"] is False
-    assert [entity.dxftype() for entity in msp] == ["TEXT"]
-    assert next(iter(msp)).dxf.text == content
+
+    assert dxf_text_builder._validate_physical_glyph_ink_proof(proof) is True
+    assert proof["status"] == "unproven"
+    assert dxf_text_builder._visible_ink_expected(content) is True
 
 
 @pytest.mark.parametrize(
@@ -1960,7 +1972,7 @@ def test_non_default_ignorable_controls_do_not_self_certify_as_zero_ink(
     assert dxf_text_builder._visible_ink_expected(content) is True
 
 
-def test_zero_ink_authority_uses_exact_unicode_17_white_space_membership() -> None:
+def test_unicode_white_space_membership_is_not_zero_ink_authority() -> None:
     white_space = [
         *range(0x0009, 0x000E),
         0x0020,
@@ -1976,14 +1988,8 @@ def test_zero_ink_authority_uses_exact_unicode_17_white_space_membership() -> No
     ]
 
     assert all(
-        dxf_text_builder._visible_ink_expected(chr(code_point)) is False
-        for code_point in white_space
-    )
-    # Python classifies these information separators as whitespace, but the
-    # Unicode 17 White_Space property deliberately does not.
-    assert all(
         dxf_text_builder._visible_ink_expected(chr(code_point)) is True
-        for code_point in range(0x001C, 0x0020)
+        for code_point in white_space
     )
 
 
@@ -2788,7 +2794,7 @@ def test_exporter_fails_loudly_when_terminal_raster_cannot_be_verified(
     assert not list(tmp_path.rglob("*.png"))
 
 
-def test_requested_raster_delivers_whitespace_as_source_bound_zero_ink_image(
+def test_requested_raster_samples_source_when_whitespace_lacks_physical_glyph_proof(
     tmp_path,
 ) -> None:
     run = _real_text_extraction(tmp_path)
@@ -2797,26 +2803,25 @@ def test_requested_raster_delivers_whitespace_as_source_bound_zero_ink_image(
         original,
         text="   ",
         normalized="",
+        source_char_layout=(),
+        requires_individual_positioning=False,
+        positioned_character=False,
+        source_glyph_id=None,
+        font_asset=None,
     )
     run.extraction.pages[0].page_data.text_items = [whitespace]
     source_id = f"text_span:1:{whitespace.id}"
     output = tmp_path / "whitespace_zero_ink_raster.dxf"
 
-    with patch(
-        "librecad_pdf_importer.exporters.dxf_exporter.fitz.open",
-        side_effect=AssertionError("zero-ink Raster must not sample neighboring page pixels"),
-    ) as source_open:
-        result = export_to_dxf(
-            run.extraction,
-            str(output),
-            DxfExportOptions(
-                include_images=False,
-                text_mode="raster",
-                provenance_opts=run.config,
-            ),
-        )
-
-    source_open.assert_not_called()
+    result = export_to_dxf(
+        run.extraction,
+        str(output),
+        DxfExportOptions(
+            include_images=False,
+            text_mode="raster",
+            provenance_opts=run.config,
+        ),
+    )
     assert output.is_file()
     assert result.entity_count == 1
     assert result.image_count == 1
@@ -2834,7 +2839,7 @@ def test_requested_raster_delivers_whitespace_as_source_bound_zero_ink_image(
     assert len(delivery["attempts"]) == 1
     attempt = delivery["attempts"][0]
     assert attempt["attempted_representation"] == "raster"
-    assert attempt["strategy"] == "source_bound_zero_ink_png"
+    assert attempt["strategy"] == "pymupdf_item_clip"
     assert attempt["outcome"] == "verified"
     assert attempt["type_verified"] is True
     assert attempt["visual_verified"] is True
@@ -2846,11 +2851,12 @@ def test_requested_raster_delivers_whitespace_as_source_bound_zero_ink_image(
     ).hexdigest()
     assert evidence["source_bbox_pdf"] == pytest.approx(whitespace.source_bbox_pdf)
     assert evidence["target_bbox_model"] == pytest.approx(whitespace.bbox)
-    assert evidence["source_content_whitespace_only"] is True
-    assert evidence["visible_ink_expected"] is False
-    assert evidence["zero_ink_verified"] is True
-    assert evidence["source_pixels_sampled"] is False
-    assert evidence["pixel_size"] == [1, 1]
+    assert evidence["source_zero_ink_physically_proven"] is False
+    assert evidence["visible_ink_expected"] is True
+    assert evidence["source_pixels_sampled"] is True
+    assert evidence["source_clip_pdf"] is not None
+    assert evidence["pixel_size"][0] > 1
+    assert evidence["pixel_size"][1] > 1
     assert evidence["anchor_verified"] is True
     assert evidence["size_verified"] is True
 
@@ -2859,10 +2865,8 @@ def test_requested_raster_delivers_whitespace_as_source_bound_zero_ink_image(
     asset_content = asset_path.read_bytes()
     assert asset_content.startswith(b"\x89PNG\r\n\x1a\n")
     assert hashlib.sha256(asset_content).hexdigest() == evidence["asset_sha256"]
-    transparent = fitz.Pixmap(str(asset_path))
-    assert (transparent.width, transparent.height) == (1, 1)
-    assert bool(transparent.alpha) is True
-    assert transparent.pixel(0, 0)[-1] == 0
+    sampled = fitz.Pixmap(str(asset_path))
+    assert (sampled.width, sampled.height) == tuple(evidence["pixel_size"])
 
     drawing = ezdxf.readfile(output)
     images = list(drawing.modelspace())
@@ -3497,8 +3501,10 @@ def test_real_welding_chart_all_requested_raster_spans_are_source_bound(
         ]
         asset_paths.add(asset_path)
         if int(item.id) in whitespace_ids:
-            assert attempt["strategy"] == "source_bound_zero_ink_png"
-            assert evidence["source_content_whitespace_only"] is True
+            assert attempt["strategy"] == "sealed_physical_zero_ink_png"
+            assert evidence["source_zero_ink_physically_proven"] is True
+            assert evidence["physical_glyph_ink_proof_valid"] is True
+            assert evidence["physical_glyph_ink_proof"]["status"] == "empty"
             assert evidence["visible_ink_expected"] is False
             assert evidence["zero_ink_verified"] is True
             assert evidence["source_pixels_sampled"] is False

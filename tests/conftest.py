@@ -105,6 +105,7 @@ def deterministic_exact_font(tmp_path_factory):
                 exact=True,
                 reason="repository-controlled deterministic test font",
                 resolution_source="test_fixture",
+                unicode_map_installed=True,
             )
         return original_resolver(font_name)
 

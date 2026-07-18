@@ -206,6 +206,7 @@ class _ExactFontResolution:
     source_page_number: Optional[int] = None
     asset_span_font_name: str = ""
     usable_format: str = ""
+    unicode_map_installed: bool = False
     pdf_font_failure_reason: str = ""
     installed_font_failure_reason: str = ""
     proof_category: str = ""
@@ -229,6 +230,7 @@ class _ExactFontResolution:
             "font_source_page_number": self.source_page_number,
             "font_asset_span_font_name": self.asset_span_font_name or None,
             "font_usable_format": self.usable_format or None,
+            "font_unicode_map_installed": bool(self.unicode_map_installed),
             "pdf_font_failure_reason": self.pdf_font_failure_reason or None,
             "installed_font_failure_reason": (
                 self.installed_font_failure_reason or None
@@ -367,6 +369,9 @@ def _resolve_item_font(
                 getattr(asset, "span_font_name", source_name) or source_name
             ),
             "usable_format": str(getattr(asset, "usable_format", "") or ""),
+            "unicode_map_installed": bool(
+                getattr(asset, "unicode_map_installed", False)
+            ),
         }
         if path is None or not path.is_file():
             return _ExactFontResolution(
@@ -482,6 +487,400 @@ def _source_font_program_is_authoritative(resolution: _ExactFontResolution) -> b
     return bool(
         resolution.exact and origin in _SOURCE_AUTHORITATIVE_FONT_ORIGINS
     )
+
+
+_PHYSICAL_GLYPH_INK_PROOF_SCHEMA = "bcs.pdf-source-glyph-ink/v1"
+
+
+def _canonical_sha256(value: Any) -> str:
+    payload = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _font_glyph_physical_record(font: Any, glyph_id: int) -> Dict[str, Any]:
+    """Measure one exact glyph program without consulting Unicode properties."""
+
+    from fontTools.pens.basePen import BasePen
+    from fontTools.pens.boundsPen import BoundsPen
+
+    class _OutlineRecordingPen(BasePen):
+        """Small component-decomposing recorder using the bundled BasePen API."""
+
+        def __init__(self, glyph_set: Any) -> None:
+            super().__init__(glyph_set)
+            self.value: List[Any] = []
+
+        def _moveTo(self, point: Any) -> None:
+            self.value.append(("moveTo", (point,)))
+
+        def _lineTo(self, point: Any) -> None:
+            self.value.append(("lineTo", (point,)))
+
+        def _curveToOne(self, point1: Any, point2: Any, point3: Any) -> None:
+            self.value.append(("curveTo", (point1, point2, point3)))
+
+        def _qCurveToOne(self, point1: Any, point2: Any) -> None:
+            self.value.append(("qCurveTo", (point1, point2)))
+
+        def _closePath(self) -> None:
+            self.value.append(("closePath", ()))
+
+        def _endPath(self) -> None:
+            self.value.append(("endPath", ()))
+
+    glyph_order = tuple(font.getGlyphOrder())
+    if glyph_id < 0 or glyph_id >= len(glyph_order):
+        raise IndexError(f"source glyph id {glyph_id} is outside the exact font")
+    glyph_name = glyph_order[glyph_id]
+    glyph_set = font.getGlyphSet()
+    glyph = glyph_set[glyph_name]
+
+    bounds_pen = BoundsPen(glyph_set)
+    glyph.draw(bounds_pen)
+    recording_pen = _OutlineRecordingPen(glyph_set)
+    glyph.draw(recording_pen)
+    commands: List[Any] = []
+    for operator, operands in recording_pen.value:
+        canonical_operands: List[Any] = []
+        for operand in operands:
+            if isinstance(operand, (tuple, list)):
+                canonical_operands.append([float(value) for value in operand])
+            else:
+                canonical_operands.append(str(operand))
+        commands.append([str(operator), canonical_operands])
+    bounds = (
+        [float(value) for value in bounds_pen.bounds]
+        if bounds_pen.bounds is not None
+        else None
+    )
+    contour_count = sum(
+        1 for operator, _ in recording_pen.value if operator in {"closePath", "endPath"}
+    )
+    draw_count = sum(
+        1
+        for operator, _ in recording_pen.value
+        if operator in {"lineTo", "qCurveTo", "curveTo"}
+    )
+    if not recording_pen.value and bounds is None:
+        status = "empty"
+    elif (
+        bounds is not None
+        and draw_count > 0
+        and bounds[2] > bounds[0]
+        and bounds[3] > bounds[1]
+    ):
+        status = "visible"
+    else:
+        # Degenerate or malformed contours do not affirmatively prove either
+        # visible ink or physical emptiness.
+        status = "unproven"
+    return {
+        "glyph_id": int(glyph_id),
+        "glyph_name": glyph_name,
+        "bounds": bounds,
+        "contour_count": int(contour_count),
+        "draw_command_count": int(draw_count),
+        "outline_sha256": _canonical_sha256(commands),
+        "status": status,
+    }
+
+
+def _source_glyph_identity_rows(
+    text_item: NormalizedText,
+    text: str,
+) -> List[Tuple[str, Optional[int], str]]:
+    """Return source character/glyph ownership without inventing an identity."""
+
+    layout = tuple(getattr(text_item, "source_char_layout", ()) or ())
+    if layout:
+        layout_text = "".join(str(getattr(row, "text", "") or "") for row in layout)
+        if layout_text != text or any(
+            len(str(getattr(row, "text", "") or "")) != 1 for row in layout
+        ):
+            return [(character, None, "missing") for character in text]
+        return [
+            (
+                str(getattr(row, "text", "") or ""),
+                getattr(row, "glyph_id", None),
+                "source_char_layout_glyph_id",
+            )
+            for row in layout
+        ]
+    source_glyph_id = getattr(text_item, "source_glyph_id", None)
+    if len(text) == 1 and source_glyph_id is not None:
+        return [(text, source_glyph_id, "source_glyph_id")]
+    return [(character, None, "missing") for character in text]
+
+
+def _seal_physical_glyph_ink_proof(proof: Dict[str, Any]) -> Dict[str, Any]:
+    sealed = dict(proof)
+    sealed.pop("proof_sha256", None)
+    sealed["proof_sha256"] = _canonical_sha256(sealed)
+    return sealed
+
+
+def _build_physical_glyph_ink_proof(
+    text_item: NormalizedText,
+    config: ImportConfig,
+    *,
+    resolution: Optional[_ExactFontResolution] = None,
+) -> Dict[str, Any]:
+    """Bind ink/empty status to exact font bytes and exact PDF glyph identity.
+
+    A Unicode character map may fill a missing glyph ID only when the PDF font
+    asset explicitly records that its PDF mapping was installed into these
+    exact usable bytes. Missing evidence remains ``unproven`` and can never
+    authorize a transparent raster or a zero-outline shortcut.
+    """
+
+    text = str(getattr(text_item, "text", "") or "")
+    resolved = resolution or _resolve_item_font(text_item, config)
+    asset = getattr(text_item, "font_asset", None)
+    rows = _source_glyph_identity_rows(text_item, text)
+    proof: Dict[str, Any] = {
+        "schema": _PHYSICAL_GLYPH_INK_PROOF_SCHEMA,
+        "source_text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "source_text_length": len(text),
+        "font_program_path": str(resolved.filename or ""),
+        "font_program_sha256": "",
+        "font_asset_id": str(resolved.asset_id or ""),
+        "font_asset_sha256": str(resolved.asset_sha256 or ""),
+        "font_source_sha256": str(resolved.source_sha256 or ""),
+        "font_source_origin": str(
+            resolved.source_origin or resolved.resolution_source or ""
+        ),
+        "font_source_authoritative": _source_font_program_is_authoritative(resolved),
+        "font_unicode_map_installed": bool(
+            getattr(asset, "unicode_map_installed", False)
+            or (
+                resolved.unicode_map_installed
+                and str(resolved.resolution_source or "").strip().lower()
+                == "test_fixture"
+            )
+        ),
+        "glyphs": [],
+        "status": "unproven",
+        "reason": "",
+    }
+
+    def finish(reason: str = "") -> Dict[str, Any]:
+        glyphs = list(proof.get("glyphs") or [])
+        statuses = [str(row.get("status") or "unproven") for row in glyphs]
+        if text and statuses and any(status == "visible" for status in statuses):
+            proof["status"] = "visible"
+        elif text and len(statuses) == len(text) and all(
+            status == "empty" for status in statuses
+        ):
+            proof["status"] = "empty"
+        else:
+            proof["status"] = "unproven"
+        proof["reason"] = reason
+        return _seal_physical_glyph_ink_proof(proof)
+
+    if not text:
+        return finish("source text is empty")
+    if not resolved.exact or not _source_font_program_is_authoritative(resolved):
+        proof["glyphs"] = [
+            {
+                "index": index,
+                "character_codepoint": ord(character),
+                "glyph_id": None,
+                "selection_source": "missing",
+                "status": "unproven",
+            }
+            for index, (character, _, _) in enumerate(rows)
+        ]
+        return finish("exact source-authoritative font program is unavailable")
+
+    font_path = Path(str(resolved.filename or ""))
+    try:
+        font_bytes = font_path.read_bytes()
+    except OSError as exc:
+        return finish(f"exact font program cannot be read: {exc}")
+    font_digest = hashlib.sha256(font_bytes).hexdigest()
+    proof["font_program_sha256"] = font_digest
+    if asset is not None:
+        expected_digest = str(getattr(asset, "usable_sha256", "") or "")
+        expected_bytes = bytes(getattr(asset, "usable_bytes", b"") or b"")
+        if (
+            not expected_digest
+            or font_digest != expected_digest
+            or font_bytes != expected_bytes
+            or str(resolved.asset_sha256 or "") != expected_digest
+        ):
+            return finish("exact font bytes or digest do not match the PDF font asset")
+
+    from fontTools.ttLib import TTFont
+
+    try:
+        font = TTFont(BytesIO(font_bytes), lazy=False, recalcTimestamp=False)
+        glyph_order = tuple(font.getGlyphOrder())
+        cmap = font.getBestCmap() or {}
+        glyphs: List[Dict[str, Any]] = []
+        for index, (character, raw_glyph_id, selection_source) in enumerate(rows):
+            glyph_id: Optional[int] = None
+            if raw_glyph_id is not None:
+                if not isinstance(raw_glyph_id, bool):
+                    try:
+                        candidate = int(raw_glyph_id)
+                    except (TypeError, ValueError):
+                        candidate = -1
+                    if candidate == raw_glyph_id and 0 <= candidate < len(glyph_order):
+                        glyph_id = candidate
+            elif proof["font_unicode_map_installed"] and proof[
+                "font_source_authoritative"
+            ]:
+                glyph_name = cmap.get(ord(character))
+                if glyph_name in glyph_order:
+                    glyph_id = glyph_order.index(glyph_name)
+                    selection_source = (
+                        "installed_pdf_unicode_cmap"
+                        if asset is not None
+                        else "test_fixture_unicode_cmap"
+                    )
+
+            row: Dict[str, Any] = {
+                "index": index,
+                "character_codepoint": ord(character),
+                "glyph_id": glyph_id,
+                "selection_source": selection_source if glyph_id is not None else "missing",
+                "status": "unproven",
+            }
+            if glyph_id is not None:
+                row.update(_font_glyph_physical_record(font, glyph_id))
+            glyphs.append(row)
+        proof["glyphs"] = glyphs
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        return finish(f"exact glyph programs cannot be measured: {exc}")
+    finally:
+        try:
+            font.close()
+        except (NameError, AttributeError):
+            pass
+    return finish()
+
+
+def _validate_physical_glyph_ink_proof(proof: Any) -> bool:
+    """Recompute the sealed physical facts before trusting an empty glyph."""
+
+    if not isinstance(proof, dict):
+        return False
+    supplied_seal = str(proof.get("proof_sha256") or "")
+    payload = dict(proof)
+    payload.pop("proof_sha256", None)
+    try:
+        if supplied_seal != _canonical_sha256(payload):
+            return False
+    except (TypeError, ValueError):
+        return False
+    if (
+        payload.get("schema") != _PHYSICAL_GLYPH_INK_PROOF_SCHEMA
+        or payload.get("status") not in {"empty", "visible", "unproven"}
+        or not isinstance(payload.get("glyphs"), list)
+    ):
+        return False
+    glyphs = payload["glyphs"]
+    status = str(payload["status"])
+    source_length = payload.get("source_text_length")
+    if (
+        isinstance(source_length, bool)
+        or not isinstance(source_length, int)
+        or source_length < 0
+        or len(glyphs) != source_length
+        or any(
+            not isinstance(row, dict)
+            or row.get("index") != index
+            or isinstance(row.get("character_codepoint"), bool)
+            or not isinstance(row.get("character_codepoint"), int)
+            or not 0 <= row["character_codepoint"] <= 0x10FFFF
+            for index, row in enumerate(glyphs)
+        )
+    ):
+        return False
+    if status == "empty" and (
+        source_length <= 0
+        or any(row.get("status") != "empty" for row in glyphs)
+    ):
+        return False
+    if status == "visible" and not any(
+        row.get("status") == "visible" for row in glyphs
+    ):
+        return False
+    font_path = Path(str(payload.get("font_program_path") or ""))
+    font_digest = str(payload.get("font_program_sha256") or "")
+    resolved_rows = [row for row in glyphs if row.get("glyph_id") is not None]
+    if not resolved_rows:
+        return status == "unproven"
+    origin = str(payload.get("font_source_origin") or "").strip().lower()
+    if (
+        payload.get("font_source_authoritative") is not True
+        or origin not in _SOURCE_AUTHORITATIVE_FONT_ORIGINS
+    ):
+        return False
+    try:
+        font_bytes = font_path.read_bytes()
+    except OSError:
+        return False
+    if not font_digest or hashlib.sha256(font_bytes).hexdigest() != font_digest:
+        return False
+    asset_id = str(payload.get("font_asset_id") or "")
+    asset_digest = str(payload.get("font_asset_sha256") or "")
+    if asset_id and asset_digest != font_digest:
+        return False
+
+    from fontTools.ttLib import TTFont
+
+    try:
+        font = TTFont(BytesIO(font_bytes), lazy=False, recalcTimestamp=False)
+        glyph_order = tuple(font.getGlyphOrder())
+        cmap = font.getBestCmap() or {}
+        for row in resolved_rows:
+            glyph_id = int(row["glyph_id"])
+            measured = _font_glyph_physical_record(font, glyph_id)
+            for field_name in (
+                "glyph_id",
+                "glyph_name",
+                "bounds",
+                "contour_count",
+                "draw_command_count",
+                "outline_sha256",
+                "status",
+            ):
+                if row.get(field_name) != measured.get(field_name):
+                    return False
+            if row.get("selection_source") in {
+                "installed_pdf_unicode_cmap",
+                "test_fixture_unicode_cmap",
+            }:
+                if (
+                    payload.get("font_unicode_map_installed") is not True
+                    or (
+                        row.get("selection_source") == "installed_pdf_unicode_cmap"
+                        and (not asset_id or asset_digest != font_digest)
+                    )
+                    or (
+                        row.get("selection_source") == "test_fixture_unicode_cmap"
+                        and origin != "test_fixture"
+                    )
+                ):
+                    return False
+                codepoint = int(row.get("character_codepoint"))
+                if cmap.get(codepoint) != glyph_order[glyph_id]:
+                    return False
+    except (IndexError, KeyError, OSError, TypeError, ValueError):
+        return False
+    finally:
+        try:
+            font.close()
+        except (NameError, AttributeError):
+            pass
+    return True
 
 
 def _embedded_ezdxf_cap_height_ratio(font_bytes: bytes) -> float:
@@ -1524,71 +1923,15 @@ def _path_geometry_within_envelope(
     return geometry_seen and math.isfinite(tolerance) and tolerance >= 0.0
 
 
-# Exact ranges from Unicode 17's DerivedCoreProperties.txt for the
-# Default_Ignorable_Code_Point property:
-# https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt
-# Python's unicodedata module does not expose derived binary properties, so
-# keep the small, deterministic table locally instead of guessing from general
-# categories such as Cf or Mn.  The latter would incorrectly suppress visible
-# combining marks.
-_DEFAULT_IGNORABLE_CODE_POINT_RANGES = (
-    (0x00AD, 0x00AD),
-    (0x034F, 0x034F),
-    (0x061C, 0x061C),
-    (0x115F, 0x1160),
-    (0x17B4, 0x17B5),
-    (0x180B, 0x180F),
-    (0x200B, 0x200F),
-    (0x202A, 0x202E),
-    (0x2060, 0x206F),
-    (0x3164, 0x3164),
-    (0xFE00, 0xFE0F),
-    (0xFEFF, 0xFEFF),
-    (0xFFA0, 0xFFA0),
-    (0xFFF0, 0xFFF8),
-    (0x1BCA0, 0x1BCA3),
-    (0x1D173, 0x1D17A),
-    (0xE0000, 0xE0FFF),
-)
-
-# Exact White_Space ranges from Unicode 17's PropList.txt:
-# https://www.unicode.org/Public/17.0.0/ucd/PropList.txt
-_WHITE_SPACE_CODE_POINT_RANGES = (
-    (0x0009, 0x000D),
-    (0x0020, 0x0020),
-    (0x0085, 0x0085),
-    (0x00A0, 0x00A0),
-    (0x1680, 0x1680),
-    (0x2000, 0x200A),
-    (0x2028, 0x2029),
-    (0x202F, 0x202F),
-    (0x205F, 0x205F),
-    (0x3000, 0x3000),
-)
-
-
-def _is_default_ignorable_code_point(character: str) -> bool:
-    code_point = ord(character)
-    return any(
-        first <= code_point <= last
-        for first, last in _DEFAULT_IGNORABLE_CODE_POINT_RANGES
-    )
-
-
-def _is_unicode_white_space(character: str) -> bool:
-    code_point = ord(character)
-    return any(
-        first <= code_point <= last
-        for first, last in _WHITE_SPACE_CODE_POINT_RANGES
-    )
-
-
 def _visible_ink_expected(text: str) -> bool:
-    return any(
-        not _is_unicode_white_space(character)
-        and not _is_default_ignorable_code_point(character)
-        for character in text
-    )
+    """Conservatively require physical handling for every non-empty string.
+
+    White_Space and Default_Ignorable_Code_Point describe Unicode semantics,
+    not the contours selected by a PDF font program.  Only a validated
+    ``_build_physical_glyph_ink_proof`` result may certify zero ink.
+    """
+
+    return bool(text)
 
 
 def _quad_coordinates(
@@ -1667,6 +2010,8 @@ def _quad_linear_map(
 
 def _validate_character_layout(
     text_item: NormalizedText,
+    *,
+    physical_ink_proof: Optional[Dict[str, Any]] = None,
 ) -> Tuple[_ValidatedCharacterLayout, ...]:
     raw_layout = tuple(getattr(text_item, "source_char_layout", ()) or ())
     source_text = str(getattr(text_item, "text", "") or "")
@@ -1680,6 +2025,7 @@ def _validate_character_layout(
             "source character layout text/order does not match the source item"
         )
     validated: List[_ValidatedCharacterLayout] = []
+    proof_rows = list((physical_ink_proof or {}).get("glyphs") or [])
     for index, item in enumerate(raw_layout):
         character = str(getattr(item, "text", "") or "")
         if len(character) != 1:
@@ -1754,6 +2100,10 @@ def _validate_character_layout(
 
         glyph_id = getattr(item, "glyph_id", None)
         if glyph_id is not None:
+            if isinstance(glyph_id, bool):
+                raise _RepresentationImpossible(
+                    f"source character layout entry {index} has invalid glyph id"
+                )
             try:
                 integer_glyph_id = int(glyph_id)
             except (TypeError, ValueError):
@@ -1765,6 +2115,21 @@ def _validate_character_layout(
                     f"source character layout entry {index} has non-integral glyph id"
                 )
             glyph_id = integer_glyph_id
+        if index < len(proof_rows):
+            proof_glyph_id = proof_rows[index].get("glyph_id")
+            proof_selection = str(
+                proof_rows[index].get("selection_source") or ""
+            )
+            if glyph_id is None and proof_selection in {
+                "installed_pdf_unicode_cmap",
+                "test_fixture_unicode_cmap",
+            }:
+                glyph_id = proof_glyph_id
+            elif proof_glyph_id is not None and proof_glyph_id != glyph_id:
+                raise _RepresentationImpossible(
+                    f"source character layout entry {index} glyph id does not "
+                    "match the sealed physical glyph proof"
+                )
         rotation_degrees = math.degrees(
             math.atan2(
                 target_quad[1][1] - target_quad[0][1],
@@ -1781,7 +2146,10 @@ def _validate_character_layout(
                 advance_width=advance,
                 glyph_height=glyph_height,
                 rotation_degrees=rotation_degrees,
-                visible_ink_expected=_visible_ink_expected(character),
+                visible_ink_expected=not bool(
+                    index < len(proof_rows)
+                    and proof_rows[index].get("status") == "empty"
+                ),
                 source_to_target_linear=_quad_linear_map(source_quad, target_quad),
             )
         )
@@ -1995,11 +2363,10 @@ def _fit_text_advance(
     target_width: Optional[float],
     *,
     parent_fit_alignment: bool = False,
+    zero_ink_proven: bool = False,
 ) -> Optional[float]:
     actual_text = str(getattr(entity.dxf, "text", "") or "")
-    if entity.dxftype() == "TEXT" and actual_text and not _visible_ink_expected(
-        actual_text
-    ):
+    if entity.dxftype() == "TEXT" and actual_text and zero_ink_proven:
         return 0.0
     if target_width is None or entity.dxftype() != "TEXT":
         return None
@@ -2033,6 +2400,7 @@ def _verify_label(
     measured_width: Optional[float],
     width_source: str,
     expected_content: Optional[str] = None,
+    zero_ink_proven: bool = False,
 ) -> Tuple[bool, bool, Dict[str, Any]]:
     entity_type = entity.dxftype()
     type_ok = entity_type in {"TEXT", "MTEXT"}
@@ -2060,8 +2428,8 @@ def _verify_label(
     rotation_ok = math.isclose(
         actual_rotation, expected_rotation, rel_tol=0.0, abs_tol=1e-9
     )
-    whitespace_zero_ink = bool(
-        actual_text and not _visible_ink_expected(actual_text) and measured_width == 0.0
+    physical_zero_ink = bool(
+        actual_text and zero_ink_proven and measured_width == 0.0
     )
     fit_alignment_verified = False
     if entity_type == "TEXT" and int(entity.dxf.halign or 0) == 5 and target_width:
@@ -2086,7 +2454,7 @@ def _verify_label(
                 )
             )
         )
-    width_ok = whitespace_zero_ink or fit_alignment_verified or bool(
+    width_ok = physical_zero_ink or fit_alignment_verified or bool(
         target_width is not None
         and measured_width is not None
         and math.isclose(
@@ -2108,7 +2476,7 @@ def _verify_label(
         "rotation_verified": rotation_ok,
         "width_verified": width_ok,
         "fit_alignment_verified": fit_alignment_verified,
-        "whitespace_zero_ink_verified": whitespace_zero_ink,
+        "physical_zero_ink_verified": physical_zero_ink,
         "width_source": width_source,
         "expected_insert": list(expected_insert),
         "actual_insert": list(insert),
@@ -2131,7 +2499,7 @@ def _verify_parent_native_text_delivery(
     style_name: str,
     style_handle: str,
     is_3d_text: bool,
-    source_content_whitespace_only: bool,
+    source_zero_ink_proven: bool,
 ) -> Tuple[bool, Dict[str, Any], str]:
     """Verify native editable delivery without inventing source-font equivalence.
 
@@ -2159,7 +2527,7 @@ def _verify_parent_native_text_delivery(
     }
     if parent != "librecad":
         source_visual_ok = bool(
-            source_content_whitespace_only or not bool(parent_font_substituted)
+            source_zero_ink_proven or not bool(parent_font_substituted)
         )
         parent_delivery_ok = source_visual_ok
         evidence.update(
@@ -2182,11 +2550,10 @@ def _verify_parent_native_text_delivery(
         return parent_delivery_ok, evidence, reason
 
     font_ok = candidate_format == "lff" and bool(str(style_font or "").strip())
-    # A whitespace-only PDF span has no font pixels to reproduce.  A native
-    # TEXT entity still preserves its exact semantic content and placement, so
-    # requiring an LFF renderer for pixels that do not exist would manufacture
-    # a false impossibility and can ultimately rasterize unrelated nearby ink.
-    font_rendering_required = not source_content_whitespace_only
+    # Only exact font bytes plus exact source glyph identity may waive parent
+    # rendering. Unicode whitespace/default-ignorable properties are not ink
+    # evidence because a PDF cmap can bind those characters to real contours.
+    font_rendering_required = not source_zero_ink_proven
     font_requirement_ok = bool(font_ok or not font_rendering_required)
     native_3d_ok = not is_3d_text
     source_visual_ok = bool(
@@ -2203,7 +2570,7 @@ def _verify_parent_native_text_delivery(
             "parent_native_font_format_verified": font_ok,
             "parent_native_font_renderability_verified": font_ok,
             "parent_native_font_rendering_required": font_rendering_required,
-            "source_content_whitespace_only": source_content_whitespace_only,
+            "source_zero_ink_physically_proven": source_zero_ink_proven,
             "parent_native_3d_display_verified": native_3d_ok,
             "parent_native_text_delivery_verified": parent_delivery_ok,
             "parent_visual_fidelity_verified": source_visual_ok,
@@ -2307,6 +2674,25 @@ def _attempt_labels(
         insert = tuple(float(value) for value in text_item.insertion[:2])
         font_resolution = _resolve_item_font(text_item, config)
         attempt.evidence.update(font_resolution.evidence())
+        physical_ink_proof = _build_physical_glyph_ink_proof(
+            text_item,
+            config,
+            resolution=font_resolution,
+        )
+        physical_ink_proof_valid = _validate_physical_glyph_ink_proof(
+            physical_ink_proof
+        )
+        source_zero_ink_proven = bool(
+            physical_ink_proof_valid
+            and physical_ink_proof.get("status") == "empty"
+        )
+        attempt.evidence.update(
+            {
+                "physical_glyph_ink_proof": physical_ink_proof,
+                "physical_glyph_ink_proof_valid": physical_ink_proof_valid,
+                "source_zero_ink_physically_proven": source_zero_ink_proven,
+            }
+        )
         if parent == "librecad":
             # LibreCAD's editable native text renderer consumes its bundled LFF
             # fonts. Preserve the requested Text/Labels representation and use
@@ -2389,6 +2775,7 @@ def _attempt_labels(
             entity,
             target_width,
             parent_fit_alignment=parent == "librecad",
+            zero_ink_proven=source_zero_ink_proven,
         )
         type_ok, visual_ok, evidence = _verify_label(
             entity,
@@ -2398,6 +2785,7 @@ def _attempt_labels(
             measured_width=measured_width,
             width_source=width_source,
             expected_content=delivered_text,
+            zero_ink_proven=source_zero_ink_proven,
         )
         attempt.type_verified = type_ok
         attempt.visual_verified = visual_ok
@@ -2449,9 +2837,7 @@ def _attempt_labels(
                 style_name=style_name,
                 style_handle=style_handle,
                 is_3d_text=is_3d_text,
-                source_content_whitespace_only=not _visible_ink_expected(
-                    str(getattr(text_item, "text", "") or "")
-                ),
+                source_zero_ink_proven=source_zero_ink_proven,
             )
         )
         attempt.evidence.update(parent_evidence)
@@ -2647,6 +3033,128 @@ def _visible_font_ink_width(font: Any, text: str, *, height: float) -> float:
     return width if math.isfinite(width) and width > 0.0 else 0.0
 
 
+def _make_paths_from_source_glyph_id(
+    font_filename: str,
+    glyph_id: int,
+    *,
+    cap_height: float,
+    transform: Optional[Matrix44] = None,
+) -> List[Any]:
+    """Render the exact PDF-selected glyph, bypassing Unicode cmap lookup."""
+
+    from ezdxf.fonts.ttfonts import PathPen
+    from fontTools.pens.boundsPen import ControlBoundsPen
+    from fontTools.ttLib import TTFont
+
+    exact_font = TTFont(
+        str(font_filename),
+        lazy=False,
+        recalcTimestamp=False,
+    )
+    try:
+        glyph_order = tuple(exact_font.getGlyphOrder())
+        glyph_id = int(glyph_id)
+        if glyph_id < 0 or glyph_id >= len(glyph_order):
+            raise ValueError(f"source glyph id {glyph_id} is outside the exact font")
+        glyph_set = exact_font.getGlyphSet()
+        cmap = exact_font.getBestCmap() or {}
+
+        def control_bounds(character: str) -> Tuple[float, float, float, float]:
+            # Match the cap-height calibration already certified by
+            # _embedded_ezdxf_cap_height_ratio. Subset PDF fonts can omit x/A;
+            # their exact .notdef contour is ezdxf's deterministic metric basis.
+            glyph_name = cmap.get(ord(character), ".notdef")
+            if glyph_name not in glyph_set:
+                raise ValueError(
+                    f"exact source font has no {character!r} scaling glyph"
+                )
+            bounds_pen = ControlBoundsPen(glyph_set)
+            glyph_set[glyph_name].draw(bounds_pen)
+            if bounds_pen.bounds is None:
+                raise ValueError(
+                    f"exact source font scaling glyph {character!r} has no bounds"
+                )
+            return tuple(float(value) for value in bounds_pen.bounds)
+
+        x_bounds = control_bounds("x")
+        cap_bounds = control_bounds("A")
+        baseline = x_bounds[1]
+        cap_units = cap_bounds[3] - baseline
+        if not math.isfinite(cap_units) or cap_units <= 0.0:
+            raise ValueError("exact source font cap-height metric is invalid")
+        pen = PathPen(glyph_set)
+        glyph_set[glyph_order[glyph_id]].draw(pen)
+        glyph_path = pen.path
+    finally:
+        exact_font.close()
+    if not len(glyph_path):
+        return []
+    scale = float(cap_height) / cap_units
+    if not math.isfinite(scale) or scale <= 0.0:
+        raise ValueError("exact source glyph cap-height scale is invalid")
+    glyph_transform = Matrix44.scale(scale, scale, 1.0)
+    glyph_transform[3, 1] = -baseline * scale
+    if transform is not None:
+        glyph_transform *= transform
+    glyph_path.transform_inplace(glyph_transform)
+    return list(glyph_path.to_path().sub_paths())
+
+
+def _source_glyph_metrics(
+    font_filename: str,
+    glyph_id: int,
+    *,
+    cap_height: float,
+) -> Tuple[float, float]:
+    """Return exact advance and visible contour width for one PDF glyph ID."""
+
+    paths = _make_paths_from_source_glyph_id(
+        font_filename,
+        glyph_id,
+        cap_height=cap_height,
+    )
+    from fontTools.pens.boundsPen import ControlBoundsPen
+    from fontTools.ttLib import TTFont
+
+    exact_font = TTFont(
+        str(font_filename),
+        lazy=False,
+        recalcTimestamp=False,
+    )
+    try:
+        glyph_order = tuple(exact_font.getGlyphOrder())
+        glyph_id = int(glyph_id)
+        if glyph_id < 0 or glyph_id >= len(glyph_order):
+            raise ValueError(f"source glyph id {glyph_id} is outside the exact font")
+        glyph_set = exact_font.getGlyphSet()
+        cmap = exact_font.getBestCmap() or {}
+        x_name = cmap.get(ord("x"), ".notdef")
+        a_name = cmap.get(ord("A"), ".notdef")
+        if x_name not in glyph_set or a_name not in glyph_set:
+            raise ValueError("exact source font lacks cap-height scaling glyphs")
+        x_pen = ControlBoundsPen(glyph_set)
+        glyph_set[x_name].draw(x_pen)
+        a_pen = ControlBoundsPen(glyph_set)
+        glyph_set[a_name].draw(a_pen)
+        if x_pen.bounds is None or a_pen.bounds is None:
+            raise ValueError("exact source font cap-height bounds are missing")
+        cap_units = float(a_pen.bounds[3]) - float(x_pen.bounds[1])
+        if not math.isfinite(cap_units) or cap_units <= 0.0:
+            raise ValueError("exact source font cap-height metric is invalid")
+        scale = float(cap_height) / cap_units
+        glyph = glyph_set[glyph_order[glyph_id]]
+        advance = float(getattr(glyph, "width", 0.0) or 0.0) * scale
+    finally:
+        exact_font.close()
+    box = ezdxf_path.bbox(paths)
+    ink_width = (
+        float(box.extmax.x) - float(box.extmin.x) if box.has_data else 0.0
+    )
+    if not all(math.isfinite(value) and value >= 0.0 for value in (advance, ink_width)):
+        raise ValueError("exact source glyph metrics are invalid")
+    return advance, ink_width
+
+
 def _make_scaled_string_paths(
     text: str,
     face: FontFace,
@@ -2773,6 +3281,97 @@ def _authoritative_quad_transform(
     return transform, target_advance, target_advance / source_width_basis
 
 
+def _authoritative_glyph_quad_transform(
+    font_filename: str,
+    glyph_id: int,
+    *,
+    target_quad: Tuple[Tuple[float, float], ...],
+    target_origin: Tuple[float, float],
+    target_advance: float,
+    target_height: float,
+) -> Tuple[Matrix44, float, float]:
+    """Map an exact source glyph ID through its authoritative PDF quad."""
+
+    quad = _validated_quad(target_quad, field_name="authoritative target quad")
+    quad_advance, quad_height = _quad_dimensions(quad)
+    metric_scale = max(quad_advance, quad_height, target_advance, target_height, 1e-9)
+    tolerance = metric_scale * 1e-7 + 1e-12
+    if not (
+        math.isclose(target_advance, quad_advance, rel_tol=0.0, abs_tol=tolerance)
+        and math.isclose(target_height, quad_height, rel_tol=0.0, abs_tol=tolerance)
+    ):
+        raise _RepresentationImpossible(
+            "authoritative target metrics do not match the target quad"
+        )
+    horizontal, vertical = _quad_coordinates(target_origin, quad)
+    normalized_tolerance = max(tolerance / quad_advance, 1e-8)
+    if abs(horizontal) > normalized_tolerance or not (
+        normalized_tolerance < vertical <= 1.0 + normalized_tolerance
+    ):
+        raise _RepresentationImpossible(
+            "source baseline origin is not bound to the authoritative target quad"
+        )
+    natural_advance, ink_width = _source_glyph_metrics(
+        font_filename,
+        glyph_id,
+        cap_height=1.0,
+    )
+    source_width_basis = natural_advance if natural_advance > 0.0 else ink_width
+    if source_width_basis <= 0.0:
+        raise ValueError("visible source glyph has no advance or contour width")
+    baseline = (quad[1][0] - quad[0][0], quad[1][1] - quad[0][1])
+    vertical_axis = (quad[3][0] - quad[0][0], quad[3][1] - quad[0][1])
+    transform = Matrix44.ucs(
+        ux=(baseline[0] / source_width_basis, baseline[1] / source_width_basis, 0.0),
+        uy=(-vertical_axis[0] * vertical, -vertical_axis[1] * vertical, 0.0),
+        uz=(0.0, 0.0, 1.0),
+        origin=(target_origin[0], target_origin[1], 0.0),
+    )
+    return transform, target_advance, target_advance / source_width_basis
+
+
+def _make_scaled_source_glyph_paths(
+    font_filename: str,
+    glyph_id: int,
+    *,
+    height: float,
+    target_advance: Optional[float],
+    rotation_degrees: float,
+    translation: Tuple[float, float],
+    source_transform: Optional[Matrix44] = None,
+) -> Tuple[List[Any], float, float]:
+    natural_advance, ink_width = _source_glyph_metrics(
+        font_filename,
+        glyph_id,
+        cap_height=height,
+    )
+    if target_advance is None:
+        width_scale = 1.0
+        delivered_advance = natural_advance
+    elif natural_advance > 0.0:
+        width_scale = target_advance / natural_advance
+        delivered_advance = target_advance
+    elif ink_width > 0.0:
+        width_scale = target_advance / ink_width
+        delivered_advance = target_advance
+    else:
+        raise ValueError("visible source glyph has no advance or contour width")
+    if not math.isfinite(width_scale) or width_scale <= 0.0:
+        raise ValueError("source glyph baseline scale is invalid")
+    transform = source_transform or (
+        Matrix44.scale(width_scale, 1.0, 1.0)
+        * Matrix44.z_rotate(math.radians(rotation_degrees))
+        * Matrix44.translate(translation[0], translation[1], 0.0)
+    )
+    paths = _make_paths_from_source_glyph_id(
+        font_filename,
+        glyph_id,
+        cap_height=1.0 if source_transform is not None else height,
+        transform=transform,
+    )
+    return paths, delivered_advance, width_scale
+
+
 def _item_authoritative_transform(
     text_item: NormalizedText,
     face: FontFace,
@@ -2803,6 +3402,44 @@ def _item_authoritative_transform(
     return _authoritative_quad_transform(
         str(getattr(text_item, "text", "") or ""),
         face,
+        target_quad=quad,
+        target_origin=target_origin,
+        target_advance=target_advance,
+        target_height=target_height,
+    )
+
+
+def _item_authoritative_glyph_transform(
+    text_item: NormalizedText,
+    font_filename: str,
+    glyph_id: int,
+    *,
+    representation: str,
+) -> Optional[Tuple[Matrix44, float, float]]:
+    raw_quad = getattr(text_item, "target_quad_model", None)
+    if raw_quad is None:
+        return None
+    quad = _validated_quad(raw_quad, field_name="target_quad_model")
+    insertion = _finite_point(getattr(text_item, "insertion", None))
+    if insertion is None:
+        raise _RepresentationImpossible("source insertion is missing or non-finite")
+    target_advance = _positive_finite(getattr(text_item, "advance_width", None))
+    target_height = _positive_finite(getattr(text_item, "glyph_height", None))
+    quad_advance, quad_height = _quad_dimensions(quad)
+    if target_advance is None:
+        target_advance = quad_advance
+    if target_height is None:
+        target_height = quad_height
+    if representation == "glyphs":
+        quad = tuple(
+            (point[0] - insertion[0], point[1] - insertion[1]) for point in quad
+        )
+        target_origin = (0.0, 0.0)
+    else:
+        target_origin = insertion
+    return _authoritative_glyph_quad_transform(
+        font_filename,
+        glyph_id,
         target_quad=quad,
         target_origin=target_origin,
         target_advance=target_advance,
@@ -3684,18 +4321,6 @@ def _attempt_outline_entity(
     style_created = False
     try:
         source_text = str(getattr(text_item, "text", "") or "")
-        if source_text and not _visible_ink_expected(source_text):
-            attempt.evidence.update(
-                {
-                    "source_content_whitespace_only": True,
-                    "visible_ink_expected": False,
-                    "zero_outline_result_verified": True,
-                    "item_specific_creation_attempted": True,
-                }
-            )
-            raise _RepresentationImpossible(
-                "zero-ink source item has no truthful outline geometry"
-            )
         requires_individual = bool(
             getattr(text_item, "requires_individual_positioning", False)
         )
@@ -3719,6 +4344,49 @@ def _attempt_outline_entity(
         insertion = tuple(float(value) for value in text_item.insertion[:2])
         source_insert = (0.0, 0.0) if representation == "glyphs" else insertion
         font_resolution = _require_exact_item_font(text_item, config, attempt)
+        physical_ink_proof = _build_physical_glyph_ink_proof(
+            text_item,
+            config,
+            resolution=font_resolution,
+        )
+        physical_ink_proof_valid = _validate_physical_glyph_ink_proof(
+            physical_ink_proof
+        )
+        attempt.evidence.update(
+            {
+                "physical_glyph_ink_proof": physical_ink_proof,
+                "physical_glyph_ink_proof_valid": physical_ink_proof_valid,
+            }
+        )
+        if not physical_ink_proof_valid:
+            raise ValueError("exact source glyph evidence could not be revalidated")
+        if any(
+            row.get("glyph_id") is None or row.get("status") == "unproven"
+            for row in physical_ink_proof.get("glyphs") or []
+        ):
+            raise ValueError(
+                "exact source glyph identity or contour evidence is incomplete"
+            )
+        if (
+            physical_ink_proof_valid
+            and physical_ink_proof.get("status") == "empty"
+        ):
+            attempt.evidence.update(
+                {
+                    "source_zero_ink_physically_proven": True,
+                    "visible_ink_expected": False,
+                    "zero_outline_result_verified": True,
+                    "item_specific_creation_attempted": True,
+                }
+            )
+            raise _RepresentationImpossible(
+                "exact source glyph programs physically contain no outline ink"
+            )
+        if getattr(text_item, "source_glyph_id", None) is not None:
+            raise _RepresentationImpossible(
+                "entity text2path cannot bind the exact source glyph ID; "
+                "direct source-font paths are required"
+            )
         height, cap_height_ratio = _delivery_cap_height(
             source_em_height, font_resolution
         )
@@ -3829,18 +4497,6 @@ def _attempt_outline_entity(
         if expected_path_bbox != independent_path_bbox:
             raise ValueError("independent source path expectation mutated")
         if expected_path_bbox is None or actual_path_bbox is None:
-            if str(text_item.text) and not _visible_ink_expected(str(text_item.text)):
-                attempt.evidence.update(
-                    {
-                        "source_content_whitespace_only": True,
-                        "visible_ink_expected": False,
-                        "zero_outline_result_verified": True,
-                        "item_specific_creation_attempted": True,
-                    }
-                )
-                raise _RepresentationImpossible(
-                    "zero-ink source item has no outline ink"
-                )
             raise ValueError("visible source text produced no finite outline paths")
         if not pre_entity_paths_verified:
             raise ValueError("entity text2path output is not bound to source geometry")
@@ -3930,18 +4586,6 @@ def _attempt_outline_string(
     doc = msp.doc
     try:
         source_text = str(getattr(text_item, "text", "") or "")
-        if source_text and not _visible_ink_expected(source_text):
-            attempt.evidence.update(
-                {
-                    "source_content_whitespace_only": True,
-                    "visible_ink_expected": False,
-                    "zero_outline_result_verified": True,
-                    "item_specific_creation_attempted": True,
-                }
-            )
-            raise _RepresentationImpossible(
-                "zero-ink source item has no truthful outline geometry"
-            )
         requires_individual = bool(
             getattr(text_item, "requires_individual_positioning", False)
         )
@@ -3962,6 +4606,44 @@ def _attempt_outline_string(
         insertion = insertion_point
         target_width, width_source = _target_advance_width(text_item)
         font_resolution = _require_exact_item_font(text_item, config, attempt)
+        physical_ink_proof = _build_physical_glyph_ink_proof(
+            text_item,
+            config,
+            resolution=font_resolution,
+        )
+        physical_ink_proof_valid = _validate_physical_glyph_ink_proof(
+            physical_ink_proof
+        )
+        attempt.evidence.update(
+            {
+                "physical_glyph_ink_proof": physical_ink_proof,
+                "physical_glyph_ink_proof_valid": physical_ink_proof_valid,
+            }
+        )
+        if not physical_ink_proof_valid:
+            raise ValueError("exact source glyph evidence could not be revalidated")
+        if any(
+            row.get("glyph_id") is None or row.get("status") == "unproven"
+            for row in physical_ink_proof.get("glyphs") or []
+        ):
+            raise ValueError(
+                "exact source glyph identity or contour evidence is incomplete"
+            )
+        if (
+            physical_ink_proof_valid
+            and physical_ink_proof.get("status") == "empty"
+        ):
+            attempt.evidence.update(
+                {
+                    "source_zero_ink_physically_proven": True,
+                    "visible_ink_expected": False,
+                    "zero_outline_result_verified": True,
+                    "item_specific_creation_attempted": True,
+                }
+            )
+            raise _RepresentationImpossible(
+                "exact source glyph programs physically contain no outline ink"
+            )
         height, cap_height_ratio = _delivery_cap_height(
             source_em_height, font_resolution
         )
@@ -3979,7 +4661,12 @@ def _attempt_outline_string(
         delivered_advance: Optional[float] = None
         baseline_scale: Optional[float] = None
         if requires_individual:
-            positioned_layout = _validate_character_layout(text_item)
+            positioned_layout = _validate_character_layout(
+                text_item,
+                physical_ink_proof=(
+                    physical_ink_proof if physical_ink_proof_valid else None
+                ),
+            )
             attempt.evidence.update(
                 {
                     "source_char_layout_verified": True,
@@ -4004,47 +4691,85 @@ def _attempt_outline_string(
                     target_origin = character.target_origin
                     target_quad = character.target_quad
                 if character.visible_ink_expected:
-                    (
-                        character_transform,
-                        authoritative_character_advance,
-                        authoritative_character_scale,
-                    ) = _authoritative_quad_transform(
-                        character.text,
-                        face,
-                        target_quad=target_quad,
-                        target_origin=target_origin,
-                        target_advance=character.advance_width,
-                        target_height=character.glyph_height,
-                    )
-                    (
-                        expected_character_paths,
-                        expected_character_bbox,
-                        expected_character_advance,
-                        expected_character_scale,
-                    ) = _source_bound_string_path_expectation(
-                        character.text,
-                        face,
-                        height=1.0,
-                        target_advance=character.advance_width,
-                        rotation_degrees=character.rotation_degrees,
-                        translation=target_origin,
-                        source_transform=character_transform,
-                        delivered_advance_override=authoritative_character_advance,
-                        width_scale_override=authoritative_character_scale,
-                    )
-                    (
-                        character_paths,
-                        character_advance,
-                        character_scale,
-                    ) = _make_scaled_string_paths(
-                        character.text,
-                        face,
-                        height=1.0,
-                        target_advance=character.advance_width,
-                        rotation_degrees=character.rotation_degrees,
-                        translation=target_origin,
-                        source_transform=character_transform,
-                    )
+                    if character.glyph_id is not None:
+                        (
+                            character_transform,
+                            authoritative_character_advance,
+                            authoritative_character_scale,
+                        ) = _authoritative_glyph_quad_transform(
+                            font_resolution.filename,
+                            character.glyph_id,
+                            target_quad=target_quad,
+                            target_origin=target_origin,
+                            target_advance=character.advance_width,
+                            target_height=character.glyph_height,
+                        )
+                        expected_character_paths = _make_paths_from_source_glyph_id(
+                            font_resolution.filename,
+                            character.glyph_id,
+                            cap_height=1.0,
+                            transform=character_transform,
+                        )
+                        expected_character_bbox = _path_bbox_tuple(
+                            expected_character_paths
+                        )
+                        expected_character_advance = authoritative_character_advance
+                        expected_character_scale = authoritative_character_scale
+                        (
+                            character_paths,
+                            character_advance,
+                            character_scale,
+                        ) = _make_scaled_source_glyph_paths(
+                            font_resolution.filename,
+                            character.glyph_id,
+                            height=1.0,
+                            target_advance=character.advance_width,
+                            rotation_degrees=character.rotation_degrees,
+                            translation=target_origin,
+                            source_transform=character_transform,
+                        )
+                    else:
+                        (
+                            character_transform,
+                            authoritative_character_advance,
+                            authoritative_character_scale,
+                        ) = _authoritative_quad_transform(
+                            character.text,
+                            face,
+                            target_quad=target_quad,
+                            target_origin=target_origin,
+                            target_advance=character.advance_width,
+                            target_height=character.glyph_height,
+                        )
+                        (
+                            expected_character_paths,
+                            expected_character_bbox,
+                            expected_character_advance,
+                            expected_character_scale,
+                        ) = _source_bound_string_path_expectation(
+                            character.text,
+                            face,
+                            height=1.0,
+                            target_advance=character.advance_width,
+                            rotation_degrees=character.rotation_degrees,
+                            translation=target_origin,
+                            source_transform=character_transform,
+                            delivered_advance_override=authoritative_character_advance,
+                            width_scale_override=authoritative_character_scale,
+                        )
+                        (
+                            character_paths,
+                            character_advance,
+                            character_scale,
+                        ) = _make_scaled_string_paths(
+                            character.text,
+                            face,
+                            height=1.0,
+                            target_advance=character.advance_width,
+                            rotation_degrees=character.rotation_degrees,
+                            translation=target_origin,
+                            source_transform=character_transform,
+                        )
                     (
                         character_paths_verified,
                         independent_character_bbox,
@@ -4158,17 +4883,17 @@ def _attempt_outline_string(
             if expected_path_bbox is None:
                 attempt.evidence.update(
                     {
-                        "source_content_whitespace_only": not _visible_ink_expected(
-                            str(text_item.text)
-                        ),
                         "visible_ink_expected": False,
-                        "zero_outline_result_verified": True,
+                        "zero_outline_result_verified": bool(
+                            physical_ink_proof_valid
+                            and physical_ink_proof.get("status") == "empty"
+                        ),
                         "item_specific_creation_attempted": True,
                         "positioned_character_metrics": character_metrics,
                     }
                 )
-                raise _RepresentationImpossible(
-                    "individually positioned source item contains no visible outline ink"
+                raise ValueError(
+                    "positioned source glyphs produced no finite outline paths"
                 )
             expectation = _outline_expectation(
                 text_item,
@@ -4184,39 +4909,85 @@ def _attempt_outline_string(
             attempt.evidence["positioned_character_metrics"] = character_metrics
         else:
             translation = insertion if representation == "geometry" else (0.0, 0.0)
-            source_transform = _item_authoritative_transform(
-                text_item,
-                face,
-                representation=representation,
+            proof_glyphs = list(physical_ink_proof.get("glyphs") or [])
+            source_glyph_id = (
+                proof_glyphs[0].get("glyph_id")
+                if physical_ink_proof_valid
+                and len(proof_glyphs) == 1
+                and proof_glyphs[0].get("selection_source") == "source_glyph_id"
+                else None
             )
+            direct_source_glyph = bool(
+                source_glyph_id is not None and len(source_text) == 1
+            )
+            if direct_source_glyph:
+                source_transform = _item_authoritative_glyph_transform(
+                    text_item,
+                    font_resolution.filename,
+                    int(source_glyph_id),
+                    representation=representation,
+                )
+            else:
+                source_transform = _item_authoritative_transform(
+                    text_item,
+                    face,
+                    representation=representation,
+                )
             transform_matrix = source_transform[0] if source_transform else None
             delivered_override = source_transform[1] if source_transform else None
             scale_override = source_transform[2] if source_transform else None
-            (
-                expected_paths,
-                expected_path_bbox,
-                expected_delivered_advance,
-                expected_baseline_scale,
-            ) = _source_bound_string_path_expectation(
-                str(text_item.text),
-                face,
-                height=height,
-                target_advance=target_width,
-                rotation_degrees=rotation_degrees,
-                translation=translation,
-                source_transform=transform_matrix,
-                delivered_advance_override=delivered_override,
-                width_scale_override=scale_override,
-            )
-            paths, delivered_advance, baseline_scale = _make_scaled_string_paths(
-                str(text_item.text),
-                face,
-                height=1.0 if source_transform else height,
-                target_advance=target_width,
-                rotation_degrees=rotation_degrees,
-                translation=translation,
-                source_transform=transform_matrix,
-            )
+            if direct_source_glyph:
+                (
+                    expected_paths,
+                    expected_delivered_advance,
+                    expected_baseline_scale,
+                ) = _make_scaled_source_glyph_paths(
+                    font_resolution.filename,
+                    int(source_glyph_id),
+                    height=1.0 if source_transform else height,
+                    target_advance=target_width,
+                    rotation_degrees=rotation_degrees,
+                    translation=translation,
+                    source_transform=transform_matrix,
+                )
+                expected_path_bbox = _path_bbox_tuple(expected_paths)
+                paths, delivered_advance, baseline_scale = (
+                    _make_scaled_source_glyph_paths(
+                        font_resolution.filename,
+                        int(source_glyph_id),
+                        height=1.0 if source_transform else height,
+                        target_advance=target_width,
+                        rotation_degrees=rotation_degrees,
+                        translation=translation,
+                        source_transform=transform_matrix,
+                    )
+                )
+            else:
+                (
+                    expected_paths,
+                    expected_path_bbox,
+                    expected_delivered_advance,
+                    expected_baseline_scale,
+                ) = _source_bound_string_path_expectation(
+                    str(text_item.text),
+                    face,
+                    height=height,
+                    target_advance=target_width,
+                    rotation_degrees=rotation_degrees,
+                    translation=translation,
+                    source_transform=transform_matrix,
+                    delivered_advance_override=delivered_override,
+                    width_scale_override=scale_override,
+                )
+                paths, delivered_advance, baseline_scale = _make_scaled_string_paths(
+                    str(text_item.text),
+                    face,
+                    height=1.0 if source_transform else height,
+                    target_advance=target_width,
+                    rotation_degrees=rotation_degrees,
+                    translation=translation,
+                    source_transform=transform_matrix,
+                )
             (
                 pre_entity_paths_verified,
                 independent_path_bbox,
@@ -4227,20 +4998,6 @@ def _attempt_outline_string(
             if expected_path_bbox != independent_path_bbox:
                 raise ValueError("independent source path expectation mutated")
             if expected_path_bbox is None or actual_path_bbox is None:
-                if str(text_item.text) and not _visible_ink_expected(
-                    str(text_item.text)
-                ):
-                    attempt.evidence.update(
-                        {
-                            "source_content_whitespace_only": True,
-                            "visible_ink_expected": False,
-                            "zero_outline_result_verified": True,
-                            "item_specific_creation_attempted": True,
-                        }
-                    )
-                    raise _RepresentationImpossible(
-                        "zero-ink source item has no outline ink"
-                    )
                 raise ValueError("visible source text produced no finite outline paths")
             if (
                 not pre_entity_paths_verified
