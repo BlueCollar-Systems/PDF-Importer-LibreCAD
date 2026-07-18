@@ -259,7 +259,6 @@ def _verify_serialized_text_deliveries(
 
     expected_types = {
         "text": {"TEXT"},
-        "labels": {"TEXT", "MTEXT"},
         "glyphs": {"INSERT"},
         "geometry": {"LWPOLYLINE", "POLYLINE", "SOLID"},
         "raster": {"IMAGE"},
@@ -276,6 +275,11 @@ def _verify_serialized_text_deliveries(
                 f"serialized text delivery has invalid or duplicate source id: {source_id!r}"
             )
         source_ids.add(source_id)
+        if representation == "labels":
+            raise RuntimeError(
+                f"serialized text delivery {source_id}: native Label is unsupported "
+                "by DXF; TEXT/MTEXT report aliases are rejected"
+            )
         if delivery.get("verified") is not True or representation not in expected_types:
             raise RuntimeError(
                 f"serialized text delivery {source_id}: unverified final representation"
@@ -338,6 +342,11 @@ def _verify_serialized_text_deliveries(
         if str(final_attempt.get("source_id") or "") != source_id:
             raise RuntimeError(
                 f"serialized text delivery {source_id}: verified attempt source mismatch"
+            )
+        if str(final_attempt.get("attempted_representation") or "") != representation:
+            raise RuntimeError(
+                f"serialized text delivery {source_id}: verified attempt representation "
+                "does not match the final representation"
             )
         if set(map(str, final_attempt.get("entity_handles") or [])) != set(
             entity_handles
@@ -1002,6 +1011,14 @@ def _verify_serialized_text_deliveries(
                 )
             source_pixels_sampled = evidence.get("source_pixels_sampled") is True
             if source_pixels_sampled:
+                if (
+                    evidence.get("visible_ink_verified") is not True
+                    or evidence.get("zero_ink_verified") is not False
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: sampled source clip "
+                        "contains no verified visible ink"
+                    )
                 source_clip = list(evidence.get("source_clip_pdf") or [])
                 if len(source_clip) != 4 or not all(
                     isinstance(value, (int, float)) and math.isfinite(float(value))
@@ -1135,6 +1152,8 @@ def _verify_serialized_text_deliveries(
                     and bytes(staged.samples) == bytes(fresh.samples)
                     and evidence.get("source_render_samples_sha256")
                     == hashlib.sha256(bytes(fresh.samples)).hexdigest()
+                    and _pixmap_contains_ink(fresh)
+                    and _pixmap_contains_ink(staged)
                 )
                 if not geometry_matches or not pixels_match:
                     raise RuntimeError(
@@ -1871,7 +1890,7 @@ def _attempt_terminal_text_raster(
         ink_contract_verified = (
             zero_ink_verified
             if source_zero_ink_proven
-            else source_pixels_sampled
+            else source_pixels_sampled and visible_ink_verified
         )
         attempt.type_verified = image.dxftype() == "IMAGE"
         attempt.visual_verified = insert_ok and size_ok and ink_contract_verified

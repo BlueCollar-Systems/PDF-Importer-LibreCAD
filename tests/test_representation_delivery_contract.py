@@ -983,6 +983,29 @@ def test_librecad_empty_source_glyph_does_not_waive_visible_parent_lff() -> None
     assert native.evidence["fallback_authorized_for_this_item"] is True
 
 
+def test_serialized_verifier_rejects_text_entity_relabelled_as_native_label(
+    tmp_path,
+) -> None:
+    """DXF TEXT cannot become a native Label through report-only relabelling."""
+
+    item = __import__("dataclasses").replace(
+        _item(width=2.5, rotation=17.0),
+        text=" ",
+        normalized="",
+        source_glyph_id=1,
+    )
+    doc, _msp, result = _deliver("labels", item)
+    assert result.final_representation == "text"
+    output = tmp_path / "forged-label-alias.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    forged = result.to_dict()
+    forged["final_representation"] = "labels"
+
+    with pytest.raises(RuntimeError, match="native Label|Label.*unsupported"):
+        _verify_serialized_text_deliveries(reopened, [forged])
+
+
 def test_librecad_space_bound_to_visible_source_glyph_uses_exact_glyph_geometry(
     deterministic_exact_font,
     tmp_path,
@@ -2738,6 +2761,41 @@ def test_missing_source_glyph_identity_reaches_source_sampled_terminal_raster(
     assert raster["outcome"] == "verified"
     assert raster["evidence"]["source_pixels_sampled"] is True
     assert Path(raster["evidence"]["asset_path"]).is_file()
+    run.close()
+
+
+def test_unproven_zero_ink_cannot_certify_a_blank_sampled_raster_clip(
+    tmp_path,
+) -> None:
+    """Sampling a clip is not visual proof when it contains no source ink."""
+
+    run = _real_text_extraction(tmp_path)
+    original = run.extraction.pages[0].page_data.text_items[0]
+    blank_clip_item = __import__("dataclasses").replace(
+        original,
+        source_bbox_pdf=(180.0, 120.0, 220.0, 150.0),
+        source_char_layout=(),
+        requires_individual_positioning=False,
+        positioned_character=False,
+        source_glyph_id=None,
+        font_asset=None,
+        font_failure=None,
+    )
+    run.extraction.pages[0].page_data.text_items = [blank_clip_item]
+    output = tmp_path / "blank-source-clip-must-fail.dxf"
+
+    with pytest.raises(TextRepresentationDeliveryError):
+        export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(
+                include_images=False,
+                text_mode="raster",
+                provenance_opts=run.config,
+            ),
+        )
+
+    assert not output.exists()
     run.close()
 
 

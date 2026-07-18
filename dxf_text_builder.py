@@ -1275,7 +1275,7 @@ def _validate_physical_glyph_ink_proof(
     if (
         isinstance(source_page_number, bool)
         or not isinstance(source_page_number, int)
-        or source_page_number < 0
+        or source_page_number <= 0
         or isinstance(source_item_id, bool)
         or not isinstance(source_item_id, int)
         or source_item_id < 0
