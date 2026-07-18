@@ -1041,6 +1041,157 @@ def test_serialized_glyph_verifier_rejects_reopened_parent_transform_corruption(
         _verify_serialized_text_deliveries(reopened, [result.to_dict()])
 
 
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    [
+        ("row_count", 2),
+        ("column_count", 2),
+        ("extrusion", (0.0, 1.0, 0.0)),
+    ],
+)
+def test_serialized_glyph_verifier_rejects_reopened_array_or_ocs_corruption(
+    tmp_path,
+    attribute,
+    value,
+) -> None:
+    """A reopened INSERT cannot duplicate or reorient verified glyph ink."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / f"glyphs-corrupted-{attribute}.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+
+    insert = next(iter(reopened.modelspace()))
+    setattr(insert.dxf, attribute, value)
+
+    with pytest.raises(RuntimeError, match="transform|geometry|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    [
+        ("zscale", 2.0),
+        ("insert", (12.25, 24.5, 47.0)),
+    ],
+)
+def test_serialized_glyph_verifier_rejects_adjacent_insert_state_corruption(
+    tmp_path,
+    attribute,
+    value,
+) -> None:
+    """Every persisted INSERT field that can reposition glyph ink is bound."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / f"glyphs-corrupted-adjacent-{attribute}.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+
+    insert = next(iter(reopened.modelspace()))
+    setattr(insert.dxf, attribute, value)
+
+    with pytest.raises(RuntimeError, match="transform|geometry|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+@pytest.mark.parametrize("attribute", ["row_spacing", "column_spacing"])
+def test_serialized_glyph_verifier_ignores_visually_inoperative_spacing(
+    tmp_path,
+    attribute,
+) -> None:
+    """Spacing is not a roadblock when its corresponding array count is one."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / f"glyphs-inoperative-{attribute}.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+
+    insert = next(iter(reopened.modelspace()))
+    assert int(insert.dxf.get("row_count", 1)) == 1
+    assert int(insert.dxf.get("column_count", 1)) == 1
+    setattr(insert.dxf, attribute, 47.0)
+
+    _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+@pytest.mark.parametrize(
+    ("count_attribute", "spacing_attribute"),
+    [
+        ("row_count", "row_spacing"),
+        ("column_count", "column_spacing"),
+    ],
+)
+def test_serialized_glyph_verifier_binds_spacing_when_array_count_is_operative(
+    tmp_path,
+    count_attribute,
+    spacing_attribute,
+) -> None:
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / f"glyphs-operative-{spacing_attribute}.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    delivery = result.to_dict()
+    verified_attempt = next(
+        attempt for attempt in delivery["attempts"] if attempt["outcome"] == "verified"
+    )
+    evidence = verified_attempt["evidence"]
+
+    insert = next(iter(reopened.modelspace()))
+    setattr(insert.dxf, count_attribute, 2)
+    setattr(insert.dxf, spacing_attribute, 47.0)
+    evidence[f"expected_block_{count_attribute}"] = 2
+
+    with pytest.raises(RuntimeError, match="transform|geometry|outline"):
+        _verify_serialized_text_deliveries(reopened, [delivery])
+
+
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    [
+        ("row_count", 1.5),
+        ("column_count", True),
+        ("xscale", True),
+        ("zscale", "1.0"),
+        ("row_spacing", "0.0"),
+        ("extrusion", (False, 0.0, 1.0)),
+    ],
+)
+def test_serialized_glyph_verifier_rejects_untyped_raw_insert_state(
+    tmp_path,
+    attribute,
+    value,
+) -> None:
+    """Raw malformed DXF values cannot be normalized into trusted state."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / f"glyphs-corrupted-raw-{attribute}.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+
+    insert = next(iter(reopened.modelspace()))
+    insert.dxf.unprotected_set(attribute, value)
+
+    with pytest.raises(RuntimeError, match="transform|geometry|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_created_glyph_evidence_binds_the_complete_insert_transform() -> None:
+    _, _, result = _deliver("glyphs")
+    evidence = result.attempts[-1].evidence
+
+    assert evidence["expected_block_insert"] == pytest.approx([12.25, 24.5, 0.0])
+    assert evidence["expected_block_rotation"] == pytest.approx(0.0)
+    assert evidence["expected_block_xscale"] == pytest.approx(1.0)
+    assert evidence["expected_block_yscale"] == pytest.approx(1.0)
+    assert evidence["expected_block_zscale"] == pytest.approx(1.0)
+    assert evidence["expected_block_row_count"] == 1
+    assert evidence["expected_block_column_count"] == 1
+    assert evidence["expected_block_row_spacing"] == pytest.approx(0.0)
+    assert evidence["expected_block_column_spacing"] == pytest.approx(0.0)
+    assert evidence["expected_block_extrusion"] == pytest.approx([0.0, 0.0, 1.0])
+    assert evidence["block_insert_transform_verified"] is True
+
+
 def test_serialized_glyph_verifier_rejects_reopened_block_base_point_corruption(
     tmp_path,
 ) -> None:
@@ -1120,6 +1271,45 @@ def test_r12_glyph_fill_uses_serializable_solid_triangles(tmp_path) -> None:
     reopened_ref = next(iter(reopened.modelspace()))
     reopened_block = reopened.blocks.get(reopened_ref.dxf.name)
     assert "SOLID" in {entity.dxftype() for entity in reopened_block}
+
+
+@pytest.mark.parametrize(
+    ("dxf_version", "is_r12"),
+    [("R12", True), ("R2010", False)],
+)
+@pytest.mark.parametrize("mode", ["glyphs", "geometry"])
+def test_outline_modes_survive_direct_save_reopen_verification(
+    tmp_path,
+    dxf_version,
+    is_r12,
+    mode,
+) -> None:
+    doc = ezdxf.new(dxf_version)
+    msp = doc.modelspace()
+    result = build_text(
+        _item(),
+        msp,
+        "TEXT",
+        ImportConfig(text_mode=mode),
+        is_r12=is_r12,
+        target_app="librecad",
+        dxf_version=dxf_version,
+        return_delivery_result=True,
+    )
+
+    assert isinstance(result, TextDeliveryResult)
+    assert result.verified is True
+    assert result.final_representation == mode
+    output = tmp_path / f"{dxf_version}-{mode}-direct-reopen.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+
+    _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+    expected_types = {"INSERT"} if mode == "glyphs" else {
+        "POLYLINE" if is_r12 else "LWPOLYLINE",
+        "SOLID",
+    }
+    assert {entity.dxftype() for entity in reopened.modelspace()} == expected_types
 
 
 def test_solid_fill_discards_degenerate_triangulator_artifacts() -> None:
@@ -1282,12 +1472,26 @@ def test_whitespace_only_source_falls_back_to_nearest_exact_zero_ink_text(mode) 
     [
         "\u200b",  # ZERO WIDTH SPACE
         "\u2060",  # WORD JOINER
+        "\u00ad",  # SOFT HYPHEN
+        "\u034f",  # COMBINING GRAPHEME JOINER
+        "\u061c",  # ARABIC LETTER MARK
+        "\u115f",  # HANGUL CHOSEONG FILLER
+        "\u180b",  # MONGOLIAN FREE VARIATION SELECTOR ONE
+        "\u200e",  # LEFT-TO-RIGHT MARK
+        "\u202a",  # LEFT-TO-RIGHT EMBEDDING
         "\u2061",  # FUNCTION APPLICATION
         "\u2062",  # INVISIBLE TIMES
         "\u2063",  # INVISIBLE SEPARATOR
         "\u2064",  # INVISIBLE PLUS
+        "\u2066",  # LEFT-TO-RIGHT ISOLATE
+        "\u3164",  # HANGUL FILLER
         "\ufe0e",  # VARIATION SELECTOR-15
         "\ufe0f",  # VARIATION SELECTOR-16
+        "\uffa0",  # HALFWIDTH HANGUL FILLER
+        "\U0001bca0",  # SHORTHAND FORMAT LETTER OVERLAP
+        "\U0001d173",  # MUSICAL SYMBOL BEGIN BEAM
+        "\U000e0001",  # LANGUAGE TAG
+        "\U000e0100",  # VARIATION SELECTOR-17
     ],
 )
 def test_zero_ink_format_source_uses_the_same_truthful_zero_ink_path(
@@ -1313,6 +1517,19 @@ def test_zero_ink_format_source_uses_the_same_truthful_zero_ink_path(
     assert final.evidence["parent_native_font_rendering_required"] is False
     assert [entity.dxftype() for entity in msp] == ["TEXT"]
     assert next(iter(msp)).dxf.text == content
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "\u0301",  # COMBINING ACUTE ACCENT has visible ink.
+        "\u05b0",  # HEBREW POINT SHEVA has visible ink.
+        "A\u034f",  # Visible base plus a default-ignorable joiner.
+        "\u0301\u200b",  # Visible combining ink plus ZERO WIDTH SPACE.
+    ],
+)
+def test_default_ignorable_detection_preserves_real_combining_ink(content) -> None:
+    assert dxf_text_builder._visible_ink_expected(content) is True
 
 
 def test_outline_cannot_self_certify_when_source_text_parameters_fail() -> None:

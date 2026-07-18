@@ -666,6 +666,14 @@ def _finite_float(value: Any) -> Optional[float]:
     return number if math.isfinite(number) else None
 
 
+def _is_strict_finite_number(value: Any) -> bool:
+    return bool(
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(float(value))
+    )
+
+
 def _finite_point(value: Any) -> Optional[Tuple[float, float]]:
     if value is None:
         return None
@@ -1496,24 +1504,47 @@ def _path_geometry_within_envelope(
     return geometry_seen and math.isfinite(tolerance) and tolerance >= 0.0
 
 
+# Exact ranges from Unicode 17's DerivedCoreProperties.txt for the
+# Default_Ignorable_Code_Point property:
+# https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt
+# Python's unicodedata module does not expose derived binary properties, so
+# keep the small, deterministic table locally instead of guessing from general
+# categories such as Cf or Mn.  The latter would incorrectly suppress visible
+# combining marks.
+_DEFAULT_IGNORABLE_CODE_POINT_RANGES = (
+    (0x00AD, 0x00AD),
+    (0x034F, 0x034F),
+    (0x061C, 0x061C),
+    (0x115F, 0x1160),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180F),
+    (0x200B, 0x200F),
+    (0x202A, 0x202E),
+    (0x2060, 0x206F),
+    (0x3164, 0x3164),
+    (0xFE00, 0xFE0F),
+    (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0),
+    (0xFFF0, 0xFFF8),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+
+
+def _is_default_ignorable_code_point(character: str) -> bool:
+    code_point = ord(character)
+    return any(
+        first <= code_point <= last
+        for first, last in _DEFAULT_IGNORABLE_CODE_POINT_RANGES
+    )
+
+
 def _visible_ink_expected(text: str) -> bool:
-    zero_width_format_characters = {
-        "\u200b",
-        "\u200c",
-        "\u200d",
-        "\u2060",
-        "\u2061",
-        "\u2062",
-        "\u2063",
-        "\u2064",
-        "\ufe0e",
-        "\ufe0f",
-        "\ufeff",
-    }
     return any(
         not character.isspace()
         and unicodedata.category(character) != "Cc"
-        and character not in zero_width_format_characters
+        and not _is_default_ignorable_code_point(character)
         for character in text
     )
 
@@ -2288,11 +2319,11 @@ def _attempt_labels(
             or str(target_app or "").lower() == "librecad"
             or str(dxf_version or "R2010") <= "R2000"
         )
-        delivered_text = (
-            unicodedata.normalize("NFKC", str(text_item.text))
-            if parent == "librecad"
-            else str(text_item.text)
-        )
+        # Representation fallback must not rewrite source content.  In
+        # particular, NFKC maps compatibility characters such as Hangul
+        # fillers to different code points even though DXF can preserve the
+        # original Unicode string exactly.
+        delivered_text = str(text_item.text)
         if len(delivered_text) > _MTEXT_THRESHOLD and not force_text:
             mtext_attribs = dict(attribs)
             mtext_attribs.pop("height", None)
@@ -3084,28 +3115,89 @@ def _commit_outlines(
         _handle(entity) for entity in outlines + fills
     ]
     actual_bbox = _bbox_tuple(outlines)
-    actual_insert = tuple(float(value) for value in tuple(block_ref.dxf.insert)[:2])
-    insert_verified = all(
-        math.isclose(left, right, rel_tol=0.0, abs_tol=1e-12)
-        for left, right in zip(actual_insert, insertion, strict=True)
-    )
+    expected_insert = (float(insertion[0]), float(insertion[1]), 0.0)
     expected_rotation = 0.0
     expected_xscale = 1.0
     expected_yscale = 1.0
+    expected_zscale = 1.0
+    expected_row_count = 1
+    expected_column_count = 1
+    expected_row_spacing = 0.0
+    expected_column_spacing = 0.0
+    expected_extrusion = (0.0, 0.0, 1.0)
     expected_base_point = (0.0, 0.0, 0.0)
-    actual_rotation = float(block_ref.dxf.get("rotation", 0.0))
-    actual_xscale = float(block_ref.dxf.get("xscale", 1.0))
-    actual_yscale = float(block_ref.dxf.get("yscale", 1.0))
-    actual_base_point = tuple(float(value) for value in block.block.dxf.base_point)
+    raw_insert = tuple(block_ref.dxf.insert)
+    raw_rotation = block_ref.dxf.get("rotation", 0.0)
+    raw_xscale = block_ref.dxf.get("xscale", 1.0)
+    raw_yscale = block_ref.dxf.get("yscale", 1.0)
+    raw_zscale = block_ref.dxf.get("zscale", 1.0)
+    raw_row_count = block_ref.dxf.get("row_count", 1)
+    raw_column_count = block_ref.dxf.get("column_count", 1)
+    raw_row_spacing = block_ref.dxf.get("row_spacing", 0.0)
+    raw_column_spacing = block_ref.dxf.get("column_spacing", 0.0)
+    raw_extrusion = tuple(block_ref.dxf.get("extrusion", expected_extrusion))
+    raw_base_point = tuple(block.block.dxf.base_point)
+    raw_scalar_values = (
+        raw_rotation,
+        raw_xscale,
+        raw_yscale,
+        raw_zscale,
+        raw_row_spacing,
+        raw_column_spacing,
+    )
+    if (
+        len(raw_insert) != 3
+        or len(raw_extrusion) != 3
+        or len(raw_base_point) != 3
+        or not all(
+            _is_strict_finite_number(value)
+            for value in (
+                *raw_insert,
+                *raw_scalar_values,
+                *raw_extrusion,
+                *raw_base_point,
+            )
+        )
+        or isinstance(raw_row_count, bool)
+        or not isinstance(raw_row_count, int)
+        or raw_row_count < 1
+        or isinstance(raw_column_count, bool)
+        or not isinstance(raw_column_count, int)
+        or raw_column_count < 1
+    ):
+        raise ValueError("glyph INSERT has invalid typed transform state")
+    actual_insert = tuple(float(value) for value in raw_insert)
+    actual_rotation = float(raw_rotation)
+    actual_xscale = float(raw_xscale)
+    actual_yscale = float(raw_yscale)
+    actual_zscale = float(raw_zscale)
+    actual_row_count = raw_row_count
+    actual_column_count = raw_column_count
+    actual_row_spacing = float(raw_row_spacing)
+    actual_column_spacing = float(raw_column_spacing)
+    actual_extrusion = tuple(float(value) for value in raw_extrusion)
+    actual_base_point = tuple(float(value) for value in raw_base_point)
+    insert_verified = all(
+        math.isclose(left, right, rel_tol=0.0, abs_tol=1e-12)
+        for left, right in zip(actual_insert, expected_insert, strict=True)
+    )
     transform_values = (
+        *actual_insert,
         actual_rotation,
         actual_xscale,
         actual_yscale,
+        actual_zscale,
+        actual_row_spacing,
+        actual_column_spacing,
+        *actual_extrusion,
         *actual_base_point,
     )
     insert_transform_verified = bool(
-        len(actual_base_point) == 3
+        len(actual_insert) == 3
+        and len(actual_extrusion) == 3
+        and len(actual_base_point) == 3
         and all(math.isfinite(value) for value in transform_values)
+        and insert_verified
         and math.isclose(
             actual_rotation,
             expected_rotation,
@@ -3123,6 +3215,40 @@ def _commit_outlines(
             expected_yscale,
             rel_tol=0.0,
             abs_tol=1e-12,
+        )
+        and math.isclose(
+            actual_zscale,
+            expected_zscale,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        and actual_row_count == expected_row_count
+        and actual_column_count == expected_column_count
+        and (
+            expected_row_count <= 1
+            or math.isclose(
+                actual_row_spacing,
+                expected_row_spacing,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+        )
+        and (
+            expected_column_count <= 1
+            or math.isclose(
+                actual_column_spacing,
+                expected_column_spacing,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+        )
+        and all(
+            math.isclose(left, right, rel_tol=0.0, abs_tol=1e-12)
+            for left, right in zip(
+                actual_extrusion,
+                expected_extrusion,
+                strict=True,
+            )
         )
         and all(
             math.isclose(left, right, rel_tol=0.0, abs_tol=1e-12)
@@ -3181,7 +3307,7 @@ def _commit_outlines(
             "nonserializable_support_roles": ["BLOCK_RECORD"] if is_r12 else [],
             "expected_outline_bbox": list(expectation.path_bbox),
             "actual_outline_bbox": list(actual_bbox) if actual_bbox else None,
-            "expected_block_insert": list(insertion),
+            "expected_block_insert": list(expected_insert),
             "actual_block_insert": list(actual_insert),
             "block_insert_verified": insert_verified,
             "expected_block_rotation": expected_rotation,
@@ -3190,6 +3316,18 @@ def _commit_outlines(
             "actual_block_xscale": actual_xscale,
             "expected_block_yscale": expected_yscale,
             "actual_block_yscale": actual_yscale,
+            "expected_block_zscale": expected_zscale,
+            "actual_block_zscale": actual_zscale,
+            "expected_block_row_count": expected_row_count,
+            "actual_block_row_count": actual_row_count,
+            "expected_block_column_count": expected_column_count,
+            "actual_block_column_count": actual_column_count,
+            "expected_block_row_spacing": expected_row_spacing,
+            "actual_block_row_spacing": actual_row_spacing,
+            "expected_block_column_spacing": expected_column_spacing,
+            "actual_block_column_spacing": actual_column_spacing,
+            "expected_block_extrusion": list(expected_extrusion),
+            "actual_block_extrusion": list(actual_extrusion),
             "expected_block_base_point": list(expected_base_point),
             "actual_block_base_point": list(actual_base_point),
             "block_insert_transform_verified": insert_transform_verified,

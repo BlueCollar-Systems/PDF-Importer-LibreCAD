@@ -185,6 +185,24 @@ def _serialized_entity(doc: Any, handle: str, source_id: str) -> Any:
     return entity
 
 
+def _strict_finite_number(value: Any) -> bool:
+    return bool(
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(float(value))
+    )
+
+
+def _strict_finite_vector(value: Any, *, length: int) -> Optional[Tuple[Any, ...]]:
+    try:
+        values = tuple(value)
+    except TypeError:
+        return None
+    if len(values) != length or not all(_strict_finite_number(item) for item in values):
+        return None
+    return values
+
+
 def _verify_serialized_text_deliveries(
     doc: Any,
     deliveries: List[Dict[str, Any]],
@@ -402,21 +420,31 @@ def _verify_serialized_text_deliveries(
                     )
                 evidence = dict(final_attempt.get("evidence") or {})
                 expected_block_name = str(evidence.get("block_name") or "")
-                expected_insert = tuple(
-                    float(value) for value in evidence.get("expected_block_insert") or []
+                raw_expected_insert = _strict_finite_vector(
+                    evidence.get("expected_block_insert") or (),
+                    length=3,
                 )
-                actual_insert = tuple(float(value) for value in tuple(insert.dxf.insert)[:2])
+                raw_actual_insert = _strict_finite_vector(
+                    insert.dxf.insert,
+                    length=3,
+                )
                 if (
                     not expected_block_name
                     or str(insert.dxf.name) != expected_block_name
-                    or len(expected_insert) != 2
-                    or not all(
-                        math.isclose(left, right, rel_tol=0.0, abs_tol=1e-12)
-                        for left, right in zip(
-                            actual_insert,
-                            expected_insert,
-                            strict=True,
-                        )
+                    or raw_expected_insert is None
+                    or raw_actual_insert is None
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: glyph outline transform changed"
+                    )
+                expected_insert = tuple(float(value) for value in raw_expected_insert)
+                actual_insert = tuple(float(value) for value in raw_actual_insert)
+                if not all(
+                    math.isclose(left, right, rel_tol=0.0, abs_tol=1e-12)
+                    for left, right in zip(
+                        actual_insert,
+                        expected_insert,
+                        strict=True,
                     )
                 ):
                     raise RuntimeError(
@@ -438,7 +466,15 @@ def _verify_serialized_text_deliveries(
                     evidence.get("expected_block_rotation"),
                     evidence.get("expected_block_xscale"),
                     evidence.get("expected_block_yscale"),
+                    evidence.get("expected_block_zscale"),
+                    evidence.get("expected_block_row_spacing"),
+                    evidence.get("expected_block_column_spacing"),
                 ]
+                expected_count_values = [
+                    evidence.get("expected_block_row_count"),
+                    evidence.get("expected_block_column_count"),
+                ]
+                expected_extrusion = evidence.get("expected_block_extrusion")
                 expected_base_point = evidence.get("expected_block_base_point")
                 if (
                     evidence.get("block_insert_transform_verified") is not True
@@ -447,6 +483,20 @@ def _verify_serialized_text_deliveries(
                         or not isinstance(value, (int, float))
                         or not math.isfinite(float(value))
                         for value in expected_transform_values
+                    )
+                    or any(
+                        isinstance(value, bool)
+                        or not isinstance(value, int)
+                        or value < 1
+                        for value in expected_count_values
+                    )
+                    or not isinstance(expected_extrusion, (list, tuple))
+                    or len(expected_extrusion) != 3
+                    or any(
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not math.isfinite(float(value))
+                        for value in expected_extrusion
                     )
                     or not isinstance(expected_base_point, (list, tuple))
                     or len(expected_base_point) != 3
@@ -461,24 +511,92 @@ def _verify_serialized_text_deliveries(
                         f"serialized text delivery {source_id}: glyph transform "
                         "evidence incomplete"
                     )
-                expected_rotation, expected_xscale, expected_yscale = map(
+                (
+                    expected_rotation,
+                    expected_xscale,
+                    expected_yscale,
+                    expected_zscale,
+                    expected_row_spacing,
+                    expected_column_spacing,
+                ) = map(
                     float,
                     expected_transform_values,
                 )
-                actual_rotation = float(insert.dxf.get("rotation", 0.0))
-                actual_xscale = float(insert.dxf.get("xscale", 1.0))
-                actual_yscale = float(insert.dxf.get("yscale", 1.0))
-                actual_base_point = tuple(
-                    float(value) for value in block.block.dxf.base_point
+                expected_row_count, expected_column_count = map(
+                    int,
+                    expected_count_values,
+                )
+                raw_actual_transform_values = (
+                    insert.dxf.get("rotation", 0.0),
+                    insert.dxf.get("xscale", 1.0),
+                    insert.dxf.get("yscale", 1.0),
+                    insert.dxf.get("zscale", 1.0),
+                    insert.dxf.get("row_spacing", 0.0),
+                    insert.dxf.get("column_spacing", 0.0),
+                )
+                raw_actual_row_count = insert.dxf.get("row_count", 1)
+                raw_actual_column_count = insert.dxf.get("column_count", 1)
+                raw_actual_extrusion = _strict_finite_vector(
+                    insert.dxf.get("extrusion", (0.0, 0.0, 1.0)),
+                    length=3,
+                )
+                raw_actual_base_point = _strict_finite_vector(
+                    block.block.dxf.base_point,
+                    length=3,
                 )
                 if (
                     not all(
-                        math.isfinite(value)
-                        for value in (
-                            actual_rotation,
-                            actual_xscale,
-                            actual_yscale,
-                            *actual_base_point,
+                        _strict_finite_number(value)
+                        for value in raw_actual_transform_values
+                    )
+                    or isinstance(raw_actual_row_count, bool)
+                    or not isinstance(raw_actual_row_count, int)
+                    or raw_actual_row_count < 1
+                    or isinstance(raw_actual_column_count, bool)
+                    or not isinstance(raw_actual_column_count, int)
+                    or raw_actual_column_count < 1
+                    or raw_actual_extrusion is None
+                    or raw_actual_base_point is None
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: glyph outline "
+                        "transform changed"
+                    )
+                (
+                    actual_rotation,
+                    actual_xscale,
+                    actual_yscale,
+                    actual_zscale,
+                    actual_row_spacing,
+                    actual_column_spacing,
+                ) = map(float, raw_actual_transform_values)
+                actual_row_count = raw_actual_row_count
+                actual_column_count = raw_actual_column_count
+                actual_extrusion = tuple(
+                    float(value) for value in raw_actual_extrusion
+                )
+                actual_base_point = tuple(
+                    float(value) for value in raw_actual_base_point
+                )
+                if (
+                    actual_row_count != expected_row_count
+                    or actual_column_count != expected_column_count
+                    or (
+                        expected_row_count > 1
+                        and not math.isclose(
+                            actual_row_spacing,
+                            expected_row_spacing,
+                            rel_tol=0.0,
+                            abs_tol=1e-12,
+                        )
+                    )
+                    or (
+                        expected_column_count > 1
+                        and not math.isclose(
+                            actual_column_spacing,
+                            expected_column_spacing,
+                            rel_tol=0.0,
+                            abs_tol=1e-12,
                         )
                     )
                     or not all(
@@ -488,12 +606,16 @@ def _verify_serialized_text_deliveries(
                                 actual_rotation,
                                 actual_xscale,
                                 actual_yscale,
+                                actual_zscale,
+                                *actual_extrusion,
                                 *actual_base_point,
                             ),
                             (
                                 expected_rotation,
                                 expected_xscale,
                                 expected_yscale,
+                                expected_zscale,
+                                *(float(value) for value in expected_extrusion),
                                 *(float(value) for value in expected_base_point),
                             ),
                             strict=True,
