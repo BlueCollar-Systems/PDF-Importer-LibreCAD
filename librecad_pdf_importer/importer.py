@@ -258,6 +258,11 @@ def write_import_report(
         for item in text_items
         if str(getattr(item, "id", "") or "").strip()
     }
+    expected_text_source_ids.update(
+        f"page_visual:{int(page.page_data.page_number)}"
+        for page in pages
+        if not list(page.page_data.text_items or []) and bool(page.images)
+    )
     delivery_records_well_formed = bool(text_representation_deliveries) and all(
         isinstance(item, dict) for item in text_representation_deliveries
     )
@@ -275,7 +280,7 @@ def write_import_report(
     ]
     text_delivery_verified = bool(
         delivery_records_well_formed
-        and len(text_representation_deliveries) == text_source_spans
+        and len(text_representation_deliveries) == len(expected_text_source_ids)
         and len(delivered_source_ids_for_gate)
         == len(set(delivered_source_ids_for_gate))
         and set(delivered_source_ids_for_gate) == expected_text_source_ids

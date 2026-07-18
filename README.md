@@ -229,7 +229,7 @@ capabilities. Modes differ only in extraction *strategy*, not quality tier.
 The six requests remain structurally distinct. A DXF declaration is not enough
 to claim success: the requested semantics and item transform must also survive
 serialization. LibreCAD uses LFF stroke fonts for editable native text, so Text
-and Text uses its broad Unicode LFF face while retaining source content, anchor,
+uses its broad Unicode LFF face while retaining source content, anchor,
 height, rotation, and advance. That parent-font substitution is reported
 explicitly; it is not misreported as a representation fallback. DXF has no
 native Label entity, so a Labels request records that item-scoped impossibility
@@ -244,7 +244,7 @@ parent.
 | **3d_text** | ✅ 3D Text | Attempts DXF `TEXT` with positive thickness and +Z extrusion first. Success additionally requires the parent to verify it as visible/editable 3D text. LibreCAD is 2D, so the exact failed item advances first to verified flat editable Text and reports that transition. |
 | **glyphs** | ✅ Glyphs | One grouped DXF `INSERT` per source text span with outline entities in its owned block definition. This remains structurally distinct from raw Geometry. |
 | **geometry** | ✅ Geometry | Raw modelspace `LWPOLYLINE`/`POLYLINE` glyph edges. No `TEXT`, `MTEXT`, or `INSERT` is accepted as Geometry. |
-| **raster** | ✅ Raster | A source-PDF-bound PNG of only the exact text item, delivered as a verified DXF `IMAGE`; it is a direct result when requested, not a fallback. |
+| **raster** | ✅ Raster | A source-PDF-bound PNG of the exact text item, or the already-delivered source image on a page proven to contain zero PDF text objects, delivered as a verified DXF `IMAGE`; it is a direct result when requested, not a fallback. |
 
 Plus `--import-text` / `--no-import-text` to skip text entirely.
 
@@ -264,6 +264,14 @@ type fail verification and clean their exact owned DXF handles.
 | **3d_text** | 3D Text → Text → Glyphs → Geometry → item Raster | The first rung creates the item-specific DXF `TEXT`, applies and reads back thickness/+Z extrusion, then verifies parent font rendering and 3D display semantics. Flat Text is the closest fallback, and a different rung is legal only after the prior attempt is removed with recorded impossibility evidence. |
 | **raster** | item Raster | PyMuPDF renders the exact source bbox. Success requires visible pixels, PNG byte verification, exact model placement/size, a live `IMAGE` handle, and an atomically written uniquely owned asset. |
 
+For an image-only page, the importer does not invent semantic text. It reopens
+the exact PDF, verifies its SHA-256 and selected page, proves that the page has
+zero PDF text objects, and binds the existing source-derived `IMAGE` (including
+its asset hash and full insertion/U/V transform) as the page Raster terminal.
+A non-Raster request records its source-zero-text impossibility before that
+verified fallback; an explicit Raster request remains Raster with no fallback.
+No second image is created for this delivery.
+
 `text2path_failed` means both independent same-representation outline
 strategies failed verification and their owned entities were cleaned before
 the next distinct rung was attempted.
@@ -274,7 +282,8 @@ with every source ID, attempted type/strategy, reason/evidence, created and
 removed handle, cleanup result, final handle, and supersession. The legacy
 `fallback.text` summary remains for UI compatibility. If the terminal Raster
 attempt cannot be verified, no DXF replaces an existing output and the import
-fails explicitly. Raster is never assumed successful.
+fails explicitly. Raster is a terminal opportunity, not a guaranteed result; it
+is never assumed successful.
 
 Auto page classification cannot replace extractable text with Raster while a
 non-raster text representation is requested. Explicit Raster import mode still

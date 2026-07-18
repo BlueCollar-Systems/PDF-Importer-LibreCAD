@@ -158,6 +158,19 @@ class TestTextModeLadderDocumented(unittest.TestCase):
         self.assertIn("positive thickness", readme)
         self.assertNotIn("host_2d_no_3d_text", readme)
         self.assertIn("text2path_failed", readme)
+        self.assertNotIn("Text and Text uses", readme)
+        self.assertIn("proves that the page has", readme)
+        self.assertIn("zero PDF text objects", readme)
+        self.assertIn("not a guaranteed result", readme)
+        for documented_ladder in (
+            "Text → Glyphs → Geometry → item Raster",
+            "Labels → Text → Glyphs → Geometry → item Raster",
+            "Glyphs → Geometry → Text → item Raster",
+            "Geometry → Glyphs → Text → item Raster",
+            "3D Text → Text → Glyphs → Geometry → item Raster",
+            "| **raster** | item Raster |",
+        ):
+            self.assertIn(documented_ladder, readme)
 
 
 class TestLibreCadPluginLauncher(unittest.TestCase):

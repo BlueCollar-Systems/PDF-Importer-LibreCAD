@@ -85,6 +85,21 @@ class TestDxfPipeline(unittest.TestCase):
         doc.save(str(out_path))
         doc.close()
 
+    def _build_rotated_image_pdf(self, out_path: Path) -> None:
+        """Create an asymmetric source image on a page whose /Rotate is 90."""
+
+        pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 3, 2), 0)
+        for y in range(2):
+            for x in range(3):
+                pix.set_pixel(x, y, (40 + x * 70, 30 + y * 150, 20))
+
+        doc = fitz.open()
+        page = doc.new_page(width=120, height=80)
+        page.insert_image(fitz.Rect(0, 0, 120, 80), stream=pix.tobytes("png"))
+        page.set_rotation(90)
+        doc.save(str(out_path))
+        doc.close()
+
     def _build_filled_and_stroked_pdf(self, out_path: Path) -> None:
         doc = fitz.open()
         page = doc.new_page(width=100, height=100)
@@ -289,6 +304,89 @@ class TestDxfPipeline(unittest.TestCase):
             hashlib.sha256(staged_asset.read_bytes()).hexdigest(),
             expected_sha,
         )
+
+    def test_rotated_pdf_image_preserves_exact_display_affine_in_dxf(self) -> None:
+        source = self.tmp_path / "rotated-image.pdf"
+        output = self.tmp_path / "rotated-image.dxf"
+        image_dir = self.tmp_path / "rotated-image-assets"
+        self._build_rotated_image_pdf(source)
+        extraction = extract_document(
+            str(source),
+            ExtractionOptions(
+                pages="1",
+                import_mode="vector",
+                import_text=False,
+                import_images=True,
+                image_dir=str(image_dir),
+            ),
+        )
+
+        self.assertEqual(len(extraction.pages[0].images), 1)
+        placement = extraction.pages[0].images[0]
+        mm_per_pt = 25.4 / 72.0
+        self.assertEqual(placement.x_mm, 0.0)
+        self.assertAlmostEqual(placement.y_mm, 120.0 * mm_per_pt)
+        self.assertEqual(placement.u_vector_mm, (0.0, -120.0 * mm_per_pt))
+        self.assertEqual(placement.v_vector_mm, (80.0 * mm_per_pt, 0.0))
+
+        export_to_dxf(
+            extraction,
+            str(output),
+            DxfExportOptions(include_text=False, include_images=True),
+        )
+        drawing = ezdxf.readfile(str(output))
+        image = list(drawing.modelspace().query("IMAGE"))[0]
+        full_u = (
+            float(image.dxf.u_pixel.x) * float(image.dxf.image_size.x),
+            float(image.dxf.u_pixel.y) * float(image.dxf.image_size.x),
+        )
+        full_v = (
+            float(image.dxf.v_pixel.x) * float(image.dxf.image_size.y),
+            float(image.dxf.v_pixel.y) * float(image.dxf.image_size.y),
+        )
+        self.assertAlmostEqual(float(image.dxf.insert.x), 0.0)
+        self.assertAlmostEqual(float(image.dxf.insert.y), 120.0 * mm_per_pt)
+        self.assertAlmostEqual(full_u[0], 0.0)
+        self.assertAlmostEqual(full_u[1], -120.0 * mm_per_pt)
+        self.assertAlmostEqual(full_v[0], 80.0 * mm_per_pt)
+        self.assertAlmostEqual(full_v[1], 0.0)
+
+    def test_serialized_image_verifier_rejects_same_size_wrong_orientation(self) -> None:
+        source = self.tmp_path / "rotated-image-corrupt.pdf"
+        output = self.tmp_path / "rotated-image-corrupt.dxf"
+        image_dir = self.tmp_path / "rotated-image-corrupt-assets"
+        self._build_rotated_image_pdf(source)
+        extraction = extract_document(
+            str(source),
+            ExtractionOptions(
+                pages="1",
+                import_mode="vector",
+                import_text=False,
+                import_images=True,
+                image_dir=str(image_dir),
+            ),
+        )
+        real_readfile = ezdxf.readfile
+
+        def reopen_with_rotated_u_vector(path):
+            drawing = real_readfile(path)
+            image = list(drawing.modelspace().query("IMAGE"))[0]
+            u_pixel = image.dxf.u_pixel
+            image.dxf.u_pixel = (-float(u_pixel.y), float(u_pixel.x), 0.0)
+            return drawing
+
+        with (
+            patch(
+                "librecad_pdf_importer.exporters.dxf_exporter.ezdxf.readfile",
+                side_effect=reopen_with_rotated_u_vector,
+            ),
+            self.assertRaisesRegex(RuntimeError, "orientation|U vector|u-vector"),
+        ):
+            export_to_dxf(
+                extraction,
+                str(output),
+                DxfExportOptions(include_text=False, include_images=True),
+            )
 
     def test_import_run_close_reclaims_only_importer_owned_image_workspace(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
@@ -717,11 +815,11 @@ class TestDxfPipeline(unittest.TestCase):
             block = dxf.blocks.get(glyph_ref.dxf.name)
             self.assertTrue(
                 all(
-                    entity.dxftype() in {"LWPOLYLINE", "POLYLINE", "SOLID"}
+                    entity.dxftype() in {"LWPOLYLINE", "POLYLINE", "HATCH"}
                     for entity in block
                 )
             )
-            self.assertIn("SOLID", {entity.dxftype() for entity in block})
+            self.assertIn("HATCH", {entity.dxftype() for entity in block})
 
     def test_dxf_version_override(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})

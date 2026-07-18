@@ -412,21 +412,22 @@ def test_outline_verification_rejects_bbox_preserving_shape_corruption(mode) -> 
 
 
 @pytest.mark.parametrize("mode", ["glyphs", "geometry"])
-def test_outline_verification_rejects_corrupted_solid_fourth_vertex(mode) -> None:
-    """A SOLID triangle's persisted fourth vertex is part of its visible fill."""
+def test_outline_verification_rejects_corrupted_hatch_boundary(mode) -> None:
+    """A compact HATCH hole/external boundary is part of its visible fill."""
 
     original = dxf_text_builder._to_solid_fill_entities
 
-    def corrupt_fourth_vertex(paths, *, is_r12, attribs):
+    def corrupt_fill_boundary(paths, *, is_r12, attribs):
         entities = original(paths, is_r12=is_r12, attribs=attribs)
         fill = entities[0]
-        point = fill.dxf.vtx3
-        fill.dxf.vtx3 = (point.x + 47.0, point.y - 31.0, point.z)
+        boundary = fill.paths[0]
+        point = boundary.vertices[0]
+        boundary.vertices[0] = (point[0] + 47.0, point[1] - 31.0, point[2])
         return entities
 
     with patch(
         "dxf_text_builder._to_solid_fill_entities",
-        side_effect=corrupt_fourth_vertex,
+        side_effect=corrupt_fill_boundary,
     ):
         _, msp, result = _deliver(mode)
 
@@ -1212,9 +1213,10 @@ def test_glyphs_are_block_references_and_geometry_is_raw_edges() -> None:
         glyph_doc.entitydb[handle].dxftype() for handle in structure_handles
     } == {"BLOCK_RECORD", "BLOCK", "ENDBLK"}
     glyph_types = {entity.dxftype() for entity in block}
-    assert "SOLID" in glyph_types
-    assert glyph_types <= {"LWPOLYLINE", "POLYLINE", "SOLID"}
+    assert "HATCH" in glyph_types
+    assert glyph_types <= {"LWPOLYLINE", "POLYLINE", "HATCH"}
     assert glyph_result.attempts[-1].evidence["solid_fill_verified"] is True
+    assert glyph_result.attempts[-1].evidence["solid_fill_entity_type"] == "HATCH"
 
     geometry_entities = list(geometry_msp)
     assert geometry_result.final_representation == "geometry"
@@ -1225,9 +1227,9 @@ def test_glyphs_are_block_references_and_geometry_is_raw_edges() -> None:
     assert {entity.dxftype() for entity in geometry_entities} <= {
         "LWPOLYLINE",
         "POLYLINE",
-        "SOLID",
+        "HATCH",
     }
-    assert any(entity.dxftype() == "SOLID" for entity in geometry_entities)
+    assert any(entity.dxftype() == "HATCH" for entity in geometry_entities)
     assert "INSERT" not in {entity.dxftype() for entity in geometry_msp}
 
 
@@ -1918,6 +1920,69 @@ def test_r12_glyph_fill_uses_serializable_solid_triangles(tmp_path) -> None:
     assert "SOLID" in {entity.dxftype() for entity in reopened_block}
 
 
+def _nested_rectangle_paths():
+    """One external contour plus one hole, independent of a host font."""
+
+    from ezdxf.path import Path as DxfPath
+
+    outer = DxfPath((0.0, 0.0))
+    outer.line_to((10.0, 0.0))
+    outer.line_to((10.0, 10.0))
+    outer.line_to((0.0, 10.0))
+    outer.close()
+    hole = DxfPath((3.0, 3.0))
+    hole.line_to((7.0, 3.0))
+    hole.line_to((7.0, 7.0))
+    hole.line_to((3.0, 7.0))
+    hole.close()
+    return [outer, hole]
+
+
+def test_modern_glyph_fill_uses_one_compact_hatch_with_a_hole(tmp_path) -> None:
+    """Modern DXF must not amplify one nested glyph into SOLID triangles."""
+
+    fills = _to_solid_fill_entities(
+        _nested_rectangle_paths(),
+        is_r12=False,
+        attribs={"layer": "TEXT"},
+    )
+
+    assert len(fills) == 1
+    hatch = fills[0]
+    assert hatch.dxftype() == "HATCH"
+    assert hatch.dxf.solid_fill == 1
+    assert hatch.dxf.pattern_name == "SOLID"
+    assert len(hatch.paths) == 2
+    assert hatch.paths[0].path_type_flags & 1
+    assert not (hatch.paths[1].path_type_flags & 1)
+
+    doc = ezdxf.new("R2010")
+    block = doc.blocks.new("NESTED_GLYPH")
+    block.add_entity(hatch)
+    doc.modelspace().add_blockref("NESTED_GLYPH", (0.0, 0.0))
+    output = tmp_path / "modern-nested-hatch-in-block.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    reopened_ref = next(iter(reopened.modelspace()))
+    reopened_hatches = [
+        entity
+        for entity in reopened.blocks.get(reopened_ref.dxf.name)
+        if entity.dxftype() == "HATCH"
+    ]
+    assert len(reopened_hatches) == 1
+    assert len(reopened_hatches[0].paths) == 2
+
+
+def test_modern_fill_entity_count_is_bounded_by_source_contours() -> None:
+    """Proof/report growth must follow contours, never triangulation density."""
+
+    paths = _nested_rectangle_paths()
+    fills = _to_solid_fill_entities(paths, is_r12=False, attribs={})
+
+    assert 0 < len(fills) <= len(paths)
+    assert {entity.dxftype() for entity in fills} == {"HATCH"}
+
+
 @pytest.mark.parametrize(
     ("dxf_version", "is_r12"),
     [("R12", True), ("R2010", False)],
@@ -1952,7 +2017,7 @@ def test_outline_modes_survive_direct_save_reopen_verification(
     _verify_serialized_text_deliveries(reopened, [result.to_dict()])
     expected_types = {"INSERT"} if mode == "glyphs" else {
         "POLYLINE" if is_r12 else "LWPOLYLINE",
-        "SOLID",
+        "SOLID" if is_r12 else "HATCH",
     }
     assert {entity.dxftype() for entity in reopened.modelspace()} == expected_types
 
@@ -1968,10 +2033,10 @@ def test_solid_fill_discards_degenerate_triangulator_artifacts() -> None:
         "dxf_text_builder.ezdxf_path.triangulate",
         return_value=[valid, degenerate],
     ) as triangulate:
-        fills = _to_solid_fill_entities([], is_r12=False, attribs={})
+        fills = _to_solid_fill_entities([], is_r12=True, attribs={})
 
     assert len(fills) == 1
-    assert _solid_fill_verified(fills, is_r12=False) is True
+    assert _solid_fill_verified(fills, is_r12=True) is True
     assert triangulate.call_args.kwargs == {"max_sagitta": 0.01, "min_segments": 2}
 
 
@@ -2420,12 +2485,22 @@ def test_render_stage_must_not_alter_delivered_text_representation(tmp_path) -> 
     ]
     result, _config, drawing, _report = _run_for_items(tmp_path, "labels", items)
 
-    dxf_texts = [
-        entity.dxf.text
-        for entity in drawing.modelspace()
-        if entity.dxftype() == "TEXT"
-    ]
-    assert sorted(dxf_texts) == ["13", "16", "7/16"]
+    # Labels are not a native DXF entity and must not be certified by relabeling
+    # TEXT.  Check the source-bound evidence on each verified closest fallback
+    # instead of requiring a representation that the parent cannot deliver.
+    delivered_texts = []
+    for delivery in result.text_deliveries:
+        verified = [
+            attempt
+            for attempt in delivery["attempts"]
+            if attempt["outcome"] == "verified"
+        ]
+        assert len(verified) == 1
+        source_text = verified[0]["evidence"]["source_text_evidence"]
+        assert source_text["content_verified"] is True
+        assert source_text["source_content"] == source_text["delivered_content"]
+        delivered_texts.append(source_text["delivered_content"])
+    assert sorted(delivered_texts) == ["13", "16", "7/16"]
     assert [entry["source_id"] for entry in result.text_deliveries] == [
         "text_span:3:1",
         "text_span:3:2",
@@ -2523,7 +2598,7 @@ def test_exporter_reports_exact_source_and_dxf_handle_sets(
     assert len({entry.object_id for entry in provenance}) == len(provenance)
     assert all(entry.object_id.startswith("text_span:3:") for entry in provenance)
     expected_provenance_types = (
-        {modelspace_type, "SOLID"} if mode == "geometry" else {modelspace_type}
+        {modelspace_type, "HATCH"} if mode == "geometry" else {modelspace_type}
     )
     assert {entry.created_entity_type for entry in provenance} == expected_provenance_types
     assert all(entry.source_bbox_pdf is None for entry in provenance)
@@ -4071,3 +4146,165 @@ def test_real_image_only_chart_explicit_page_raster_survives_source_cleanup(
     run.close()
     assert not source_asset.exists()
     assert staged_asset.is_file()
+
+
+@pytest.mark.parametrize(
+    ("requested_mode", "expected_fallback", "expected_attempt_count"),
+    [
+        ("text", True, 2),
+        ("labels", True, 2),
+        ("glyphs", True, 2),
+        ("3d_text", True, 2),
+        ("geometry", True, 2),
+        ("raster", False, 1),
+    ],
+)
+def test_real_image_only_chart_binds_existing_page_image_as_verified_text_terminal(
+    tmp_path,
+    aws_weld_symbol_chart,
+    requested_mode,
+    expected_fallback,
+    expected_attempt_count,
+) -> None:
+    chart = aws_weld_symbol_chart
+    source_pdf_sha = hashlib.sha256(chart.read_bytes()).hexdigest()
+    run = run_import(
+        str(chart),
+        mode="vector",
+        overrides={"pages": "1", "text_mode": requested_mode},
+    )
+    output = tmp_path / f"aws-page-terminal-{requested_mode}.dxf"
+    result = export_to_dxf(
+        run.extraction,
+        str(output),
+        DxfExportOptions(
+            include_text=True,
+            include_images=True,
+            text_mode=requested_mode,
+            dxf_version="R2010",
+            provenance_opts=run.config,
+        ),
+    )
+
+    drawing = ezdxf.readfile(output)
+    images = list(drawing.modelspace().query("IMAGE"))
+    assert len(images) == 1
+    assert result.image_count == 1
+    assert len(result.text_deliveries) == 1
+    delivery = result.text_deliveries[0]
+    assert delivery["source_id"] == "page_visual:1"
+    assert delivery["requested_representation"] == requested_mode
+    assert delivery["final_representation"] == "raster"
+    assert delivery["verified"] is True
+    assert delivery["fallback_used"] is expected_fallback
+    assert delivery["entity_handles"] == [str(images[0].dxf.handle)]
+    assert len(delivery["attempts"]) == expected_attempt_count
+    assert sum(
+        attempt["outcome"] == "verified" for attempt in delivery["attempts"]
+    ) == 1
+    terminal = delivery["attempts"][-1]
+    assert terminal["attempted_representation"] == "raster"
+    assert terminal["strategy"] == "existing_page_image_terminal_raster"
+    assert terminal["outcome"] == "verified"
+    evidence = terminal["evidence"]
+    assert evidence["source_pdf_sha256"] == source_pdf_sha
+    assert evidence["source_page_number"] == 1
+    assert evidence["source_zero_text_proof"]["verified_zero_text"] is True
+    assert evidence["source_zero_text_proof"]["plain_text_length"] == 0
+    assert evidence["source_zero_text_proof"]["word_count"] == 0
+    assert evidence["existing_image_entity_reused"] is True
+    assert evidence["duplicate_image_entities_created"] is False
+    assert evidence["image_entity_handles"] == [str(images[0].dxf.handle)]
+
+    report_path = tmp_path / f"aws-page-terminal-{requested_mode}_report.json"
+    write_import_report(run, str(report_path), elapsed_ms=1.0)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    reported = report["extra"]["text_representation_delivery"]
+    assert reported["verified"] is True
+    assert reported["source_ids"] == ["page_visual:1"]
+    assert len(reported["items"]) == 1
+    assert report["extra"]["import_contract_ready"]["ready"] is True
+    assert (
+        report["extra"]["import_contract_ready"]["checks"]["text_delivery"]
+        is True
+    )
+
+
+def test_image_only_page_terminal_rejects_source_zero_text_proof_tamper(
+    tmp_path,
+    aws_weld_symbol_chart,
+) -> None:
+    from librecad_pdf_importer.exporters import dxf_exporter as exporter_module
+
+    run = run_import(
+        str(aws_weld_symbol_chart),
+        mode="vector",
+        overrides={"pages": "1", "text_mode": "text"},
+    )
+    original_proof = exporter_module._source_zero_text_page_proof
+    proof_call_count = 0
+
+    def proof_then_tamper(*args, **kwargs):
+        nonlocal proof_call_count
+        proof_call_count += 1
+        proof = dict(original_proof(*args, **kwargs))
+        if proof_call_count >= 2:
+            proof["plain_text_length"] = 1
+        return proof
+
+    with (
+        patch.object(
+            exporter_module,
+            "_source_zero_text_page_proof",
+            side_effect=proof_then_tamper,
+        ),
+        pytest.raises(RuntimeError, match="source-zero-text proof changed"),
+    ):
+        export_to_dxf(
+            run.extraction,
+            str(tmp_path / "aws-zero-text-proof-tamper.dxf"),
+            DxfExportOptions(
+                include_text=True,
+                include_images=True,
+                text_mode="text",
+                dxf_version="R2010",
+                provenance_opts=run.config,
+            ),
+        )
+
+
+def test_image_only_page_terminal_rejects_duplicate_existing_image_artifact(
+    tmp_path,
+    aws_weld_symbol_chart,
+) -> None:
+    run = run_import(
+        str(aws_weld_symbol_chart),
+        mode="vector",
+        overrides={"pages": "1", "text_mode": "text"},
+    )
+    real_readfile = ezdxf.readfile
+
+    def reopen_with_duplicate_image(path):
+        drawing = real_readfile(path)
+        image = list(drawing.modelspace().query("IMAGE"))[0]
+        drawing.modelspace().add_entity(image.copy())
+        return drawing
+
+    with (
+        patch(
+            "librecad_pdf_importer.exporters.dxf_exporter.ezdxf.readfile",
+            side_effect=reopen_with_duplicate_image,
+        ),
+        pytest.raises(RuntimeError, match="duplicate or altered page IMAGE"),
+    ):
+        export_to_dxf(
+            run.extraction,
+            str(tmp_path / "aws-duplicate-page-image.dxf"),
+            DxfExportOptions(
+                include_text=True,
+                include_images=True,
+                text_mode="text",
+                dxf_version="R2010",
+                provenance_opts=run.config,
+            ),
+        )

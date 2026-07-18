@@ -58,6 +58,31 @@ def test_import_contract_ready_ignores_source_spans_when_text_is_disabled():
     assert ready["checks"]["text_delivery"] is True
 
 
+def test_zero_span_unverified_delivery_cannot_claim_contract_ready():
+    report = build_import_report(
+        host_app="librecad",
+        importer_version="1.0.66",
+        pdf_path="image-only.pdf",
+        mode="vector",
+        pages=1,
+        image_count=1,
+        import_text=True,
+        text_mode="text",
+        text_source_spans=0,
+        extra={
+            "text_representation_delivery": {
+                "required": False,
+                "verified": False,
+                "items": [],
+            },
+        },
+    )
+
+    ready = report.extra["import_contract_ready"]
+    assert ready["ready"] is False
+    assert ready["checks"]["text_delivery"] is False
+
+
 def test_performance_phases_optional():
     report = build_import_report(
         host_app="librecad",

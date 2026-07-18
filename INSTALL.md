@@ -111,7 +111,8 @@ The graphical interface uses **Auto** import only (vector/raster/hybrid chosen p
   native success also requires verified 3D display/edit semantics in the parent.
 - **Glyphs** — grouped outline block references.
 - **Geometry** — raw outline edges, not editable as text.
-- **Raster** — source-bound exact item pixels in a verified DXF `IMAGE`.
+- **Raster** — source-bound exact item pixels, or an existing source image on a
+  page proven to contain zero PDF text objects, in a verified DXF `IMAGE`.
 - Scale warnings appear in `import_report.json` (`extra.scale_crosscheck` / `human_summary`) when title-block scale is uncertain.
 
 The GUI and CLI expose the same six representation choices. The selected type
@@ -141,7 +142,11 @@ first attempts native `TEXT` with verified extrusion. DXF has no native Label
 entity, so Labels records that exact item-scoped impossibility and then reports
 the closest verified Text fallback instead of relabeling TEXT/MTEXT. Glyphs are
 grouped block references, Geometry is raw modelspace edges, and requested Raster
-is an exact source-item `IMAGE`.
+is an exact source-item `IMAGE`. On an image-only page, no text is fabricated:
+the exact PDF hash, page, zero-text observation, image asset, and full IMAGE
+transform are verified before the existing image can serve as the Raster
+terminal. Explicit Raster is not reported as a fallback, and no terminal Raster
+is claimed successful until that verification passes.
 
 ## Requirements
 

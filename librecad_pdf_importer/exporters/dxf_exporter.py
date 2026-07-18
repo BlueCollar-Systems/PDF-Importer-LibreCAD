@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import hashlib
+import json
 import math
 from pathlib import Path
 import re
@@ -210,6 +211,261 @@ def _strict_finite_vector(value: Any, *, length: int) -> Optional[Tuple[Any, ...
     return values
 
 
+def _source_zero_text_page_proof(
+    source_pdf: Path,
+    page_number: int,
+) -> Dict[str, Any]:
+    """Re-read one exact source page and prove that it has no PDF text objects."""
+
+    with fitz.open(str(source_pdf)) as source_doc:
+        if page_number <= 0 or page_number > len(source_doc):
+            raise RuntimeError(f"source page {page_number} is outside the PDF")
+        page = source_doc[page_number - 1]
+        plain_text = str(page.get_text("text") or "")
+        words = list(page.get_text("words") or [])
+        raw = dict(page.get_text("rawdict") or {})
+        text_blocks = [
+            block
+            for block in list(raw.get("blocks") or [])
+            if int(block.get("type", -1)) == 0
+        ]
+        lines = [
+            line
+            for block in text_blocks
+            for line in list(block.get("lines") or [])
+        ]
+        spans = [
+            span
+            for line in lines
+            for span in list(line.get("spans") or [])
+        ]
+        characters = [
+            char
+            for span in spans
+            for char in list(span.get("chars") or [])
+        ]
+        raw_character_text = "".join(str(char.get("c") or "") for char in characters)
+        source_image_xrefs = sorted(
+            {
+                int(image[0])
+                for image in page.get_images(full=True)
+                if image and int(image[0]) > 0
+            }
+        )
+        payload: Dict[str, Any] = {
+            "schema": "bcs.source_zero_text_page_proof/1.0",
+            "source_page_number": int(page_number),
+            "page_rotation_degrees": int(page.rotation or 0),
+            "display_page_rect": [float(value) for value in page.rect],
+            "media_box": [float(value) for value in page.mediabox],
+            "plain_text_length": len(plain_text),
+            "plain_text_sha256": hashlib.sha256(plain_text.encode("utf-8")).hexdigest(),
+            "word_count": len(words),
+            "text_block_count": len(text_blocks),
+            "line_count": len(lines),
+            "span_count": len(spans),
+            "character_count": len(characters),
+            "raw_character_text_sha256": hashlib.sha256(
+                raw_character_text.encode("utf-8")
+            ).hexdigest(),
+            "source_image_xrefs": source_image_xrefs,
+        }
+        payload["verified_zero_text"] = bool(
+            plain_text == ""
+            and not words
+            and not text_blocks
+            and not lines
+            and not spans
+            and not characters
+            and raw_character_text == ""
+        )
+        canonical = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        payload["proof_sha256"] = hashlib.sha256(canonical).hexdigest()
+        return payload
+
+
+def _page_visual_image_artifact(
+    expected: "_SerializedImageExpectation",
+    *,
+    reactor_handle: str,
+    source_xref: int,
+) -> Dict[str, Any]:
+    return {
+        "image_handle": expected.image_handle,
+        "image_def_handle": expected.image_def_handle,
+        "image_def_reactor_handle": str(reactor_handle),
+        "source_xref": int(source_xref),
+        "asset_path": str(expected.asset_path.resolve()),
+        "asset_sha256": expected.asset_sha256,
+        "pixel_size": list(expected.size_in_pixel),
+        "insert": list(expected.insert),
+        "u_vector_in_units": list(expected.u_vector_in_units),
+        "v_vector_in_units": list(expected.v_vector_in_units),
+    }
+
+
+def _verify_page_visual_raster_delivery(
+    doc: Any,
+    delivery: Dict[str, Any],
+    final_attempt: Dict[str, Any],
+    expected: Dict[str, Any],
+    *,
+    expected_source_pdf_path: Path,
+    expected_source_pdf_sha256: str,
+) -> None:
+    """Verify a source-zero-text page against its already-delivered IMAGE entities."""
+
+    source_id = str(delivery.get("source_id") or "")
+    requested = _normalized_text_mode(delivery.get("requested_representation"))
+    attempts = list(delivery.get("attempts") or [])
+    if requested == "raster":
+        ladder_ok = len(attempts) == 1 and attempts[0] is final_attempt
+    else:
+        failed = attempts[:-1]
+        ladder_ok = bool(
+            len(attempts) == 2
+            and attempts[-1] is final_attempt
+            and len(failed) == 1
+            and str(failed[0].get("source_id") or "") == source_id
+            and _normalized_text_mode(failed[0].get("attempted_representation"))
+            == requested
+            and failed[0].get("outcome") == "impossible"
+            and failed[0].get("cleanup_verified") is True
+            and not failed[0].get("created_entity_handles")
+            and not failed[0].get("entity_handles")
+        )
+    if not ladder_ok:
+        raise RuntimeError(
+            f"serialized text delivery {source_id}: page visual fallback ladder changed"
+        )
+    if (
+        final_attempt.get("strategy") != "existing_page_image_terminal_raster"
+        or final_attempt.get("type_verified") is not True
+        or final_attempt.get("visual_verified") is not True
+        or final_attempt.get("cleanup_verified") is not True
+    ):
+        raise RuntimeError(
+            f"serialized text delivery {source_id}: page visual terminal is unverified"
+        )
+
+    page_number = int(expected["page_number"])
+    source_path = Path(str(expected_source_pdf_path)).expanduser().resolve()
+    if not source_path.is_file():
+        raise RuntimeError(
+            f"serialized text delivery {source_id}: source PDF is missing"
+        )
+    actual_source_sha = _file_sha256(source_path)
+    if (
+        not expected_source_pdf_sha256
+        or actual_source_sha != expected_source_pdf_sha256
+        or str(expected.get("source_pdf_sha256") or "") != actual_source_sha
+    ):
+        raise RuntimeError(
+            f"serialized text delivery {source_id}: source PDF digest changed"
+        )
+    fresh_zero_proof = _source_zero_text_page_proof(source_path, page_number)
+    expected_zero_proof = dict(expected.get("source_zero_text_proof") or {})
+    evidence = dict(final_attempt.get("evidence") or {})
+    if (
+        expected_zero_proof.get("verified_zero_text") is not True
+        or fresh_zero_proof != expected_zero_proof
+        or evidence.get("source_zero_text_proof") != expected_zero_proof
+        or Path(str(evidence.get("source_pdf_path") or "")).expanduser().resolve()
+        != source_path
+        or str(evidence.get("source_pdf_sha256") or "") != actual_source_sha
+        or evidence.get("source_page_number") != page_number
+        or evidence.get("source_id") != source_id
+    ):
+        raise RuntimeError(
+            f"serialized text delivery {source_id}: source-zero-text proof changed"
+        )
+
+    expected_bindings = list(expected.get("image_bindings") or [])
+    expected_artifacts = [
+        _page_visual_image_artifact(
+            binding["expectation"],
+            reactor_handle=str(binding["reactor_handle"]),
+            source_xref=int(binding["source_xref"]),
+        )
+        for binding in expected_bindings
+    ]
+    expected_handles = [artifact["image_handle"] for artifact in expected_artifacts]
+    expected_support = [
+        handle
+        for artifact in expected_artifacts
+        for handle in (
+            artifact["image_def_handle"],
+            artifact["image_def_reactor_handle"],
+        )
+    ]
+    if (
+        list(map(str, delivery.get("entity_handles") or [])) != expected_handles
+        or list(map(str, delivery.get("support_entity_handles") or []))
+        != expected_support
+        or list(delivery.get("referenced_entity_handles") or [])
+        or evidence.get("image_artifacts") != expected_artifacts
+        or evidence.get("image_entity_handles") != expected_handles
+        or evidence.get("image_entity_count") != len(expected_handles)
+        or evidence.get("existing_image_entity_reused") is not True
+        or evidence.get("duplicate_image_entities_created") is not False
+    ):
+        raise RuntimeError(
+            f"serialized text delivery {source_id}: existing IMAGE binding changed"
+        )
+
+    all_images = list(doc.modelspace().query("IMAGE"))
+    for artifact in expected_artifacts:
+        expected_insert = tuple(float(value) for value in artifact["insert"])
+        expected_u = tuple(float(value) for value in artifact["u_vector_in_units"])
+        expected_v = tuple(float(value) for value in artifact["v_vector_in_units"])
+
+        def _same_artifact(
+            image: Any,
+            *,
+            _artifact: Dict[str, Any] = artifact,
+            _expected_insert: Tuple[float, ...] = expected_insert,
+            _expected_u: Tuple[float, ...] = expected_u,
+            _expected_v: Tuple[float, ...] = expected_v,
+        ) -> bool:
+            actual_insert = tuple(float(value) for value in image.dxf.insert)
+            actual_u = tuple(
+                float(value) * float(image.dxf.image_size.x)
+                for value in image.dxf.u_pixel
+            )
+            actual_v = tuple(
+                float(value) * float(image.dxf.image_size.y)
+                for value in image.dxf.v_pixel
+            )
+            return bool(
+                str(image.dxf.image_def_handle or "")
+                == _artifact["image_def_handle"]
+                and all(
+                    math.isclose(left, right, rel_tol=0.0, abs_tol=1e-9)
+                    for left, right in zip(
+                        actual_insert + actual_u + actual_v,
+                        _expected_insert + _expected_u + _expected_v,
+                        strict=True,
+                    )
+                )
+            )
+
+        matching = [image for image in all_images if _same_artifact(image)]
+        if (
+            len(matching) != 1
+            or str(matching[0].dxf.handle or "") != artifact["image_handle"]
+            or str(matching[0].dxf.image_def_reactor_handle or "")
+            != artifact["image_def_reactor_handle"]
+        ):
+            raise RuntimeError(
+                f"serialized text delivery {source_id}: duplicate or altered page IMAGE"
+            )
+
+
 def _attached_attribute_is_visible(doc: Any, attribute: Any) -> bool:
     raw_invisible = attribute.dxf.get("invisible", 0)
     if (
@@ -254,13 +510,14 @@ def _verify_serialized_text_deliveries(
     expected_source_pdf_path: Optional[Path] = None,
     expected_source_pdf_sha256: str = "",
     expected_text_sources: Optional[Dict[str, Tuple[Any, ImportConfig]]] = None,
+    expected_page_visual_sources: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> None:
     """Reconcile accepted item evidence against the re-opened DXF candidate."""
 
     expected_types = {
         "text": {"TEXT"},
         "glyphs": {"INSERT"},
-        "geometry": {"LWPOLYLINE", "POLYLINE", "SOLID"},
+        "geometry": {"LWPOLYLINE", "POLYLINE", "SOLID", "HATCH"},
         "raster": {"IMAGE"},
         "3d_text": {"TEXT"},
     }
@@ -365,10 +622,33 @@ def _verify_serialized_text_deliveries(
             if expected_text_sources is not None
             else None
         )
-        if expected_text_sources is not None and expected_source is None:
+        expected_page_visual = (
+            expected_page_visual_sources.get(source_id)
+            if expected_page_visual_sources is not None
+            else None
+        )
+        if (
+            expected_text_sources is not None
+            and expected_source is None
+            and expected_page_visual is None
+        ):
             raise RuntimeError(
                 f"serialized text delivery {source_id}: source identity is unbound"
             )
+        if expected_page_visual is not None:
+            if representation != "raster" or expected_source_pdf_path is None:
+                raise RuntimeError(
+                    f"serialized text delivery {source_id}: page visual terminal is not raster-bound"
+                )
+            _verify_page_visual_raster_delivery(
+                doc,
+                delivery,
+                final_attempt,
+                expected_page_visual,
+                expected_source_pdf_path=expected_source_pdf_path,
+                expected_source_pdf_sha256=expected_source_pdf_sha256,
+            )
+            continue
         physical_proof = evidence.get("physical_glyph_ink_proof")
         physical_proof_valid: Optional[bool] = None
         if physical_proof is not None:
@@ -1259,9 +1539,11 @@ class _SerializedImageExpectation:
     image_def_handle: str
     asset_path: Path
     asset_sha256: str
-    insert: Tuple[float, float]
+    insert: Tuple[float, float, float]
     size_in_units: Tuple[float, float]
     size_in_pixel: Tuple[int, int]
+    u_vector_in_units: Tuple[float, float, float]
+    v_vector_in_units: Tuple[float, float, float]
 
 
 @dataclass
@@ -1483,13 +1765,17 @@ def _verify_serialized_image_assets(
                 f"serialized image delivery {expected.image_handle} asset hash mismatch"
             )
 
-        actual_insert = tuple(image.dxf.insert)[:2]
-        actual_width = math.hypot(image.dxf.u_pixel.x, image.dxf.u_pixel.y) * float(
-            image.dxf.image_size.x
+        actual_insert = tuple(float(value) for value in image.dxf.insert)
+        actual_u_vector = tuple(
+            float(value) * float(image.dxf.image_size.x)
+            for value in image.dxf.u_pixel
         )
-        actual_height = math.hypot(image.dxf.v_pixel.x, image.dxf.v_pixel.y) * float(
-            image.dxf.image_size.y
+        actual_v_vector = tuple(
+            float(value) * float(image.dxf.image_size.y)
+            for value in image.dxf.v_pixel
         )
+        actual_width = math.hypot(*actual_u_vector[:2])
+        actual_height = math.hypot(*actual_v_vector[:2])
         actual_pixels = (
             int(round(float(image_def.dxf.image_size.x))),
             int(round(float(image_def.dxf.image_size.y))),
@@ -1500,6 +1786,28 @@ def _verify_serialized_image_assets(
         ):
             raise RuntimeError(
                 f"serialized image delivery {expected.image_handle} insert changed"
+            )
+        if not all(
+            math.isclose(left, right, rel_tol=0.0, abs_tol=1e-9)
+            for left, right in zip(
+                actual_u_vector,
+                expected.u_vector_in_units,
+                strict=True,
+            )
+        ):
+            raise RuntimeError(
+                f"serialized image delivery {expected.image_handle} U vector orientation or scale changed"
+            )
+        if not all(
+            math.isclose(left, right, rel_tol=0.0, abs_tol=1e-9)
+            for left, right in zip(
+                actual_v_vector,
+                expected.v_vector_in_units,
+                strict=True,
+            )
+        ):
+            raise RuntimeError(
+                f"serialized image delivery {expected.image_handle} V vector orientation or scale changed"
             )
         if not math.isclose(
             actual_width,
@@ -2050,6 +2358,7 @@ def _export_to_dxf_impl(
     delivered_text_entity_counts: Dict[str, int] = {}
     text_deliveries: List[Dict[str, Any]] = []
     serialized_text_sources: Dict[str, Tuple[Any, ImportConfig]] = {}
+    serialized_page_visual_sources: Dict[str, Dict[str, Any]] = {}
     seen_text_source_ids: set[str] = set()
     seen_text_entity_handles: set[str] = set()
     serialized_image_expectations: List[_SerializedImageExpectation] = []
@@ -2110,6 +2419,7 @@ def _export_to_dxf_impl(
         dy = _stack_offset_y
         page_w = float(page.page_data.width or 0.0)
         page_h = float(page.page_data.height or 0.0)
+        page_image_bindings: List[Dict[str, Any]] = []
         # Seed extents from the page frame so host auto-fit still works even
         # when selected export mode yields no drawable entities on that page.
         _track_xy(0.0, 0.0 + dy)
@@ -2405,33 +2715,205 @@ def _export_to_dxf_impl(
 
                 layer = _layer_name(page.page_data.page_number, "IMAGES", None, opts)
                 _ensure_layer(doc, layer, None)
-                insert = (float(placement.x_mm), float(placement.y_mm) + dy)
+                insert = (float(placement.x_mm), float(placement.y_mm) + dy, 0.0)
                 size_in_units = (
                     float(placement.width_mm),
                     float(placement.height_mm),
                 )
+                u_vector = tuple(
+                    float(value)
+                    for value in (
+                        placement.u_vector_mm
+                        if placement.u_vector_mm is not None
+                        else (size_in_units[0], 0.0)
+                    )
+                ) + (0.0,)
+                v_vector = tuple(
+                    float(value)
+                    for value in (
+                        placement.v_vector_mm
+                        if placement.v_vector_mm is not None
+                        else (0.0, size_in_units[1])
+                    )
+                ) + (0.0,)
+                pixel_width, pixel_height = staged_asset.size_px
+                if pixel_width <= 0 or pixel_height <= 0:
+                    raise RuntimeError(
+                        f"image asset has invalid pixel dimensions: {staged_asset.path}"
+                    )
                 image = msp.add_image(
                     image_def,
                     insert=insert,
                     size_in_units=size_in_units,
                     dxfattribs={"layer": layer},
                 )
-                image.dxf.flags = int(image.dxf.flags or 0) | 8
-                serialized_image_expectations.append(
-                    _SerializedImageExpectation(
-                        image_handle=str(image.dxf.handle or ""),
-                        image_def_handle=str(image_def.dxf.handle or ""),
-                        asset_path=staged_asset.path,
-                        asset_sha256=staged_asset.sha256,
-                        insert=insert,
-                        size_in_units=size_in_units,
-                        size_in_pixel=staged_asset.size_px,
-                    )
+                image.dxf.u_pixel = tuple(
+                    value / float(pixel_width) for value in u_vector
                 )
-                _track_xy(float(placement.x_mm), float(placement.y_mm) + dy)
-                _track_xy(float(placement.x_mm + placement.width_mm), float(placement.y_mm + placement.height_mm) + dy)
+                image.dxf.v_pixel = tuple(
+                    value / float(pixel_height) for value in v_vector
+                )
+                image.dxf.flags = int(image.dxf.flags or 0) | 8
+                image_expectation = _SerializedImageExpectation(
+                    image_handle=str(image.dxf.handle or ""),
+                    image_def_handle=str(image_def.dxf.handle or ""),
+                    asset_path=staged_asset.path,
+                    asset_sha256=staged_asset.sha256,
+                    insert=insert,
+                    size_in_units=size_in_units,
+                    size_in_pixel=staged_asset.size_px,
+                    u_vector_in_units=u_vector,
+                    v_vector_in_units=v_vector,
+                )
+                serialized_image_expectations.append(image_expectation)
+                reactor_handle = str(image.dxf.image_def_reactor_handle or "")
+                if not reactor_handle:
+                    raise RuntimeError(
+                        f"image {image_expectation.image_handle} has no IMAGEDEF reactor"
+                    )
+                page_image_bindings.append(
+                    {
+                        "expectation": image_expectation,
+                        "reactor_handle": reactor_handle,
+                        "source_xref": int(placement.xref),
+                    }
+                )
+                for u_factor, v_factor in (
+                    (0.0, 0.0),
+                    (1.0, 0.0),
+                    (0.0, 1.0),
+                    (1.0, 1.0),
+                ):
+                    _track_xy(
+                        insert[0] + u_factor * u_vector[0] + v_factor * v_vector[0],
+                        insert[1] + u_factor * u_vector[1] + v_factor * v_vector[1],
+                    )
                 entity_count += 1
                 image_count += 1
+
+        requested_page_text_mode = _normalized_text_mode(opts.text_mode)
+        if (
+            opts.include_text
+            and requested_page_text_mode != "none"
+            and not page.page_data.text_items
+            and page_image_bindings
+        ):
+            if source_pdf_sha256 is None:
+                source_pdf_sha256 = _file_sha256(source_pdf)
+            page_number = int(page.page_data.page_number)
+            source_id = f"page_visual:{page_number}"
+            zero_text_proof = _source_zero_text_page_proof(source_pdf, page_number)
+            if zero_text_proof.get("verified_zero_text") is not True:
+                raise RuntimeError(
+                    f"{source_id}: normalized text is empty but exact source-zero-text proof failed"
+                )
+            if source_id in seen_text_source_ids:
+                raise RuntimeError(f"{source_id}: duplicate stable page visual identity")
+
+            image_artifacts = [
+                _page_visual_image_artifact(
+                    binding["expectation"],
+                    reactor_handle=str(binding["reactor_handle"]),
+                    source_xref=int(binding["source_xref"]),
+                )
+                for binding in page_image_bindings
+            ]
+            image_handles = [
+                str(artifact["image_handle"]) for artifact in image_artifacts
+            ]
+            support_handles = [
+                str(handle)
+                for artifact in image_artifacts
+                for handle in (
+                    artifact["image_def_handle"],
+                    artifact["image_def_reactor_handle"],
+                )
+            ]
+            duplicate_handles = seen_text_entity_handles.intersection(image_handles)
+            if duplicate_handles:
+                raise RuntimeError(
+                    f"{source_id}: duplicate delivered DXF handles {sorted(duplicate_handles)}"
+                )
+            source_evidence = {
+                "source_id": source_id,
+                "source_pdf_path": str(source_pdf),
+                "source_pdf_sha256": str(source_pdf_sha256),
+                "source_page_number": page_number,
+                "source_zero_text_proof": zero_text_proof,
+            }
+            attempts: List[TextDeliveryAttempt] = []
+            if requested_page_text_mode != "raster":
+                attempts.append(
+                    TextDeliveryAttempt(
+                        source_id=source_id,
+                        requested_representation=requested_page_text_mode,
+                        attempted_representation=requested_page_text_mode,
+                        strategy="source_zero_text_requested_representation",
+                        outcome="impossible",
+                        reason=(
+                            "the exact source page contains no PDF text object to "
+                            f"deliver as {requested_page_text_mode}"
+                        ),
+                        cleanup_verified=True,
+                        evidence={
+                            **source_evidence,
+                            "no_source_text_item_verified": True,
+                        },
+                    )
+                )
+            terminal_evidence = {
+                **source_evidence,
+                "existing_image_entity_reused": True,
+                "duplicate_image_entities_created": False,
+                "image_entity_count": len(image_handles),
+                "image_entity_handles": image_handles,
+                "image_artifacts": image_artifacts,
+            }
+            attempts.append(
+                TextDeliveryAttempt(
+                    source_id=source_id,
+                    requested_representation=requested_page_text_mode,
+                    attempted_representation="raster",
+                    strategy="existing_page_image_terminal_raster",
+                    outcome="verified",
+                    type_verified=True,
+                    visual_verified=True,
+                    created_entity_handles=[],
+                    entity_handles=image_handles,
+                    support_entity_handles=support_handles,
+                    cleanup_verified=True,
+                    evidence=terminal_evidence,
+                )
+            )
+            page_delivery = TextDeliveryResult(
+                source_id=source_id,
+                requested_representation=requested_page_text_mode,
+                final_representation="raster",
+                verified=True,
+                entity_handles=image_handles,
+                support_entity_handles=support_handles,
+                attempts=attempts,
+            )
+            seen_text_source_ids.add(source_id)
+            seen_text_entity_handles.update(image_handles)
+            serialized_page_visual_sources[source_id] = {
+                "page_number": page_number,
+                "source_pdf_sha256": str(source_pdf_sha256),
+                "source_zero_text_proof": zero_text_proof,
+                "image_bindings": page_image_bindings,
+            }
+            text_deliveries.append(page_delivery.to_dict())
+            delivered_text_entity_counts["raster_image"] = int(
+                delivered_text_entity_counts.get("raster_image", 0) or 0
+            ) + len(image_handles)
+            if page_delivery.fallback_used:
+                _append_text_fallback(
+                    text_fallbacks,
+                    requested=requested_page_text_mode,
+                    delivered="raster",
+                    reason=_fallback_reason_code(page_delivery),
+                    count=1,
+                )
 
         # Advance page placement offset for the next page.
         page_step = _page_stack_step(page.page_data.height, arrangement, gap_ratio)
@@ -2493,6 +2975,7 @@ def _export_to_dxf_impl(
             expected_source_pdf_path=source_pdf,
             expected_source_pdf_sha256=str(source_pdf_sha256 or ""),
             expected_text_sources=serialized_text_sources,
+            expected_page_visual_sources=serialized_page_visual_sources,
         )
         _verify_serialized_image_assets(candidate, serialized_image_expectations)
         temp_output.replace(output)

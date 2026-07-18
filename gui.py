@@ -37,7 +37,7 @@ TEXT_MODES = {
     "3D Text (TEXT with thickness)": "3d_text",
     "Glyphs (grouped outlines)": "glyphs",
     "Geometry (raw outlines)": "geometry",
-    "Raster (exact item pixels)": "raster",
+    "Raster (verified source pixels)": "raster",
 }
 
 DXF_VERSIONS = ("R12", "R2000", "R2004", "R2007", "R2010", "R2013", "R2018")
@@ -136,8 +136,9 @@ class Pdf2DxfApp(tk.Tk):
         ttk.Label(
             frame,
             text=(
-                "LibreCAD is 2D. The selected type is attempted item by item; "
-                "any verified fallback is shown in the result and complete report."
+                "LibreCAD is 2D. The selected type is verified per source item, "
+                "or against the exact source page when no PDF text exists; any "
+                "verified fallback is shown in the result and complete report."
             ),
             font=("Segoe UI", 8),
             wraplength=420,

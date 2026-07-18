@@ -143,7 +143,7 @@ class _OutlineCharacterGroup:
     visible_ink_expected: bool
     expected_bbox: Optional[Tuple[float, float, float, float]]
     expected_path_geometry: Tuple["_PathGeometryExpectation", ...] = ()
-    expected_fill_geometry: Tuple[Tuple[Tuple[float, float], ...], ...] = ()
+    expected_fill_geometry: Tuple["_FillGeometryExpectation", ...] = ()
     flattening_error: float = 0.0
     geometry_tolerance: float = 0.0
     outlines: List[Any] = field(default_factory=list)
@@ -161,6 +161,23 @@ class _PathGeometryExpectation:
 
 
 @dataclass(frozen=True)
+class _FillBoundaryExpectation:
+    """One serialized boundary of a source-derived fill entity."""
+
+    path_type_flags: int
+    is_closed: bool
+    vertices: Tuple[Tuple[float, float], ...]
+
+
+@dataclass(frozen=True)
+class _FillGeometryExpectation:
+    """Compact immutable fill truth for one SOLID or HATCH entity."""
+
+    entity_type: str
+    boundaries: Tuple[_FillBoundaryExpectation, ...]
+
+
+@dataclass(frozen=True)
 class _OutlineExpectation:
     """Independent source/path truth captured before DXF entity construction."""
 
@@ -168,7 +185,7 @@ class _OutlineExpectation:
     source_envelope: Tuple[Tuple[float, float], ...]
     source_envelope_source: str
     path_geometry: Tuple[_PathGeometryExpectation, ...]
-    fill_geometry: Tuple[Tuple[Tuple[float, float], ...], ...]
+    fill_geometry: Tuple[_FillGeometryExpectation, ...]
     flattening_error: float
     geometry_tolerance: float
     source_geometry_verified: bool
@@ -2122,33 +2139,104 @@ def _triangulated_geometry(
     return tuple(triangles)
 
 
+def _fill_geometry_expectations(
+    paths: Sequence[Any],
+    *,
+    is_r12: bool,
+    flattening_error: float,
+) -> Tuple[_FillGeometryExpectation, ...]:
+    """Capture compact source-derived fill boundaries before entity creation."""
+
+    if is_r12:
+        return tuple(
+            _FillGeometryExpectation(
+                entity_type="SOLID",
+                boundaries=(
+                    _FillBoundaryExpectation(
+                        path_type_flags=0,
+                        is_closed=True,
+                        vertices=tuple(triangle) + (tuple(triangle[-1]),),
+                    ),
+                ),
+            )
+            for triangle in _triangulated_geometry(
+                paths,
+                flattening_error=flattening_error,
+            )
+        )
+
+    expected: List[_FillGeometryExpectation] = []
+    for hatch in ezdxf_path.to_hatches(
+        paths,
+        edge_path=False,
+        distance=flattening_error,
+        segments=2,
+    ):
+        boundaries = tuple(
+            _FillBoundaryExpectation(
+                path_type_flags=int(boundary.path_type_flags),
+                is_closed=bool(boundary.is_closed),
+                vertices=tuple(_point_pair(vertex) for vertex in boundary.vertices),
+            )
+            for boundary in hatch.paths
+        )
+        expected.append(
+            _FillGeometryExpectation(
+                entity_type="HATCH",
+                boundaries=boundaries,
+            )
+        )
+    return tuple(expected)
+
+
 def _fill_entities_match(
-    expected: Sequence[Tuple[Tuple[float, float], ...]],
+    expected: Sequence[_FillGeometryExpectation],
     fills: Sequence[Any],
     *,
     tolerance: float,
 ) -> bool:
-    actual = tuple(
-        tuple(
-            _point_triple(getattr(entity.dxf, f"vtx{index}"))
-            for index in range(4)
-        )
-        for entity in fills
-        if entity.dxftype() == "SOLID"
-    )
-    expected_with_four_vertices = tuple(
-        tuple((point[0], point[1], 0.0) for point in triangle)
-        + ((triangle[-1][0], triangle[-1][1], 0.0),)
-        for triangle in expected
-        if len(triangle) == 3
-    )
-    return bool(
-        len(actual) == len(fills) == len(expected_with_four_vertices) == len(expected)
-        and all(
-            _points3_match(left, right, tolerance=tolerance)
-            for left, right in zip(expected_with_four_vertices, actual, strict=True)
-        )
-    )
+    if len(expected) != len(fills):
+        return False
+    for expectation, entity in zip(expected, fills, strict=True):
+        if entity.dxftype() != expectation.entity_type:
+            return False
+        if expectation.entity_type == "SOLID":
+            if len(expectation.boundaries) != 1:
+                return False
+            actual = tuple(
+                _point_pair(getattr(entity.dxf, f"vtx{index}"))
+                for index in range(4)
+            )
+            if not _points_match(
+                expectation.boundaries[0].vertices,
+                actual,
+                tolerance=tolerance,
+            ):
+                return False
+            continue
+        if expectation.entity_type != "HATCH":
+            return False
+        actual_boundaries = list(entity.paths)
+        if len(actual_boundaries) != len(expectation.boundaries):
+            return False
+        for expected_boundary, actual_boundary in zip(
+            expectation.boundaries,
+            actual_boundaries,
+            strict=True,
+        ):
+            if (
+                not hasattr(actual_boundary, "vertices")
+                or int(actual_boundary.path_type_flags)
+                != expected_boundary.path_type_flags
+                or bool(actual_boundary.is_closed) != expected_boundary.is_closed
+                or not _points_match(
+                    expected_boundary.vertices,
+                    tuple(_point_pair(vertex) for vertex in actual_boundary.vertices),
+                    tolerance=tolerance,
+                )
+            ):
+                return False
+    return bool(expected)
 
 
 _OUTLINE_GEOMETRY_EVIDENCE_SCHEMA = "bcs-source-bound-outline-v1"
@@ -2261,14 +2349,21 @@ def _canonical_source_outline_payload(
             }
         )
     fills = [
-        [
-            *[
-                _geometry_digest_point(point, quantum=quantum)
-                for point in triangle
+        {
+            "type": fill.entity_type,
+            "boundaries": [
+                {
+                    "path_type_flags": boundary.path_type_flags,
+                    "closed": boundary.is_closed,
+                    "vertices": [
+                        _geometry_digest_point(point, quantum=quantum)
+                        for point in boundary.vertices
+                    ],
+                }
+                for boundary in fill.boundaries
             ],
-            _geometry_digest_point(triangle[-1], quantum=quantum),
-        ]
-        for triangle in expectation.fill_geometry
+        }
+        for fill in expectation.fill_geometry
     ]
     characters = [
         {
@@ -2330,7 +2425,7 @@ def _serialized_outline_payload(
     *,
     tolerance: float,
 ) -> Dict[str, Any]:
-    """Capture ordered persisted contour/fill geometry, including SOLID vtx3."""
+    """Capture ordered persisted contour/fill geometry for SOLID or HATCH."""
 
     quantum = _geometry_digest_quantum(tolerance)
     serialized: List[Dict[str, Any]] = []
@@ -2414,6 +2509,40 @@ def _serialized_outline_payload(
                         )
                         for index in range(4)
                     ],
+                    "extrusion": _geometry_digest_point3(
+                        entity.dxf.get("extrusion", (0.0, 0.0, 1.0)),
+                        quantum=quantum,
+                    ),
+                    "visual": _serialized_visual_attributes(entity),
+                }
+            )
+        elif entity_type == "HATCH":
+            boundaries = []
+            for boundary in entity.paths:
+                if not hasattr(boundary, "vertices"):
+                    raise ValueError("serialized HATCH contains a non-polyline boundary")
+                boundaries.append(
+                    {
+                        "path_type_flags": int(boundary.path_type_flags),
+                        "closed": bool(boundary.is_closed),
+                        "vertices": [
+                            _geometry_digest_point(vertex, quantum=quantum)
+                            for vertex in boundary.vertices
+                        ],
+                    }
+                )
+            serialized.append(
+                {
+                    "kind": "fill",
+                    "type": entity_type,
+                    "solid_fill": int(entity.dxf.get("solid_fill", 0) or 0),
+                    "pattern_name": str(entity.dxf.get("pattern_name", "") or ""),
+                    "hatch_style": int(entity.dxf.get("hatch_style", 0) or 0),
+                    "boundaries": boundaries,
+                    "elevation": _geometry_digest_point3(
+                        entity.dxf.get("elevation", (0.0, 0.0, 0.0)),
+                        quantum=quantum,
+                    ),
                     "extrusion": _geometry_digest_point3(
                         entity.dxf.get("extrusion", (0.0, 0.0, 1.0)),
                         quantum=quantum,
@@ -3649,10 +3778,22 @@ def _to_solid_fill_entities(
 ) -> List[Any]:
     """Return parent-visible solid fills while preserving outline ownership.
 
-    Use contour-aware triangulation for every DXF version. LibreCAD can
-    misrender nested HATCH boundaries inside blocks, while SOLID triangles are
-    stable in the parent and are also available in R12.
+    Modern DXF can preserve a complete external contour plus all nested holes
+    in one solid HATCH entity.  Keep triangle SOLIDs only for R12, which has no
+    HATCH entity.  The modern representation therefore grows with source
+    contours rather than adaptive triangulation density.
     """
+
+    if not is_r12:
+        return list(
+            ezdxf_path.to_hatches(
+                paths,
+                edge_path=False,
+                distance=_flattening_error(paths),
+                segments=2,
+                dxfattribs=attribs,
+            )
+        )
 
     from ezdxf.entities import factory
 
@@ -3698,9 +3839,47 @@ def _to_solid_fill_entities(
 def _solid_fill_verified(fills: Sequence[Any], *, is_r12: bool) -> bool:
     if not fills:
         return False
-    expected_type = "SOLID"
+    expected_type = "SOLID" if is_r12 else "HATCH"
     if any(entity.dxftype() != expected_type for entity in fills):
         return False
+    if not is_r12:
+        for entity in fills:
+            try:
+                elevation = _point_triple(
+                    entity.dxf.get("elevation", (0.0, 0.0, 0.0))
+                )
+                extrusion = _point_triple(
+                    entity.dxf.get("extrusion", (0.0, 0.0, 1.0))
+                )
+                boundaries = list(entity.paths)
+            except (TypeError, ValueError, AttributeError):
+                return False
+            if (
+                int(entity.dxf.get("solid_fill", 0) or 0) != 1
+                or str(entity.dxf.get("pattern_name", "") or "").upper() != "SOLID"
+                or int(entity.dxf.get("hatch_style", 0) or 0) != 0
+                or not boundaries
+                or any(not hasattr(boundary, "vertices") for boundary in boundaries)
+                or sum(
+                    1 for boundary in boundaries if int(boundary.path_type_flags) & 1
+                )
+                != 1
+                or not all(bool(boundary.is_closed) for boundary in boundaries)
+                or not all(
+                    math.isfinite(float(value))
+                    for boundary in boundaries
+                    for vertex in boundary.vertices
+                    for value in vertex[:2]
+                )
+                or not all(math.isfinite(value) for value in elevation + extrusion)
+                or not _points3_match(
+                    (elevation, extrusion),
+                    ((0.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+                    tolerance=1e-12,
+                )
+            ):
+                return False
+        return True
     for entity in fills:
         points = tuple(
             _point_triple(getattr(entity.dxf, f"vtx{index}"))
@@ -4239,6 +4418,7 @@ def _outline_expectation(
     representation: str,
     path_bbox: Optional[Tuple[float, float, float, float]],
     expected_paths: Sequence[Any],
+    is_r12: bool,
     character_groups: Sequence[_OutlineCharacterGroup] = (),
 ) -> _OutlineExpectation:
     if path_bbox is None:
@@ -4280,8 +4460,9 @@ def _outline_expectation(
             expected_paths,
             flattening_error=flattening_error,
         )
-        fill_geometry = _triangulated_geometry(
+        fill_geometry = _fill_geometry_expectations(
             expected_paths,
+            is_r12=is_r12,
             flattening_error=flattening_error,
         )
     source_geometry_verified = _path_geometry_within_envelope(
@@ -4544,7 +4725,7 @@ def _commit_outlines(
     )
     attempt.evidence.update(
         {
-            "solid_fill_entity_type": "SOLID",
+            "solid_fill_entity_type": "SOLID" if is_r12 else "HATCH",
             "solid_fill_entity_count": len(fills),
             "solid_fill_verified": fill_verified,
             "source_outline_envelope": [
@@ -4560,7 +4741,7 @@ def _commit_outlines(
         }
     )
     if not fill_verified:
-        raise ValueError("outline strategy did not create verified solid glyph fill")
+        raise ValueError("outline strategy did not create a verified solid glyph fill")
 
     expected_layer_name = str(outlines[0].dxf.layer or "0")
     if not doc.layers.has_entry(expected_layer_name):
@@ -4882,7 +5063,7 @@ def _commit_outlines(
         block_ref.dxftype() == "INSERT"
         and bool(attempt.support_entity_handles)
         and all(
-            entity.dxftype() in {"LWPOLYLINE", "POLYLINE", "SOLID"}
+            entity.dxftype() in {"LWPOLYLINE", "POLYLINE", "SOLID", "HATCH"}
             for entity in block
         )
         and _solid_fill_verified(fills, is_r12=is_r12)
@@ -5243,6 +5424,7 @@ def _attempt_outline_entity(
             representation=representation,
             path_bbox=expected_path_bbox,
             expected_paths=expected_paths,
+            is_r12=is_r12,
         )
         if not expectation.source_geometry_verified:
             raise ValueError("source outline paths fall outside the authoritative envelope")
@@ -5582,8 +5764,9 @@ def _attempt_outline_string(
                             expected_character_paths,
                             flattening_error=character_flattening_error,
                         ),
-                        expected_fill_geometry=_triangulated_geometry(
+                        expected_fill_geometry=_fill_geometry_expectations(
                             expected_character_paths,
+                            is_r12=is_r12,
                             flattening_error=character_flattening_error,
                         ),
                         flattening_error=character_flattening_error,
@@ -5630,6 +5813,7 @@ def _attempt_outline_string(
                 representation=representation,
                 path_bbox=expected_path_bbox,
                 expected_paths=expected_paths,
+                is_r12=is_r12,
                 character_groups=character_groups,
             )
             if not expectation.source_geometry_verified:
@@ -5759,6 +5943,7 @@ def _attempt_outline_string(
                 representation=representation,
                 path_bbox=expected_path_bbox,
                 expected_paths=expected_paths,
+                is_r12=is_r12,
             )
             if not expectation.source_geometry_verified:
                 raise ValueError(

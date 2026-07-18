@@ -51,6 +51,12 @@ class ImagePlacement:
     height_mm: float
     path: str
     xref: int
+    # Full source-image axes in model space.  These preserve PDF image CTM
+    # rotation, reflection, and shear after the page /Rotate transform.  Page
+    # raster fallbacks leave them unset because they are already rendered in
+    # displayed page orientation.
+    u_vector_mm: Optional[tuple[float, float]] = None
+    v_vector_mm: Optional[tuple[float, float]] = None
 
 
 @dataclass
@@ -688,6 +694,10 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
         return placements
 
     page_height = float(page.rect.height)
+    page_transform = _page_rotation_transform(
+        page.rect,
+        getattr(page, "rotation_matrix", None),
+    )
     seen: set[tuple[int, int]] = set()
     for img_info in page.get_images(full=True):
         xref = int(img_info[0])
@@ -737,34 +747,72 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
                 f"page_{page_number:03d}_xref_{xref}{mask_suffix}.png"
             )
             pix.save(str(img_path))
-            rects = page.get_image_rects(img_info)
+            rects = page.get_image_rects(img_info, transform=True)
         except (RuntimeError, OSError, ValueError, TypeError) as exc:
             raise RuntimeError(
                 f"page {page_number} image xref {xref} soft-mask {smask} "
                 f"could not be extracted faithfully: {exc}"
             ) from exc
 
-        for rect in rects:
-            x0, y0, x1, y1 = float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)
-            left = min(x0, x1)
-            right = max(x0, x1)
+        for rect_and_matrix in rects:
+            try:
+                _rect, image_transform = rect_and_matrix
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"page {page_number} image xref {xref} has no exact placement transform"
+                ) from exc
 
-            if options.flip_y:
-                bottom_pt = page_height - max(y0, y1)
-                top_pt = page_height - min(y0, y1)
-            else:
-                bottom_pt = min(y0, y1)
-                top_pt = max(y0, y1)
+            factor = MM_PER_PT * options.scale
+
+            def _model_point(
+                unit_x: float,
+                unit_y: float,
+                *,
+                _image_transform=image_transform,
+                _factor: float = factor,
+            ) -> tuple[float, float]:
+                source_x, source_y = _transform_pdf_point(
+                    unit_x,
+                    unit_y,
+                    _image_transform,
+                )
+                display_x, display_y = _transform_pdf_point(
+                    source_x,
+                    source_y,
+                    page_transform,
+                )
+                model_y = page_height - display_y if options.flip_y else display_y
+                return display_x * _factor, model_y * _factor
+
+            top_left = _model_point(0.0, 0.0)
+            bottom_left = _model_point(0.0, 1.0)
+            bottom_right = _model_point(1.0, 1.0)
+            u_vector = (
+                bottom_right[0] - bottom_left[0],
+                bottom_right[1] - bottom_left[1],
+            )
+            v_vector = (
+                top_left[0] - bottom_left[0],
+                top_left[1] - bottom_left[1],
+            )
+            width_mm = math.hypot(*u_vector)
+            height_mm = math.hypot(*v_vector)
+            if width_mm <= 0.0 or height_mm <= 0.0:
+                raise RuntimeError(
+                    f"page {page_number} image xref {xref} has a degenerate placement transform"
+                )
 
             placements.append(
                 ImagePlacement(
                     page_number=page_number,
-                    x_mm=left * MM_PER_PT * options.scale,
-                    y_mm=bottom_pt * MM_PER_PT * options.scale,
-                    width_mm=(right - left) * MM_PER_PT * options.scale,
-                    height_mm=(top_pt - bottom_pt) * MM_PER_PT * options.scale,
+                    x_mm=bottom_left[0],
+                    y_mm=bottom_left[1],
+                    width_mm=width_mm,
+                    height_mm=height_mm,
                     path=str(img_path),
                     xref=xref,
+                    u_vector_mm=u_vector,
+                    v_vector_mm=v_vector,
                 )
             )
 
