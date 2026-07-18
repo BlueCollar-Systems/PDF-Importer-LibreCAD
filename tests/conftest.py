@@ -35,6 +35,8 @@ def _build_deterministic_test_font(path: Path) -> None:
         glyph_name = f"uni{codepoint:04X}"
         glyph_order.append(glyph_name)
         cmap[codepoint] = glyph_name
+    glyph_order.append("acutecomb")
+    cmap[0x0301] = "acutecomb"
 
     glyphs = {".notdef": _draw_box(top=700), "space": TTGlyphPen(None).glyph()}
     for codepoint, glyph_name in cmap.items():
@@ -49,7 +51,12 @@ def _build_deterministic_test_font(path: Path) -> None:
     builder.setupGlyphOrder(glyph_order)
     builder.setupCharacterMap(cmap)
     builder.setupGlyf(glyphs)
-    builder.setupHorizontalMetrics({name: (600, 50) for name in glyph_order})
+    builder.setupHorizontalMetrics(
+        {
+            name: ((0, 50) if name == "acutecomb" else (600, 50))
+            for name in glyph_order
+        }
+    )
     builder.setupHorizontalHeader(ascent=800, descent=-200)
     builder.setupOS2(
         sTypoAscender=800,

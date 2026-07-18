@@ -1139,8 +1139,28 @@ def _geometry_digest_scalar(value: Any) -> str:
 
 
 def _serialized_visual_attributes(entity: Any) -> Dict[str, Any]:
+    doc = getattr(entity, "doc", None)
+    if doc is None:
+        raise ValueError("outline entity is not attached to a DXF document")
+    layer_name = str(entity.dxf.get("layer", "0") or "0")
+    try:
+        layer = doc.layers.get(layer_name)
+    except Exception as exc:
+        raise ValueError(f"outline entity layer is missing: {layer_name!r}") from exc
+    entity_transparency = float(entity.transparency)
+    layer_transparency = float(layer.transparency)
+    if not all(
+        math.isfinite(value) for value in (entity_transparency, layer_transparency)
+    ):
+        raise ValueError("outline visibility contains non-finite transparency")
     return {
-        "layer": str(entity.dxf.get("layer", "0") or "0"),
+        "layer": layer_name,
+        "layer_handle": _handle(layer),
+        "layer_on": bool(layer.is_on()),
+        "layer_frozen": bool(layer.is_frozen()),
+        "layer_transparency": _geometry_digest_scalar(layer_transparency),
+        "invisible": entity.dxf.get("invisible", 0),
+        "transparency": _geometry_digest_scalar(entity_transparency),
         "color": int(entity.dxf.get("color", 256) or 0),
         "true_color": (
             int(entity.dxf.true_color) if entity.dxf.hasattr("true_color") else None
@@ -1450,6 +1470,7 @@ def verify_serialized_outline_geometry(
         or evidence.get("source_outline_geometry_verified") is not True
         or evidence.get("outline_topology_control_geometry_verified") is not True
         or evidence.get("solid_fill_geometry_verified") is not True
+        or evidence.get("owned_outline_visibility_verified") is not True
     ):
         return False
     source_digest = str(evidence.get("canonical_source_outline_geometry_sha256") or "")
@@ -2611,6 +2632,21 @@ def _solid_fill_verified(fills: Sequence[Any], *, is_r12: bool) -> bool:
     return True
 
 
+def _visible_font_ink_width(font: Any, text: str, *, height: float) -> float:
+    """Return finite source-font ink width without using glyph advance.
+
+    Combining marks can own visible contours while intentionally advancing the
+    text cursor by zero.  Their ink is still a valid affine scaling basis.
+    """
+
+    path = font.text_path_ex(text, cap_height=height).to_path()
+    box = ezdxf_path.bbox(list(path.sub_paths()))
+    if not box.has_data:
+        return 0.0
+    width = float(box.extmax.x) - float(box.extmin.x)
+    return width if math.isfinite(width) and width > 0.0 else 0.0
+
+
 def _make_scaled_string_paths(
     text: str,
     face: FontFace,
@@ -2634,7 +2670,11 @@ def _make_scaled_string_paths(
         width_scale = target_advance / natural_advance
         delivered_advance = natural_advance * width_scale
     elif _visible_ink_expected(text):
-        raise ValueError("visible source character has no measurable font advance")
+        ink_width = _visible_font_ink_width(font, text, height=height)
+        if ink_width <= 0.0:
+            raise ValueError("visible zero-advance source character has no font contour")
+        width_scale = target_advance / ink_width
+        delivered_advance = target_advance
     else:
         width_scale = 1.0
         delivered_advance = 0.0
@@ -2707,10 +2747,14 @@ def _authoritative_quad_transform(
     natural_advance = float(font.text_width(text))
     if not math.isfinite(natural_advance) or natural_advance < 0.0:
         raise ValueError("font returned an invalid authoritative source advance")
-    if natural_advance <= 0.0:
+    source_width_basis = natural_advance
+    if source_width_basis <= 0.0:
         if _visible_ink_expected(text):
-            raise ValueError("visible source text has no authoritative font advance")
-        natural_advance = target_advance
+            source_width_basis = _visible_font_ink_width(font, text, height=1.0)
+            if source_width_basis <= 0.0:
+                raise ValueError("visible zero-advance source text has no font contour")
+        else:
+            source_width_basis = target_advance
 
     baseline = (
         quad[1][0] - quad[0][0],
@@ -2721,12 +2765,12 @@ def _authoritative_quad_transform(
         quad[3][1] - quad[0][1],
     )
     transform = Matrix44.ucs(
-        ux=(baseline[0] / natural_advance, baseline[1] / natural_advance, 0.0),
+        ux=(baseline[0] / source_width_basis, baseline[1] / source_width_basis, 0.0),
         uy=(-vertical_axis[0] * vertical, -vertical_axis[1] * vertical, 0.0),
         uz=(0.0, 0.0, 1.0),
         origin=(target_origin[0], target_origin[1], 0.0),
     )
-    return transform, target_advance, target_advance / natural_advance
+    return transform, target_advance, target_advance / source_width_basis
 
 
 def _item_authoritative_transform(
@@ -2796,7 +2840,11 @@ def _source_bound_string_path_expectation(
         width_scale = target_advance / natural_advance
         delivered_advance = natural_advance * width_scale
     elif _visible_ink_expected(text):
-        raise ValueError("visible source character has no expected font advance")
+        ink_width = _visible_font_ink_width(font, text, height=height)
+        if ink_width <= 0.0:
+            raise ValueError("visible zero-advance source character has no font contour")
+        width_scale = target_advance / ink_width
+        delivered_advance = target_advance
     else:
         width_scale = 1.0
         delivered_advance = 0.0
@@ -2924,6 +2972,74 @@ def _block_reference_handles(doc: Any, block_name: str) -> List[str]:
             ):
                 references.append(_handle(entity))
     return references
+
+
+def _outline_reference_handles(doc: Any, entities: Sequence[Any]) -> List[str]:
+    """Return the exact non-owned layer dependency closure actually traversed."""
+
+    handles: List[str] = []
+    for entity in entities:
+        layer_name = str(entity.dxf.get("layer", "0") or "0")
+        try:
+            layer = doc.layers.get(layer_name)
+        except Exception as exc:
+            raise ValueError(f"outline dependency layer is missing: {layer_name!r}") from exc
+        handle = _handle(layer)
+        if not handle:
+            raise ValueError(f"outline dependency layer has no handle: {layer_name!r}")
+        if handle not in handles:
+            handles.append(handle)
+    return handles
+
+
+def _outline_entities_visible_and_opaque(
+    doc: Any,
+    entities: Sequence[Any],
+    *,
+    expected_owner: Optional[str] = None,
+) -> bool:
+    """Verify direct and inherited visibility for owned outline entities."""
+
+    if not entities:
+        return False
+    for entity in entities:
+        raw_invisible = entity.dxf.get("invisible", 0)
+        if (
+            isinstance(raw_invisible, bool)
+            or not isinstance(raw_invisible, int)
+            or raw_invisible != 0
+        ):
+            return False
+        try:
+            entity_transparency = float(entity.transparency)
+            layer = doc.layers.get(str(entity.dxf.get("layer", "0") or "0"))
+            layer_transparency = float(layer.transparency)
+        except (TypeError, ValueError, AttributeError, KeyError):
+            return False
+        if (
+            not math.isfinite(entity_transparency)
+            or not math.isclose(
+                entity_transparency,
+                0.0,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+            or not layer.is_on()
+            or layer.is_frozen()
+            or not math.isfinite(layer_transparency)
+            or not math.isclose(
+                layer_transparency,
+                0.0,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+            or (
+                expected_owner is not None
+                and str(entity.dxf.owner or "") != str(expected_owner)
+            )
+        ):
+            return False
+    return True
 
 
 def _unique_block_name(doc: ezdxf.document.Drawing, source_id: str) -> str:
@@ -3085,12 +3201,32 @@ def _commit_outlines(
     if not fill_verified:
         raise ValueError("outline strategy did not create verified solid glyph fill")
 
+    expected_layer_name = str(outlines[0].dxf.layer or "0")
+    if not doc.layers.has_entry(expected_layer_name):
+        doc.layers.add(expected_layer_name)
+    layer_record = doc.layers.get(expected_layer_name)
+    layer_handle = _handle(layer_record)
+
     if representation == "geometry":
         for entity in outlines + fills:
             msp.add_entity(entity)
             attempt.created_entity_handles.append(_handle(entity))
-        attempt.entity_handles = [_handle(entity) for entity in outlines + fills]
+        geometry_entities = [*outlines, *fills]
+        attempt.entity_handles = [_handle(entity) for entity in geometry_entities]
+        attempt.referenced_entity_handles = _outline_reference_handles(
+            doc,
+            geometry_entities,
+        )
         actual_bbox = _bbox_tuple(outlines)
+        modelspace_ownership_verified = all(
+            str(entity.dxf.owner or "") == str(msp.layout_key)
+            for entity in geometry_entities
+        )
+        owned_outline_visibility_verified = _outline_entities_visible_and_opaque(
+            doc,
+            geometry_entities,
+            expected_owner=str(msp.layout_key),
+        )
         attempt.type_verified = (
             bool(attempt.entity_handles)
             and all(
@@ -3115,6 +3251,8 @@ def _commit_outlines(
                 flattening_error=expectation.flattening_error,
             )
             and ownership_verified
+            and modelspace_ownership_verified
+            and owned_outline_visibility_verified
         )
         attempt.evidence.update(
             {
@@ -3122,6 +3260,13 @@ def _commit_outlines(
                 "actual_outline_bbox": list(actual_bbox) if actual_bbox else None,
                 "outline_character_ownership": ownership,
                 "outline_character_ownership_verified": ownership_verified,
+                "expected_geometry_in_modelspace": True,
+                "geometry_modelspace_ownership_verified": (
+                    modelspace_ownership_verified
+                ),
+                "owned_outline_visibility_verified": (
+                    owned_outline_visibility_verified
+                ),
             }
         )
         _record_outline_geometry_evidence(
@@ -3131,11 +3276,6 @@ def _commit_outlines(
         )
         return
 
-    expected_layer_name = str(outlines[0].dxf.layer or "0")
-    if not doc.layers.has_entry(expected_layer_name):
-        doc.layers.add(expected_layer_name)
-    layer_record = doc.layers.get(expected_layer_name)
-    layer_handle = _handle(layer_record)
     block_name = _unique_block_name(doc, attempt.source_id)
     block = doc.blocks.new(name=block_name)
     attempt.owned_block_names.append(block_name)
@@ -3171,8 +3311,10 @@ def _commit_outlines(
     attempt.support_entity_handles = block_structure_handles + [
         _handle(entity) for entity in outlines + fills
     ]
-    if layer_handle not in attempt.referenced_entity_handles:
-        attempt.referenced_entity_handles.append(layer_handle)
+    attempt.referenced_entity_handles = _outline_reference_handles(
+        doc,
+        [block_ref, *list(block)],
+    )
     actual_bbox = _bbox_tuple(outlines)
     expected_insert = (float(insertion[0]), float(insertion[1]), 0.0)
     expected_rotation = 0.0
@@ -3318,6 +3460,8 @@ def _commit_outlines(
             )
         )
     )
+    expected_aci = int(block_attribs.get("color", 256))
+    raw_actual_aci = block_ref.dxf.get("color", 256)
     expected_true_color = block_attribs.get("true_color")
     actual_true_color = (
         block_ref.dxf.true_color
@@ -3325,11 +3469,10 @@ def _commit_outlines(
         else None
     )
     insert_color_verified = bool(
-        expected_true_color is None
-        or (
-            actual_true_color is not None
-            and int(actual_true_color) == int(expected_true_color)
-        )
+        not isinstance(raw_actual_aci, bool)
+        and isinstance(raw_actual_aci, int)
+        and raw_actual_aci == expected_aci
+        and actual_true_color == expected_true_color
     )
     source_identity_sha256 = _source_identity_sha256(attempt.source_id)
     source_identity_physical_verified = _glyph_block_name_binds_source(
@@ -3339,10 +3482,18 @@ def _commit_outlines(
     actual_layer_name = str(block_ref.dxf.layer or "")
     actual_layer_on = bool(layer_record.is_on())
     actual_layer_frozen = bool(layer_record.is_frozen())
+    actual_layer_transparency = float(layer_record.transparency)
     insert_layer_verified = bool(
         actual_layer_name == expected_layer_name
         and actual_layer_on
         and not actual_layer_frozen
+        and math.isfinite(actual_layer_transparency)
+        and math.isclose(
+            actual_layer_transparency,
+            0.0,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
     )
     raw_invisible = block_ref.dxf.get("invisible", 0)
     invisible_state_verified = bool(
@@ -3362,6 +3513,10 @@ def _commit_outlines(
     block_reference_ownership_verified = actual_reference_handles == [
         _handle(block_ref)
     ]
+    owned_outline_visibility_verified = _outline_entities_visible_and_opaque(
+        doc,
+        list(block),
+    )
     attempt.type_verified = (
         block_ref.dxftype() == "INSERT"
         and bool(attempt.support_entity_handles)
@@ -3388,6 +3543,7 @@ def _commit_outlines(
         and modelspace_verified
         and attached_content_verified
         and block_reference_ownership_verified
+        and owned_outline_visibility_verified
         and expectation.source_geometry_verified
         and outline_geometry_verified
         and fill_geometry_verified
@@ -3431,6 +3587,7 @@ def _commit_outlines(
             "actual_block_base_point": list(actual_base_point),
             "block_insert_transform_verified": insert_transform_verified,
             "block_insert_color_verified": insert_color_verified,
+            "block_insert_aci": expected_aci,
             "block_insert_true_color": expected_true_color,
             "expected_block_layer": expected_layer_name,
             "actual_block_layer": actual_layer_name,
@@ -3439,6 +3596,8 @@ def _commit_outlines(
             "actual_block_layer_on": actual_layer_on,
             "expected_block_layer_frozen": False,
             "actual_block_layer_frozen": actual_layer_frozen,
+            "expected_block_layer_transparency": 0.0,
+            "actual_block_layer_transparency": actual_layer_transparency,
             "block_insert_layer_verified": insert_layer_verified,
             "expected_block_invisible": 0,
             "actual_block_invisible": raw_invisible,
@@ -3455,6 +3614,7 @@ def _commit_outlines(
             "expected_block_reference_count": 1,
             "actual_block_reference_handles": actual_reference_handles,
             "block_reference_ownership_verified": block_reference_ownership_verified,
+            "owned_outline_visibility_verified": owned_outline_visibility_verified,
             "outline_character_ownership": ownership,
             "outline_character_ownership_verified": ownership_verified,
         }
@@ -3562,6 +3722,25 @@ def _attempt_outline_entity(
         height, cap_height_ratio = _delivery_cap_height(
             source_em_height, font_resolution
         )
+        face = FontFace(filename=font_resolution.filename)
+        source_font = text2path.get_font(face)
+        source_advance = float(source_font.text_width(source_text)) * height
+        if (
+            math.isfinite(source_advance)
+            and source_advance <= 0.0
+            and _visible_ink_expected(source_text)
+            and _visible_font_ink_width(source_font, source_text, height=height) > 0.0
+        ):
+            attempt.evidence.update(
+                {
+                    "visible_zero_advance_contour": True,
+                    "direct_source_path_required": True,
+                }
+            )
+            raise _RepresentationImpossible(
+                "DXF TEXT cannot retain a visible zero-advance contour; "
+                "direct source-font paths are required"
+            )
         style_name, style_handle, style_created = _ensure_text_style(
             doc, font_resolution
         )
@@ -3618,7 +3797,6 @@ def _attempt_outline_entity(
         rotation_degrees = _finite_float(getattr(text_item, "rotation", 0.0) or 0.0)
         if rotation_degrees is None:
             raise _RepresentationImpossible("source rotation is missing or non-finite")
-        face = FontFace(filename=font_resolution.filename)
         source_transform = _item_authoritative_transform(
             text_item,
             face,

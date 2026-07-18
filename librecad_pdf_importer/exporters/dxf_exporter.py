@@ -31,6 +31,7 @@ from dxf_text_builder import (
     TextDeliveryResult,
     _block_reference_handles,
     _glyph_block_name_binds_source,
+    _outline_reference_handles,
     _source_identity_sha256,
     _visible_ink_expected,
     build_text,
@@ -460,6 +461,21 @@ def _verify_serialized_text_deliveries(
                     raise RuntimeError(
                         f"serialized text delivery {source_id}: glyph support mismatch"
                     )
+                try:
+                    exact_referenced = _outline_reference_handles(
+                        doc,
+                        [insert, *list(block)],
+                    )
+                except (TypeError, ValueError, AttributeError) as exc:
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: glyph reference "
+                        "dependency closure is invalid"
+                    ) from exc
+                if exact_referenced != referenced_handles:
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: glyph referenced handles "
+                        "do not match the physical layer dependency closure"
+                    )
                 evidence = dict(final_attempt.get("evidence") or {})
                 expected_block_name = str(evidence.get("block_name") or "")
                 expected_source_digest = str(
@@ -527,6 +543,30 @@ def _verify_serialized_text_deliveries(
                     raise RuntimeError(
                         f"serialized text delivery {source_id}: glyph parent layer "
                         "identity or visual state changed"
+                    )
+                expected_layer_transparency = evidence.get(
+                    "expected_block_layer_transparency"
+                )
+                actual_layer_transparency = layer_record.transparency
+                if (
+                    not _strict_finite_number(expected_layer_transparency)
+                    or not _strict_finite_number(actual_layer_transparency)
+                    or not math.isclose(
+                        float(actual_layer_transparency),
+                        float(expected_layer_transparency),
+                        rel_tol=0.0,
+                        abs_tol=1e-12,
+                    )
+                    or not math.isclose(
+                        float(expected_layer_transparency),
+                        0.0,
+                        rel_tol=0.0,
+                        abs_tol=1e-12,
+                    )
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: glyph parent layer "
+                        "transparent visual state changed"
                     )
                 if (
                     evidence.get("expected_block_in_modelspace") is not True
@@ -613,14 +653,29 @@ def _verify_serialized_text_deliveries(
                     raise RuntimeError(
                         f"serialized text delivery {source_id}: glyph outline transform changed"
                     )
+                expected_aci = evidence.get("block_insert_aci")
+                actual_aci = insert.dxf.get("color", 256)
                 expected_true_color = evidence.get("block_insert_true_color")
                 actual_true_color = (
                     int(insert.dxf.true_color)
                     if insert.dxf.hasattr("true_color")
                     else None
                 )
-                if expected_true_color is not None and actual_true_color != int(
-                    expected_true_color
+                if (
+                    evidence.get("block_insert_color_verified") is not True
+                    or isinstance(expected_aci, bool)
+                    or not isinstance(expected_aci, int)
+                    or isinstance(actual_aci, bool)
+                    or not isinstance(actual_aci, int)
+                    or actual_aci != expected_aci
+                    or (
+                        expected_true_color is not None
+                        and (
+                            isinstance(expected_true_color, bool)
+                            or not isinstance(expected_true_color, int)
+                        )
+                    )
+                    or actual_true_color != expected_true_color
                 ):
                     raise RuntimeError(
                         f"serialized text delivery {source_id}: glyph outline color changed"
@@ -795,6 +850,31 @@ def _verify_serialized_text_deliveries(
             if support_handles:
                 raise RuntimeError(
                     f"serialized text delivery {source_id}: geometry has unexpected support"
+                )
+            evidence = dict(final_attempt.get("evidence") or {})
+            if (
+                evidence.get("expected_geometry_in_modelspace") is not True
+                or evidence.get("geometry_modelspace_ownership_verified") is not True
+                or any(
+                    str(entity.dxf.owner or "") != str(doc.modelspace().layout_key)
+                    for entity in entities
+                )
+            ):
+                raise RuntimeError(
+                    f"serialized text delivery {source_id}: geometry modelspace "
+                    "ownership changed"
+                )
+            try:
+                exact_referenced = _outline_reference_handles(doc, entities)
+            except (TypeError, ValueError, AttributeError) as exc:
+                raise RuntimeError(
+                    f"serialized text delivery {source_id}: geometry reference "
+                    "dependency closure is invalid"
+                ) from exc
+            if exact_referenced != referenced_handles:
+                raise RuntimeError(
+                    f"serialized text delivery {source_id}: geometry referenced handles "
+                    "do not match the physical layer dependency closure"
                 )
             outline_delivery_entities = entities
 

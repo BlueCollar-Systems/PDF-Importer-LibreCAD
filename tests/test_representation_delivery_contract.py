@@ -1279,6 +1279,23 @@ def test_serialized_glyph_verifier_rejects_expected_layer_frozen(
         _verify_serialized_text_deliveries(reopened, [result.to_dict()])
 
 
+def test_serialized_glyph_verifier_rejects_expected_layer_transparency(
+    tmp_path,
+) -> None:
+    """Inherited layer opacity is part of the persisted parent visual state."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "glyphs-expected-layer-transparent.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    insert = next(iter(reopened.modelspace()))
+    layer = reopened.layers.get(str(insert.dxf.layer))
+    layer.transparency = 1.0
+
+    with pytest.raises(RuntimeError, match="visual|layer|transparent|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
 def test_serialized_glyph_verifier_rejects_invisible_parent_insert(
     tmp_path,
 ) -> None:
@@ -1321,6 +1338,87 @@ def test_serialized_glyph_verifier_rejects_partially_transparent_parent_insert(
     next(iter(reopened.modelspace())).transparency = 0.5
 
     with pytest.raises(RuntimeError, match="visual|transparent|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+@pytest.mark.parametrize("color_kind", ["aci", "true_color"])
+def test_serialized_glyph_verifier_rejects_added_parent_color(
+    tmp_path,
+    color_kind,
+) -> None:
+    """An uncolored parent cannot gain a display color after acceptance."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / f"glyphs-added-parent-{color_kind}.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    insert = next(iter(reopened.modelspace()))
+    if color_kind == "aci":
+        insert.dxf.color = 1
+    else:
+        insert.dxf.true_color = 0xFF0000
+
+    with pytest.raises(RuntimeError, match="visual|color|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+@pytest.mark.parametrize("state", ["invisible", "transparent"])
+def test_serialized_glyph_verifier_rejects_hidden_block_child(
+    tmp_path,
+    state,
+) -> None:
+    """Intact contour coordinates cannot certify hidden owned glyph ink."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / f"glyphs-hidden-block-child-{state}.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    insert = next(iter(reopened.modelspace()))
+    child = next(iter(reopened.blocks.get(str(insert.dxf.name))))
+    if state == "invisible":
+        child.dxf.invisible = 1
+    else:
+        child.transparency = 1.0
+
+    with pytest.raises(RuntimeError, match="visual|visible|transparent|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+@pytest.mark.parametrize("state", ["invisible", "transparent"])
+def test_serialized_geometry_verifier_rejects_hidden_owned_entity(
+    tmp_path,
+    state,
+) -> None:
+    """Raw Geometry must remain visibly delivered after save/reopen."""
+
+    doc, _, result = _deliver("geometry")
+    output = tmp_path / f"geometry-hidden-owned-entity-{state}.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    entity = next(iter(reopened.modelspace()))
+    if state == "invisible":
+        entity.dxf.invisible = 1
+    else:
+        entity.transparency = 1.0
+
+    with pytest.raises(RuntimeError, match="visual|visible|transparent|outline"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_serialized_geometry_verifier_requires_owned_entities_in_modelspace(
+    tmp_path,
+) -> None:
+    """Live handles in paper space are not delivered model geometry."""
+
+    doc, _, result = _deliver("geometry")
+    output = tmp_path / "geometry-moved-to-paperspace.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    for entity in list(reopened.modelspace()):
+        reopened.modelspace().move_to_layout(entity, reopened.layout())
+    assert list(reopened.modelspace()) == []
+
+    with pytest.raises(RuntimeError, match="model|space|ownership|outline"):
         _verify_serialized_text_deliveries(reopened, [result.to_dict()])
 
 
@@ -1446,6 +1544,27 @@ def test_serialized_glyph_verifier_rejects_an_unowned_duplicate_reference(
 
     with pytest.raises(RuntimeError, match="duplicate|ownership|reference|outline"):
         _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_serialized_glyph_verifier_rejects_jointly_invented_referenced_handle(
+    tmp_path,
+) -> None:
+    """Attempt/delivery agreement cannot invent a second physical dependency."""
+
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "glyphs-invented-referenced-handle.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    delivery = result.to_dict()
+    verified_attempt = next(
+        attempt for attempt in delivery["attempts"] if attempt["outcome"] == "verified"
+    )
+    invented = str(verified_attempt["support_entity_handles"][-1])
+    delivery["referenced_entity_handles"].append(invented)
+    verified_attempt["referenced_entity_handles"].append(invented)
+
+    with pytest.raises(RuntimeError, match="reference|handle|layer|support"):
+        _verify_serialized_text_deliveries(reopened, [delivery])
 
 
 def test_serialized_delivery_binds_verified_attempt_to_the_same_source_id(
@@ -1808,6 +1927,21 @@ def test_zero_ink_format_source_uses_the_same_truthful_zero_ink_path(
 )
 def test_default_ignorable_detection_preserves_real_combining_ink(content) -> None:
     assert dxf_text_builder._visible_ink_expected(content) is True
+
+
+@pytest.mark.parametrize("mode", ["glyphs", "geometry"])
+def test_visible_zero_advance_combining_contour_is_delivered(mode) -> None:
+    """Visible contours do not become impossible merely because advance is zero."""
+
+    item = _item(width=2.0)
+    item.text = "\u0301"
+    item.normalized = "\u0301"
+
+    _, msp, result = _deliver(mode, item, target_app="librecad")
+
+    assert result.verified is True, [attempt.to_dict() for attempt in result.attempts]
+    assert result.final_representation == mode
+    assert list(msp)
 
 
 @pytest.mark.parametrize(
