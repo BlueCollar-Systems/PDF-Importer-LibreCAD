@@ -31,7 +31,11 @@ class TestLcGuiProfessionalImport(unittest.TestCase):
     def test_all_requested_text_modes_remain_available(self) -> None:
         self.assertIn('"Text (editable native TEXT)": "text"', self.source)
         self.assertIn('"Labels (closest Text fallback)": "labels"', self.source)
-        self.assertIn('"3D Text (TEXT with thickness)": "3d_text"', self.source)
+        self.assertIn(
+            '"3D Text (2D host: Text fallback)": "3d_text"',
+            self.source,
+        )
+        self.assertNotIn("3D Text (TEXT with thickness)", self.source)
         self.assertIn('"Glyphs (grouped outlines)": "glyphs"', self.source)
         self.assertIn('"Geometry (raw outlines)": "geometry"', self.source)
         self.assertIn('"Raster (exact item pixels)": "raster"', self.source)
@@ -43,6 +47,7 @@ class TestLcGuiProfessionalImport(unittest.TestCase):
     def test_librecad_2d_disclaimer_present(self) -> None:
         self.assertIn("LibreCAD is 2D", self.source)
         self.assertIn("any verified fallback is shown", self.source)
+        self.assertIn("width=38", self.source)
 
     def test_explicit_geometry_selection_has_no_confirmation_roadblock(self) -> None:
         self.assertNotIn("messagebox.askokcancel(", self.source)
