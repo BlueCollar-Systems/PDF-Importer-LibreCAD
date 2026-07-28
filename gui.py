@@ -34,7 +34,7 @@ IMPORT_MODE_AUTO = "auto"
 TEXT_MODES = {
     "Text (editable native TEXT)": "text",
     "Labels (closest Text fallback)": "labels",
-    "3D Text (TEXT with thickness)": "3d_text",
+    "3D Text (2D host: Text fallback)": "3d_text",
     "Glyphs (grouped outlines)": "glyphs",
     "Geometry (raw outlines)": "geometry",
     "Raster (exact item pixels)": "raster",
@@ -130,7 +130,7 @@ class Pdf2DxfApp(tk.Tk):
             textvariable=self._var_text_mode,
             values=list(TEXT_MODES.keys()),
             state="readonly",
-            width=28,
+            width=38,
         )
         text_combo.grid(row=7, column=1, sticky=tk.W, **pad)
         ttk.Label(

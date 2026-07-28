@@ -2,7 +2,7 @@
 
 **BlueCollar Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.67](https://img.shields.io/badge/Version-1.0.68-blue.svg)
+![Version: 1.0.69](https://img.shields.io/badge/Version-1.0.69-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
@@ -15,7 +15,7 @@ DraftSight, QCAD, and any DXF-compatible CAD software.
 - Text rendering always at maximum fidelity (no quality dials)
 - **Professional import (GUI)**: Auto mode only — picks vector/raster/hybrid per page internally
 - **CLI/batch modes** (BCS-ARCH-001): Auto, Vector, Raster, Hybrid for scripting
-- **Text representations (GUI and CLI)**: Text, Labels, 3D Text, Glyphs, Geometry, or Raster; the selected type is verified instead of silently substituted
+- **Text representations (GUI and CLI)**: Text, Labels, 3D Text, Glyphs, Geometry, or Raster; LibreCAD's 2D host limitation is stated in the 3D Text choice and every fallback is reported instead of silently substituted
 - **Maximum fidelity by default** -- no quality tiers, no fast-mode compromises
 - Organizes geometry into DXF layers (per-page and per-OCG)
 - Outputs DXF versions from R12 through R2018
@@ -131,7 +131,7 @@ Options:
   --pages 1,2,3          Pages to convert (default: all)
   --mode MODE            auto | vector | raster | hybrid  (default: auto)
   --text-mode MODE       text | labels | 3d_text | glyphs | geometry | raster
-                         (default: labels)
+                         (default: text)
   --import-text / --no-import-text  Whether to import text at all (default: on)
   --scale 1.0            Scale factor
   --dxf-version VER      R12 | R2000 | R2004 | R2007 | R2010 | R2013 | R2018
