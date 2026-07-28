@@ -11,6 +11,8 @@ from pathlib import Path
 
 import ezdxf
 
+from pdfcadcore.text_delivery_report import resolve_text_representation_delivery
+
 try:
     import pymupdf as fitz
 except ImportError:
@@ -91,14 +93,24 @@ class TestModeCli(unittest.TestCase):
             self.assertEqual(delivery["entity_count"], 1)
             self.assertEqual(delivery["report_path"], str(report_path))
 
-            item = report["extra"]["text_representation_delivery"]["items"][0]
-            self.assertEqual(item["requested_representation"], "3d_text")
-            self.assertEqual(item["final_representation"], "glyphs")
+            report_extra = report["extra"]
+            projection = report_extra["text_representation_delivery"]
+            resolution = resolve_text_representation_delivery(
+                report_extra["text_delivery_attempts"], projection
+            )
+            self.assertTrue(resolution["verified"])
+            item = projection["items"][0]
+            self.assertEqual(projection["requested_type"], "3d_text")
+            self.assertEqual(item["final_type"], "glyphs")
             self.assertTrue(item["verified"])
-            attempts = item["attempts"]
+            attempts = [
+                attempt
+                for attempt in report_extra["text_delivery_attempts"]
+                if attempt["source_item_id"] == item["source_item_id"]
+            ]
             structural_attempts = []
             for attempt in attempts:
-                attempted = attempt["attempted_representation"]
+                attempted = attempt["attempted_type"]
                 if not structural_attempts or structural_attempts[-1] != attempted:
                     structural_attempts.append(attempted)
             self.assertEqual(structural_attempts, ["3d_text", "text", "glyphs"])
@@ -107,12 +119,17 @@ class TestModeCli(unittest.TestCase):
             )
             prior = attempts[: attempts.index(terminal)]
             self.assertTrue(prior)
-            self.assertTrue(all(attempt["outcome"] == "impossible" for attempt in prior))
-            self.assertTrue(all(attempt["cleanup_verified"] for attempt in prior))
             self.assertTrue(
-                all(attempt["source_id"] == item["source_id"] for attempt in attempts)
+                all(attempt["outcome"] == "proven_impossible" for attempt in prior)
             )
-            self.assertEqual(terminal["attempted_representation"], "glyphs")
+            self.assertTrue(all(attempt["cleanup_complete"] for attempt in prior))
+            self.assertTrue(
+                all(
+                    attempt["source_item_id"] == item["source_item_id"]
+                    for attempt in attempts
+                )
+            )
+            self.assertEqual(terminal["attempted_type"], "glyphs")
             self.assertTrue(terminal["evidence"]["source_text_parameters_verified"])
             entity_types = {
                 entity.dxftype() for entity in ezdxf.readfile(out_dxf).modelspace()
@@ -225,18 +242,21 @@ class TestModeCli(unittest.TestCase):
             self.assertTrue(summary["export"]["text_delivery"]["verified"])
             self.assertTrue(summary["export"]["text_delivery"]["fallback_used"])
             report = json.loads(accepted_report.read_text(encoding="utf-8"))
-            delivery = report["extra"]["text_representation_delivery"]
+            report_extra = report["extra"]
+            delivery = report_extra["text_representation_delivery"]
             self.assertTrue(delivery["verified"])
-            self.assertEqual(
-                delivery["items"][0]["requested_representation"], "3d_text"
-            )
+            self.assertEqual(delivery["requested_type"], "3d_text")
             item = delivery["items"][0]
-            self.assertEqual(item["final_representation"], "raster")
-            self.assertTrue(item["fallback_used"])
-            attempts = item["attempts"]
+            self.assertEqual(item["final_type"], "raster")
+            self.assertNotEqual(item["final_type"], delivery["requested_type"])
+            attempts = [
+                attempt
+                for attempt in report_extra["text_delivery_attempts"]
+                if attempt["source_item_id"] == item["source_item_id"]
+            ]
             structural_attempts = []
             for attempt in attempts:
-                attempted = attempt["attempted_representation"]
+                attempted = attempt["attempted_type"]
                 if not structural_attempts or structural_attempts[-1] != attempted:
                     structural_attempts.append(attempted)
             self.assertEqual(
@@ -245,26 +265,31 @@ class TestModeCli(unittest.TestCase):
             )
             terminal = attempts[-1]
             prior = attempts[:-1]
-            self.assertEqual(terminal["attempted_representation"], "raster")
+            self.assertEqual(terminal["attempted_type"], "raster")
             self.assertEqual(terminal["outcome"], "verified")
-            self.assertTrue(terminal["cleanup_verified"])
-            self.assertTrue(all(attempt["outcome"] == "impossible" for attempt in prior))
-            self.assertTrue(all(attempt["cleanup_verified"] for attempt in prior))
+            self.assertTrue(terminal["cleanup_complete"])
             self.assertTrue(
-                all(attempt["source_id"] == item["source_id"] for attempt in attempts)
+                all(attempt["outcome"] == "proven_impossible" for attempt in prior)
+            )
+            self.assertTrue(all(attempt["cleanup_complete"] for attempt in prior))
+            self.assertTrue(
+                all(
+                    attempt["source_item_id"] == item["source_item_id"]
+                    for attempt in attempts
+                )
             )
             native_attempts = [
                 attempt
                 for attempt in prior
-                if attempt["attempted_representation"] in {"3d_text", "text"}
+                if attempt["attempted_type"] in {"3d_text", "text"}
             ]
             self.assertEqual(len(native_attempts), 2)
             self.assertTrue(
                 all(
                     attempt["evidence"]["parent_visual_fidelity_verified"] is False
                     and attempt["evidence"]["fallback_authorized_for_this_item"] is True
-                    and set(attempt["removed_entity_handles"])
-                    == set(attempt["created_entity_handles"])
+                    and set(attempt["removed_entity_ids"])
+                    == set(attempt["created_entity_ids"])
                     for attempt in native_attempts
                 )
             )
@@ -283,7 +308,7 @@ class TestModeCli(unittest.TestCase):
                 )
             )
             evidence = terminal["evidence"]
-            self.assertEqual(evidence["source_id"], item["source_id"])
+            self.assertEqual(evidence["source_id"], item["source_item_id"])
             self.assertEqual(evidence["source_page_number"], 1)
             self.assertEqual(len(evidence["source_bbox_pdf"]), 4)
             self.assertEqual(len(evidence["target_bbox_model"]), 4)

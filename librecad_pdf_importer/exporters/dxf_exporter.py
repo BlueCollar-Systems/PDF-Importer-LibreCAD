@@ -33,7 +33,9 @@ from dxf_text_builder import (
     _block_reference_handles,
     _build_physical_glyph_ink_proof,
     _glyph_block_name_binds_source,
+    _normalized_mode,
     _outline_reference_handles,
+    _representation_ladder,
     _source_identity_sha256,
     _validate_parent_lff_ink_proof,
     _validate_physical_glyph_ink_proof,
@@ -648,6 +650,9 @@ def _verify_serialized_text_deliveries(
                 expected_source_pdf_path=expected_source_pdf_path,
                 expected_source_pdf_sha256=expected_source_pdf_sha256,
             )
+            verified_evidence = dict(final_attempt.get("evidence") or {})
+            verified_evidence["serialized_record_verified"] = True
+            final_attempt["evidence"] = verified_evidence
             continue
         physical_proof = evidence.get("physical_glyph_ink_proof")
         physical_proof_valid: Optional[bool] = None
@@ -1517,6 +1522,9 @@ def _verify_serialized_text_deliveries(
                     raise RuntimeError(
                         f"serialized text delivery {source_id}: embedded font hash mismatch"
                     )
+        verified_evidence = dict(final_attempt.get("evidence") or {})
+        verified_evidence["serialized_record_verified"] = True
+        final_attempt["evidence"] = verified_evidence
 
 
 @dataclass
@@ -2295,6 +2303,39 @@ def _attempt_terminal_text_raster(
         )
 
 
+def _terminal_raster_fallback_ladder_verified(
+    delivery: TextDeliveryResult,
+) -> bool:
+    """Require the exact finite structural ladder before item Raster."""
+
+    requested = _normalized_mode(delivery.requested_representation)
+    if requested == "raster":
+        return not delivery.attempts
+    expected = _representation_ladder(requested)
+    if not expected or not delivery.attempts:
+        return False
+    compressed: List[str] = []
+    for attempt in delivery.attempts:
+        attempted = _normalized_mode(attempt.attempted_representation)
+        if not compressed or compressed[-1] != attempted:
+            compressed.append(attempted)
+        evidence = attempt.evidence
+        if (
+            attempt.source_id != delivery.source_id
+            or _normalized_mode(attempt.requested_representation) != requested
+            or attempt.outcome != "impossible"
+            or attempt.cleanup_verified is not True
+            or set(attempt.created_entity_handles)
+            != set(attempt.removed_entity_handles)
+            or bool(attempt.entity_handles)
+            or bool(attempt.support_entity_handles)
+            or not isinstance(evidence, dict)
+            or not evidence
+        ):
+            return False
+    return compressed == expected
+
+
 def export_to_dxf(
     extraction: DocumentExtraction,
     output_path: str,
@@ -2571,27 +2612,36 @@ def _export_to_dxf_impl(
                     (not delivery.verified or not delivery.final_representation)
                     and delivery.terminal_fallback_authorized
                 ):
-                    if source_pdf_sha256 is None:
-                        source_pdf_sha256 = _file_sha256(source_pdf)
-                    delivery, pending_asset = _attempt_terminal_text_raster(
-                        delivery,
-                        extraction=extraction,
-                        page_number=int(page.page_data.page_number),
-                        source_text=text,
-                        placed_text=ti,
-                        msp=msp,
-                        layer_name=layer,
-                        asset_root=asset_root,
-                        raster_dpi=int(
-                            getattr(opts.provenance_opts, "raster_dpi", 300)
-                            if opts.provenance_opts is not None
-                            else 300
-                        ),
-                        source_pdf_sha256=source_pdf_sha256,
-                        config=text_cfg,
-                    )
-                    if pending_asset is not None:
-                        pending_raster_assets.append(pending_asset)
+                    if not _terminal_raster_fallback_ladder_verified(delivery):
+                        delivery.terminal_fallback_authorized = False
+                        if "impossibility proof" not in delivery.failure_reason:
+                            delivery.failure_reason = (
+                                (delivery.failure_reason + "; ")
+                                if delivery.failure_reason
+                                else ""
+                            ) + "terminal Raster forbidden without exact impossibility proof"
+                    else:
+                        if source_pdf_sha256 is None:
+                            source_pdf_sha256 = _file_sha256(source_pdf)
+                        delivery, pending_asset = _attempt_terminal_text_raster(
+                            delivery,
+                            extraction=extraction,
+                            page_number=int(page.page_data.page_number),
+                            source_text=text,
+                            placed_text=ti,
+                            msp=msp,
+                            layer_name=layer,
+                            asset_root=asset_root,
+                            raster_dpi=int(
+                                getattr(opts.provenance_opts, "raster_dpi", 300)
+                                if opts.provenance_opts is not None
+                                else 300
+                            ),
+                            source_pdf_sha256=source_pdf_sha256,
+                            config=text_cfg,
+                        )
+                        if pending_asset is not None:
+                            pending_raster_assets.append(pending_asset)
                 if not delivery.verified or not delivery.final_representation:
                     text_deliveries.append(delivery.to_dict())
                     _sync_text_evidence()

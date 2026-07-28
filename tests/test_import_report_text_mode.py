@@ -9,6 +9,52 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from pdfcadcore.import_report import build_import_report
+from pdfcadcore.text_delivery_report import build_text_representation_delivery
+
+
+def _delivery_contract_extra(
+    source_ids: list[str],
+    *,
+    requested_type: str = "text",
+) -> dict:
+    attempts = [
+        {
+            "source_item_id": source_id,
+            "requested_type": requested_type,
+            "attempted_type": requested_type,
+            "final_type": requested_type,
+            "outcome": "verified",
+            "cleanup_complete": True,
+            "record_verified": True,
+            "type_verified": True,
+            "visual_verified": True,
+            "ownership_verified": True,
+            "created_entity_ids": [f"entity:{source_id}"],
+            "removed_entity_ids": [],
+            "delivery_entity_ids": [f"entity:{source_id}"],
+            "support_entity_ids": [],
+            "referenced_entity_ids": [],
+            "reused_entity_ids": [],
+            "evidence": {"host_bound": True},
+        }
+        for source_id in source_ids
+    ]
+    required = bool(source_ids)
+    return {
+        "text_delivery_obligations": {
+            "schema": "bcs.text_delivery_obligations/1.0",
+            "required": required,
+            "requested_type": requested_type,
+            "source_item_ids": list(source_ids),
+        },
+        "text_delivery_attempts": attempts,
+        "text_representation_delivery": build_text_representation_delivery(
+            attempts,
+            requested_type=requested_type,
+            required=required,
+            expected_source_item_ids=source_ids,
+        ),
+    }
 
 
 def test_librecad_report_records_text_mode():
@@ -81,6 +127,72 @@ def test_zero_span_unverified_delivery_cannot_claim_contract_ready():
     ready = report.extra["import_contract_ready"]
     assert ready["ready"] is False
     assert ready["checks"]["text_delivery"] is False
+
+
+def test_fabricated_delivery_without_canonical_ledger_is_not_ready():
+    report = build_import_report(
+        host_app="librecad",
+        importer_version="1.0.66",
+        pdf_path="drawing.pdf",
+        import_text=True,
+        text_mode="text",
+        text_source_spans=1,
+        extra={
+            "text_delivery_obligations": {
+                "schema": "bcs.text_delivery_obligations/1.0",
+                "required": True,
+                "requested_type": "text",
+                "source_item_ids": ["text_span:1:1"],
+            },
+            "text_representation_delivery": {
+                "verified": True,
+                "items": [{"source_item_id": "text_span:1:1", "verified": True}],
+            },
+        },
+    )
+
+    assert report.extra["import_contract_ready"]["ready"] is False
+    assert report.extra["import_contract_ready"]["checks"]["text_delivery"] is False
+
+
+def test_readiness_recomputes_mutated_ledger_and_binds_independent_context():
+    for mutation in ("ledger", "requested", "obligation"):
+        extra = _delivery_contract_extra(["text_span:1:1"])
+        if mutation == "ledger":
+            extra["text_delivery_attempts"][0]["outcome"] = "failed"
+        elif mutation == "requested":
+            extra["text_delivery_obligations"]["requested_type"] = "glyphs"
+        else:
+            extra["text_delivery_obligations"]["source_item_ids"] = [
+                "text_span:1:2"
+            ]
+        report = build_import_report(
+            host_app="librecad",
+            importer_version="1.0.66",
+            pdf_path="drawing.pdf",
+            import_text=True,
+            text_mode="text",
+            text_source_spans=1,
+            extra=extra,
+        )
+
+        assert report.extra["import_contract_ready"]["ready"] is False
+        assert report.extra["import_contract_ready"]["checks"]["text_delivery"] is False
+
+
+def test_verified_zero_obligation_contract_is_ready() -> None:
+    report = build_import_report(
+        host_app="librecad",
+        importer_version="1.0.66",
+        pdf_path="blank.pdf",
+        import_text=True,
+        text_mode="text",
+        text_source_spans=0,
+        extra=_delivery_contract_extra([]),
+    )
+
+    assert report.extra["import_contract_ready"]["ready"] is True
+    assert report.extra["import_contract_ready"]["checks"]["text_delivery"] is True
 
 
 def test_performance_phases_optional():

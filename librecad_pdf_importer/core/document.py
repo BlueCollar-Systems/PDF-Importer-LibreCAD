@@ -19,6 +19,7 @@ from pdfcadcore.primitive_extractor import (
     _page_rotation_transform,
     _transform_pdf_point,
     extract_page,
+    semantic_text_projection,
 )
 from pdfcadcore.primitives import PageData
 
@@ -161,16 +162,22 @@ class ExtractionOptions:
     image_dir: Optional[str] = None
 
 
+def _replace_physical_text_items(page_data: PageData, text_items: Sequence[object]) -> None:
+    """Replace delivery spans and rebuild analysis from only those exact spans."""
+    page_data.text_items = list(text_items)
+    page_data.semantic_text_items = semantic_text_projection(page_data.text_items)
+
+
 def _prepare_vector_page_data(page_data: PageData, options: ExtractionOptions) -> None:
     """Apply the existing vector controls without changing text sizing."""
     if options.min_segment_mm > 0:
         _prune_micro_segments(page_data, options.min_segment_mm)
     if not options.import_text:
-        page_data.text_items = []
+        _replace_physical_text_items(page_data, ())
     elif options.max_text_items_per_page is not None:
         cap = int(max(0, options.max_text_items_per_page))
         if len(page_data.text_items) > cap:
-            page_data.text_items = page_data.text_items[:cap]
+            _replace_physical_text_items(page_data, page_data.text_items[:cap])
     if options.detect_arcs:
         _promote_arcs(page_data, options.arc_fit_tol_mm, options.min_arc_span_deg)
 
@@ -190,7 +197,7 @@ def _restore_viable_vector_content(
         return False
     primitives, text_items = retained_content
     page_data.primitives = list(primitives)
-    page_data.text_items = list(text_items)
+    _replace_physical_text_items(page_data, text_items)
     if not content_prepared:
         _prepare_vector_page_data(page_data, options)
     return _has_viable_vector_content(page_data)
@@ -358,7 +365,7 @@ def _extract_document_impl(
                 if _has_viable_vector_content(page_data):
                     retained_content = (list(page_data.primitives), list(page_data.text_items))
                 page_data.primitives = []
-                page_data.text_items = []
+                _replace_physical_text_items(page_data, ())
 
             if (
                 mode == "auto"
@@ -377,7 +384,7 @@ def _extract_document_impl(
                         retained_content = (list(page_data.primitives), list(page_data.text_items))
                         retained_content_prepared = True
                     page_data.primitives = []
-                    page_data.text_items = []
+                    _replace_physical_text_items(page_data, ())
 
             profile = profile_page(page_data)
             images = []

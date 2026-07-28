@@ -102,6 +102,12 @@ class NormalizedText:
     source_glyph_id: Optional[int] = None
     font_asset: Optional[Any] = field(default=None, repr=False, compare=False)
     font_failure: Optional[Any] = field(default=None, repr=False, compare=False)
+    # Physical delivery items retain their exact source-span identity. A
+    # semantic projection may combine spans for recognition, but it is marked
+    # explicitly and must never be passed to a host renderer. These fields are
+    # appended to preserve the dataclass's historical positional signature.
+    source_span_ids: Tuple[int, ...] = field(default_factory=tuple)
+    semantic_projection: bool = False
 
 
 @dataclass
@@ -119,10 +125,22 @@ class PageData:
     width: float           # mm
     height: float          # mm
     primitives: List[Primitive] = field(default_factory=list)
+    # Canonical physical delivery spans, in page-local source order.
     text_items: List[NormalizedText] = field(default_factory=list)
     layers: List[str] = field(default_factory=list)
     xobject_names: List[str] = field(default_factory=list)
     resolved_scale: Optional["ResolvedScale"] = None
+    # Analysis-only projection. Appended for positional-call compatibility.
+    # Recognizers may merge stacked fraction spans here without changing text,
+    # glyph layout, placement, or ids above.
+    semantic_text_items: List[NormalizedText] = field(default_factory=list)
+
+
+def text_items_for_analysis(page_data: PageData) -> List[NormalizedText]:
+    """Return analysis text without ever rewriting physical delivery spans."""
+
+    semantic = getattr(page_data, "semantic_text_items", None)
+    return semantic if semantic else page_data.text_items
 
 
 @dataclass

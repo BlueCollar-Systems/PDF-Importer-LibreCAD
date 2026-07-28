@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .preflight_copy import SCALE_CROSSCHECK_BANNER
+from .text_delivery_report import resolve_text_representation_delivery
 
 SCHEMA = "bcs.import_report/1.1"
 SCALE_TRUST_CONFIDENCE = 0.70
@@ -521,13 +522,61 @@ def build_import_contract_ready(report: "ImportReport") -> Dict[str, Any]:
     } and terminal_failure is None
     import_text_enabled = extra.get("import_text") is not False
     delivery = extra.get("text_representation_delivery")
-    text_delivery_ok = (
-        not import_text_enabled
-        or (
-            isinstance(delivery, dict)
-            and delivery.get("verified") is True
-            and bool(delivery.get("items"))
+    attempts = extra.get("text_delivery_attempts")
+    obligations = extra.get("text_delivery_obligations")
+    delivery_resolution: Dict[str, Any] = {
+        "verified": False,
+        "invalid_reasons": ["text delivery contract was not resolved"],
+    }
+    obligations_valid = False
+    expected_source_item_ids: List[str] = []
+    if isinstance(obligations, dict):
+        source_ids_value = obligations.get("source_item_ids")
+        if isinstance(source_ids_value, list):
+            expected_source_item_ids = list(source_ids_value)
+            exact_source_ids = bool(
+                all(
+                    isinstance(source_id, str)
+                    and bool(source_id)
+                    and source_id == source_id.strip()
+                    for source_id in expected_source_item_ids
+                )
+                and len(expected_source_item_ids)
+                == len(set(expected_source_item_ids))
+            )
+            requested_type = obligations.get("requested_type")
+            exact_requested_type = bool(
+                isinstance(requested_type, str)
+                and bool(requested_type)
+                and requested_type == requested_type.strip()
+                and requested_type == extra.get("text_mode")
+            )
+            required = obligations.get("required")
+            obligations_valid = bool(
+                obligations.get("schema")
+                == "bcs.text_delivery_obligations/1.0"
+                and type(required) is bool
+                and required == bool(expected_source_item_ids)
+                and exact_source_ids
+                and exact_requested_type
+                and isinstance(delivery, dict)
+                and delivery.get("required") is required
+                and delivery.get("requested_type") == requested_type
+            )
+    if (
+        import_text_enabled
+        and obligations_valid
+        and isinstance(attempts, list)
+        and all(isinstance(attempt, dict) for attempt in attempts)
+    ):
+        delivery_resolution = resolve_text_representation_delivery(
+            attempts,
+            delivery,
+            expected_source_item_ids=expected_source_item_ids,
         )
+    text_delivery_ok = bool(
+        not import_text_enabled
+        or (obligations_valid and delivery_resolution.get("verified") is True)
     )
     ready = (
         has_stamp
@@ -551,6 +600,9 @@ def build_import_contract_ready(report: "ImportReport") -> Dict[str, Any]:
             "no_terminal_failure": terminal_failure is None,
             "no_open_failure": open_failure is None,
         },
+        "text_delivery_invalid_reasons": list(
+            delivery_resolution.get("invalid_reasons") or []
+        ),
         "note": (
             "ready for contract consumers"
             if ready

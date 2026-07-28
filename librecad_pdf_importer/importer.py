@@ -7,10 +7,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from dxf_text_builder import _representation_ladder as _dxf_text_representation_ladder
 from pdfcadcore.import_bounds import compute_import_bounds
 from pdfcadcore.import_config import ImportConfig
 from pdfcadcore.import_report import build_actual_text_entity_types, build_import_report
 from pdfcadcore.model3d_intent import analyze_model3d_intent
+from pdfcadcore.text_delivery_report import build_text_representation_delivery
 
 from .core.document import DocumentExtraction, ExtractionOptions, extract_document
 
@@ -51,7 +53,280 @@ def _importer_version() -> str:
 
 def _normalized_text_mode(text_mode: Any) -> str:
     mode = str(text_mode or "text").strip().lower()
-    return "3d_text" if mode == "text3d" else mode
+    return {
+        "label": "labels",
+        "native_text": "text",
+        "text3d": "3d_text",
+        "outlines": "glyphs",
+    }.get(mode, mode)
+
+
+def _canonical_text_mode(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    return _normalized_text_mode(value)
+
+
+def _canonical_entity_ids(value: Any) -> tuple[list[Any], bool]:
+    if not isinstance(value, (list, tuple)):
+        return [], False
+    ids = list(value)
+    valid = bool(
+        all(
+            isinstance(item, str)
+            and bool(item)
+            and item == item.strip()
+            for item in ids
+        )
+        and len(ids) == len(set(ids))
+    )
+    return ids, valid
+
+
+def _librecad_attempt_sequence_verified(
+    requested: str,
+    source_id: str,
+    attempted_types: list[str],
+) -> bool:
+    if not requested or not source_id or not attempted_types or any(
+        not attempted_type for attempted_type in attempted_types
+    ):
+        return False
+    compressed: list[str] = []
+    for attempted_type in attempted_types:
+        if not compressed or compressed[-1] != attempted_type:
+            compressed.append(attempted_type)
+    if source_id.startswith("page_visual:"):
+        expected = [requested] if requested == "raster" else [requested, "raster"]
+    else:
+        expected = _dxf_text_representation_ladder(requested)
+        if expected and expected[-1] != "raster":
+            expected.append("raster")
+    return bool(compressed and compressed == expected[: len(compressed)])
+
+
+def _canonical_text_delivery_attempts(
+    deliveries: list[Any],
+) -> list[Dict[str, Any]]:
+    """Flatten host delivery results into the one canonical report ledger."""
+
+    ledger: list[Dict[str, Any]] = []
+    for delivery in deliveries:
+        if not isinstance(delivery, dict):
+            continue
+        raw_source_id = delivery.get("source_id")
+        source_id = (
+            raw_source_id
+            if isinstance(raw_source_id, str)
+            and bool(raw_source_id)
+            and raw_source_id == raw_source_id.strip()
+            else ""
+        )
+        requested = _canonical_text_mode(
+            delivery.get("requested_representation")
+        )
+        final_type = _canonical_text_mode(delivery.get("final_representation"))
+        outer_verified = delivery.get("verified") is True
+        outer_delivery_ids, outer_delivery_ids_valid = _canonical_entity_ids(
+            delivery.get("entity_handles")
+        )
+        outer_support_ids, outer_support_ids_valid = _canonical_entity_ids(
+            delivery.get("support_entity_handles")
+        )
+        outer_referenced_ids, outer_referenced_ids_valid = _canonical_entity_ids(
+            delivery.get("referenced_entity_handles")
+        )
+        outer_ids_valid = bool(
+            outer_delivery_ids_valid
+            and outer_support_ids_valid
+            and outer_referenced_ids_valid
+        )
+        raw_attempt_value = delivery.get("attempts")
+        raw_attempts_well_formed = bool(
+            isinstance(raw_attempt_value, list)
+            and raw_attempt_value
+            and all(isinstance(item, dict) for item in raw_attempt_value)
+        )
+        raw_attempts = (
+            list(raw_attempt_value) if isinstance(raw_attempt_value, list) else []
+        )
+        if not raw_attempts_well_formed:
+            raw_attempts = [
+                {
+                    "source_id": source_id,
+                    "requested_representation": requested,
+                    "attempted_representation": requested,
+                    "outcome": "failed",
+                    "reason": str(delivery.get("failure_reason") or ""),
+                    "cleanup_verified": False,
+                    "created_entity_handles": [],
+                    "removed_entity_handles": [],
+                    "entity_handles": [],
+                    "support_entity_handles": [],
+                    "referenced_entity_handles": [],
+                    "evidence": {
+                        "terminal_fallback_authorized": bool(
+                            delivery.get("terminal_fallback_authorized")
+                        ),
+                        "failure_reason": str(
+                            delivery.get("failure_reason") or ""
+                        ),
+                    },
+                }
+            ]
+        attempted_types = [
+            _canonical_text_mode(attempt.get("attempted_representation"))
+            for attempt in raw_attempts
+            if isinstance(attempt, dict)
+        ]
+        inner_identities_verified = bool(
+            raw_attempts_well_formed
+            and all(
+                attempt.get("source_id") == source_id
+                and _canonical_text_mode(
+                    attempt.get("requested_representation")
+                )
+                == requested
+                for attempt in raw_attempts
+            )
+        )
+        sequence_verified = _librecad_attempt_sequence_verified(
+            requested,
+            source_id,
+            attempted_types,
+        )
+        for attempt_index, raw_attempt in enumerate(raw_attempts):
+            attempt = raw_attempt if isinstance(raw_attempt, dict) else {}
+            host_outcome = str(attempt.get("outcome") or "failed").strip()
+            outcome = {
+                "impossible": "proven_impossible",
+                "verified": "verified",
+            }.get(host_outcome, "failed")
+            attempted_type = _canonical_text_mode(
+                attempt.get("attempted_representation")
+            )
+            verified_terminal = outcome == "verified"
+            terminal_record = attempt_index == len(raw_attempts) - 1
+            evidence_value = attempt.get("evidence")
+            evidence = dict(evidence_value) if isinstance(evidence_value, dict) else {}
+            created_ids, created_ids_valid = _canonical_entity_ids(
+                attempt.get("created_entity_handles")
+            )
+            removed_ids, removed_ids_valid = _canonical_entity_ids(
+                attempt.get("removed_entity_handles")
+            )
+            delivery_ids, delivery_ids_valid = _canonical_entity_ids(
+                attempt.get("entity_handles")
+            )
+            support_ids, support_ids_valid = _canonical_entity_ids(
+                attempt.get("support_entity_handles")
+            )
+            referenced_ids, referenced_ids_valid = _canonical_entity_ids(
+                attempt.get("referenced_entity_handles")
+            )
+            ids_valid = bool(
+                created_ids_valid
+                and removed_ids_valid
+                and delivery_ids_valid
+                and support_ids_valid
+                and referenced_ids_valid
+            )
+            cleanup_complete = attempt.get("cleanup_verified") is True
+            serialized_record_verified = (
+                evidence.get("serialized_record_verified") is True
+            )
+            terminal_bindings_verified = bool(
+                terminal_record
+                and ids_valid
+                and outer_ids_valid
+                and set(delivery_ids) == set(outer_delivery_ids)
+                and set(support_ids) == set(outer_support_ids)
+                and set(referenced_ids) == set(outer_referenced_ids)
+            )
+            page_visual_reuse_verified = bool(
+                terminal_record
+                and attempt.get("strategy")
+                == "existing_page_image_terminal_raster"
+                and evidence.get("existing_image_entity_reused") is True
+                and evidence.get("duplicate_image_entities_created") is False
+                and evidence.get("image_entity_handles") == delivery_ids
+                and evidence.get("image_entity_count") == len(delivery_ids)
+                and not created_ids
+                and serialized_record_verified
+            )
+            reused_ids = (
+                list(dict.fromkeys(delivery_ids + support_ids))
+                if page_visual_reuse_verified
+                else []
+            )
+            created_set = set(created_ids) if ids_valid else set()
+            removed_set = set(removed_ids) if ids_valid else set()
+            delivery_set = set(delivery_ids) if ids_valid else set()
+            support_set = set(support_ids) if ids_valid else set()
+            retained_set = delivery_set.union(support_set)
+            reused_set = set(reused_ids)
+            ownership_partition_verified = bool(
+                ids_valid
+                and removed_set.issubset(created_set)
+                and not removed_set.intersection(retained_set)
+                and not delivery_set.intersection(support_set)
+                and reused_set == retained_set.difference(created_set)
+                and not reused_set.intersection(created_set.union(removed_set))
+                and created_set
+                == removed_set.union(retained_set.difference(reused_set))
+            )
+            terminal_record_verified = bool(
+                terminal_record
+                and verified_terminal
+                and outer_verified
+                and raw_attempts_well_formed
+                and inner_identities_verified
+                and sequence_verified
+                and ids_valid
+                and terminal_bindings_verified
+                and serialized_record_verified
+                and final_type in {"text", "3d_text", "glyphs", "geometry", "raster"}
+                and final_type == attempted_type
+            )
+            ledger.append(
+                {
+                    "source_item_id": source_id,
+                    "requested_type": requested,
+                    "attempted_type": attempted_type,
+                    "final_type": final_type if verified_terminal else None,
+                    "outcome": outcome,
+                    "cleanup_complete": cleanup_complete,
+                    "record_verified": terminal_record_verified,
+                    "type_verified": bool(
+                        terminal_record_verified
+                        and attempt.get("type_verified") is True
+                    ),
+                    "visual_verified": bool(
+                        terminal_record_verified
+                        and attempt.get("visual_verified") is True
+                    ),
+                    "ownership_verified": bool(
+                        terminal_record_verified
+                        and cleanup_complete
+                        and ownership_partition_verified
+                    ),
+                    "created_entity_ids": created_ids,
+                    "removed_entity_ids": removed_ids,
+                    "delivery_entity_ids": delivery_ids,
+                    "support_entity_ids": support_ids,
+                    "referenced_entity_ids": referenced_ids,
+                    "reused_entity_ids": reused_ids,
+                    "strategy": str(attempt.get("strategy") or ""),
+                    "reason": str(attempt.get("reason") or ""),
+                    "superseded": attempt.get("superseded") is True,
+                    "owned_block_names": _canonical_entity_ids(
+                        attempt.get("owned_block_names", [])
+                    )[0],
+                    "host_outcome": host_outcome,
+                    "evidence": evidence,
+                }
+            )
+    return ledger
 
 
 def _text_mode_fallback_for_report(config: ImportConfig, text_source_spans: int) -> Optional[Dict[str, Any]]:
@@ -243,54 +518,46 @@ def write_import_report(
     requested_text_mode = _normalized_text_mode(
         getattr(run.config, "_export_requested_text_mode", run.config.text_mode)
     )
-    delivered_text_entity_counts = dict(
-        getattr(run.config, "_delivered_text_entity_counts", {}) or {}
+    text_delivery_enabled = bool(
+        run.config.import_text and requested_text_mode != "none"
+    )
+    delivered_text_entity_counts = (
+        dict(getattr(run.config, "_delivered_text_entity_counts", {}) or {})
+        if text_delivery_enabled
+        else {}
     )
     delivered_image_count = int(
         getattr(run.config, "_delivered_image_count", 0) or 0
     )
-    text_representation_deliveries = list(
-        getattr(run.config, "_text_representation_deliveries", []) or []
+    text_representation_deliveries = (
+        list(getattr(run.config, "_text_representation_deliveries", []) or [])
+        if text_delivery_enabled
+        else []
     )
-    expected_text_source_ids = {
-        f"text_span:{int(getattr(item, 'page_number', 0) or 0)}:"
-        f"{getattr(item, 'id', '')}"
-        for item in text_items
-        if str(getattr(item, "id", "") or "").strip()
-    }
-    expected_text_source_ids.update(
-        f"page_visual:{int(page.page_data.page_number)}"
-        for page in pages
-        if not list(page.page_data.text_items or []) and bool(page.images)
+    expected_text_source_ids = (
+        [
+            f"text_span:{int(getattr(item, 'page_number', 0) or 0)}:"
+            f"{getattr(item, 'id', '')}"
+            for item in text_items
+            if str(getattr(item, "id", "") or "").strip()
+        ]
+        if text_delivery_enabled
+        else []
     )
-    delivery_records_well_formed = bool(text_representation_deliveries) and all(
-        isinstance(item, dict) for item in text_representation_deliveries
-    )
-    delivered_source_ids_for_gate = [
-        str(item.get("source_id") or "")
-        for item in text_representation_deliveries
-        if isinstance(item, dict)
-    ]
-    delivered_handles_for_gate = [
-        str(handle)
-        for item in text_representation_deliveries
-        if isinstance(item, dict)
-        for handle in list(item.get("entity_handles") or [])
-        if str(handle)
-    ]
-    text_delivery_verified = bool(
-        delivery_records_well_formed
-        and len(text_representation_deliveries) == len(expected_text_source_ids)
-        and len(delivered_source_ids_for_gate)
-        == len(set(delivered_source_ids_for_gate))
-        and set(delivered_source_ids_for_gate) == expected_text_source_ids
-        and len(delivered_handles_for_gate) == len(set(delivered_handles_for_gate))
-        and all(
-            item.get("verified") is True
-            and bool(item.get("final_representation"))
-            and bool(item.get("entity_handles"))
-            for item in text_representation_deliveries
+    if text_delivery_enabled:
+        expected_text_source_ids.extend(
+            f"page_visual:{int(page.page_data.page_number)}"
+            for page in pages
+            if not list(page.page_data.text_items or []) and bool(page.images)
         )
+    canonical_text_delivery_attempts = _canonical_text_delivery_attempts(
+        text_representation_deliveries
+    )
+    text_representation_delivery = build_text_representation_delivery(
+        canonical_text_delivery_attempts,
+        requested_type=requested_text_mode,
+        required=bool(expected_text_source_ids),
+        expected_source_item_ids=expected_text_source_ids,
     )
     delivered_font_rendered = None
     if delivered_text_entity_counts:
@@ -300,70 +567,45 @@ def write_import_report(
             )
         except (TypeError, ValueError):
             delivered_font_rendered = None
-    if run.config.import_text and requested_text_mode != "none":
-        extra["actual_text_entity_types"] = build_actual_text_entity_types(
-            host_app="librecad",
-            text_mode=requested_text_mode,
-            count=extraction.text_count,
-            font_rendered=delivered_font_rendered,
-            examples=[
+    extra["text_delivery_obligations"] = {
+        "schema": "bcs.text_delivery_obligations/1.0",
+        "required": bool(expected_text_source_ids),
+        "requested_type": requested_text_mode,
+        "source_item_ids": list(expected_text_source_ids),
+    }
+    extra["text_delivery_attempts"] = canonical_text_delivery_attempts
+    extra["actual_text_entity_types"] = build_actual_text_entity_types(
+        host_app="librecad",
+        text_mode=requested_text_mode,
+        count=extraction.text_count if text_delivery_enabled else 0,
+        font_rendered=delivered_font_rendered,
+        examples=(
+            [
                 str(getattr(txt, "text", "") or "")[:20]
                 for txt in text_items[:3]
                 if str(getattr(txt, "text", "") or "").strip()
-            ],
-            # Supplying an empty mapping is intentional and fail-closed: no
-            # exporter evidence means no actual entity may be inferred.
-            delivered_counts=delivered_text_entity_counts,
+            ]
+            if text_delivery_enabled
+            else []
+        ),
+        # Supplying an empty mapping is intentional and fail-closed: no
+        # exporter evidence means no actual entity may be inferred.
+        delivered_counts=delivered_text_entity_counts,
+    )
+    verified_final_modes = {
+        _normalized_text_mode(item.get("final_type"))
+        for item in text_representation_delivery["items"]
+        if isinstance(item, dict)
+        and item.get("verified") is True
+        and item.get("final_type")
+    }
+    if len(verified_final_modes) == 1:
+        extra["actual_text_entity_types"]["entity_type"] = next(
+            iter(verified_final_modes)
         )
-        verified_final_modes = {
-            _normalized_text_mode(item.get("final_representation"))
-            for item in text_representation_deliveries
-            if isinstance(item, dict)
-            and item.get("verified") is True
-            and item.get("final_representation")
-        }
-        if len(verified_final_modes) == 1:
-            extra["actual_text_entity_types"]["entity_type"] = next(
-                iter(verified_final_modes)
-            )
-        elif len(verified_final_modes) > 1:
-            extra["actual_text_entity_types"]["entity_type"] = "mixed"
-        source_ids = [
-            str(item.get("source_id") or "")
-            for item in text_representation_deliveries
-            if isinstance(item, dict) and str(item.get("source_id") or "")
-        ]
-        entity_handles = [
-            str(handle)
-            for item in text_representation_deliveries
-            if isinstance(item, dict)
-            for handle in list(item.get("entity_handles") or [])
-            if str(handle)
-        ]
-        support_entity_handles = [
-            str(handle)
-            for item in text_representation_deliveries
-            if isinstance(item, dict)
-            for handle in list(item.get("support_entity_handles") or [])
-            if str(handle)
-        ]
-        referenced_entity_handles = [
-            str(handle)
-            for item in text_representation_deliveries
-            if isinstance(item, dict)
-            for handle in list(item.get("referenced_entity_handles") or [])
-            if str(handle)
-        ]
-        extra["text_representation_delivery"] = {
-            "schema": "bcs.text_representation_delivery/1.0",
-            "requested_representation": requested_text_mode,
-            "verified": text_delivery_verified,
-            "source_ids": source_ids,
-            "entity_handles": entity_handles,
-            "support_entity_handles": support_entity_handles,
-            "referenced_entity_handles": referenced_entity_handles,
-            "items": text_representation_deliveries,
-        }
+    elif len(verified_final_modes) > 1:
+        extra["actual_text_entity_types"]["entity_type"] = "mixed"
+    extra["text_representation_delivery"] = text_representation_delivery
 
     text_fallback = _text_mode_fallback_for_report(run.config, text_source_spans)
 

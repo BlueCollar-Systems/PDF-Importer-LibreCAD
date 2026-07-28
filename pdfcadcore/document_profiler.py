@@ -2,14 +2,14 @@
 # document_profiler.py — Auto page-type detection
 # BlueCollar Systems — BUILT. NOT BOUGHT.
 from __future__ import annotations
-from .primitives import PageData, PageProfile
+from .primitives import PageData, PageProfile, text_items_for_analysis
 from .geometry_cleanup import circle_fit
 
 
 def profile(page_data: PageData) -> PageProfile:
     """Score page type. Returns PageProfile."""
     prims = page_data.primitives
-    texts = page_data.text_items
+    texts = text_items_for_analysis(page_data)
 
     lines = sum(1 for p in prims if p.type == "line")
     closed = sum(1 for p in prims if p.type == "closed_loop")

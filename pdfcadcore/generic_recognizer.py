@@ -3,7 +3,7 @@
 # BlueCollar Systems — BUILT. NOT BOUGHT.
 from __future__ import annotations
 from dataclasses import dataclass, field
-from .primitives import PageData, RecognitionConfig
+from .primitives import PageData, RecognitionConfig, text_items_for_analysis
 from .geometry_cleanup import circle_fit
 from . import generic_classifier as gc
 from . import document_profiler as dp
@@ -60,7 +60,7 @@ def analyze(page_data: PageData, config: RecognitionConfig = None) -> GenericRes
     tb_bbox = gc.detect_title_block(page_data)
 
     dim_assocs = []
-    for txt in page_data.text_items:
+    for txt in text_items_for_analysis(page_data):
         if "dimension_like" not in txt.generic_tags: continue
         pd = dim_parser.parse(txt.text)
         if pd.value is None or pd.confidence < 0.3: continue
@@ -70,8 +70,15 @@ def analyze(page_data: PageData, config: RecognitionConfig = None) -> GenericRes
             pcx = (p.bbox[0]+p.bbox[2])/2; pcy = (p.bbox[1]+p.bbox[3])/2
             d = math.hypot(txt.insertion[0]-pcx, txt.insertion[1]-pcy)
             if d < nd: nearest, nd = p, d
-        dim_assocs.append({"text_id":txt.id,"text":txt.text,"value":pd.value,
-                          "kind":pd.kind,"nearest_prim_id":nearest.id if nearest else None})
+        dim_assocs.append({
+            "text_id": txt.id,
+            "text": txt.text,
+            "value": pd.value,
+            "kind": pd.kind,
+            "nearest_prim_id": nearest.id if nearest else None,
+            "semantic_projection": bool(txt.semantic_projection),
+            "source_span_ids": list(txt.source_span_ids or (txt.id,)),
+        })
 
     return GenericResults(circles=circles, closed_boundaries=boundaries,
         repeated_patterns=patterns, tables=tables, title_block_bbox=tb_bbox,

@@ -6,6 +6,7 @@ THE SEAM: converts PyMuPDF page data into host-neutral Primitives.
 Rule 1: Parser modules must not know about domain-specific logic.
 """
 from __future__ import annotations
+from dataclasses import replace
 import math
 import re
 from typing import List, Optional, Tuple
@@ -411,7 +412,9 @@ def extract_page(
     page_data = PageData(
         page_number=page_num,
         width=page_w_mm, height=page_h_mm,
-        primitives=primitives, text_items=text_items,
+        primitives=primitives,
+        text_items=text_items,
+        semantic_text_items=semantic_text_projection(text_items),
         layers=layers, xobject_names=[]
     )
     from .generic_classifier import classify_text
@@ -758,28 +761,16 @@ def _extract_text(
                     requires_individual_positioning=bool(char_layout),
                     font_asset=font_asset,
                     font_failure=font_failure,
+                    source_span_ids=(len(items) + 1,),
                 ))
-    # Stacked-fraction spans ("7" over "16", or "716" + "/") ARE the
-    # dimension value 7/16 on fabrication drawings; extraction owns this
-    # semantic merge (RB-16 cross-host golden, stacked-fraction-extract).
-    # Representation modes govern HOW a delivered value renders, never WHAT
-    # the value is — the render stage must not alter it further.
-    items = _merge_stacked_fractions(items)
-    # Text identity is page-local source order (see the id note above). The
-    # merger allocates replacement ids from the global counter, so re-index
-    # after merging to keep ids deterministic and dense regardless of global
-    # counter state or earlier imported documents.
-    for index, item in enumerate(items):
-        item.id = index + 1
     return items
 
 
 # ── Stacked-fraction merger ──
 # Some CAD PDFs encode fractions like "15/16" as three separate text spans
 # stacked vertically: numerator, slash, denominator.  This post-processor
-# detects unambiguous stacked-fraction groups and merges them into a single
-# NormalizedText so downstream importers see e.g. "15/16" instead of three
-# overlapping items.
+# detects unambiguous stacked-fraction groups for the analysis-only semantic
+# projection. Host importers always retain the original positioned spans.
 
 _SLASH_RE = re.compile(r'^[/\u2044\u2215]$')   # slash, fraction slash, division slash
 _DIGITS_RE = re.compile(r'^\d{1,4}$')           # 1-4 digit number
@@ -842,10 +833,10 @@ def _split_concatenated_fraction(digits: str):
 def _merged_fraction_fidelity(parts: List[NormalizedText]) -> dict:
     """Fidelity fields for a merged stacked-fraction replacement item.
 
-    The merged text (e.g. "7/16") is a semantic value whose characters no
-    longer map 1:1 onto any single source span, so per-character layout is
-    intentionally dropped and the merged item positions as a whole string at
-    the slash insertion (the documented legacy merged-fraction path).
+    The merged text (e.g. "7/16") is an analysis-only value whose characters
+    no longer map 1:1 onto one source span. Per-character layout is therefore
+    absent only from this explicitly marked semantic object; physical delivery
+    continues to use every untouched source span.
     Source/target quads are the unscaled union of the constituent spans;
     font identity follows the numerator digits (``parts[0]``) with the
     remaining parts as fallback.
@@ -853,6 +844,12 @@ def _merged_fraction_fidelity(parts: List[NormalizedText]) -> dict:
     fields: dict = {
         "source_char_layout": (),
         "requires_individual_positioning": False,
+        "source_span_ids": tuple(
+            source_id
+            for part in parts
+            for source_id in (part.source_span_ids or (part.id,))
+        ),
+        "semantic_projection": True,
     }
 
     src_union = _merged_bbox(*[part.source_bbox_pdf for part in parts])
@@ -895,6 +892,32 @@ def _merged_fraction_fidelity(parts: List[NormalizedText]) -> dict:
     return fields
 
 
+def semantic_text_projection(
+    delivery_items: List[NormalizedText],
+) -> List[NormalizedText]:
+    """Build analysis-only text while preserving delivery objects byte-for-byte.
+
+    Stacked fractions need a semantic value such as ``7/16`` for dimension
+    recognition. The host still has to receive the original positioned PDF
+    spans, so the merger operates only on shallow dataclass copies with fresh
+    tag lists and the result is explicitly marked as analysis-only.
+    """
+
+    projection = [
+        replace(
+            item,
+            generic_tags=list(item.generic_tags),
+            domain_tags=list(item.domain_tags),
+            source_span_ids=item.source_span_ids or (item.id,),
+        )
+        for item in delivery_items
+    ]
+    projection = _merge_stacked_fractions(projection)
+    for index, item in enumerate(projection, start=1):
+        item.id = index
+    return projection
+
+
 def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText]:
     """Merge stacked fraction spans into one.
 
@@ -905,9 +928,9 @@ def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText
        Only matched when neither digit item is itself a concatenated fraction.
 
     NOTE: Merged fractions use reduced font_size (~0.6x) to match stacked footprint.
-    Replacement items take ids from the global counter; ``_extract_text``
-    re-indexes its output afterwards so pipeline ids stay page-local and
-    deterministic.
+    Replacement items reuse a constituent id until the semantic projection
+    re-indexes its copies. Analysis must not consume the global physical-id
+    allocator or make later source identities depend on recognition results.
     """
     if len(items) < 2:
         return items
@@ -979,7 +1002,7 @@ def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText
                     stacked_size = avg_size * _FRAC_STACKED_SCALE
                     first = selected[0]
                     merged_item = NormalizedText(
-                        id=next_id(),
+                        id=slash.id,
                         text=merged_text,
                         normalized=merged_text.upper().strip(),
                         insertion=slash.insertion,
@@ -1070,7 +1093,7 @@ def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText
                         # Apply stacked fraction scale to match original footprint
                         stacked_size = avg_size * _FRAC_STACKED_SCALE
                         merged_item = NormalizedText(
-                            id=next_id(),
+                            id=slash.id,
                             text=merged_text,
                             normalized=merged_text.upper().strip(),
                             insertion=slash.insertion,
@@ -1128,7 +1151,7 @@ def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText
                             # Apply stacked fraction scale to match original footprint
                             stacked_size = avg_size * _FRAC_STACKED_SCALE
                             merged_item = NormalizedText(
-                                id=next_id(),
+                                id=slash.id,
                                 text=merged_text,
                                 normalized=merged_text.upper().strip(),
                                 insertion=slash.insertion,

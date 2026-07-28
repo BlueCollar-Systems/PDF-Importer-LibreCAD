@@ -118,22 +118,58 @@ def _write_tiny_pdf(path: Path) -> None:
 def _validate_glyph_delivery(report_path: Path) -> None:
     try:
         report = json.loads(report_path.read_text(encoding="utf-8"))
-        delivery = report["extra"]["text_representation_delivery"]
+        extra = report["extra"]
+        attempts = extra["text_delivery_attempts"]
+        delivery = extra["text_representation_delivery"]
+        obligations = extra["text_delivery_obligations"]
+        expected_source_ids = obligations["source_item_ids"]
+        source_span_count = extra["text_source_spans"]
         items = delivery["items"]
+        from pdfcadcore.text_delivery_report import (
+            resolve_text_representation_delivery,
+        )
+
+        resolution = resolve_text_representation_delivery(
+            attempts,
+            delivery,
+            expected_source_item_ids=expected_source_ids,
+        )
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise SystemExit(f"Portable conversion report is invalid: {report_path}: {exc}") from exc
 
     exact_items = bool(items) and all(
-        item.get("requested_representation") == "glyphs"
-        and item.get("final_representation") == "glyphs"
+        item.get("final_type") == "glyphs"
         and item.get("verified") is True
-        and item.get("fallback_used") is False
         for item in items
     )
+    complete_obligations = bool(
+        isinstance(obligations, dict)
+        and obligations.get("schema") == "bcs.text_delivery_obligations/1.0"
+        and obligations.get("required") is True
+        and obligations.get("requested_type") == "glyphs"
+        and isinstance(expected_source_ids, list)
+        and expected_source_ids
+        and all(
+            isinstance(source_id, str)
+            and bool(source_id)
+            and source_id == source_id.strip()
+            for source_id in expected_source_ids
+        )
+        and len(expected_source_ids) == len(set(expected_source_ids))
+        and type(source_span_count) is int
+        and source_span_count == len(expected_source_ids)
+        and delivery.get("source_item_count") == source_span_count
+    )
     if (
-        delivery.get("requested_representation") != "glyphs"
+        delivery.get("requested_type") != "glyphs"
         or delivery.get("verified") is not True
+        or resolution.get("verified") is not True
+        or any(
+            attempt.get("attempted_type") != "glyphs"
+            for attempt in attempts
+        )
         or not exact_items
+        or not complete_obligations
     ):
         raise SystemExit(
             "Portable conversion did not deliver requested Glyphs as verified Glyphs"

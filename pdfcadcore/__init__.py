@@ -18,6 +18,7 @@ from .primitives import (
     ResolvedScale as ResolvedScale,
     next_id as next_id,
     reset_ids as reset_ids,
+    text_items_for_analysis as text_items_for_analysis,
 )
 from .import_report import ImportReport as ImportReport, build_import_report as build_import_report
 from .resolved_scale import resolve_page_scale as resolve_page_scale

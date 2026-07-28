@@ -39,6 +39,7 @@ from librecad_pdf_importer.exporters.dxf_exporter import (
 from librecad_pdf_importer.importer import ImportRun, run_import, write_import_report
 from pdfcadcore.import_config import ImportConfig
 from pdfcadcore.embedded_fonts import EmbeddedFontFailure
+from pdfcadcore.text_delivery_report import resolve_text_representation_delivery
 from pdfcadcore.fitz_loader import import_fitz
 from pdfcadcore.import_report import build_actual_text_entity_types
 from pdfcadcore.primitive_extractor import (
@@ -46,6 +47,7 @@ from pdfcadcore.primitive_extractor import (
     _extract_text,
     _page_rotation_transform,
     _transform_pdf_point,
+    semantic_text_projection,
 )
 from pdfcadcore.primitives import NormalizedText, PageData, TextCharLayout
 from pdfcadcore.text_scale import (
@@ -76,6 +78,38 @@ def _item(
         font_name="BCS Deterministic Test",
         page_number=3,
         advance_width=width,
+    )
+
+
+def _proven_structural_failure(
+    source_id: str,
+    requested_representation: str,
+) -> TextDeliveryResult:
+    """Build the exact item-specific ladder required before terminal Raster."""
+
+    return TextDeliveryResult(
+        source_id=source_id,
+        requested_representation=requested_representation,
+        final_representation=None,
+        verified=False,
+        attempts=[
+            TextDeliveryAttempt(
+                source_id=source_id,
+                requested_representation=requested_representation,
+                attempted_representation=representation,
+                strategy="injected_structural_impossibility",
+                outcome="impossible",
+                reason="item-specific structural verification failed",
+                cleanup_verified=True,
+                evidence={
+                    "item_specific_proven_impossible": True,
+                    "fallback_authorized_for_this_item": True,
+                },
+            )
+            for representation in _representation_ladder(requested_representation)
+        ],
+        terminal_fallback_authorized=True,
+        failure_reason="all structural representations proven impossible",
     )
 
 
@@ -2377,15 +2411,12 @@ def test_shared_text_scale_preserves_subpoint_source_size_without_floor() -> Non
     assert extracted[0].font_size < 0.1
 
 
-def test_extraction_merges_stacked_fractions_into_semantic_value() -> None:
-    """Extraction owns the semantic merge: a stacked '716' + '/' IS 7/16.
+def test_extraction_preserves_stacked_fraction_spans_for_delivery() -> None:
+    """A stacked value may merge for analysis, never for physical delivery.
 
-    RB-16 cross-host golden family (stacked-fraction-extract, T1-11). A
-    prior revision of this file locked the opposite ("production must NOT
-    merge") — that lock was wrong (worker-log Ruling 1, 2026-07-17): on
-    fabrication drawings the stacked spans ARE the dimension value, and
-    representation modes govern HOW a delivered value renders, never WHAT
-    the value is. Ids stay page-local source order after the merge.
+    RB-16 recognizes ``716`` plus ``/`` as the semantic value ``7/16``.
+    The source inventory remains two exact, page-local spans so recognition
+    cannot rewrite text content, ownership, placement, rotation, or scale.
     """
 
     class _Page:
@@ -2437,15 +2468,17 @@ def test_extraction_merges_stacked_fractions_into_semantic_value() -> None:
     extracted = _extract_text(_Page(), 100.0, 1, True, 1.0)
     extracted_again = _extract_text(_Page(), 100.0, 1, True, 1.0)
 
-    assert [item.text for item in extracted] == ["7/16"]
-    # Identity is page-local source order, deterministic across runs and
-    # independent of the merger's global id counter.
-    assert [item.id for item in extracted] == [1]
-    assert [item.id for item in extracted_again] == [1]
-    merged = extracted[0]
-    # The merged value positions as a whole string (per-character source
-    # layout no longer maps 1:1 onto the semantic text) and carries union
-    # source/target fidelity geometry from its constituent spans.
+    assert [item.text for item in extracted] == ["716", "/"]
+    assert [item.id for item in extracted] == [1, 2]
+    assert [item.id for item in extracted_again] == [1, 2]
+    assert [item.source_span_ids for item in extracted] == [(1,), (2,)]
+    assert all(item.semantic_projection is False for item in extracted)
+
+    semantic = semantic_text_projection(extracted)
+    assert [item.text for item in semantic] == ["7/16"]
+    merged = semantic[0]
+    assert merged.semantic_projection is True
+    assert merged.source_span_ids == (1, 2)
     assert merged.requires_individual_positioning is False
     assert merged.source_char_layout == ()
     assert merged.source_bbox_pdf is not None
@@ -2453,12 +2486,10 @@ def test_extraction_merges_stacked_fractions_into_semantic_value() -> None:
 
 
 def test_render_stage_must_not_alter_delivered_text_representation(tmp_path) -> None:
-    """The render stage delivers extraction's text values verbatim.
+    """The render stage delivers whichever physical items it receives verbatim.
 
-    Counterpart lock to the extraction-merge test above: the semantic
-    stacked-fraction merge happens at extraction and ONLY there. The render
-    stage must not merge ('13' + '16' never becomes '13/16'), split
-    ('7/16' stays one entity), or otherwise relabel delivered content.
+    Semantic projections belong to analysis and are never substituted into
+    this delivery list. Rendering must not merge, split, or relabel content.
     """
 
     def _text(item_id: int, text: str, insertion) -> NormalizedText:
@@ -2604,23 +2635,29 @@ def test_exporter_reports_exact_source_and_dxf_handle_sets(
     assert all(entry.source_bbox_pdf is None for entry in provenance)
     assert all(entry.target_bbox_model is not None for entry in provenance)
 
-    delivery_report = report["extra"]["text_representation_delivery"]
-    assert delivery_report["schema"] == "bcs.text_representation_delivery/1.0"
-    assert delivery_report["items"] == deliveries
-    assert set(delivery_report["source_ids"]) == {
+    report_extra = report["extra"]
+    ledger = report_extra["text_delivery_attempts"]
+    delivery_report = report_extra["text_representation_delivery"]
+    resolution = resolve_text_representation_delivery(ledger, delivery_report)
+    assert resolution["verified"] is True
+    assert delivery_report["schema"] == "bcs.text_representation_delivery/1.1"
+    assert set(item["source_item_id"] for item in delivery_report["items"]) == {
         "text_span:3:17",
         "text_span:3:18",
     }
-    assert set(delivery_report["entity_handles"]) == reported_ids
-    assert set(delivery_report["support_entity_handles"]) == {
-        handle
-        for item in deliveries
-        for handle in item["support_entity_handles"]
+    terminals = resolution["terminal_attempts"]
+    assert {
+        handle for item in terminals for handle in item["delivery_entity_ids"]
+    } == reported_ids
+    assert {
+        handle for item in terminals for handle in item["support_entity_ids"]
+    } == {
+        handle for item in deliveries for handle in item["support_entity_handles"]
     }
-    assert set(delivery_report["referenced_entity_handles"]) == {
-        handle
-        for item in deliveries
-        for handle in item["referenced_entity_handles"]
+    assert {
+        handle for item in terminals for handle in item["referenced_entity_ids"]
+    } == {
+        handle for item in deliveries for handle in item["referenced_entity_handles"]
     }
     actual = report["extra"]["actual_text_entity_types"]
     assert actual["entity_type"] == delivered_mode
@@ -3126,24 +3163,9 @@ def test_failed_3d_export_writes_separate_complete_failure_report(tmp_path) -> N
     config = ImportConfig.vector()
     config.import_text = True
     config.text_mode = "3d_text"
-    structural_failure = TextDeliveryResult(
-        source_id="text_span:1:1",
-        requested_representation="3d_text",
-        final_representation=None,
-        verified=False,
-        attempts=[
-            TextDeliveryAttempt(
-                source_id="text_span:1:1",
-                requested_representation="3d_text",
-                attempted_representation="3d_text",
-                strategy="native_dxf_text_extrusion",
-                outcome="impossible",
-                reason="parent cannot display editable 3D text",
-                cleanup_verified=True,
-            )
-        ],
-        terminal_fallback_authorized=True,
-        failure_reason="all structural representations were proven impossible",
+    structural_failure = _proven_structural_failure(
+        "text_span:1:1",
+        "3d_text",
     )
 
     with (
@@ -3169,32 +3191,30 @@ def test_failed_3d_export_writes_separate_complete_failure_report(tmp_path) -> N
     assert report["extra"]["result_status"] == "failed"
     assert report["extra"]["import_contract_ready"]["ready"] is False
     assert report["extra"]["human_summary"].startswith("Import failed")
-    delivery = report["extra"]["text_representation_delivery"]
+    report_extra = report["extra"]
+    delivery = report_extra["text_representation_delivery"]
     assert delivery["verified"] is False
-    assert delivery["requested_representation"] == "3d_text"
+    assert delivery["requested_type"] == "3d_text"
     assert len(delivery["items"]) == 1
     item = delivery["items"][0]
-    assert item["source_id"] == "text_span:1:1"
-    assert item["final_representation"] is None
+    assert item["source_item_id"] == "text_span:1:1"
+    assert item["final_type"] is None
     assert item["verified"] is False
-    assert [attempt["attempted_representation"] for attempt in item["attempts"]] == [
-        "3d_text",
+    attempts = report_extra["text_delivery_attempts"]
+    assert [attempt["attempted_type"] for attempt in attempts] == [
+        *_representation_ladder("3d_text"),
         "raster",
     ]
-    assert all(attempt["outcome"] == "impossible" for attempt in item["attempts"][:-1])
-    assert item["attempts"][-1]["outcome"] == "failed"
+    assert all(
+        attempt["outcome"] == "proven_impossible" for attempt in attempts[:-1]
+    )
+    assert attempts[-1]["outcome"] == "failed"
 
 
 def test_exporter_reaches_verified_item_raster_terminal_attempt(tmp_path) -> None:
     run = _real_text_extraction(tmp_path)
-    failure = TextDeliveryResult(
-        source_id=f"text_span:1:{run.extraction.pages[0].page_data.text_items[0].id}",
-        requested_representation="labels",
-        final_representation=None,
-        verified=False,
-        terminal_fallback_authorized=True,
-        failure_reason="all structural representations failed",
-    )
+    source_id = f"text_span:1:{run.extraction.pages[0].page_data.text_items[0].id}"
+    failure = _proven_structural_failure(source_id, "labels")
     output = tmp_path / "raster_terminal.dxf"
     with patch(
         "librecad_pdf_importer.exporters.dxf_exporter.build_text",
@@ -3246,10 +3266,17 @@ def test_exporter_reaches_verified_item_raster_terminal_attempt(tmp_path) -> Non
         report["fallback"]["text"]["reason"]
         == "structural_representations_failed_verification"
     )
-    assert (
-        report["extra"]["text_representation_delivery"]["items"][0]
-        == delivery
+    report_extra = report["extra"]
+    projection = report_extra["text_representation_delivery"]
+    resolution = resolve_text_representation_delivery(
+        report_extra["text_delivery_attempts"], projection
     )
+    assert resolution["verified"] is True
+    assert projection["items"][0]["source_item_id"] == delivery["source_id"]
+    assert projection["items"][0]["final_type"] == delivery["final_representation"]
+    assert resolution["terminal_attempts"][0]["delivery_entity_ids"] == delivery[
+        "entity_handles"
+    ]
 
 
 @pytest.mark.parametrize("rotation", [0, 90, 180, 270])
@@ -3273,13 +3300,9 @@ def test_terminal_raster_uses_exact_raw_source_bbox_through_page_transform(
     run = run_import(str(pdf_path), mode="vector", overrides={"pages": "1"})
     source_text = run.extraction.pages[0].page_data.text_items[0]
     assert source_text.source_bbox_pdf is not None
-    failure = TextDeliveryResult(
-        source_id=f"text_span:1:{source_text.id}",
-        requested_representation="labels",
-        final_representation=None,
-        verified=False,
-        terminal_fallback_authorized=True,
-        failure_reason="all structural representations proven impossible",
+    failure = _proven_structural_failure(
+        f"text_span:1:{source_text.id}",
+        "labels",
     )
     output = tmp_path / f"terminal-raster-r{rotation}-u{user_unit}.dxf"
     with patch(
@@ -3308,14 +3331,7 @@ def test_exporter_fails_loudly_when_terminal_raster_cannot_be_verified(
     source_id = (
         f"text_span:1:{run.extraction.pages[0].page_data.text_items[0].id}"
     )
-    failure = TextDeliveryResult(
-        source_id=source_id,
-        requested_representation="labels",
-        final_representation=None,
-        verified=False,
-        terminal_fallback_authorized=True,
-        failure_reason="all structural representations failed",
-    )
+    failure = _proven_structural_failure(source_id, "labels")
     output = tmp_path / "must_not_publish.dxf"
     prior_output = b"prior accepted DXF must remain byte-for-byte unchanged\r\n"
     output.write_bytes(prior_output)
@@ -3440,12 +3456,18 @@ def test_requested_raster_samples_source_when_whitespace_lacks_physical_glyph_pr
     actual = report["extra"]["actual_text_entity_types"]
     assert actual["entity_type"] == "raster"
     assert actual["raster_image"] == 1
-    delivery_report = report["extra"]["text_representation_delivery"]
-    assert delivery_report["requested_representation"] == "raster"
+    report_extra = report["extra"]
+    delivery_report = report_extra["text_representation_delivery"]
+    resolution = resolve_text_representation_delivery(
+        report_extra["text_delivery_attempts"], delivery_report
+    )
+    assert resolution["verified"] is True
+    assert delivery_report["requested_type"] == "raster"
     assert delivery_report["verified"] is True
-    assert delivery_report["source_ids"] == [source_id]
-    assert delivery_report["entity_handles"] == delivery["entity_handles"]
-    assert delivery_report["support_entity_handles"] == delivery["support_entity_handles"]
+    assert [item["source_item_id"] for item in delivery_report["items"]] == [source_id]
+    terminal = resolution["terminal_attempts"][0]
+    assert terminal["delivery_entity_ids"] == delivery["entity_handles"]
+    assert terminal["support_entity_ids"] == delivery["support_entity_handles"]
     run.close()
     assert asset_path.is_file()
     assert not list(tmp_path.rglob("*.tmp"))
@@ -3620,7 +3642,7 @@ def test_unproven_structural_failure_cannot_start_terminal_raster(
         requested_representation="labels",
         final_representation=None,
         verified=False,
-        terminal_fallback_authorized=False,
+        terminal_fallback_authorized=True,
         failure_reason="requested representation failed without impossibility proof",
     )
     output = tmp_path / "unproven_failure.dxf"
@@ -3792,14 +3814,7 @@ def test_terminal_raster_rejects_partially_clipped_source_bbox(tmp_path) -> None
         ),
     )
     source_id = f"text_span:1:{item.id}"
-    failure = TextDeliveryResult(
-        source_id=source_id,
-        requested_representation="labels",
-        final_representation=None,
-        verified=False,
-        terminal_fallback_authorized=True,
-        failure_reason="all structural representations proven impossible",
-    )
+    failure = _proven_structural_failure(source_id, "labels")
     output = tmp_path / "accepted.dxf"
     prior_output = b"prior accepted DXF\r\n"
     output.write_bytes(prior_output)
@@ -4075,12 +4090,23 @@ def test_real_welding_chart_all_requested_raster_spans_are_source_bound(
     actual = report["extra"]["actual_text_entity_types"]
     assert actual["entity_type"] == "raster"
     assert actual["raster_image"] == 372
-    delivery_report = report["extra"]["text_representation_delivery"]
-    assert delivery_report["requested_representation"] == "raster"
+    report_extra = report["extra"]
+    delivery_report = report_extra["text_representation_delivery"]
+    resolution = resolve_text_representation_delivery(
+        report_extra["text_delivery_attempts"], delivery_report
+    )
+    assert resolution["verified"] is True
+    assert delivery_report["requested_type"] == "raster"
     assert delivery_report["verified"] is True
-    assert len(delivery_report["source_ids"]) == 372
-    assert len(delivery_report["entity_handles"]) == 372
-    assert len(delivery_report["support_entity_handles"]) == 744
+    assert len(delivery_report["items"]) == 372
+    assert sum(
+        len(item["delivery_entity_ids"])
+        for item in resolution["terminal_attempts"]
+    ) == 372
+    assert sum(
+        len(item["support_entity_ids"])
+        for item in resolution["terminal_attempts"]
+    ) == 744
     assert len(delivery_report["items"]) == 372
     run.close()
     assert all(path.is_file() for path in asset_paths)
@@ -4219,9 +4245,16 @@ def test_real_image_only_chart_binds_existing_page_image_as_verified_text_termin
     report_path = tmp_path / f"aws-page-terminal-{requested_mode}_report.json"
     write_import_report(run, str(report_path), elapsed_ms=1.0)
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    reported = report["extra"]["text_representation_delivery"]
+    report_extra = report["extra"]
+    reported = report_extra["text_representation_delivery"]
+    resolution = resolve_text_representation_delivery(
+        report_extra["text_delivery_attempts"], reported
+    )
+    assert resolution["verified"] is True
     assert reported["verified"] is True
-    assert reported["source_ids"] == ["page_visual:1"]
+    assert [item["source_item_id"] for item in reported["items"]] == [
+        "page_visual:1"
+    ]
     assert len(reported["items"]) == 1
     assert report["extra"]["import_contract_ready"]["ready"] is True
     assert (

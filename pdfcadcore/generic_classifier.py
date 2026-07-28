@@ -4,12 +4,16 @@
 """Classifies text and primitives generically. Domain-neutral."""
 from __future__ import annotations
 import re
-from .primitives import PageData
+from .primitives import PageData, text_items_for_analysis
 
 
 def classify_text(page_data: PageData):
-    """Add generic tags to text items (in place)."""
-    for txt in page_data.text_items:
+    """Add tags to source and analysis text without conflating the two."""
+    groups = [page_data.text_items]
+    analysis_items = text_items_for_analysis(page_data)
+    if analysis_items is not page_data.text_items:
+        groups.append(analysis_items)
+    for txt in (item for group in groups for item in group):
         tags = list(txt.generic_tags)
         tu = txt.normalized
         if re.search(r"\b(NOTE|NOTES|N\.?T\.?S\.?|SEE\s+DWG)\b", tu):
@@ -50,7 +54,11 @@ def classify_primitives(page_data: PageData):
 
 def detect_title_block(page_data: PageData):
     """Returns bbox (x0,y0,x1,y1) of likely title block or None."""
-    tb = [t for t in page_data.text_items if "titleblock_like" in t.generic_tags]
+    tb = [
+        t
+        for t in text_items_for_analysis(page_data)
+        if "titleblock_like" in t.generic_tags
+    ]
     if len(tb) < 2:
         return None
     xs = [t.insertion[0] for t in tb]

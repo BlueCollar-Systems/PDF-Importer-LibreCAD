@@ -13,9 +13,49 @@ import pytest
 import build_standalone
 import build_windows_portable
 from scripts import smoke_portable_zip
+from pdfcadcore.text_delivery_report import build_text_representation_delivery
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _compact_glyph_delivery_extra(final_type: str = "glyphs") -> dict:
+    ledger = [
+        {
+            "source_item_id": "text_span:1:1",
+            "requested_type": "glyphs",
+            "attempted_type": final_type,
+            "final_type": final_type,
+            "outcome": "verified",
+            "cleanup_complete": True,
+            "record_verified": True,
+            "type_verified": True,
+            "visual_verified": True,
+            "ownership_verified": True,
+            "created_entity_ids": ["10"],
+            "removed_entity_ids": [],
+            "delivery_entity_ids": ["10"],
+            "support_entity_ids": [],
+            "referenced_entity_ids": [],
+            "reused_entity_ids": [],
+            "evidence": {"test_fixture": True},
+        }
+    ]
+    return {
+        "text_source_spans": 1,
+        "text_delivery_obligations": {
+            "schema": "bcs.text_delivery_obligations/1.0",
+            "required": True,
+            "requested_type": "glyphs",
+            "source_item_ids": ["text_span:1:1"],
+        },
+        "text_delivery_attempts": ledger,
+        "text_representation_delivery": build_text_representation_delivery(
+            ledger,
+            requested_type="glyphs",
+            expected_source_item_ids={"text_span:1:1"},
+        ),
+    }
 
 
 def test_ci_clones_optional_corpus_before_tests_and_runs_minimum_dependencies() -> None:
@@ -117,20 +157,7 @@ def test_portable_smoke_runs_all_entrypoints_and_real_glyph_conversion(
             report.write_text(
                 json.dumps(
                     {
-                        "extra": {
-                            "text_representation_delivery": {
-                                "requested_representation": "glyphs",
-                                "verified": True,
-                                "items": [
-                                    {
-                                        "requested_representation": "glyphs",
-                                        "final_representation": "glyphs",
-                                        "verified": True,
-                                        "fallback_used": False,
-                                    }
-                                ],
-                            }
-                        }
+                        "extra": _compact_glyph_delivery_extra()
                     }
                 ),
                 encoding="utf-8",
@@ -162,24 +189,21 @@ def test_portable_smoke_rejects_report_only_or_substituted_glyph_delivery(
     report.write_text(
         json.dumps(
             {
-                "extra": {
-                    "text_representation_delivery": {
-                        "requested_representation": "glyphs",
-                        "verified": True,
-                        "items": [
-                            {
-                                "requested_representation": "glyphs",
-                                "final_representation": "geometry",
-                                "verified": True,
-                                "fallback_used": True,
-                            }
-                        ],
-                    }
-                }
+                "extra": _compact_glyph_delivery_extra("geometry")
             }
         ),
         encoding="utf-8",
     )
+
+    with pytest.raises(SystemExit, match="did not deliver requested Glyphs"):
+        smoke_portable_zip._validate_glyph_delivery(report)
+
+
+def test_portable_smoke_rejects_verified_subset_of_extracted_text(tmp_path) -> None:
+    extra = _compact_glyph_delivery_extra()
+    extra["text_source_spans"] = 2
+    report = tmp_path / "partial_import_report.json"
+    report.write_text(json.dumps({"extra": extra}), encoding="utf-8")
 
     with pytest.raises(SystemExit, match="did not deliver requested Glyphs"):
         smoke_portable_zip._validate_glyph_delivery(report)

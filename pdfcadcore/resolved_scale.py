@@ -7,7 +7,7 @@ import re
 from typing import Optional
 
 from .dimension_parser import parse as parse_dimension
-from .primitives import PageData, ResolvedScale
+from .primitives import PageData, ResolvedScale, text_items_for_analysis
 
 MM_PER_INCH = 25.4
 
@@ -96,7 +96,7 @@ def resolve_page_scale(page_data: PageData) -> ResolvedScale:
     """Best-effort scale detection for one page."""
     best: Optional[ResolvedScale] = None
 
-    for txt in page_data.text_items:
+    for txt in text_items_for_analysis(page_data):
         raw = (txt.text or "").strip()
         if not raw:
             continue
@@ -147,7 +147,7 @@ def resolve_page_scale(page_data: PageData) -> ResolvedScale:
 def probe_page_scale(page, page_num: int = 1) -> ResolvedScale:
     """Detect scale from page text only (no vector primitive extraction)."""
     from .generic_classifier import classify_text
-    from .primitive_extractor import _extract_text
+    from .primitive_extractor import _extract_text, semantic_text_projection
     from .primitives import PageData
 
     page_h = float(page.rect.height)
@@ -158,6 +158,7 @@ def probe_page_scale(page, page_num: int = 1) -> ResolvedScale:
         width=page_w,
         height=page_h,
         text_items=text_items,
+        semantic_text_items=semantic_text_projection(text_items),
     )
     classify_text(page_data)
     return resolve_page_scale(page_data)
