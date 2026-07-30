@@ -6,7 +6,7 @@
   "cli_error_copy.py": "cc656dbe2518bd267204513a30580af8f8332e889921f97a757c898585bedb28",
   "dimension_parser.py": "a8a5b53d5a10a07b3fafe6683d832f7d0bfbbff74e11ba7d31b9fb3581066989",
   "document_profiler.py": "d423c6a2c980a712e91cb698e7a1fe199b883ec38f93dc87b01d87a2b8b4e877",
-  "embedded_fonts.py": "73684a5425c5cb68a9e977ef24ad8dc618b884612bc61581c3bc8e75c12b1a2b",
+  "embedded_fonts.py": "fd39e9583a86910f87691cefab1f397a873314838cc2d2a93ba2350a4eba7048",
   "fitz_loader.py": "190241667080e0d06d5c62e3587531a38ee6a73e8a3ec08c5e529d546cadf34a",
   "generic_classifier.py": "a3920341cde7ddea96463fbc1d88943b3ef7a1625a6352abe4f79875a18fec5e",
   "generic_recognizer.py": "1784218d428ce1c897e8936695ddab16ce57734452515b1d2adb07d2f9a6123f",

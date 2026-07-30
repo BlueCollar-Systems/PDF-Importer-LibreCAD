@@ -340,6 +340,7 @@ def _cff_to_otf(source_bytes: bytes, base_font_name: str) -> bytes:
 def _install_pdf_unicode_cmap_unchecked(
     usable_bytes: bytes,
     unicode_to_glyph_id: Mapping[int, int],
+    base_font_name: str = "EmbeddedFont",
 ) -> tuple[bytes, bool]:
     if not unicode_to_glyph_id:
         return usable_bytes, False
@@ -381,6 +382,36 @@ def _install_pdf_unicode_cmap_unchecked(
                 "exact PDF Unicode-to-glyph map is empty"
             )
         font["cmap"] = table
+        if "name" not in font:
+            name_table = newTable("name")
+            name_table.names = []
+            font["name"] = name_table
+        else:
+            name_table = font["name"]
+        existing_name_ids = {
+            int(record.nameID)
+            for record in name_table.names
+            if str(record.toUnicode() or "").strip()
+        }
+        family_name = str(base_font_name or "").strip() or "EmbeddedFont"
+        safe_name = (
+            _SAFE_POSTSCRIPT_NAME.sub("-", family_name).strip("-")
+            or "EmbeddedFont"
+        )[:63]
+        source_token = sha256(usable_bytes).hexdigest()[:16]
+        required_names = {
+            1: family_name,
+            2: "Regular",
+            3: f"BCS-PDFExact-{source_token}",
+            4: family_name,
+            5: "Version 1.000",
+            6: safe_name,
+        }
+        for name_id, value in required_names.items():
+            if name_id in existing_name_ids:
+                continue
+            name_table.setName(value, name_id, 3, 1, 0x0409)
+            name_table.setName(value, name_id, 1, 0, 0)
         output = BytesIO()
         font.save(output, reorderTables=False)
         return output.getvalue(), True
@@ -391,6 +422,7 @@ def _install_pdf_unicode_cmap_unchecked(
 def _install_pdf_unicode_cmap(
     usable_bytes: bytes,
     unicode_to_glyph_id: Mapping[int, int],
+    base_font_name: str = "EmbeddedFont",
 ) -> tuple[bytes, bool]:
     """Install PDF glyph identity while classifying source parse failures."""
 
@@ -398,7 +430,7 @@ def _install_pdf_unicode_cmap(
 
     try:
         return _install_pdf_unicode_cmap_unchecked(
-            usable_bytes, unicode_to_glyph_id
+            usable_bytes, unicode_to_glyph_id, base_font_name
         )
     except ExactFontSourceImpossible:
         raise
@@ -444,7 +476,11 @@ def _usable_font(
             raise ExactFontSourceImpossible(
                 f"unsupported embedded font format: {source_format or '<empty>'}"
             )
-        usable_bytes, cmap_installed = _install_pdf_unicode_cmap(usable_bytes, unicode_map)
+        usable_bytes, cmap_installed = _install_pdf_unicode_cmap(
+            usable_bytes,
+            unicode_map,
+            base_font_name,
+        )
         if not _fonttools_loadable(usable_bytes):
             raise ExactFontSourceImpossible(
                 f"embedded {usable_format} font program is not loadable"

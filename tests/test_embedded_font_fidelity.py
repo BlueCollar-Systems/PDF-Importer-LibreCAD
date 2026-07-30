@@ -9,6 +9,8 @@ try:
 except ImportError:
     import fitz as pymupdf  # type: ignore[no-redef]
 import pytest
+from fontTools.fontBuilder import FontBuilder
+from fontTools.pens.ttGlyphPen import TTGlyphPen
 from fontTools.ttLib import TTFont
 from fontTools.cffLib import CFFFontSet
 
@@ -30,6 +32,58 @@ def _load_font(data: bytes) -> TTFont:
     for tag in font.reader.keys():
         font[tag].compile(font)
     return font
+
+
+def test_cmap_repair_adds_host_safe_names_to_anonymous_subset_font():
+    """Repaired PDF subset fonts must be loadable by native host font APIs."""
+    builder = FontBuilder(1000, isTTF=True)
+    builder.setupGlyphOrder([".notdef", "A"])
+    pen = TTGlyphPen(None)
+    empty_glyph = pen.glyph()
+    builder.setupGlyf({".notdef": empty_glyph, "A": empty_glyph})
+    builder.setupHorizontalMetrics({".notdef": (500, 0), "A": (600, 0)})
+    builder.setupHorizontalHeader(ascent=800, descent=-200)
+    builder.setupCharacterMap({65: "A"})
+    builder.setupOS2()
+    builder.setupNameTable(
+        {
+            "familyName": "Disposable fixture",
+            "styleName": "Regular",
+            "uniqueFontIdentifier": "Disposable fixture Regular",
+            "fullName": "Disposable fixture Regular",
+            "psName": "DisposableFixture-Regular",
+        }
+    )
+    builder.setupPost()
+    builder.setupMaxp()
+    del builder.font["cmap"]
+    del builder.font["name"]
+    source = BytesIO()
+    builder.font.save(source, reorderTables=False)
+
+    usable_format, usable_bytes, cmap_installed = _usable_font(
+        source.getvalue(),
+        "ttf",
+        "OCR Exact / Anonymous",
+        {65: 1},
+    )
+
+    assert usable_format == "ttf"
+    assert cmap_installed is True
+    font = TTFont(BytesIO(usable_bytes), lazy=False)
+    try:
+        assert font.getBestCmap() == {65: "A"}
+        names = {
+            int(record.nameID): record.toUnicode()
+            for record in font["name"].names
+            if int(record.nameID) in {1, 2, 3, 4, 5, 6}
+        }
+        assert names[1] == "OCR Exact / Anonymous"
+        assert names[2] == "Regular"
+        assert names[4] == "OCR Exact / Anonymous"
+        assert names[6] == "OCR-Exact-Anonymous"
+    finally:
+        font.close()
 
 
 def test_real_chart_maps_each_span_font_to_its_exact_distinct_embedded_asset(
