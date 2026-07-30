@@ -1475,6 +1475,42 @@ def test_terminal_raster_cannot_borrow_neighboring_ink_for_whitespace(tmp_path) 
     assert not list(tmp_path.rglob("*.png"))
 
 
+def test_requested_raster_delivers_transparent_zero_ink_for_whitespace(
+    tmp_path,
+) -> None:
+    run = _real_text_extraction(tmp_path)
+    original = run.extraction.pages[0].page_data.text_items[0]
+    whitespace = __import__("dataclasses").replace(
+        original,
+        text="   ",
+        normalized="",
+    )
+    run.extraction.pages[0].page_data.text_items = [whitespace]
+    output = tmp_path / "requested_whitespace_raster.dxf"
+
+    result = export_to_dxf(
+        run.extraction,
+        str(output),
+        DxfExportOptions(include_images=False, text_mode="raster"),
+    )
+
+    assert output.is_file()
+    assert len(result.text_deliveries) == 1
+    delivery = result.text_deliveries[0]
+    assert delivery["requested_representation"] == "raster"
+    assert delivery["final_representation"] == "raster"
+    assert delivery["verified"] is True
+    evidence = delivery["attempts"][-1]["evidence"]
+    assert evidence["visible_ink_expected"] is False
+    assert evidence["zero_ink_verified"] is True
+    asset = Path(evidence["asset_path"])
+    assert asset.is_file()
+    pixmap = fitz.Pixmap(asset)
+    assert pixmap.alpha
+    alpha = bytes(pixmap.samples)[pixmap.n - 1 :: pixmap.n]
+    assert alpha and not any(alpha)
+
+
 def test_unproven_structural_failure_cannot_start_terminal_raster(
     tmp_path,
 ) -> None:

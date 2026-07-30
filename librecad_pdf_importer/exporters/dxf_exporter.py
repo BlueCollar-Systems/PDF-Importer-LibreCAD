@@ -809,7 +809,13 @@ def _attempt_terminal_text_raster(
     try:
         if not delivery.source_id:
             raise ValueError("terminal raster has no stable source identity")
-        if not str(getattr(source_text, "text", "") or "").strip():
+        whitespace_only = not str(
+            getattr(source_text, "text", "") or ""
+        ).strip()
+        requested_raster = (
+            _normalized_text_mode(delivery.requested_representation) == "raster"
+        )
+        if whitespace_only and not requested_raster:
             raise ValueError(
                 "terminal raster cannot certify a whitespace-only source item "
                 "from unrelated page ink"
@@ -872,18 +878,39 @@ def _attempt_terminal_text_raster(
                     "terminal raster source bbox is not fully contained by the source page"
                 )
             dpi = max(72, int(raster_dpi or 300))
-            pixmap = page.get_pixmap(
-                matrix=fitz.Matrix(dpi / 72.0, dpi / 72.0),
-                clip=clip,
-                alpha=True,
-            )
+            if whitespace_only:
+                pixel_width = max(
+                    1, int(math.ceil(float(clip.width) * dpi / 72.0))
+                )
+                pixel_height = max(
+                    1, int(math.ceil(float(clip.height) * dpi / 72.0))
+                )
+                pixmap = fitz.Pixmap(
+                    fitz.csRGB,
+                    fitz.IRect(0, 0, pixel_width, pixel_height),
+                    True,
+                )
+                pixmap.clear_with(0)
+                pixmap.set_alpha(bytes(pixel_width * pixel_height))
+                attempt.strategy = "verified_zero_ink_transparent_item"
+            else:
+                pixmap = page.get_pixmap(
+                    matrix=fitz.Matrix(dpi / 72.0, dpi / 72.0),
+                    clip=clip,
+                    alpha=True,
+                )
             png = bytes(pixmap.tobytes("png"))
 
         if pixmap.width <= 0 or pixmap.height <= 0:
             raise ValueError("terminal raster rendered zero pixels")
         if not png.startswith(b"\x89PNG\r\n\x1a\n"):
             raise ValueError("terminal raster output is not a PNG")
-        if not _pixmap_contains_ink(pixmap):
+        contains_ink = _pixmap_contains_ink(pixmap)
+        if whitespace_only and contains_ink:
+            raise ValueError(
+                "requested whitespace raster contains unrelated visible ink"
+            )
+        if not whitespace_only and not contains_ink:
             raise ValueError("terminal raster crop contains no visible source ink")
 
         safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", delivery.source_id)
@@ -929,7 +956,8 @@ def _attempt_terminal_text_raster(
             actual_height, placed_height, rel_tol=1e-8, abs_tol=1e-9
         )
         attempt.type_verified = image.dxftype() == "IMAGE"
-        attempt.visual_verified = insert_ok and size_ok
+        content_ok = (not contains_ink) if whitespace_only else contains_ink
+        attempt.visual_verified = insert_ok and size_ok and content_ok
         attempt.cleanup_verified = all(
             doc.entitydb.get(handle) is not None
             and getattr(doc.entitydb.get(handle), "is_alive", True)
@@ -957,7 +985,9 @@ def _attempt_terminal_text_raster(
                 max(py0, py1),
             ],
             "pixel_size": [int(pixmap.width), int(pixmap.height)],
-            "visible_ink_verified": True,
+            "visible_ink_expected": not whitespace_only,
+            "visible_ink_verified": bool(contains_ink),
+            "zero_ink_verified": bool(whitespace_only and not contains_ink),
             "anchor_verified": insert_ok,
             "size_verified": size_ok,
         }

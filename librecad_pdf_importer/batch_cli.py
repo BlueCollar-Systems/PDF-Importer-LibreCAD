@@ -23,6 +23,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mode", default="auto",
                    choices=["auto", "vector", "raster", "hybrid"],
                    help="Import mode (BCS-ARCH-001)")
+    p.add_argument(
+        "--text-mode",
+        default="text",
+        choices=["text", "labels", "3d_text", "glyphs", "geometry", "raster"],
+        help="Text rendering (orthogonal to --mode)",
+    )
     p.add_argument("--pages", default="all", help="Page spec (default: all)")
     p.add_argument("--dxf-version", default="R2018",
                    choices=["R12", "R2000", "R2004", "R2007", "R2010", "R2013", "R2018"],
@@ -59,13 +65,26 @@ def main() -> int:
     if not pdfs:
         raise SystemExit(f"No PDF files found under: {root}")
 
-    aggregate = {"root": str(root), "output_dir": str(out_root), "total": len(pdfs), "passed": 0, "failed": 0, "results": []}
+    aggregate = {
+        "root": str(root),
+        "output_dir": str(out_root),
+        "mode": args.mode,
+        "text_mode": args.text_mode,
+        "total": len(pdfs),
+        "passed": 0,
+        "failed": 0,
+        "results": [],
+    }
 
     for pdf in pdfs:
         rel = pdf.relative_to(root)
         out_dxf = out_root / rel.with_suffix(".dxf")
         out_dxf.parent.mkdir(parents=True, exist_ok=True)
-        overrides = {"pages": args.pages}
+        overrides = {
+            "pages": args.pages,
+            "import_text": True,
+            "text_mode": args.text_mode,
+        }
         run = None
         try:
             run = run_import(str(pdf), mode=args.mode, overrides=overrides)
@@ -75,10 +94,12 @@ def main() -> int:
                 DxfExportOptions(
                     dxf_version=args.dxf_version,
                     include_text=run.config.text_mode != "none",
+                    text_mode=run.config.text_mode,
                     include_images=True,
                     map_dashes=bool(run.config.map_dashes),
                     page_arrangement=args.page_arrangement,
                     page_gap_ratio=max(0.0, float(args.page_gap_ratio or 0.0)),
+                    provenance_opts=run.config,
                 ),
             )
             aggregate["passed"] += 1
@@ -86,12 +107,20 @@ def main() -> int:
                 "pdf": str(pdf),
                 "dxf": export.output_path,
                 "status": "PASS",
+                "mode": args.mode,
+                "text_mode": args.text_mode,
                 "entities": export.entity_count,
                 "images": export.image_count,
             })
         except Exception as exc:  # noqa: BLE001
             aggregate["failed"] += 1
-            aggregate["results"].append({"pdf": str(pdf), "status": "FAIL", "error": str(exc)})
+            aggregate["results"].append({
+                "pdf": str(pdf),
+                "status": "FAIL",
+                "mode": args.mode,
+                "text_mode": args.text_mode,
+                "error": str(exc),
+            })
         finally:
             if run is not None:
                 run.close()
