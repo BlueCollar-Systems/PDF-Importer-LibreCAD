@@ -17,6 +17,25 @@ _ARCH_SCALE = re.compile(
     re.I,
 )
 _RATIO_SCALE = re.compile(r"\b(\d+)\s*:\s*(\d+)\b")
+_DATE_TOKEN = re.compile(
+    r"(?<!\d)\d{1,2}\s*[/\-]\s*\d{1,2}\s*[/\-]\s*\d{2,4}(?!\d)",
+    re.I,
+)
+_CLOCK_TIME = re.compile(
+    r"(?<!\d)\d{1,2}\s*:\s*\d{2}(?:\s*:\s*\d{2})?\s*(?:AM|PM)\b",
+    re.I,
+)
+
+
+def _looks_temporal(raw: str) -> bool:
+    """Reject dates/timestamps before permissive dimension parsing.
+
+    A title block's issue date and clock time often sit in the same high-score
+    region as its real scale. Slash dates can resemble architectural fractions
+    and clock times can resemble ratio scales, so neither is scale evidence.
+    """
+
+    return bool(_DATE_TOKEN.search(raw) or _CLOCK_TIME.search(raw))
 
 
 def _parse_arch_inches(token: str) -> Optional[float]:
@@ -99,6 +118,8 @@ def resolve_page_scale(page_data: PageData) -> ResolvedScale:
     for txt in page_data.text_items:
         raw = (txt.text or "").strip()
         if not raw:
+            continue
+        if _looks_temporal(raw):
             continue
         normalized = txt.normalized or raw.upper()
         parsed = parse_dimension(raw)
