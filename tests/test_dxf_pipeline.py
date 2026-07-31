@@ -6,6 +6,7 @@ import math
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from unittest.mock import patch
 import ezdxf
@@ -18,7 +19,11 @@ from pdfcadcore.primitive_extractor import _merge_stacked_fractions, extract_pag
 from pdfcadcore.import_config import ImportConfig
 from pdfcadcore.primitives import NormalizedText
 from dxf_text_builder import build_text
-from librecad_pdf_importer.core.document import ExtractionOptions, extract_document
+from librecad_pdf_importer.core.document import (
+    ExtractionOptions,
+    _extract_images,
+    extract_document,
+)
 from librecad_pdf_importer.exporters.dxf_exporter import DxfExportOptions, export_to_dxf
 from librecad_pdf_importer.importer import run_import, write_import_report
 
@@ -260,6 +265,65 @@ class TestDxfPipeline(unittest.TestCase):
         alpha_samples = bytes(extracted.samples)[extracted.n - 1 :: extracted.n]
         self.assertEqual(min(alpha_samples), 0)
         self.assertEqual(max(alpha_samples), 255)
+
+    def test_precomposed_alpha_image_is_not_merged_with_soft_mask_twice(self) -> None:
+        image_dir = self.tmp_path / "precomposed-alpha"
+        image_dir.mkdir()
+        document = object()
+        constructor_calls = []
+
+        class FakePixmap:
+            def __init__(self, *args):
+                constructor_calls.append(args)
+                if len(args) != 2 or args != (document, 7):
+                    raise RuntimeError(
+                        "soft mask was redundantly merged into an alpha pixmap"
+                    )
+                self.alpha = True
+                self.n = 4
+                self.width = 2
+                self.height = 2
+                self.colorspace = SimpleNamespace(n=3)
+                self.samples = bytes(
+                    (255, 0, 0, 255)
+                    + (0, 255, 0, 128)
+                    + (0, 0, 255, 255)
+                    + (255, 255, 255, 64)
+                )
+
+            @staticmethod
+            def save(path):
+                Path(path).write_bytes(b"precomposed-alpha-png")
+
+        class Page:
+            rect = SimpleNamespace(height=100.0)
+
+            @staticmethod
+            def get_images(*, full=False):
+                self.assertTrue(full)
+                return [(7, 8)]
+
+            @staticmethod
+            def get_image_rects(_image_info):
+                return [
+                    SimpleNamespace(x0=10.0, y0=20.0, x1=30.0, y1=40.0)
+                ]
+
+        with patch(
+            "librecad_pdf_importer.core.document.fitz.Pixmap",
+            FakePixmap,
+        ):
+            placements = _extract_images(
+                document,
+                Page(),
+                page_number=1,
+                options=ExtractionOptions(),
+                image_dir=image_dir,
+            )
+
+        self.assertEqual(constructor_calls, [(document, 7)])
+        self.assertEqual(len(placements), 1)
+        self.assertTrue(Path(placements[0].path).is_file())
 
     def test_export_stages_image_assets_beside_the_accepted_dxf(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})

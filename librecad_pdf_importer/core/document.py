@@ -700,7 +700,15 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
         try:
             base_pix = fitz.Pixmap(doc, xref)
             pix = base_pix
-            if smask > 0:
+            if smask > 0 and not base_pix.alpha:
+                # Only merge when PyMuPDF handed back an opaque image. When the
+                # base pixmap already carries alpha, PyMuPDF has applied the
+                # soft mask itself -- verified on alvord-2013.pdf, where the
+                # base alpha channel is byte-identical to the soft mask's
+                # samples across every image on the page. Merging again is not
+                # merely redundant: fz_new_pixmap_from_color_and_mask rejects a
+                # colour pixmap that has an alpha channel, which aborted the
+                # whole import for every text mode, not just raster.
                 mask_pix = fitz.Pixmap(doc, smask)
                 if (
                     int(base_pix.width) != int(mask_pix.width)
