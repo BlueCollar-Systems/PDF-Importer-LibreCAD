@@ -196,36 +196,6 @@ def _item(
     )
 
 
-def test_trailing_caret_marker_is_item_impossibility_not_import_abort() -> None:
-    """ezdxf strips trailing '^'; treat as ladder impossibility, keep other spans."""
-    marker = NormalizedText(
-        id=3037,
-        text="^",
-        normalized="^",
-        insertion=(1.0, 2.0),
-        bbox=(0.5, 1.5, 1.5, 2.5),
-        font_size=0.12,
-        rotation=0.0,
-        font_name="ESRIDefaultMarker",
-        page_number=1,
-        advance_width=0.2,
-    )
-    _, _msp, marker_result = _deliver("text", item=marker, target_app="librecad")
-    native_attempts = [
-        attempt
-        for attempt in marker_result.attempts
-        if attempt.attempted_representation in {"text", "labels", "3d_text"}
-    ]
-    assert native_attempts
-    assert any(attempt.outcome == "impossible" for attempt in native_attempts), [
-        (attempt.attempted_representation, attempt.outcome, attempt.reason)
-        for attempt in native_attempts
-    ]
-    # Peer span still imports after marker handling.
-    _, _msp2, peer_result = _deliver("text", target_app="librecad")
-    assert peer_result.verified is True
-    assert peer_result.final_representation == "text"
-
 def test_generated_text_style_never_claims_a_preexisting_user_style() -> None:
     doc = ezdxf.new("R2010")
     user_style = doc.styles.add("S1", font="user-owned.ttf")
@@ -286,6 +256,40 @@ def _deliver(
     )
     assert isinstance(result, TextDeliveryResult)
     return doc, msp, result
+
+
+def test_trailing_caret_marker_is_item_impossibility_not_import_abort() -> None:
+    """DXF TEXT must not silently strip a source marker control."""
+
+    marker = NormalizedText(
+        id=3037,
+        text="^",
+        normalized="^",
+        insertion=(1.0, 2.0),
+        bbox=(0.5, 1.5, 1.5, 2.5),
+        font_size=0.12,
+        rotation=0.0,
+        font_name="BCS Deterministic Test",
+        page_number=1,
+        advance_width=0.2,
+    )
+
+    _doc, _msp, marker_result = _deliver(
+        "text", item=marker, target_app="librecad"
+    )
+
+    first_attempt = marker_result.attempts[0]
+    assert first_attempt.attempted_representation == "text"
+    assert first_attempt.outcome == "impossible"
+    assert "trailing caret" in first_attempt.reason.lower()
+    assert marker_result.verified is True
+    assert marker_result.final_representation in {"glyphs", "geometry"}
+
+    # A malformed marker is item-scoped; a neighboring ordinary span still
+    # imports natively instead of the page or document aborting.
+    _doc2, _msp2, peer_result = _deliver("text", target_app="librecad")
+    assert peer_result.verified is True
+    assert peer_result.final_representation == "text"
 
 
 def test_text_is_a_distinct_requested_and_delivered_representation() -> None:
@@ -1421,11 +1425,9 @@ def test_failed_3d_export_writes_separate_complete_failure_report(tmp_path) -> N
             "get_pixmap",
             side_effect=RuntimeError("terminal renderer unavailable"),
         ),
-        # Terminal raster renders each item clip from the page's cached display
-        # list rather than re-opening the PDF per span, so the renderer failure
-        # has to be injected there as well; patching only Page.get_pixmap would
-        # let the export quietly succeed and this test would stop guarding
-        # anything.
+        # Terminal raster renders item clips from the page's cached display
+        # list, so the renderer failure must be injected there too; patching
+        # only Page.get_pixmap would let the export quietly succeed.
         patch.object(
             fitz.DisplayList,
             "get_pixmap",
