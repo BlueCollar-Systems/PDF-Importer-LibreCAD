@@ -33,6 +33,7 @@ from ezdxf.addons import text2path
 from ezdxf.fonts import fonts as ezdxf_fonts
 from ezdxf.fonts.font_face import FontFace
 from ezdxf.math import Matrix44
+from ezdxf.tools.text import plain_text
 from ezdxf.tools.text_size import text_size
 
 from pdfcadcore.import_config import ImportConfig
@@ -1146,6 +1147,16 @@ def _attempt_labels(
             if parent == "librecad"
             else str(text_item.text)
         )
+        if force_text and plain_text(delivered_text) != delivered_text:
+            # DXF TEXT treats a trailing caret as a control and ezdxf removes
+            # it. Marker fonts use a lone caret as visible source content, so
+            # certify this item as impossible in native TEXT before creating a
+            # silently mutated entity; the caller can continue down its finite
+            # item-scoped fallback ladder without aborting the page.
+            raise _RepresentationImpossible(
+                "DXF TEXT cannot carry trailing caret marker control without "
+                "mutating source content"
+            )
         if len(delivered_text) > _MTEXT_THRESHOLD and not force_text:
             mtext_attribs = dict(attribs)
             mtext_attribs.pop("height", None)
