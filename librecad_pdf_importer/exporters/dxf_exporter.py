@@ -676,6 +676,7 @@ def _verify_serialized_image_assets(
 ) -> None:
     """Reconcile every normal image placement and owned asset after DXF reopen."""
 
+    verified_asset_digests: Dict[Path, str] = {}
     if expectations:
         raster_variables = list(doc.objects.query("RASTERVARIABLES"))
         if len(raster_variables) != 1:
@@ -724,7 +725,11 @@ def _verify_serialized_image_assets(
             raise RuntimeError(
                 f"serialized image delivery {expected.image_handle} references a missing or foreign asset"
             )
-        if hashlib.sha256(asset_path.read_bytes()).hexdigest() != expected.asset_sha256:
+        actual_asset_sha256 = verified_asset_digests.get(asset_path)
+        if actual_asset_sha256 is None:
+            actual_asset_sha256 = _file_sha256(asset_path)
+            verified_asset_digests[asset_path] = actual_asset_sha256
+        if actual_asset_sha256 != expected.asset_sha256:
             raise RuntimeError(
                 f"serialized image delivery {expected.image_handle} asset hash mismatch"
             )
@@ -781,6 +786,80 @@ def _pixmap_contains_ink(pixmap: Any) -> bool:
     return False
 
 
+class _RasterRenderSession:
+    """Own source documents and page display lists for one DXF export."""
+
+    def __init__(self) -> None:
+        self._source_key: Optional[Tuple[str, str]] = None
+        self._page_key: Optional[Tuple[str, str, int]] = None
+        self._document: Any = None
+        self._page: Any = None
+        self._display_list: Any = None
+
+    def __enter__(self) -> "_RasterRenderSession":
+        return self
+
+    def __exit__(self, _exc_type: Any, _exc: Any, _traceback: Any) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Release every PyMuPDF object owned by this export session."""
+
+        document = self._document
+        self._source_key = None
+        self._page_key = None
+        self._display_list = None
+        self._page = None
+        self._document = None
+        if document is not None:
+            document.close()
+
+    def page(
+        self,
+        source_pdf: Path,
+        source_pdf_sha256: str,
+        page_number: int,
+    ) -> Tuple[Any, Any]:
+        """Return an isolated, export-scoped page display list."""
+
+        resolved_source = str(Path(source_pdf).expanduser().resolve())
+        source_digest = str(source_pdf_sha256).strip()
+        requested_page = int(page_number)
+        if not source_digest:
+            raise ValueError("raster render session requires a source digest")
+        if requested_page < 1:
+            raise ValueError("raster render session page number must be positive")
+        source_key = (resolved_source, source_digest)
+        page_key = (
+            resolved_source,
+            source_digest,
+            requested_page,
+        )
+        if self._source_key != source_key:
+            self.close()
+            document = fitz.open(resolved_source)
+            self._source_key = source_key
+            self._document = document
+        if self._page_key != page_key:
+            self._page_key = None
+            self._display_list = None
+            self._page = None
+            try:
+                page = self._document.load_page(requested_page - 1)
+                display_list = page.get_displaylist()
+            except Exception:
+                if self._source_key == source_key and self._page_key is None:
+                    # Keep a valid source document reusable after an invalid page,
+                    # while never retaining a partial page/display-list pair.
+                    self._display_list = None
+                    self._page = None
+                raise
+            self._page_key = page_key
+            self._page = page
+            self._display_list = display_list
+        return self._page, self._display_list
+
+
 def _attempt_terminal_text_raster(
     delivery: TextDeliveryResult,
     *,
@@ -793,6 +872,7 @@ def _attempt_terminal_text_raster(
     asset_root: Path,
     raster_dpi: int,
     source_pdf_sha256: str,
+    raster_session: _RasterRenderSession,
 ) -> Tuple[TextDeliveryResult, Optional[_PendingRasterAsset]]:
     """Attempt a real item crop as requested or after proven structural failure."""
     attempts = list(delivery.attempts)
@@ -836,122 +916,125 @@ def _attempt_terminal_text_raster(
         if min(source_width, source_height, placed_width, placed_height) <= 0.0:
             raise ValueError("terminal raster source item bbox is empty")
 
-        with fitz.open(extraction.pdf_path) as source_doc:
-            page = source_doc.load_page(int(page_number) - 1)
-            rotation_matrix = _page_rotation_transform(
-                page.rect,
-                getattr(page, "rotation_matrix", None),
+        page, page_display_list = raster_session.page(
+            Path(extraction.pdf_path),
+            source_pdf_sha256,
+            page_number,
+        )
+        rotation_matrix = _page_rotation_transform(
+            page.rect,
+            getattr(page, "rotation_matrix", None),
+        )
+        source_corners = [
+            _transform_pdf_point(x, y, rotation_matrix)
+            for x, y in (
+                (sx0, sy0),
+                (sx1, sy0),
+                (sx1, sy1),
+                (sx0, sy1),
             )
-            source_corners = [
-                _transform_pdf_point(x, y, rotation_matrix)
-                for x, y in (
-                    (sx0, sy0),
-                    (sx1, sy0),
-                    (sx1, sy1),
-                    (sx0, sy1),
-                )
-            ]
-            requested_clip = fitz.Rect(
-                min(point[0] for point in source_corners),
-                min(point[1] for point in source_corners),
-                max(point[0] for point in source_corners),
-                max(point[1] for point in source_corners),
+        ]
+        requested_clip = fitz.Rect(
+            min(point[0] for point in source_corners),
+            min(point[1] for point in source_corners),
+            max(point[0] for point in source_corners),
+            max(point[1] for point in source_corners),
+        )
+        clip = requested_clip & page.rect
+        if clip.is_empty or clip.is_infinite:
+            raise ValueError("terminal raster clip is outside the source page")
+        containment_tolerance = max(
+            1e-6,
+            max(float(page.rect.width), float(page.rect.height), 1.0) * 1e-7,
+        )
+        source_bbox_clipped = any(
+            not math.isclose(
+                left,
+                right,
+                rel_tol=0.0,
+                abs_tol=containment_tolerance,
             )
-            clip = requested_clip & page.rect
-            if clip.is_empty or clip.is_infinite:
-                raise ValueError("terminal raster clip is outside the source page")
-            containment_tolerance = max(
-                1e-6,
-                max(float(page.rect.width), float(page.rect.height), 1.0) * 1e-7,
+            for left, right in zip(
+                (requested_clip.x0, requested_clip.y0, requested_clip.x1, requested_clip.y1),
+                (clip.x0, clip.y0, clip.x1, clip.y1),
+                strict=True,
             )
-            source_bbox_clipped = any(
-                not math.isclose(
-                    left,
-                    right,
-                    rel_tol=0.0,
-                    abs_tol=containment_tolerance,
-                )
-                for left, right in zip(
-                    (requested_clip.x0, requested_clip.y0, requested_clip.x1, requested_clip.y1),
-                    (clip.x0, clip.y0, clip.x1, clip.y1),
-                    strict=True,
-                )
+        )
+        # PDF producers commonly emit text whose font ascent extends a
+        # fraction of a point beyond the CropBox.  Only the intersection is
+        # visible in a conforming viewer, so rasterize that intersection and
+        # map it to the corresponding (not stretched) portion of the model
+        # bbox.  The source-to-display transform is axis-aligned for PDF
+        # page rotations; the model transform only reverses display Y.
+        requested_width = float(requested_clip.width)
+        requested_height = float(requested_clip.height)
+        if requested_width <= 0.0 or requested_height <= 0.0:
+            raise ValueError("terminal raster requested clip is empty")
+        x_fraction_0 = (float(clip.x0) - float(requested_clip.x0)) / requested_width
+        x_fraction_1 = (float(clip.x1) - float(requested_clip.x0)) / requested_width
+        y_fraction_0 = (float(clip.y0) - float(requested_clip.y0)) / requested_height
+        y_fraction_1 = (float(clip.y1) - float(requested_clip.y0)) / requested_height
+        target_x0 = min(px0, px1) + x_fraction_0 * placed_width
+        target_x1 = min(px0, px1) + x_fraction_1 * placed_width
+        target_y0 = max(py0, py1) - y_fraction_1 * placed_height
+        target_y1 = max(py0, py1) - y_fraction_0 * placed_height
+        visible_placed_width = target_x1 - target_x0
+        visible_placed_height = target_y1 - target_y0
+        if min(visible_placed_width, visible_placed_height) <= 0.0:
+            raise ValueError("terminal raster visible model bbox is empty")
+        dpi = max(72, int(raster_dpi or 300))
+        zero_ink_confirmation_dpi: Optional[int] = None
+        if whitespace_only:
+            pixel_width = max(
+                1, int(math.ceil(float(clip.width) * dpi / 72.0))
             )
-            # PDF producers commonly emit text whose font ascent extends a
-            # fraction of a point beyond the CropBox.  Only the intersection is
-            # visible in a conforming viewer, so rasterize that intersection and
-            # map it to the corresponding (not stretched) portion of the model
-            # bbox.  The source-to-display transform is axis-aligned for PDF
-            # page rotations; the model transform only reverses display Y.
-            requested_width = float(requested_clip.width)
-            requested_height = float(requested_clip.height)
-            if requested_width <= 0.0 or requested_height <= 0.0:
-                raise ValueError("terminal raster requested clip is empty")
-            x_fraction_0 = (float(clip.x0) - float(requested_clip.x0)) / requested_width
-            x_fraction_1 = (float(clip.x1) - float(requested_clip.x0)) / requested_width
-            y_fraction_0 = (float(clip.y0) - float(requested_clip.y0)) / requested_height
-            y_fraction_1 = (float(clip.y1) - float(requested_clip.y0)) / requested_height
-            target_x0 = min(px0, px1) + x_fraction_0 * placed_width
-            target_x1 = min(px0, px1) + x_fraction_1 * placed_width
-            target_y0 = max(py0, py1) - y_fraction_1 * placed_height
-            target_y1 = max(py0, py1) - y_fraction_0 * placed_height
-            visible_placed_width = target_x1 - target_x0
-            visible_placed_height = target_y1 - target_y0
-            if min(visible_placed_width, visible_placed_height) <= 0.0:
-                raise ValueError("terminal raster visible model bbox is empty")
-            dpi = max(72, int(raster_dpi or 300))
-            zero_ink_confirmation_dpi: Optional[int] = None
-            if whitespace_only:
-                pixel_width = max(
-                    1, int(math.ceil(float(clip.width) * dpi / 72.0))
+            pixel_height = max(
+                1, int(math.ceil(float(clip.height) * dpi / 72.0))
+            )
+            pixmap = fitz.Pixmap(
+                fitz.csRGB,
+                fitz.IRect(0, 0, pixel_width, pixel_height),
+                True,
+            )
+            pixmap.clear_with(0)
+            pixmap.set_alpha(bytes(pixel_width * pixel_height))
+            attempt.strategy = "verified_zero_ink_transparent_item"
+        else:
+            pixmap = page_display_list.get_pixmap(
+                matrix=fitz.Matrix(dpi / 72.0, dpi / 72.0),
+                clip=clip,
+                alpha=True,
+            )
+            if not _pixmap_contains_ink(pixmap) and requested_raster:
+                # A non-empty text record can legitimately paint no page
+                # pixels (render mode 3, clipping paths, optional content,
+                # or an empty glyph program).  Confirm at a second, higher
+                # resolution before preserving it as transparent output.
+                # Bound the confirmation to protect older hardware.
+                max_confirmation_pixels = 8_000_000
+                area_points = max(float(clip.width) * float(clip.height), 1e-12)
+                dpi_cap = int(
+                    math.floor(72.0 * math.sqrt(max_confirmation_pixels / area_points))
                 )
-                pixel_height = max(
-                    1, int(math.ceil(float(clip.height) * dpi / 72.0))
-                )
-                pixmap = fitz.Pixmap(
-                    fitz.csRGB,
-                    fitz.IRect(0, 0, pixel_width, pixel_height),
-                    True,
-                )
-                pixmap.clear_with(0)
-                pixmap.set_alpha(bytes(pixel_width * pixel_height))
-                attempt.strategy = "verified_zero_ink_transparent_item"
-            else:
-                pixmap = page.get_pixmap(
-                    matrix=fitz.Matrix(dpi / 72.0, dpi / 72.0),
+                zero_ink_confirmation_dpi = min(dpi * 2, 1200, dpi_cap)
+                if zero_ink_confirmation_dpi <= dpi:
+                    raise ValueError(
+                        "terminal raster zero-ink confirmation exceeds safe pixel budget"
+                    )
+                confirmation = page_display_list.get_pixmap(
+                    matrix=fitz.Matrix(
+                        zero_ink_confirmation_dpi / 72.0,
+                        zero_ink_confirmation_dpi / 72.0,
+                    ),
                     clip=clip,
                     alpha=True,
                 )
-                if not _pixmap_contains_ink(pixmap) and requested_raster:
-                    # A non-empty text record can legitimately paint no page
-                    # pixels (render mode 3, clipping paths, optional content,
-                    # or an empty glyph program).  Confirm at a second, higher
-                    # resolution before preserving it as transparent output.
-                    # Bound the confirmation to protect older hardware.
-                    max_confirmation_pixels = 8_000_000
-                    area_points = max(float(clip.width) * float(clip.height), 1e-12)
-                    dpi_cap = int(
-                        math.floor(72.0 * math.sqrt(max_confirmation_pixels / area_points))
+                if _pixmap_contains_ink(confirmation):
+                    raise ValueError(
+                        "terminal raster zero-ink result was not confirmed at higher resolution"
                     )
-                    zero_ink_confirmation_dpi = min(dpi * 2, 1200, dpi_cap)
-                    if zero_ink_confirmation_dpi <= dpi:
-                        raise ValueError(
-                            "terminal raster zero-ink confirmation exceeds safe pixel budget"
-                        )
-                    confirmation = page.get_pixmap(
-                        matrix=fitz.Matrix(
-                            zero_ink_confirmation_dpi / 72.0,
-                            zero_ink_confirmation_dpi / 72.0,
-                        ),
-                        clip=clip,
-                        alpha=True,
-                    )
-                    if _pixmap_contains_ink(confirmation):
-                        raise ValueError(
-                            "terminal raster zero-ink result was not confirmed at higher resolution"
-                        )
-                    attempt.strategy = "verified_source_zero_ink_transparent_item"
-            png = bytes(pixmap.tobytes("png"))
+                attempt.strategy = "verified_source_zero_ink_transparent_item"
+        png = bytes(pixmap.tobytes("png"))
 
         if pixmap.width <= 0 or pixmap.height <= 0:
             raise ValueError("terminal raster rendered zero pixels")
@@ -1123,21 +1206,23 @@ def export_to_dxf(
     options: Optional[DxfExportOptions] = None,
 ) -> DxfExportResult:
     transaction = _AssetTransaction()
-    try:
-        result = _export_to_dxf_impl(
-            extraction,
-            output_path,
-            options,
-            asset_transaction=transaction,
-        )
-    except Exception:
-        transaction.rollback()
-        if options is not None and options.provenance_opts is not None:
-            options.provenance_opts._result_status = "failed"  # noqa: B010
-            options.provenance_opts._delivered_image_count = 0  # noqa: B010
-        raise
-    transaction.commit()
-    return result
+    with _RasterRenderSession() as raster_session:
+        try:
+            result = _export_to_dxf_impl(
+                extraction,
+                output_path,
+                options,
+                asset_transaction=transaction,
+                raster_session=raster_session,
+            )
+        except Exception:
+            transaction.rollback()
+            if options is not None and options.provenance_opts is not None:
+                options.provenance_opts._result_status = "failed"  # noqa: B010
+                options.provenance_opts._delivered_image_count = 0  # noqa: B010
+            raise
+        transaction.commit()
+        return result
 
 
 def _export_to_dxf_impl(
@@ -1146,6 +1231,7 @@ def _export_to_dxf_impl(
     options: Optional[DxfExportOptions] = None,
     *,
     asset_transaction: _AssetTransaction,
+    raster_session: _RasterRenderSession,
 ) -> DxfExportResult:
     opts = options or DxfExportOptions()
     output = Path(output_path).expanduser().resolve()
@@ -1403,6 +1489,7 @@ def _export_to_dxf_impl(
                             else 300
                         ),
                         source_pdf_sha256=source_pdf_sha256,
+                        raster_session=raster_session,
                     )
                     if pending_asset is not None:
                         pending_raster_assets.append(pending_asset)

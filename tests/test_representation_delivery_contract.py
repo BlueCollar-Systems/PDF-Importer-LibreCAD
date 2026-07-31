@@ -31,6 +31,7 @@ from dxf_text_builder import (
     reset_text_styles,
 )
 from librecad_pdf_importer.core.document import DocumentExtraction, ExtractedPage
+from librecad_pdf_importer.exporters import dxf_exporter as dxf_exporter_module
 from librecad_pdf_importer.exporters.dxf_exporter import (
     DxfExportOptions,
     _verify_serialized_text_deliveries,
@@ -1202,6 +1203,175 @@ def _real_text_extraction(tmp_path):
     return run
 
 
+def test_terminal_raster_reuses_one_display_list_without_changing_pixels(
+    tmp_path,
+) -> None:
+    pdf_path = tmp_path / "two-raster-items.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=240, height=160)
+    page.insert_text((24, 48), "W12X30", fontsize=12)
+    page.insert_text((124, 118), "HSS6X6", fontsize=12)
+    pdf.save(str(pdf_path))
+    pdf.close()
+    run = run_import(str(pdf_path), mode="vector", overrides={"pages": "1"})
+    source_items = run.extraction.pages[0].page_data.text_items
+    assert len(source_items) == 2
+
+    real_open = fitz.open
+    opened_documents = []
+
+    def tracked_open(*args, **kwargs):
+        document = real_open(*args, **kwargs)
+        opened_documents.append(document)
+        return document
+
+    output = tmp_path / "two-raster-items.dxf"
+    with patch.object(
+        dxf_exporter_module.fitz,
+        "open",
+        side_effect=tracked_open,
+    ):
+        result = export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(include_images=False, text_mode="raster"),
+        )
+
+    assert len(opened_documents) == 1
+    assert opened_documents[0].is_closed
+    assert len(result.text_deliveries) == 2
+    with real_open(pdf_path) as source_document:
+        source_page = source_document[0]
+        for source_item, delivery in zip(
+            source_items,
+            result.text_deliveries,
+            strict=True,
+        ):
+            evidence = delivery["attempts"][-1]["evidence"]
+            clip = fitz.Rect(source_item.source_bbox_pdf) & source_page.rect
+            expected_png = source_page.get_pixmap(
+                matrix=fitz.Matrix(
+                    evidence["raster_dpi"] / 72.0,
+                    evidence["raster_dpi"] / 72.0,
+                ),
+                clip=clip,
+                alpha=True,
+            ).tobytes("png")
+            assert Path(evidence["asset_path"]).read_bytes() == expected_png
+
+
+def test_raster_render_session_isolates_pages_and_source_documents(tmp_path) -> None:
+    source_a = tmp_path / "source-a.pdf"
+    pdf = fitz.open()
+    first_page = pdf.new_page(width=160, height=100)
+    first_page.insert_text((20, 40), "SOURCE A PAGE 1", fontsize=12)
+    second_page = pdf.new_page(width=180, height=120)
+    second_page.insert_text((30, 70), "SOURCE A PAGE 2", fontsize=14)
+    pdf.save(str(source_a))
+    pdf.close()
+
+    source_b = tmp_path / "source-b.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=140, height=90)
+    page.insert_text((18, 52), "SOURCE B PAGE 1", fontsize=11)
+    pdf.save(str(source_b))
+    pdf.close()
+
+    real_open = fitz.open
+
+    def direct_page_png(source, page_index):
+        with real_open(source) as document:
+            return document[page_index].get_pixmap(alpha=True).tobytes("png")
+
+    expected_a1 = direct_page_png(source_a, 0)
+    expected_a2 = direct_page_png(source_a, 1)
+    expected_b1 = direct_page_png(source_b, 0)
+    opened_documents = []
+
+    def tracked_open(*args, **kwargs):
+        document = real_open(*args, **kwargs)
+        opened_documents.append(document)
+        return document
+
+    source_a_sha = hashlib.sha256(source_a.read_bytes()).hexdigest()
+    source_b_sha = hashlib.sha256(source_b.read_bytes()).hexdigest()
+    with patch.object(dxf_exporter_module.fitz, "open", side_effect=tracked_open):
+        with dxf_exporter_module._RasterRenderSession() as session:
+            _, display_list_a1 = session.page(source_a, source_a_sha, 1)
+            actual_a1 = display_list_a1.get_pixmap(alpha=True).tobytes("png")
+            _, repeated_display_list_a1 = session.page(source_a, source_a_sha, 1)
+            assert repeated_display_list_a1 is display_list_a1
+            assert len(opened_documents) == 1
+            assert actual_a1 == expected_a1
+
+            _, display_list_a2 = session.page(source_a, source_a_sha, 2)
+            assert display_list_a2 is not display_list_a1
+            assert display_list_a2.get_pixmap(alpha=True).tobytes("png") == expected_a2
+            assert len(opened_documents) == 1
+
+            source_a_document = opened_documents[0]
+            _, display_list_b1 = session.page(source_b, source_b_sha, 1)
+            assert source_a_document.is_closed
+            assert display_list_b1.get_pixmap(alpha=True).tobytes("png") == expected_b1
+            assert len(opened_documents) == 2
+
+        assert all(document.is_closed for document in opened_documents)
+
+
+def test_serialized_image_verification_hashes_a_shared_asset_once(tmp_path) -> None:
+    asset_path = tmp_path / "shared.png"
+    pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 2, 2), False)
+    pixmap.clear_with(0)
+    pixmap.save(str(asset_path))
+    asset_sha256 = hashlib.sha256(asset_path.read_bytes()).hexdigest()
+
+    drawing = ezdxf.new("R2010")
+    drawing.set_raster_variables(frame=0, quality=1, units="mm")
+    image_def = drawing.add_image_def(
+        filename=str(asset_path),
+        size_in_pixel=(2, 2),
+        name="SHARED",
+    )
+    expectations = []
+    for index in range(128):
+        insert = (float(index), float(index % 7))
+        image = drawing.modelspace().add_image(
+            image_def,
+            insert=insert,
+            size_in_units=(1.0, 1.0),
+        )
+        image.dxf.flags = int(image.dxf.flags or 0) | 8
+        expectations.append(
+            dxf_exporter_module._SerializedImageExpectation(
+                image_handle=str(image.dxf.handle),
+                image_def_handle=str(image_def.dxf.handle),
+                asset_path=asset_path.resolve(),
+                asset_sha256=asset_sha256,
+                insert=insert,
+                size_in_units=(1.0, 1.0),
+                size_in_pixel=(2, 2),
+            )
+        )
+
+    real_file_sha256 = dxf_exporter_module._file_sha256
+    asset_hashes = 0
+
+    def tracked_file_sha256(path):
+        nonlocal asset_hashes
+        if path.resolve() == asset_path.resolve():
+            asset_hashes += 1
+        return real_file_sha256(path)
+
+    with patch.object(
+        dxf_exporter_module,
+        "_file_sha256",
+        side_effect=tracked_file_sha256,
+    ):
+        dxf_exporter_module._verify_serialized_image_assets(drawing, expectations)
+
+    assert asset_hashes == 1
+
+
 def test_explicit_item_raster_is_verified_without_being_reported_as_fallback(
     tmp_path,
 ) -> None:
@@ -1380,6 +1550,13 @@ def test_failed_3d_export_writes_separate_complete_failure_report(tmp_path) -> N
         terminal_fallback_authorized=True,
         failure_reason="all structural representations were proven impossible",
     )
+    real_open = fitz.open
+    opened_documents = []
+
+    def tracked_open(*args, **kwargs):
+        document = real_open(*args, **kwargs)
+        opened_documents.append(document)
+        return document
 
     with (
         patch(
@@ -1387,14 +1564,17 @@ def test_failed_3d_export_writes_separate_complete_failure_report(tmp_path) -> N
             return_value=structural_failure,
         ),
         patch.object(
-            fitz.Page,
+            fitz.DisplayList,
             "get_pixmap",
             side_effect=RuntimeError("terminal renderer unavailable"),
         ),
+        patch.object(dxf_exporter_module.fitz, "open", side_effect=tracked_open),
     ):
         with pytest.raises(RuntimeError, match="text_span:1:1") as raised:
             convert(str(pdf_path), str(dxf_path), config=config, dxf_version="R2010")
 
+    assert opened_documents
+    assert all(document.is_closed for document in opened_documents)
     assert dxf_path.read_bytes() == prior_dxf
     assert accepted_report.read_bytes() == prior_report
     failure_report_path = Path(raised.value.failure_report_path)
