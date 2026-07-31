@@ -21,6 +21,7 @@ from dxf_text_builder import (
     TextDeliveryResult,
     _ExactFontResolution,
     _embedded_ezdxf_cap_height_ratio,
+    _staged_font_matches_source,
     _ensure_text_style,
     _normalized_mode,
     _representation_ladder,
@@ -94,6 +95,47 @@ def test_subset_font_cap_height_uses_available_capital_when_x_is_absent() -> Non
     assert _embedded_ezdxf_cap_height_ratio(
         _subset_font_without_lowercase_x()
     ) == pytest.approx(0.7)
+
+
+def test_embedded_font_metrics_are_parsed_once_per_document() -> None:
+    font_bytes = _subset_font_without_lowercase_x()
+    from fontTools.ttLib import TTFont as real_ttfont
+
+    reset_text_styles()
+    with patch("fontTools.ttLib.TTFont", wraps=real_ttfont) as constructor:
+        first = _embedded_ezdxf_cap_height_ratio(font_bytes)
+        second = _embedded_ezdxf_cap_height_ratio(font_bytes)
+        assert first == second == pytest.approx(0.7)
+        assert constructor.call_count == 1
+
+        reset_text_styles()
+        assert _embedded_ezdxf_cap_height_ratio(font_bytes) == pytest.approx(0.7)
+        assert constructor.call_count == 2
+
+
+def test_staged_embedded_font_bytes_are_read_once_per_document(
+    tmp_path: Path,
+) -> None:
+    font_bytes = _subset_font_without_lowercase_x()
+    font_path = tmp_path / "embedded.ttf"
+    font_path.write_bytes(font_bytes)
+    digest = hashlib.sha256(font_bytes).hexdigest()
+
+    reset_text_styles()
+    original_read_bytes = Path.read_bytes
+    with patch.object(
+        Path,
+        "read_bytes",
+        autospec=True,
+        side_effect=original_read_bytes,
+    ) as reader:
+        assert _staged_font_matches_source(font_path, digest, font_bytes) is True
+        assert _staged_font_matches_source(font_path, digest, font_bytes) is True
+        assert reader.call_count == 1
+
+        reset_text_styles()
+        assert _staged_font_matches_source(font_path, digest, font_bytes) is True
+        assert reader.call_count == 2
 
 
 def test_serialized_fallback_text_keeps_unused_embedded_font_provenance() -> None:

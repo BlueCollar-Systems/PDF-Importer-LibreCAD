@@ -41,6 +41,8 @@ from pdfcadcore.primitives import NormalizedText
 
 _MTEXT_THRESHOLD = 120
 _created_styles: Dict[str, str] = {}
+_embedded_cap_height_cache: Dict[str, float] = {}
+_staged_font_verification_cache: Dict[Tuple[str, str, int, int], bool] = {}
 _style_counter = 0
 
 
@@ -257,6 +259,31 @@ def _resolve_exact_font(font_name: str) -> _ExactFontResolution:
     )
 
 
+def _staged_font_matches_source(
+    path: Path,
+    expected_sha256: str,
+    expected_bytes: bytes,
+) -> bool:
+    """Verify immutable staged font bytes once per export document."""
+
+    stat = path.stat()
+    cache_key = (
+        str(path.resolve()),
+        str(expected_sha256),
+        int(stat.st_size),
+        int(stat.st_mtime_ns),
+    )
+    if cache_key in _staged_font_verification_cache:
+        return _staged_font_verification_cache[cache_key]
+    content = path.read_bytes()
+    matches = bool(
+        hashlib.sha256(content).hexdigest() == str(expected_sha256)
+        and content == expected_bytes
+    )
+    _staged_font_verification_cache[cache_key] = matches
+    return matches
+
+
 def _resolve_item_font(
     text_item: NormalizedText,
     config: ImportConfig,
@@ -268,7 +295,8 @@ def _resolve_item_font(
     if asset is not None:
         try:
             cap_height_ratio = _embedded_ezdxf_cap_height_ratio(
-                bytes(asset.usable_bytes)
+                bytes(asset.usable_bytes),
+                cache_key=str(asset.usable_sha256),
             )
         except (KeyError, OSError, TypeError, ValueError) as exc:
             return _ExactFontResolution(
@@ -314,15 +342,18 @@ def _resolve_item_font(
                 reason="exact embedded font was not staged for this export",
             )
         try:
-            content = path.read_bytes()
+            staged_font_matches = _staged_font_matches_source(
+                path,
+                str(asset.usable_sha256),
+                bytes(asset.usable_bytes),
+            )
         except OSError as exc:
             return _ExactFontResolution(
                 **base,
                 exact=False,
                 reason=f"exact embedded font asset could not be read: {exc}",
             )
-        digest = hashlib.sha256(content).hexdigest()
-        if digest != str(asset.usable_sha256) or content != bytes(asset.usable_bytes):
+        if not staged_font_matches:
             return _ExactFontResolution(
                 **base,
                 exact=False,
@@ -399,7 +430,11 @@ def _require_exact_item_font(
     raise ValueError(resolution.reason)
 
 
-def _embedded_ezdxf_cap_height_ratio(font_bytes: bytes) -> float:
+def _embedded_ezdxf_cap_height_ratio(
+    font_bytes: bytes,
+    *,
+    cache_key: str = "",
+) -> float:
     """Resolve a certifiable cap-height ratio from a possibly subset font.
 
     PDF subset programs legitimately omit unused lowercase ``x`` glyphs.
@@ -409,10 +444,16 @@ def _embedded_ezdxf_cap_height_ratio(font_bytes: bytes) -> float:
     subsets that contain no usable capital outline.
     """
 
+    font_payload = bytes(font_bytes)
+    resolved_cache_key = str(cache_key or hashlib.sha256(font_payload).hexdigest())
+    cached_ratio = _embedded_cap_height_cache.get(resolved_cache_key)
+    if cached_ratio is not None:
+        return cached_ratio
+
     from fontTools.pens.boundsPen import ControlBoundsPen
     from fontTools.ttLib import TTFont
 
-    font = TTFont(BytesIO(font_bytes), lazy=False, recalcTimestamp=False)
+    font = TTFont(BytesIO(font_payload), lazy=False, recalcTimestamp=False)
     try:
         units_per_em = float(font["head"].unitsPerEm)
         if not math.isfinite(units_per_em) or units_per_em <= 0.0:
@@ -477,6 +518,7 @@ def _embedded_ezdxf_cap_height_ratio(font_bytes: bytes) -> float:
     ratio = cap_height / units_per_em
     if not math.isfinite(ratio) or ratio <= 0.0:
         raise ValueError("font cap-height ratio is invalid")
+    _embedded_cap_height_cache[resolved_cache_key] = ratio
     return ratio
 
 
@@ -2042,9 +2084,11 @@ def build_text(
 
 
 def reset_text_styles() -> None:
-    """Clear the cached text-style registry (call between documents)."""
+    """Clear per-document text-style and embedded-font caches."""
     global _style_counter  # noqa: PLW0603
     _created_styles.clear()
+    _embedded_cap_height_cache.clear()
+    _staged_font_verification_cache.clear()
     _style_counter = 0
 
 
