@@ -259,6 +259,40 @@ def _deliver(
     return doc, msp, result
 
 
+def test_trailing_caret_marker_is_item_impossibility_not_import_abort() -> None:
+    """DXF TEXT must not silently strip a source marker control."""
+
+    marker = NormalizedText(
+        id=3037,
+        text="^",
+        normalized="^",
+        insertion=(1.0, 2.0),
+        bbox=(0.5, 1.5, 1.5, 2.5),
+        font_size=0.12,
+        rotation=0.0,
+        font_name="BCS Deterministic Test",
+        page_number=1,
+        advance_width=0.2,
+    )
+
+    _doc, _msp, marker_result = _deliver(
+        "text", item=marker, target_app="librecad"
+    )
+
+    first_attempt = marker_result.attempts[0]
+    assert first_attempt.attempted_representation == "text"
+    assert first_attempt.outcome == "impossible"
+    assert "trailing caret" in first_attempt.reason.lower()
+    assert marker_result.verified is True
+    assert marker_result.final_representation in {"glyphs", "geometry"}
+
+    # A malformed marker is item-scoped; a neighboring ordinary span still
+    # imports natively instead of the page or document aborting.
+    _doc2, _msp2, peer_result = _deliver("text", target_app="librecad")
+    assert peer_result.verified is True
+    assert peer_result.final_representation == "text"
+
+
 def test_text_is_a_distinct_requested_and_delivered_representation() -> None:
     _, msp, result = _deliver("text")
 
