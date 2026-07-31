@@ -963,7 +963,7 @@ def _verify_parent_native_text_delivery(
                 "parent_native_text_delivery_verified": True,
                 "parent_native_3d_display_verified": True,
                 "parent_visual_fidelity_verified": source_visual_ok,
-                "fallback_authorized_for_this_item": False,
+                "fallback_authorized_for_this_item": not source_visual_ok,
             }
         )
         return True, evidence, ""
@@ -994,7 +994,9 @@ def _verify_parent_native_text_delivery(
             "parent_native_3d_display_verified": native_3d_ok,
             "parent_native_text_delivery_verified": parent_delivery_ok,
             "parent_visual_fidelity_verified": source_visual_ok,
-            "fallback_authorized_for_this_item": not parent_delivery_ok,
+            "fallback_authorized_for_this_item": not (
+                parent_delivery_ok and source_visual_ok
+            ),
         }
     )
     reasons: List[str] = []
@@ -1246,7 +1248,17 @@ def _attempt_labels(
             )
         )
         attempt.evidence.update(parent_evidence)
-        visual_ok = bool(visual_ok and parent_delivery_ok)
+        parent_requires_source_visual_proof = (
+            str(target_app or "generic").strip().lower() == "librecad"
+        )
+        visual_ok = bool(
+            visual_ok
+            and parent_delivery_ok
+            and (
+                not parent_requires_source_visual_proof
+                or parent_evidence.get("parent_visual_fidelity_verified") is True
+            )
+        )
         attempt.visual_verified = visual_ok
         attempt.evidence.update(
             {

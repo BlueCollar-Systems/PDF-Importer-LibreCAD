@@ -231,7 +231,10 @@ def test_installed_name_match_is_not_reported_as_source_font_equivalence() -> No
     with patch("dxf_text_builder._resolve_item_font", return_value=installed_match):
         _, _, result = _deliver("text", target_app="generic")
 
-    evidence = result.attempts[0].evidence
+    native = result.attempts[0]
+    evidence = native.evidence
+    assert native.outcome == "verified"
+    assert native.visual_verified is True
     assert evidence["parent_native_text_delivery_verified"] is True
     assert evidence["parent_native_font_substituted"] is True
     assert evidence["parent_source_font_equivalence_verified"] is False
@@ -287,10 +290,11 @@ def test_trailing_caret_marker_is_item_impossibility_not_import_abort() -> None:
     assert marker_result.final_representation in {"glyphs", "geometry"}
 
     # A malformed marker is item-scoped; a neighboring ordinary span still
-    # imports natively instead of the page or document aborting.
+    # imports through its closest verified visual rung instead of the page or
+    # document aborting.
     _doc2, _msp2, peer_result = _deliver("text", target_app="librecad")
     assert peer_result.verified is True
-    assert peer_result.final_representation == "text"
+    assert peer_result.final_representation == "glyphs"
 
 
 def test_text_is_a_distinct_requested_and_delivered_representation() -> None:
@@ -391,16 +395,16 @@ def test_missing_source_text_size_proves_structural_impossibility_without_stalli
     assert all(attempt.outcome == "impossible" for attempt in result.attempts)
 
 
-def test_librecad_reports_missing_label_entity_then_falls_back_to_text() -> None:
+def test_librecad_non_equivalent_lff_descends_to_exact_visual_glyphs() -> None:
     _, msp, result = _deliver("labels", target_app="librecad")
 
     assert result.verified is True
     assert result.requested_representation == "labels"
-    assert result.final_representation == "text"
+    assert result.final_representation == "glyphs"
     assert result.fallback_used is True
-    assert [entity.dxftype() for entity in msp] == ["TEXT"]
+    assert {entity.dxftype() for entity in msp} == {"INSERT"}
 
-    label_attempt, native = result.attempts
+    label_attempt, native, glyphs = result.attempts
     assert label_attempt.attempted_representation == "labels"
     assert label_attempt.outcome == "impossible"
     assert label_attempt.cleanup_verified is True
@@ -410,9 +414,9 @@ def test_librecad_reports_missing_label_entity_then_falls_back_to_text() -> None
     assert label_attempt.entity_handles == []
 
     assert native.attempted_representation == "text"
-    assert native.outcome == "verified"
+    assert native.outcome == "impossible"
     assert native.type_verified is True
-    assert native.visual_verified is True
+    assert native.visual_verified is False
     assert native.cleanup_verified is True
     assert native.evidence["item_specific_creation_attempted"] is True
     assert native.evidence["target_app"] == "librecad"
@@ -422,12 +426,12 @@ def test_librecad_reports_missing_label_entity_then_falls_back_to_text() -> None
     assert native.evidence["parent_native_text_delivery_verified"] is True
     assert native.evidence["parent_visual_fidelity_verified"] is False
     assert native.evidence["parent_source_font_equivalence_verified"] is False
-    assert native.evidence["fallback_authorized_for_this_item"] is False
+    assert native.evidence["fallback_authorized_for_this_item"] is True
     assert native.evidence["parent_native_font_substituted"] is True
     assert native.evidence["parent_native_font_candidate"] == "unicode"
-    entity = next(iter(msp))
-    style = msp.doc.styles.get(entity.dxf.style)
-    assert style.dxf.font == "unicode"
+    assert glyphs.outcome == "verified"
+    assert glyphs.visual_verified is True
+    assert glyphs.evidence["font_exact_match"] is True
 
 
 def test_librecad_ladders_do_not_use_labels_as_a_text_alias() -> None:
@@ -448,18 +452,20 @@ def test_librecad_ladders_do_not_use_labels_as_a_text_alias() -> None:
     ]
 
 
-def test_librecad_rejects_unverified_native_3d_text_then_preserves_native_text() -> None:
+def test_librecad_rejects_unverified_native_3d_and_substituted_text_then_uses_glyphs() -> None:
     _, msp, result = _deliver("3d_text", target_app="librecad")
 
     assert result.verified is True
     assert result.requested_representation == "3d_text"
-    assert result.final_representation == "text"
+    assert result.final_representation == "glyphs"
     assert result.fallback_used is True
     assert [attempt.attempted_representation for attempt in result.attempts] == [
         "3d_text",
         "text",
+        "glyphs",
     ]
     assert [attempt.outcome for attempt in result.attempts] == [
+        "impossible",
         "impossible",
         "verified",
     ]
@@ -469,7 +475,7 @@ def test_librecad_rejects_unverified_native_3d_text_then_preserves_native_text()
     assert native_3d.evidence["parent_native_3d_display_verified"] is False
     assert native_3d.evidence["parent_visual_fidelity_verified"] is False
     assert native_3d.cleanup_verified is True
-    assert [entity.dxftype() for entity in msp] == ["TEXT"]
+    assert {entity.dxftype() for entity in msp} == {"INSERT"}
 
 
 @pytest.mark.parametrize("width", [0.75, 7.5, 75.0])
@@ -1029,12 +1035,15 @@ def test_render_stage_must_not_alter_delivered_text_representation(tmp_path) -> 
     ]
     result, _config, drawing, _report = _run_for_items(tmp_path, "labels", items)
 
-    dxf_texts = [
-        entity.dxf.text
-        for entity in drawing.modelspace()
-        if entity.dxftype() == "TEXT"
+    delivered_texts = [
+        next(
+            attempt["evidence"]["source_text_evidence"]["delivered_content"]
+            for attempt in delivery["attempts"]
+            if attempt["outcome"] == "verified"
+        )
+        for delivery in result.text_deliveries
     ]
-    assert sorted(dxf_texts) == ["13", "16", "7/16"]
+    assert sorted(delivered_texts) == ["13", "16", "7/16"]
     assert [entry["source_id"] for entry in result.text_deliveries] == [
         "text_span:3:1",
         "text_span:3:2",
@@ -1087,7 +1096,7 @@ def _run_for_items(tmp_path, mode: str, items: list[NormalizedText]):
 @pytest.mark.parametrize(
     ("mode", "delivered_mode", "modelspace_type", "actual_bucket"),
     [
-        ("labels", "text", "TEXT", "dxf_text"),
+        ("labels", "glyphs", "INSERT", "outline_curve_or_mesh"),
         ("glyphs", "glyphs", "INSERT", "outline_curve_or_mesh"),
         ("geometry", "geometry", "LWPOLYLINE", "raw_geometry_edges"),
     ],
@@ -1161,24 +1170,26 @@ def test_exporter_reports_exact_source_and_dxf_handle_sets(
     assert actual[actual_bucket] == len(actual_entities)
 
 
-def test_3d_export_report_records_loud_native_text_fallback(tmp_path) -> None:
+def test_3d_export_report_records_exact_visual_glyph_fallback(tmp_path) -> None:
     result, _, drawing, report = _run_for_items(tmp_path, "3d_text", [_item()])
 
     assert len(result.text_deliveries) == 1
     delivery = result.text_deliveries[0]
     assert delivery["requested_representation"] == "3d_text"
-    assert delivery["final_representation"] == "text"
+    assert delivery["final_representation"] == "glyphs"
     assert delivery["fallback_used"] is True
     entity = next(iter(drawing.modelspace()))
-    assert entity.dxftype() == "TEXT"
+    assert entity.dxftype() == "INSERT"
     assert [attempt["attempted_representation"] for attempt in delivery["attempts"]] == [
         "3d_text",
         "text",
+        "glyphs",
     ]
     actual = report["extra"]["actual_text_entity_types"]
-    assert actual["entity_type"] == "text"
+    assert actual["entity_type"] == "glyphs"
     assert actual["native_3d_text"] == 0
-    assert actual["dxf_text"] == 1
+    assert actual["dxf_text"] == 0
+    assert actual["outline_curve_or_mesh"] > 0
 
 
 def test_direct_dxf_builder_records_verified_3d_text_fallback_for_librecad() -> None:
@@ -1200,10 +1211,10 @@ def test_direct_dxf_builder_records_verified_3d_text_fallback_for_librecad() -> 
     assert len(deliveries) == 1
     assert deliveries[0]["verified"] is True
     assert deliveries[0]["requested_representation"] == "3d_text"
-    assert deliveries[0]["final_representation"] == "text"
+    assert deliveries[0]["final_representation"] == "glyphs"
     assert deliveries[0]["fallback_used"] is True
     assert text_count == 1
-    assert next(iter(drawing.modelspace())).dxftype() == "TEXT"
+    assert next(iter(drawing.modelspace())).dxftype() == "INSERT"
 
 
 def test_noncanonical_engine_mode_fails_closed_instead_of_using_legacy_semantics(
@@ -1981,8 +1992,44 @@ def test_serialized_candidate_must_reconcile_delivery_handles_before_publish(
 def test_serialized_native_text_fit_width_cannot_change_after_verification(
     tmp_path,
 ) -> None:
-    result, _, drawing, _ = _run_for_items(tmp_path, "labels", [_item()])
-    native = next(iter(drawing.modelspace()))
+    from ezdxf.enums import TextEntityAlignment
+
+    drawing = ezdxf.new("R2010")
+    native = drawing.modelspace().add_text(
+        "W12X30",
+        dxfattribs={"insert": (12.25, 24.5), "height": 0.08, "rotation": 33.0},
+    )
+    angle = math.radians(33.0)
+    endpoint = (
+        12.25 + 7.5 * math.cos(angle),
+        24.5 + 7.5 * math.sin(angle),
+    )
+    native.set_placement(
+        (12.25, 24.5), endpoint, align=TextEntityAlignment.FIT
+    )
+    delivery = {
+        "source_id": "text_span:3:17",
+        "final_representation": "text",
+        "verified": True,
+        "entity_handles": [str(native.dxf.handle)],
+        "support_entity_handles": [],
+        "referenced_entity_handles": [],
+        "attempts": [
+            {
+                "outcome": "verified",
+                "entity_handles": [str(native.dxf.handle)],
+                "support_entity_handles": [],
+                "evidence": {
+                    "delivered_content": "W12X30",
+                    "expected_insert": [12.25, 24.5],
+                    "expected_height": 0.08,
+                    "expected_rotation": 33.0,
+                    "fit_alignment_verified": True,
+                    "expected_advance_width": 7.5,
+                },
+            }
+        ],
+    }
     assert native.dxftype() == "TEXT"
     assert int(native.dxf.halign) == 5
     native.dxf.align_point = (
@@ -1992,7 +2039,7 @@ def test_serialized_native_text_fit_width_cannot_change_after_verification(
     )
 
     with pytest.raises(RuntimeError, match="FIT width changed"):
-        _verify_serialized_text_deliveries(drawing, result.text_deliveries)
+        _verify_serialized_text_deliveries(drawing, [delivery])
 
 
 def test_terminal_raster_clips_page_edge_and_preserves_visible_placement(tmp_path) -> None:
@@ -2145,7 +2192,7 @@ def test_real_embedded_chart_fonts_drive_the_requested_dxf_representation(
 
     assert output.is_file()
     assert len(result.text_deliveries) == 4
-    expected_final = "text" if mode in {"labels", "3d_text"} else mode
+    expected_final = "glyphs" if mode in {"text", "labels", "3d_text"} else mode
     assert all(
         item["final_representation"] == expected_final
         for item in result.text_deliveries
@@ -2190,26 +2237,22 @@ def test_real_embedded_chart_fonts_drive_the_requested_dxf_representation(
 
     drawing = ezdxf.readfile(output)
     if mode in {"text", "labels", "3d_text"}:
-        assert {entity.dxftype() for entity in drawing.modelspace()} == {"TEXT"}
-        assert {
-            drawing.styles.get(entity.dxf.style).dxf.font
-            for entity in drawing.modelspace()
-        } == {"unicode"}
-        verified_evidence = [
+        assert {entity.dxftype() for entity in drawing.modelspace()} == {"INSERT"}
+        text_attempt_evidence = [
             next(
                 attempt["evidence"]
                 for attempt in item["attempts"]
-                if attempt["outcome"] == "verified"
+                if attempt["attempted_representation"] == "text"
             )
             for item in result.text_deliveries
         ]
         assert all(
             evidence["parent_native_text_delivery_verified"] is True
-            for evidence in verified_evidence
+            for evidence in text_attempt_evidence
         )
         assert all(
             evidence["parent_visual_fidelity_verified"] is False
-            for evidence in verified_evidence
+            for evidence in text_attempt_evidence
         )
         if mode == "labels":
             assert all(
