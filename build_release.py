@@ -31,7 +31,46 @@ def _read_version() -> str:
 
 def _should_include(rel_path: str) -> bool:
     """Return True if *rel_path* should be included in the release zip."""
-    parts = rel_path.replace("\\", "/").split("/")
+    normalized = rel_path.replace("\\", "/")
+    parts = normalized.split("/")
+    lower_path = normalized.lower()
+    lower_parts = [part.lower() for part in parts]
+    basename = os.path.basename(normalized)
+    lower_basename = basename.lower()
+
+    # User-supplied PDFs, CAD/model outputs derived from them, sweep reports,
+    # and nested archives are evidence -- never product payload.  This guard is
+    # independent of .gitignore because the builder walks the live filesystem.
+    if lower_basename.endswith(
+        (
+            ".pdf",
+            ".dxf",
+            ".dwg",
+            ".skp",
+            ".fcstd",
+            ".fcstd1",
+            ".blend",
+            ".blend1",
+            ".zip",
+            ".7z",
+            ".rar",
+            ".tar",
+            ".gz",
+            ".rbz",
+        )
+    ):
+        return False
+    if lower_basename.endswith("_import_report.json") or lower_basename.endswith(
+        "_failed_import_report.json"
+    ):
+        return False
+    if any(part.endswith("_assets") for part in lower_parts):
+        return False
+    if any(
+        marker in lower_path
+        for marker in ("imported evidence", "pdf-test-corpus", "pdftest files")
+    ):
+        return False
 
     if "_archived" in parts:
         return False
@@ -73,7 +112,6 @@ def _should_include(rel_path: str) -> bool:
         return False
 
     # Exclude dev-only files
-    basename = os.path.basename(rel_path)
     if basename in ("requirements-dev.txt",):
         return False
     if basename.startswith("Makefile"):

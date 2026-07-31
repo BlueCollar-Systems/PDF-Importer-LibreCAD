@@ -169,6 +169,31 @@ def test_source_release_never_opportunistically_bundles_a_partial_runtime(
     assert "lib/fontTools/__init__.py" not in names
 
 
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "customer-sheet.pdf",
+        "generated/customer-sheet.dxf",
+        "generated/customer-sheet.dwg",
+        "generated/customer-sheet.skp",
+        "generated/customer-sheet.FCStd",
+        "generated/customer-sheet.blend",
+        "run_import_report.json",
+        "run_failed_import_report.json",
+        "run_assets/text_span_1_1.png",
+        "Imported Evidence/LibreCAD/result.png",
+        "pdf-test-corpus/private-source-without-extension",
+        "PDFTest Files/private-source-without-extension",
+    ],
+)
+def test_source_release_excludes_private_corpus_and_derivatives(
+    relative_path: str,
+) -> None:
+    import build_release
+
+    assert build_release._should_include(relative_path) is False
+
+
 def test_ci_does_not_swallow_shared_core_failures_or_cancel_sibling_versions() -> None:
     workflow = (ROOT / ".github" / "workflows" / "lc-pdfimporter-ci.yml").read_text(
         encoding="utf-8"
