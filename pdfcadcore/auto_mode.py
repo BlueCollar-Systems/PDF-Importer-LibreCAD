@@ -31,6 +31,9 @@ AUTO_FILL_PURE_STROKE_MAX = 0.02
 AUTO_FILL_PURE_MIN_GROUPS = 12
 AUTO_FILL_PURE_MIN_ITEMS = 24
 AUTO_FILL_PURE_LARGE_RECT_RATIO = 0.03
+AUTO_FILL_COMPLEX_RATIO = 0.98
+AUTO_FILL_COMPLEX_STROKE_MAX = 0.01
+AUTO_FILL_COMPLEX_MIN_ITEMS = 3000
 
 
 def classify_page_content(
@@ -194,6 +197,22 @@ def classify_page_content(
     # ── Fill-art flood detection ───────────────────────────────────
     # Decorative/map art uses simple 1–3 item groups; real CAD plans have
     # many path items per drawing group (avg_items >> 5).
+    complex_pure_fill = (
+        fill_only_ratio >= AUTO_FILL_COMPLEX_RATIO
+        and stroke_ratio <= AUTO_FILL_COMPLEX_STROKE_MAX
+        and total_item_count >= AUTO_FILL_COMPLEX_MIN_ITEMS
+    )
+    if complex_pure_fill:
+        return {
+            "type": "fill_art",
+            "reason": (
+                f"Complex pure fill art ({fill_only_ratio:.0%} fill-only, "
+                f"{total_item_count} path operations) in {total} drawings"
+            ),
+            "drawing_count": total,
+            "stats": stats,
+        }
+
     pure_fill = (
         fill_only_ratio >= AUTO_FILL_PURE_RATIO
         and stroke_ratio <= AUTO_FILL_PURE_STROKE_MAX

@@ -138,7 +138,15 @@ def _fonttools_loadable(data: bytes) -> bool:
             font[tag].compile(font)
         font.close()
         return True
-    except (AttributeError, KeyError, OSError, TTLibError, TypeError, ValueError):
+    except (
+        AssertionError,
+        AttributeError,
+        KeyError,
+        OSError,
+        TTLibError,
+        TypeError,
+        ValueError,
+    ):
         return False
 
 
@@ -175,7 +183,15 @@ def _font_delivery_metrics(data: bytes) -> tuple[int, int, int, tuple[int, ...]]
         return units_per_em, ascender, descender, advances
     except ExactFontSourceImpossible:
         raise
-    except (AttributeError, KeyError, OSError, TTLibError, TypeError, ValueError) as exc:
+    except (
+        AssertionError,
+        AttributeError,
+        KeyError,
+        OSError,
+        TTLibError,
+        TypeError,
+        ValueError,
+    ) as exc:
         raise ExactFontSourceImpossible(
             f"usable font delivery metrics are unavailable: {type(exc).__name__}: {exc}"
         ) from exc
@@ -324,6 +340,7 @@ def _cff_to_otf(source_bytes: bytes, base_font_name: str) -> bytes:
     except ExactFontSourceImpossible:
         raise
     except (
+        AssertionError,
         EOFError,
         KeyError,
         OSError,
@@ -435,6 +452,7 @@ def _install_pdf_unicode_cmap(
     except ExactFontSourceImpossible:
         raise
     except (
+        AssertionError,
         EOFError,
         KeyError,
         OSError,
@@ -533,7 +551,15 @@ def _font_program_name_aliases(data: bytes, source_format: str) -> set[str]:
             if name:
                 aliases.add(name)
         return aliases
-    except (AttributeError, KeyError, OSError, TTLibError, TypeError, ValueError):
+    except (
+        AssertionError,
+        AttributeError,
+        KeyError,
+        OSError,
+        TTLibError,
+        TypeError,
+        ValueError,
+    ):
         return set()
     finally:
         if font is not None:
@@ -673,8 +699,6 @@ class EmbeddedFontCatalog:
                     "source_inventory_invalid_for_page",
                 )
                 return cls(page_number, {}, failures)
-            if base_name in ambiguous_names:
-                continue
             if document is None or not hasattr(document, "extract_font"):
                 failures[base_name] = EmbeddedFontFailure(
                     int(page_number), base_name, "source_document_unavailable", xref,
@@ -793,6 +817,19 @@ class EmbeddedFontCatalog:
             for delivery_name in delivery_names:
                 previous = assets.get(delivery_name)
                 if previous is not None and previous.asset_id != asset.asset_id:
+                    previous_is_exact = previous.base_font_name == delivery_name
+                    current_is_exact = base_name == delivery_name
+                    if previous_is_exact and not current_is_exact:
+                        # An exact PDF inventory name outranks a weaker internal
+                        # family/full-name alias from another embedded program.
+                        continue
+                    if current_is_exact and not previous_is_exact:
+                        assets[delivery_name] = replace(
+                            asset, span_font_name=delivery_name
+                        )
+                        ambiguous_names.discard(delivery_name)
+                        failures.pop(delivery_name, None)
+                        continue
                     assets.pop(delivery_name, None)
                     ambiguous_names.add(delivery_name)
                     failures[delivery_name] = EmbeddedFontFailure(
@@ -801,6 +838,15 @@ class EmbeddedFontCatalog:
                         proof_category="source_font_ambiguous_for_item",
                     )
                     continue
+                if (
+                    delivery_name in ambiguous_names
+                    and base_name != delivery_name
+                ):
+                    # Do not let a later weak alias silently resurrect a name
+                    # already proven ambiguous by distinct font programs.
+                    continue
+                if base_name == delivery_name:
+                    ambiguous_names.discard(delivery_name)
                 assets[delivery_name] = replace(
                     asset, span_font_name=delivery_name
                 )
