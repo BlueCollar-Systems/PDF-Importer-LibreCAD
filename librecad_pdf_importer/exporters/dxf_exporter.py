@@ -864,7 +864,7 @@ def _attempt_terminal_text_raster(
                 1e-6,
                 max(float(page.rect.width), float(page.rect.height), 1.0) * 1e-7,
             )
-            if any(
+            source_bbox_clipped = any(
                 not math.isclose(
                     left,
                     right,
@@ -876,11 +876,31 @@ def _attempt_terminal_text_raster(
                     (clip.x0, clip.y0, clip.x1, clip.y1),
                     strict=True,
                 )
-            ):
-                raise ValueError(
-                    "terminal raster source bbox is not fully contained by the source page"
-                )
+            )
+            # PDF producers commonly emit text whose font ascent extends a
+            # fraction of a point beyond the CropBox.  Only the intersection is
+            # visible in a conforming viewer, so rasterize that intersection and
+            # map it to the corresponding (not stretched) portion of the model
+            # bbox.  The source-to-display transform is axis-aligned for PDF
+            # page rotations; the model transform only reverses display Y.
+            requested_width = float(requested_clip.width)
+            requested_height = float(requested_clip.height)
+            if requested_width <= 0.0 or requested_height <= 0.0:
+                raise ValueError("terminal raster requested clip is empty")
+            x_fraction_0 = (float(clip.x0) - float(requested_clip.x0)) / requested_width
+            x_fraction_1 = (float(clip.x1) - float(requested_clip.x0)) / requested_width
+            y_fraction_0 = (float(clip.y0) - float(requested_clip.y0)) / requested_height
+            y_fraction_1 = (float(clip.y1) - float(requested_clip.y0)) / requested_height
+            target_x0 = min(px0, px1) + x_fraction_0 * placed_width
+            target_x1 = min(px0, px1) + x_fraction_1 * placed_width
+            target_y0 = max(py0, py1) - y_fraction_1 * placed_height
+            target_y1 = max(py0, py1) - y_fraction_0 * placed_height
+            visible_placed_width = target_x1 - target_x0
+            visible_placed_height = target_y1 - target_y0
+            if min(visible_placed_width, visible_placed_height) <= 0.0:
+                raise ValueError("terminal raster visible model bbox is empty")
             dpi = max(72, int(raster_dpi or 300))
+            zero_ink_confirmation_dpi: Optional[int] = None
             if whitespace_only:
                 pixel_width = max(
                     1, int(math.ceil(float(clip.width) * dpi / 72.0))
@@ -902,6 +922,35 @@ def _attempt_terminal_text_raster(
                     clip=clip,
                     alpha=True,
                 )
+                if not _pixmap_contains_ink(pixmap) and requested_raster:
+                    # A non-empty text record can legitimately paint no page
+                    # pixels (render mode 3, clipping paths, optional content,
+                    # or an empty glyph program).  Confirm at a second, higher
+                    # resolution before preserving it as transparent output.
+                    # Bound the confirmation to protect older hardware.
+                    max_confirmation_pixels = 8_000_000
+                    area_points = max(float(clip.width) * float(clip.height), 1e-12)
+                    dpi_cap = int(
+                        math.floor(72.0 * math.sqrt(max_confirmation_pixels / area_points))
+                    )
+                    zero_ink_confirmation_dpi = min(dpi * 2, 1200, dpi_cap)
+                    if zero_ink_confirmation_dpi <= dpi:
+                        raise ValueError(
+                            "terminal raster zero-ink confirmation exceeds safe pixel budget"
+                        )
+                    confirmation = page.get_pixmap(
+                        matrix=fitz.Matrix(
+                            zero_ink_confirmation_dpi / 72.0,
+                            zero_ink_confirmation_dpi / 72.0,
+                        ),
+                        clip=clip,
+                        alpha=True,
+                    )
+                    if _pixmap_contains_ink(confirmation):
+                        raise ValueError(
+                            "terminal raster zero-ink result was not confirmed at higher resolution"
+                        )
+                    attempt.strategy = "verified_source_zero_ink_transparent_item"
             png = bytes(pixmap.tobytes("png"))
 
         if pixmap.width <= 0 or pixmap.height <= 0:
@@ -913,7 +962,13 @@ def _attempt_terminal_text_raster(
             raise ValueError(
                 "requested whitespace raster contains unrelated visible ink"
             )
-        if not whitespace_only and not contains_ink:
+        verified_source_zero_ink = bool(
+            requested_raster
+            and not whitespace_only
+            and not contains_ink
+            and zero_ink_confirmation_dpi is not None
+        )
+        if not whitespace_only and not contains_ink and not verified_source_zero_ink:
             raise ValueError("terminal raster crop contains no visible source ink")
 
         safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", delivery.source_id)
@@ -925,8 +980,8 @@ def _attempt_terminal_text_raster(
         )
         image = msp.add_image(
             image_def,
-            insert=(min(px0, px1), min(py0, py1)),
-            size_in_units=(placed_width, placed_height),
+            insert=(target_x0, target_y0),
+            size_in_units=(visible_placed_width, visible_placed_height),
             dxfattribs={"layer": layer_name},
         )
         image.dxf.flags = int(image.dxf.flags or 0) | 8
@@ -950,16 +1005,21 @@ def _attempt_terminal_text_raster(
         insert_ok = all(
             math.isclose(left, right, rel_tol=0.0, abs_tol=1e-9)
             for left, right in zip(
-                actual_insert, (min(px0, px1), min(py0, py1)), strict=True
+                actual_insert, (target_x0, target_y0), strict=True
             )
         )
         size_ok = math.isclose(
-            actual_width, placed_width, rel_tol=1e-8, abs_tol=1e-9
+            actual_width, visible_placed_width, rel_tol=1e-8, abs_tol=1e-9
         ) and math.isclose(
-            actual_height, placed_height, rel_tol=1e-8, abs_tol=1e-9
+            actual_height, visible_placed_height, rel_tol=1e-8, abs_tol=1e-9
         )
         attempt.type_verified = image.dxftype() == "IMAGE"
-        content_ok = (not contains_ink) if whitespace_only else contains_ink
+        visible_ink_expected = not (whitespace_only or verified_source_zero_ink)
+        content_ok = (
+            not contains_ink
+            if not visible_ink_expected
+            else contains_ink
+        )
         attempt.visual_verified = insert_ok and size_ok and content_ok
         attempt.cleanup_verified = all(
             doc.entitydb.get(handle) is not None
@@ -980,17 +1040,20 @@ def _attempt_terminal_text_raster(
                 float(clip.y1),
             ],
             "source_bbox_pdf": [sx0, sy0, sx1, sy1],
+            "source_bbox_clipped_to_page": bool(source_bbox_clipped),
             "source_to_display_rotation": [float(value) for value in rotation_matrix],
             "target_bbox_model": [
-                min(px0, px1),
-                min(py0, py1),
-                max(px0, px1),
-                max(py0, py1),
+                target_x0,
+                target_y0,
+                target_x1,
+                target_y1,
             ],
             "pixel_size": [int(pixmap.width), int(pixmap.height)],
-            "visible_ink_expected": not whitespace_only,
+            "raster_dpi": dpi,
+            "zero_ink_confirmation_dpi": zero_ink_confirmation_dpi,
+            "visible_ink_expected": visible_ink_expected,
             "visible_ink_verified": bool(contains_ink),
-            "zero_ink_verified": bool(whitespace_only and not contains_ink),
+            "zero_ink_verified": bool(not visible_ink_expected and not contains_ink),
             "anchor_verified": insert_ok,
             "size_verified": size_ok,
         }

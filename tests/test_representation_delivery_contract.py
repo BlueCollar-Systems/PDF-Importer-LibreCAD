@@ -747,19 +747,31 @@ def test_outline_cannot_self_certify_when_source_text_parameters_fail() -> None:
 
 
 def test_unknown_diagonal_advance_cannot_certify_visual_width() -> None:
+    """Uncertifiable width must never be delivered as native TEXT.
+
+    The guarantee is unchanged; the consequence is not. This used to abort the
+    item outright. An uncertifiable visual width is affirmative, item-specific
+    proof that the Text rung cannot carry this item, so the ladder now descends
+    and Glyphs delivers the exact outline instead. What must still hold is that
+    native TEXT is refused -- delivering it would place text of the wrong width.
+    """
     item = _item(rotation=33.0)
     item.advance_width = None
     item.target_quad_model = None
 
     _, msp, result = _deliver("text", item)
 
-    assert result.verified is False
-    assert result.final_representation is None
     assert result.attempts[0].evidence["width_source"] == (
         "unavailable_for_diagonal_bbox"
     )
     assert result.attempts[0].evidence["width_verified"] is False
-    assert list(msp) == []
+    # The Text rung is refused, and refused as impossible so the ladder moves on.
+    assert result.attempts[0].outcome == "impossible"
+    assert result.attempts[0].visual_verified is False
+    # The item is still delivered -- just not as native text.
+    assert result.verified is True
+    assert result.final_representation == "glyphs"
+    assert list(msp) != []
 
 
 def test_unresolved_source_font_cannot_self_certify_as_arial() -> None:
@@ -1727,19 +1739,36 @@ def test_serialized_native_text_fit_width_cannot_change_after_verification(
         _verify_serialized_text_deliveries(drawing, result.text_deliveries)
 
 
-def test_terminal_raster_rejects_partially_clipped_source_bbox(tmp_path) -> None:
+def test_terminal_raster_clips_page_edge_and_preserves_visible_placement(tmp_path) -> None:
     run = _real_text_extraction(tmp_path)
     item = run.extraction.pages[0].page_data.text_items[0]
     assert item.source_bbox_pdf is not None
+    assert item.bbox is not None
+    original_source = item.source_bbox_pdf
+    original_target = item.bbox
+    source_units_to_model = (
+        (original_target[2] - original_target[0])
+        / (original_source[2] - original_source[0])
+    )
+    expanded_source_x0 = -5.0
+    expanded_target_x0 = original_target[0] - (
+        original_source[0] - expanded_source_x0
+    ) * source_units_to_model
     run.extraction.pages[0].page_data.text_items[0] = __import__(
         "dataclasses"
     ).replace(
         item,
         source_bbox_pdf=(
-            -5.0,
+            expanded_source_x0,
             item.source_bbox_pdf[1],
             item.source_bbox_pdf[2],
             item.source_bbox_pdf[3],
+        ),
+        bbox=(
+            expanded_target_x0,
+            original_target[1],
+            original_target[2],
+            original_target[3],
         ),
     )
     source_id = f"text_span:1:{item.id}"
@@ -1759,14 +1788,65 @@ def test_terminal_raster_rejects_partially_clipped_source_bbox(tmp_path) -> None
         "librecad_pdf_importer.exporters.dxf_exporter.build_text",
         return_value=failure,
     ):
-        with pytest.raises(RuntimeError, match="not fully contained"):
-            export_to_dxf(
-                run.extraction,
-                str(output),
-                DxfExportOptions(include_images=False, text_mode="labels"),
-            )
+        result = export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(include_images=False, text_mode="labels"),
+        )
 
-    assert output.read_bytes() == prior_output
+    assert output.read_bytes() != prior_output
+    attempt = result.text_deliveries[0]["attempts"][-1]
+    assert attempt["outcome"] == "verified"
+    evidence = attempt["evidence"]
+    assert evidence["source_bbox_clipped_to_page"] is True
+    assert evidence["source_clip_pdf"][0] == pytest.approx(0.0)
+    expected_visible_x0 = expanded_target_x0 + (
+        (0.0 - expanded_source_x0)
+        / (original_source[2] - expanded_source_x0)
+        * (original_target[2] - expanded_target_x0)
+    )
+    assert evidence["target_bbox_model"][0] == pytest.approx(expected_visible_x0)
+    assert evidence["target_bbox_model"][2] == pytest.approx(original_target[2])
+
+
+def test_requested_raster_preserves_verified_nonpainted_text_as_zero_ink(
+    tmp_path,
+) -> None:
+    pdf_path = tmp_path / "nonpainted-text.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=200, height=100)
+    page.insert_text(
+        (30, 50),
+        "INVISIBLE",
+        fontsize=12,
+        render_mode=3,
+    )
+    pdf.save(str(pdf_path))
+    pdf.close()
+
+    run = run_import(str(pdf_path), mode="vector", overrides={"pages": "1"})
+    assert len(run.extraction.pages[0].page_data.text_items) == 1
+    output = tmp_path / "nonpainted-text.dxf"
+
+    result = export_to_dxf(
+        run.extraction,
+        str(output),
+        DxfExportOptions(include_images=False, text_mode="raster"),
+    )
+
+    delivery = result.text_deliveries[0]
+    assert delivery["verified"] is True
+    assert delivery["final_representation"] == "raster"
+    attempt = delivery["attempts"][-1]
+    assert attempt["strategy"] == "verified_source_zero_ink_transparent_item"
+    evidence = attempt["evidence"]
+    assert evidence["visible_ink_expected"] is False
+    assert evidence["zero_ink_verified"] is True
+    assert evidence["zero_ink_confirmation_dpi"] > evidence["raster_dpi"]
+    asset = Path(evidence["asset_path"])
+    pixmap = fitz.Pixmap(asset)
+    alpha = bytes(pixmap.samples)[pixmap.n - 1 :: pixmap.n]
+    assert alpha and not any(alpha)
 
 
 @pytest.mark.parametrize("mode", ["text", "labels", "3d_text", "glyphs", "geometry"])

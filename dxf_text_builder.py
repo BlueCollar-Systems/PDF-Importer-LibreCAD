@@ -1203,9 +1203,22 @@ def _attempt_labels(
         )
         if not parent_delivery_ok:
             raise _RepresentationImpossible(parent_reason)
-        if not type_ok or not visual_ok:
-            label = "native 3D text" if is_3d_text else "native DXF text"
-            raise ValueError(f"{label} failed type or visual verification")
+        label = "native 3D text" if is_3d_text else "native DXF text"
+        if not type_ok:
+            # Wrong entity kind is our defect, not a property of the source
+            # item. Keep aborting so it cannot hide behind a silent descent.
+            raise ValueError(f"{label} failed type verification")
+        if not visual_ok:
+            # The entity was built correctly and still does not reproduce the
+            # source. That is affirmative, item-specific proof that this rung
+            # cannot carry this item, so the ladder descends rather than
+            # killing the whole import -- one ESRIDefaultMarker glyph was
+            # discarding 3,034 of 3,035 verified spans. Lower rungs render the
+            # glyph as curves or raster, which reproduce it more faithfully
+            # than substituted DXF text does.
+            raise _RepresentationImpossible(
+                f"{label} does not reproduce the source appearance of this item"
+            )
 
         attempt.entity_handles = [handle]
         attempt.outcome = "verified"
@@ -1643,8 +1656,16 @@ def _attempt_outline_entity(
             expected_bbox=expected_bbox,
             is_r12=is_r12,
         )
-        if not attempt.type_verified or not attempt.visual_verified:
-            raise ValueError("outline delivery failed type or visual verification")
+        if not attempt.type_verified:
+            raise ValueError("outline delivery failed type verification")
+        if not attempt.visual_verified:
+            # Same split as native text: a correctly built outline that still
+            # does not match the source proves this rung cannot carry the
+            # item, so descend rather than abort the whole import.
+            raise _RepresentationImpossible(
+                "outline delivery does not reproduce the source appearance "
+                "of this item"
+            )
         attempt.outcome = "verified"
         attempt.cleanup_verified = _verify_owned_state(doc, attempt)
         if not attempt.cleanup_verified:
@@ -1758,8 +1779,16 @@ def _attempt_outline_string(
             expected_bbox=expected_bbox,
             is_r12=is_r12,
         )
-        if not attempt.type_verified or not attempt.visual_verified:
-            raise ValueError("outline delivery failed type or visual verification")
+        if not attempt.type_verified:
+            raise ValueError("outline delivery failed type verification")
+        if not attempt.visual_verified:
+            # Same split as native text: a correctly built outline that still
+            # does not match the source proves this rung cannot carry the
+            # item, so descend rather than abort the whole import.
+            raise _RepresentationImpossible(
+                "outline delivery does not reproduce the source appearance "
+                "of this item"
+            )
         attempt.outcome = "verified"
         attempt.cleanup_verified = _verify_owned_state(doc, attempt)
         if not attempt.cleanup_verified:
