@@ -1,11 +1,13 @@
 """Host-neutral document extraction for PDF importer adapters."""
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
+import hashlib
 import math
 from pathlib import Path
 import tempfile
-from typing import Iterable, List, Optional, Sequence
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 try:
     import pymupdf as fitz  # PyMuPDF >= 1.24 preferred name
@@ -41,6 +43,10 @@ AUTO_FILL_PURE_MIN_GROUPS = 12
 AUTO_FILL_PURE_MIN_ITEMS = 24
 AUTO_FILL_PURE_LARGE_RECT_RATIO = 0.03
 
+# Dense inline-image PDFs (BI / ID / EI operators) must not create tens of
+# thousands of host IMAGE entities. Smaller rectilinear sets remain editable.
+INLINE_IMAGE_COMPOSITE_THRESHOLD = 256
+
 
 @dataclass
 class ImagePlacement:
@@ -51,6 +57,11 @@ class ImagePlacement:
     height_mm: float
     path: str
     xref: int
+    source_kind: str = "xobject_image"
+    source_instance_count: int = 1
+    source_bbox_pdf: Optional[Tuple[float, float, float, float]] = None
+    source_number: Optional[int] = None
+    source_digest: str = ""
 
 
 @dataclass
@@ -113,12 +124,43 @@ class DocumentExtraction:
             counts[entry["resolved"]] = counts.get(entry["resolved"], 0) + 1
         parts = [f"{n} {k}" for k, n in sorted(counts.items())]
         auto_summary = f"{len(self.pages)} pages: " + ", ".join(parts) if parts else f"{len(self.pages)} pages"
+        image_delivery_pages = []
+        image_source_kinds: dict[str, int] = {}
+        image_source_instances = 0
+        for page in self.pages:
+            page_source_kinds: dict[str, int] = {}
+            page_source_instances = 0
+            for placement in page.images:
+                source_kind = str(placement.source_kind or "xobject_image")
+                source_count = max(1, int(placement.source_instance_count or 1))
+                page_source_kinds[source_kind] = (
+                    page_source_kinds.get(source_kind, 0) + source_count
+                )
+                image_source_kinds[source_kind] = (
+                    image_source_kinds.get(source_kind, 0) + source_count
+                )
+                page_source_instances += source_count
+                image_source_instances += source_count
+            image_delivery_pages.append(
+                {
+                    "page": page.page_data.page_number,
+                    "placements": len(page.images),
+                    "source_instances": page_source_instances,
+                    "source_kinds": page_source_kinds,
+                }
+            )
         return {
             "pdf_path": self.pdf_path,
             "pages": len(self.pages),
             "primitives": self.primitive_count,
             "text_items": self.text_count,
             "images": self.image_count,
+            "image_delivery": {
+                "placements": self.image_count,
+                "source_instances": image_source_instances,
+                "source_kinds": image_source_kinds,
+                "per_page": image_delivery_pages,
+            },
             "profiles": [
                 {
                     "page": p.page_data.page_number,
@@ -392,6 +434,32 @@ def _extract_document_impl(
                         raster_failure_detail = ""
                 elif effective_mode == "vector":
                     images = _extract_images(doc, page, page_number, opts, image_dir)
+                    inline_placements = [
+                        placement
+                        for placement in images
+                        if str(placement.source_kind).startswith("inline_image")
+                    ]
+                    inline_source_count = sum(
+                        max(1, int(placement.source_instance_count or 1))
+                        for placement in inline_placements
+                    )
+                    if inline_source_count:
+                        if any(
+                            placement.source_kind == "inline_image_composite"
+                            for placement in inline_placements
+                        ):
+                            delivery_detail = (
+                                "one transparent images-only page composite"
+                            )
+                        else:
+                            delivery_detail = (
+                                f"{len(inline_placements)} individual image placements"
+                            )
+                        prior_reason = resolved_reason or "Vector content retained"
+                        resolved_reason = (
+                            f"{prior_reason}; preserved {inline_source_count} inline image "
+                            f"instances as {delivery_detail} while retaining vector/text content"
+                        )
                     has_text = bool(page_data.text_items)
                     vector_empty = not page_data.primitives and not has_text
                     if opts.raster_fallback and (vector_empty or _looks_like_page_frame_only(page_data)) and not images:
@@ -681,12 +749,263 @@ def _looks_like_page_frame_only(page_data: PageData) -> bool:
     return big_frames >= 1
 
 
+def _svg_number(value: object) -> str:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("inline image transform contains a non-finite value")
+    return format(number, ".17g")
+
+
+def _inline_image_blocks(page: fitz.Page) -> list[tuple[dict, dict]]:
+    """Return every displayed inline-image instance paired with decoded bytes."""
+
+    get_image_info = getattr(page, "get_image_info", None)
+    if not callable(get_image_info):
+        # Test doubles and unsupported legacy bindings cannot claim inline-image
+        # completeness; real supported PyMuPDF pages always provide this API.
+        return []
+    try:
+        image_info = list(get_image_info(hashes=True, xrefs=True) or [])
+    except (RuntimeError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"inline image inventory failed: {exc}") from exc
+    inline_info = [info for info in image_info if int(info.get("xref") or 0) == 0]
+    if not inline_info:
+        return []
+
+    try:
+        text_dictionary = page.get_text("dict") or {}
+    except (RuntimeError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"inline image byte extraction failed: {exc}") from exc
+    blocks_by_number = {
+        int(block.get("number")): block
+        for block in (text_dictionary.get("blocks") or [])
+        if int(block.get("type", -1)) == 1 and block.get("number") is not None
+    }
+    paired: list[tuple[dict, dict]] = []
+    for info in inline_info:
+        number = int(info.get("number", -1))
+        block = blocks_by_number.get(number)
+        if block is None:
+            raise RuntimeError(
+                f"inline image instance {number} has no decoded image block"
+            )
+        image_bytes = block.get("image")
+        transform = block.get("transform")
+        if not isinstance(image_bytes, (bytes, bytearray)) or not image_bytes:
+            raise RuntimeError(f"inline image instance {number} has no image bytes")
+        if not isinstance(transform, (list, tuple)) or len(transform) != 6:
+            raise RuntimeError(f"inline image instance {number} has no affine transform")
+        paired.append((info, block))
+    return paired
+
+
+def _inline_block_is_rectilinear(block: dict) -> bool:
+    a, b, c, d, _e, _f = [float(value) for value in block["transform"]]
+    tolerance = max(abs(a), abs(d), 1.0) * 1e-10
+    return a > 0.0 and d > 0.0 and abs(b) <= tolerance and abs(c) <= tolerance
+
+
+def _inline_delivery_image_bytes(block: dict) -> bytes:
+    cached = block.get("_bcs_delivery_image_bytes")
+    if isinstance(cached, bytes) and cached:
+        return cached
+    image_bytes = bytes(block["image"])
+    mask_bytes = block.get("mask")
+    if isinstance(mask_bytes, (bytes, bytearray)) and mask_bytes:
+        try:
+            base_pixmap = fitz.Pixmap(image_bytes)
+            if not base_pixmap.alpha:
+                mask_pixmap = fitz.Pixmap(bytes(mask_bytes))
+                if (
+                    int(base_pixmap.width) != int(mask_pixmap.width)
+                    or int(base_pixmap.height) != int(mask_pixmap.height)
+                ):
+                    raise ValueError("inline image mask dimensions do not match")
+                image_bytes = bytes(fitz.Pixmap(base_pixmap, mask_pixmap).tobytes("png"))
+        except (RuntimeError, TypeError, ValueError) as exc:
+            raise RuntimeError(f"inline image mask cannot be applied: {exc}") from exc
+    block["_bcs_delivery_image_bytes"] = image_bytes
+    return image_bytes
+
+
+def _inline_source_digest(info: dict, block: dict) -> str:
+    if block.get("mask"):
+        return hashlib.sha256(_inline_delivery_image_bytes(block)).hexdigest()
+    digest = info.get("digest")
+    if isinstance(digest, (bytes, bytearray)) and digest:
+        return bytes(digest).hex()
+    return hashlib.sha256(_inline_delivery_image_bytes(block)).hexdigest()
+
+
+def _extract_inline_images_individually(
+    inline_blocks: list[tuple[dict, dict]],
+    *,
+    page: fitz.Page,
+    page_number: int,
+    options: ExtractionOptions,
+    image_dir: Path,
+) -> List[ImagePlacement]:
+    """Deliver a tractable rectilinear inline set as reusable source assets."""
+
+    placements: list[ImagePlacement] = []
+    written_assets: dict[str, Path] = {}
+    page_height = float(page.rect.height)
+    for info, block in inline_blocks:
+        number = int(info.get("number", -1))
+        image_bytes = _inline_delivery_image_bytes(block)
+        asset_digest = hashlib.sha256(image_bytes).hexdigest()
+        asset_path = written_assets.get(asset_digest)
+        if asset_path is None:
+            extension = (
+                "png"
+                if block.get("mask")
+                else str(block.get("ext") or "png").lower().lstrip(".")
+            )
+            if extension not in {"png", "jpg", "jpeg", "bmp", "gif", "tif", "tiff"}:
+                extension = "png"
+            try:
+                decoded = fitz.Pixmap(image_bytes)
+            except (RuntimeError, TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"inline image instance {number} cannot be decoded: {exc}"
+                ) from exc
+            if int(decoded.width) <= 0 or int(decoded.height) <= 0:
+                raise RuntimeError(f"inline image instance {number} has invalid dimensions")
+            asset_path = image_dir / f"page_{page_number:03d}_inline_{asset_digest}.{extension}"
+            asset_path.write_bytes(image_bytes)
+            written_assets[asset_digest] = asset_path
+
+        bbox = fitz.Rect(info.get("bbox") or block.get("bbox"))
+        if bbox.is_empty or bbox.is_infinite:
+            raise RuntimeError(f"inline image instance {number} has an invalid bbox")
+        left = min(float(bbox.x0), float(bbox.x1))
+        right = max(float(bbox.x0), float(bbox.x1))
+        if options.flip_y:
+            bottom = page_height - max(float(bbox.y0), float(bbox.y1))
+            top = page_height - min(float(bbox.y0), float(bbox.y1))
+        else:
+            bottom = min(float(bbox.y0), float(bbox.y1))
+            top = max(float(bbox.y0), float(bbox.y1))
+        placements.append(
+            ImagePlacement(
+                page_number=page_number,
+                x_mm=left * MM_PER_PT * options.scale,
+                y_mm=bottom * MM_PER_PT * options.scale,
+                width_mm=(right - left) * MM_PER_PT * options.scale,
+                height_mm=(top - bottom) * MM_PER_PT * options.scale,
+                path=str(asset_path),
+                xref=0,
+                source_kind="inline_image",
+                source_instance_count=1,
+                source_bbox_pdf=(
+                    float(bbox.x0),
+                    float(bbox.y0),
+                    float(bbox.x1),
+                    float(bbox.y1),
+                ),
+                source_number=number,
+                source_digest=_inline_source_digest(info, block),
+            )
+        )
+    return placements
+
+
+def _render_inline_image_composite(
+    inline_blocks: list[tuple[dict, dict]],
+    *,
+    page: fitz.Page,
+    page_number: int,
+    options: ExtractionOptions,
+    image_dir: Path,
+) -> ImagePlacement:
+    """Render only inline images through one transparent MuPDF SVG page."""
+
+    definitions: list[str] = []
+    uses: list[str] = []
+    asset_ids: dict[str, str] = {}
+    source_digest = hashlib.sha256()
+    for info, block in inline_blocks:
+        image_bytes = _inline_delivery_image_bytes(block)
+        asset_digest = hashlib.sha256(image_bytes).hexdigest()
+        asset_id = asset_ids.get(asset_digest)
+        if asset_id is None:
+            asset_id = f"img{len(asset_ids)}"
+            asset_ids[asset_digest] = asset_id
+            extension = (
+                "png"
+                if block.get("mask")
+                else str(block.get("ext") or "png").lower().lstrip(".")
+            )
+            mime_subtype = "jpeg" if extension in {"jpg", "jpeg"} else extension
+            if mime_subtype not in {"png", "jpeg", "bmp", "gif", "tiff"}:
+                mime_subtype = "png"
+            encoded = base64.b64encode(image_bytes).decode("ascii")
+            definitions.append(
+                f'<image id="{asset_id}" width="1" height="1" '
+                'preserveAspectRatio="none" '
+                f'href="data:image/{mime_subtype};base64,{encoded}"/>'
+            )
+        transform = " ".join(_svg_number(value) for value in block["transform"])
+        uses.append(f'<use href="#{asset_id}" transform="matrix({transform})"/>')
+        source_digest.update(bytes.fromhex(_inline_source_digest(info, block)))
+        source_digest.update(transform.encode("ascii"))
+
+    page_rect = page.rect
+    width = float(page_rect.width)
+    height = float(page_rect.height)
+    if width <= 0.0 or height <= 0.0:
+        raise RuntimeError("inline image composite source page is empty")
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" '
+        f'width="{_svg_number(width)}" height="{_svg_number(height)}" '
+        f'viewBox="{_svg_number(page_rect.x0)} {_svg_number(page_rect.y0)} '
+        f'{_svg_number(width)} {_svg_number(height)}">'
+        f'<defs>{"".join(definitions)}</defs>{"".join(uses)}</svg>'
+    ).encode("ascii")
+    dpi = max(36, int(options.raster_dpi or 200))
+    try:
+        with fitz.open("svg", svg) as image_document:
+            pixmap = image_document[0].get_pixmap(
+                matrix=fitz.Matrix(dpi / 72.0, dpi / 72.0),
+                alpha=True,
+            )
+            if not pixmap.alpha:
+                raise RuntimeError("inline image composite lost transparency")
+            asset_path = image_dir / (
+                f"page_{page_number:03d}_inline_composite_"
+                f"{len(inline_blocks)}_{dpi}dpi.png"
+            )
+            pixmap.save(str(asset_path))
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"inline image composite render failed: {exc}") from exc
+
+    return ImagePlacement(
+        page_number=page_number,
+        x_mm=0.0,
+        y_mm=0.0,
+        width_mm=width * MM_PER_PT * options.scale,
+        height_mm=height * MM_PER_PT * options.scale,
+        path=str(asset_path),
+        xref=0,
+        source_kind="inline_image_composite",
+        source_instance_count=len(inline_blocks),
+        source_bbox_pdf=(
+            float(page_rect.x0),
+            float(page_rect.y0),
+            float(page_rect.x1),
+            float(page_rect.y1),
+        ),
+        source_digest=source_digest.hexdigest(),
+    )
+
+
 def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
                     options: ExtractionOptions, image_dir: Optional[Path]) -> List[ImagePlacement]:
     placements: list[ImagePlacement] = []
     if image_dir is None:
         return placements
 
+    inline_blocks = _inline_image_blocks(page)
     page_height = float(page.rect.height)
     seen: set[tuple[int, int]] = set()
     for img_info in page.get_images(full=True):
@@ -773,6 +1092,37 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
                     height_mm=(top_pt - bottom_pt) * MM_PER_PT * options.scale,
                     path=str(img_path),
                     xref=xref,
+                    source_kind="xobject_image",
+                    source_instance_count=1,
+                    source_bbox_pdf=(x0, y0, x1, y1),
+                )
+            )
+
+    if inline_blocks:
+        use_composite = (
+            len(inline_blocks) > INLINE_IMAGE_COMPOSITE_THRESHOLD
+            or not all(
+                _inline_block_is_rectilinear(block) for _info, block in inline_blocks
+            )
+        )
+        if use_composite:
+            placements.append(
+                _render_inline_image_composite(
+                    inline_blocks,
+                    page=page,
+                    page_number=page_number,
+                    options=options,
+                    image_dir=image_dir,
+                )
+            )
+        else:
+            placements.extend(
+                _extract_inline_images_individually(
+                    inline_blocks,
+                    page=page,
+                    page_number=page_number,
+                    options=options,
+                    image_dir=image_dir,
                 )
             )
 
@@ -877,4 +1227,12 @@ def _render_page_raster(
         height_mm=height_mm,
         path=str(img_path),
         xref=-1,
+        source_kind="page_raster",
+        source_instance_count=1,
+        source_bbox_pdf=(
+            float(page.rect.x0),
+            float(page.rect.y0),
+            float(page.rect.x1),
+            float(page.rect.y1),
+        ),
     )

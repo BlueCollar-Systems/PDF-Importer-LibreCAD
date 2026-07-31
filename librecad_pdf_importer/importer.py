@@ -224,6 +224,7 @@ def write_import_report(
             "alternate_scale_factors": sorted(alternate_factors),
         },
         "auto_mode": extraction.summary().get("auto_mode"),
+        "image_delivery": extraction.summary().get("image_delivery"),
         "model_3d_intent": analyze_model3d_intent(
             text_items,
             host_supports_3d=False,

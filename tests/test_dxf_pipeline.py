@@ -90,6 +90,51 @@ class TestDxfPipeline(unittest.TestCase):
         doc.save(str(out_path))
         doc.close()
 
+    def _build_inline_image_pdf(
+        self,
+        out_path: Path,
+        *,
+        image_count: int,
+        include_vector_content: bool,
+        unique_colors: bool = False,
+        affine_transform: bool = False,
+    ) -> None:
+        doc = fitz.open()
+        page = doc.new_page(width=220, height=160)
+        if include_vector_content:
+            page.draw_line((5, 5), (210, 5), color=(0, 0, 0), width=1.0)
+            page.insert_text((6, 154), "EDITABLE VECTOR TEXT", fontsize=8)
+        retained_content = page.read_contents()
+        inline_content = []
+        for index in range(image_count):
+            if affine_transform:
+                matrix = "20 5 7 15 80 40"
+            else:
+                column = index % 20
+                row = index // 20
+                x = 10 + column * 10
+                y = 10 + row * 9
+                matrix = f"6 0 0 5 {x} {y}"
+            if unique_colors:
+                color = bytes(
+                    (index % 256, (index // 256) % 256, (index * 37) % 256)
+                )
+            else:
+                color = b"\xff\x00\x00" if index % 2 == 0 else b"\x00\x00\xff"
+            inline_content.append(
+                f"q {matrix} cm BI /W 1 /H 1 /BPC 8 /CS /RGB ID ".encode(
+                    "ascii"
+                )
+                + color
+                + b" EI Q\n"
+            )
+        content_xref = doc.get_new_xref()
+        doc.update_object(content_xref, "<<>>")
+        doc.update_stream(content_xref, retained_content + b"".join(inline_content))
+        page.set_contents(content_xref)
+        doc.save(str(out_path))
+        doc.close()
+
     def _build_filled_and_stroked_pdf(self, out_path: Path) -> None:
         doc = fitz.open()
         page = doc.new_page(width=100, height=100)
@@ -265,6 +310,138 @@ class TestDxfPipeline(unittest.TestCase):
         alpha_samples = bytes(extracted.samples)[extracted.n - 1 :: extracted.n]
         self.assertEqual(min(alpha_samples), 0)
         self.assertEqual(max(alpha_samples), 255)
+
+    def test_vector_mode_extracts_tractable_inline_images_individually(self) -> None:
+        source = self.tmp_path / "inline-tractable.pdf"
+        self._build_inline_image_pdf(
+            source,
+            image_count=3,
+            include_vector_content=True,
+        )
+        with fitz.open(source) as document:
+            page = document[0]
+            self.assertEqual(page.get_images(full=True), [])
+            image_info = page.get_image_info(hashes=True, xrefs=True)
+            self.assertEqual(len(image_info), 3)
+            self.assertTrue(all(int(info["xref"]) == 0 for info in image_info))
+
+        run = run_import(
+            str(source),
+            mode="vector",
+            overrides={"pages": "1", "raster_dpi": 144},
+        )
+        page = run.extraction.pages[0]
+        self.assertGreater(len(page.page_data.primitives), 0)
+        self.assertGreater(len(page.page_data.text_items), 0)
+        self.assertEqual(len(page.images), 3)
+        self.assertTrue(all(image.xref == 0 for image in page.images))
+        self.assertTrue(
+            all(image.source_kind == "inline_image" for image in page.images)
+        )
+        self.assertTrue(all(image.source_instance_count == 1 for image in page.images))
+
+    def test_dense_inline_images_use_exact_transparent_images_only_composite(
+        self,
+    ) -> None:
+        source = self.tmp_path / "inline-dense-mixed.pdf"
+        expected_images = self.tmp_path / "inline-dense-images-only.pdf"
+        self._build_inline_image_pdf(
+            source,
+            image_count=300,
+            include_vector_content=True,
+            unique_colors=True,
+        )
+        self._build_inline_image_pdf(
+            expected_images,
+            image_count=300,
+            include_vector_content=False,
+            unique_colors=True,
+        )
+
+        run = run_import(
+            str(source),
+            mode="vector",
+            overrides={"pages": "1", "raster_dpi": 144},
+        )
+        page = run.extraction.pages[0]
+        self.assertGreater(len(page.page_data.primitives), 0)
+        self.assertGreater(len(page.page_data.text_items), 0)
+        self.assertEqual(len(page.images), 1)
+        composite = page.images[0]
+        self.assertEqual(composite.xref, 0)
+        self.assertEqual(composite.source_kind, "inline_image_composite")
+        self.assertEqual(composite.source_instance_count, 300)
+        self.assertIn("300 inline image instances", page.resolved_reason)
+
+        actual = fitz.Pixmap(composite.path)
+        with fitz.open(expected_images) as expected_document:
+            expected = expected_document[0].get_pixmap(
+                matrix=fitz.Matrix(2.0, 2.0),
+                alpha=True,
+            )
+        self.assertEqual(actual.tobytes("png"), expected.tobytes("png"))
+        self.assertTrue(actual.alpha)
+
+        output = self.tmp_path / "inline-dense-mixed.dxf"
+        result = export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(provenance_opts=run.config),
+        )
+        drawing = ezdxf.readfile(output)
+        self.assertEqual(result.image_count, 1)
+        self.assertEqual(len(list(drawing.modelspace().query("IMAGE"))), 1)
+        self.assertTrue(
+            any(
+                item.source_kind == "inline_image_composite"
+                for item in run.config._source_provenance_objects
+            )
+        )
+
+        report_path = self.tmp_path / "inline-dense-mixed_import_report.json"
+        write_import_report(run, str(report_path), elapsed_ms=1.0)
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        delivery = report["extra"]["image_delivery"]["per_page"][0]
+        self.assertEqual(delivery["source_instances"], 300)
+        self.assertEqual(delivery["placements"], 1)
+        self.assertEqual(delivery["source_kinds"], {"inline_image_composite": 300})
+
+    def test_affine_inline_image_uses_exact_images_only_composite(self) -> None:
+        source = self.tmp_path / "inline-affine-mixed.pdf"
+        expected_images = self.tmp_path / "inline-affine-images-only.pdf"
+        self._build_inline_image_pdf(
+            source,
+            image_count=1,
+            include_vector_content=True,
+            affine_transform=True,
+        )
+        self._build_inline_image_pdf(
+            expected_images,
+            image_count=1,
+            include_vector_content=False,
+            affine_transform=True,
+        )
+
+        run = run_import(
+            str(source),
+            mode="vector",
+            overrides={"pages": "1", "raster_dpi": 144},
+        )
+        page = run.extraction.pages[0]
+        self.assertGreater(len(page.page_data.primitives), 0)
+        self.assertGreater(len(page.page_data.text_items), 0)
+        self.assertEqual(len(page.images), 1)
+        composite = page.images[0]
+        self.assertEqual(composite.source_kind, "inline_image_composite")
+        self.assertEqual(composite.source_instance_count, 1)
+
+        actual = fitz.Pixmap(composite.path)
+        with fitz.open(expected_images) as expected_document:
+            expected = expected_document[0].get_pixmap(
+                matrix=fitz.Matrix(2.0, 2.0),
+                alpha=True,
+            )
+        self.assertEqual(actual.tobytes("png"), expected.tobytes("png"))
 
     def test_precomposed_alpha_image_is_not_merged_with_soft_mask_twice(self) -> None:
         image_dir = self.tmp_path / "precomposed-alpha"

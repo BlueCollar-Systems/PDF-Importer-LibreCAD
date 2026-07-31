@@ -1638,6 +1638,52 @@ def _export_to_dxf_impl(
                         size_in_pixel=staged_asset.size_px,
                     )
                 )
+                if opts.provenance_opts is not None:
+                    from pdfcadcore.source_provenance import (
+                        SourceProvenanceObject,
+                        ensure_provenance_bucket,
+                    )
+
+                    source_kind = str(
+                        getattr(placement, "source_kind", "xobject_image")
+                        or "xobject_image"
+                    )
+                    source_count = max(
+                        1,
+                        int(getattr(placement, "source_instance_count", 1) or 1),
+                    )
+                    source_number = getattr(placement, "source_number", None)
+                    source_bbox = getattr(placement, "source_bbox_pdf", None)
+                    ensure_provenance_bucket(opts.provenance_opts).append(
+                        SourceProvenanceObject(
+                            object_id=(
+                                f"{source_kind}:{page.page_data.page_number}:"
+                                f"{source_number if source_number is not None else source_count}:"
+                                f"entity:{image.dxf.handle}"
+                            ),
+                            page=int(page.page_data.page_number),
+                            source_kind=source_kind,
+                            created_entity_type="IMAGE",
+                            parent_handle=str(image.dxf.handle or ""),
+                            source_bbox_pdf=(
+                                [float(value) for value in source_bbox[:4]]
+                                if source_bbox
+                                else None
+                            ),
+                            target_bbox_model=[
+                                float(insert[0]),
+                                float(insert[1]),
+                                float(insert[0] + size_in_units[0]),
+                                float(insert[1] + size_in_units[1]),
+                            ],
+                            selected_import_mode=str(
+                                getattr(opts.provenance_opts, "import_mode", "") or ""
+                            ),
+                            scale_factor=float(
+                                getattr(opts.provenance_opts, "scale_factor", 1.0) or 1.0
+                            ),
+                        )
+                    )
                 _track_xy(float(placement.x_mm), float(placement.y_mm) + dy)
                 _track_xy(float(placement.x_mm + placement.width_mm), float(placement.y_mm + placement.height_mm) + dy)
                 entity_count += 1
