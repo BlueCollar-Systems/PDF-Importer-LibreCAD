@@ -18,7 +18,7 @@ import build_windows_portable
     ],
 )
 def test_release_builders_share_the_exact_product_version(reader) -> None:
-    assert reader() == "1.0.69"
+    assert reader() == "1.0.70"
 
 
 def test_source_release_refuses_to_publish_an_unknown_version() -> None:
