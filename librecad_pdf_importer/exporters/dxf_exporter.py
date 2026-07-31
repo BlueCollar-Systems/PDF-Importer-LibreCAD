@@ -469,7 +469,10 @@ def _verify_serialized_text_deliveries(
                 )
         else:
             evidence = dict(final_attempt.get("evidence") or {})
-            if evidence.get("font_asset_id"):
+            if (
+                evidence.get("font_asset_id")
+                and evidence.get("font_exact_match") is True
+            ):
                 font_path = Path(str(evidence.get("resolved_font_filename") or ""))
                 font_sha = str(evidence.get("font_asset_sha256") or "")
                 if not font_path.is_file() or not font_sha:

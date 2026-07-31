@@ -400,34 +400,80 @@ def _require_exact_item_font(
 
 
 def _embedded_ezdxf_cap_height_ratio(font_bytes: bytes) -> float:
-    """Reproduce ezdxf's A/x measurement in native PDF em units."""
+    """Resolve a certifiable cap-height ratio from a possibly subset font.
+
+    PDF subset programs legitimately omit unused lowercase ``x`` glyphs.
+    Prefer the font's explicit OS/2 cap height when present; otherwise derive
+    the same baseline-to-cap measurement from available, non-descending Latin
+    glyphs.  The hhea ascent is a final font-table metric for symbol/digit-only
+    subsets that contain no usable capital outline.
+    """
 
     from fontTools.pens.boundsPen import ControlBoundsPen
     from fontTools.ttLib import TTFont
 
     font = TTFont(BytesIO(font_bytes), lazy=False, recalcTimestamp=False)
-    units_per_em = float(font["head"].unitsPerEm)
-    if not math.isfinite(units_per_em) or units_per_em <= 0.0:
-        raise ValueError("font unitsPerEm is invalid")
-    cmap = font.getBestCmap()
-    if cmap is None:
-        raise ValueError("font has no Unicode character map")
-    glyph_set = font.getGlyphSet()
+    try:
+        units_per_em = float(font["head"].unitsPerEm)
+        if not math.isfinite(units_per_em) or units_per_em <= 0.0:
+            raise ValueError("font unitsPerEm is invalid")
+        cmap = font.getBestCmap()
+        if cmap is None:
+            raise ValueError("font has no Unicode character map")
+        glyph_set = font.getGlyphSet()
 
-    def control_bounds(character: str) -> Tuple[float, float, float, float]:
-        glyph_name = cmap.get(ord(character), ".notdef")
-        if glyph_name not in glyph_set:
-            glyph_name = ".notdef"
-        pen = ControlBoundsPen(glyph_set)
-        glyph_set[glyph_name].draw(pen)
-        if pen.bounds is None:
-            raise ValueError(f"font metric glyph {character!r} has no bounds")
-        return tuple(float(value) for value in pen.bounds)
+        def control_bounds(
+            character: str,
+        ) -> Optional[Tuple[float, float, float, float]]:
+            glyph_name = cmap.get(ord(character))
+            if not glyph_name or glyph_name not in glyph_set:
+                return None
+            pen = ControlBoundsPen(glyph_set)
+            glyph_set[glyph_name].draw(pen)
+            if pen.bounds is None:
+                return None
+            return tuple(float(value) for value in pen.bounds)
 
-    x_bounds = control_bounds("x")
-    cap_bounds = control_bounds("A")
-    cap_height = cap_bounds[3] - x_bounds[1]
-    font.close()
+        explicit_cap_height = None
+        if "OS/2" in font:
+            candidate = float(getattr(font["OS/2"], "sCapHeight", 0.0) or 0.0)
+            if math.isfinite(candidate) and candidate > 0.0:
+                explicit_cap_height = candidate
+
+        if explicit_cap_height is not None:
+            cap_height = explicit_cap_height
+        else:
+            cap_bounds = next(
+                (
+                    bounds
+                    for character in "AHIXMEFLT01"
+                    if (bounds := control_bounds(character)) is not None
+                ),
+                None,
+            )
+            baseline_bounds = next(
+                (
+                    bounds
+                    for character in "xHIAXMnoe01"
+                    if (bounds := control_bounds(character)) is not None
+                ),
+                None,
+            )
+            if cap_bounds is not None:
+                baseline = (
+                    float(baseline_bounds[1])
+                    if baseline_bounds is not None
+                    else 0.0
+                )
+                cap_height = float(cap_bounds[3]) - baseline
+            elif "hhea" in font:
+                cap_height = float(font["hhea"].ascent)
+            else:
+                raise ValueError(
+                    "font has no explicit or outline-derived cap-height metric"
+                )
+    finally:
+        font.close()
     ratio = cap_height / units_per_em
     if not math.isfinite(ratio) or ratio <= 0.0:
         raise ValueError("font cap-height ratio is invalid")

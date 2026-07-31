@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import math
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,11 +13,14 @@ from unittest.mock import patch
 import ezdxf
 import pytest
 from ezdxf.tools.text_size import text_size
+from fontTools.fontBuilder import FontBuilder
+from fontTools.pens.ttGlyphPen import TTGlyphPen
 
 from dxf_text_builder import (
     TextDeliveryAttempt,
     TextDeliveryResult,
     _ExactFontResolution,
+    _embedded_ezdxf_cap_height_ratio,
     _ensure_text_style,
     _normalized_mode,
     _representation_ladder,
@@ -51,6 +55,82 @@ from pdfcadcore.text_scale import (
 
 
 fitz = import_fitz()
+
+
+def _subset_font_without_lowercase_x() -> bytes:
+    builder = FontBuilder(1000, isTTF=True)
+    builder.setupGlyphOrder([".notdef", "A"])
+    empty_pen = TTGlyphPen(None)
+    outline_pen = TTGlyphPen(None)
+    outline_pen.moveTo((0, 0))
+    outline_pen.lineTo((300, 700))
+    outline_pen.lineTo((600, 0))
+    outline_pen.closePath()
+    builder.setupGlyf(
+        {".notdef": empty_pen.glyph(), "A": outline_pen.glyph()}
+    )
+    builder.setupHorizontalMetrics({".notdef": (500, 0), "A": (600, 0)})
+    builder.setupHorizontalHeader(ascent=800, descent=-200)
+    builder.setupCharacterMap({65: "A"})
+    builder.setupOS2()
+    builder.setupNameTable(
+        {
+            "familyName": "Subset",
+            "styleName": "Regular",
+            "uniqueFontIdentifier": "Subset Regular",
+            "fullName": "Subset Regular",
+            "psName": "Subset-Regular",
+        }
+    )
+    builder.setupPost()
+    builder.setupMaxp()
+    del builder.font["OS/2"]
+    stream = BytesIO()
+    builder.font.save(stream, reorderTables=False)
+    return stream.getvalue()
+
+
+def test_subset_font_cap_height_uses_available_capital_when_x_is_absent() -> None:
+    assert _embedded_ezdxf_cap_height_ratio(
+        _subset_font_without_lowercase_x()
+    ) == pytest.approx(0.7)
+
+
+def test_serialized_fallback_text_keeps_unused_embedded_font_provenance() -> None:
+    doc = ezdxf.new("R2010")
+    text = doc.modelspace().add_text(
+        "ABC",
+        dxfattribs={"height": 2.0, "rotation": 0.0},
+    )
+    text.dxf.insert = (10.0, 20.0)
+    handle = str(text.dxf.handle)
+    delivery = {
+        "source_id": "text_span:1:1",
+        "final_representation": "text",
+        "verified": True,
+        "entity_handles": [handle],
+        "support_entity_handles": [],
+        "referenced_entity_handles": [],
+        "attempts": [
+            {
+                "outcome": "verified",
+                "entity_handles": [handle],
+                "support_entity_handles": [],
+                "evidence": {
+                    "delivered_content": "ABC",
+                    "expected_insert": [10.0, 20.0],
+                    "expected_height": 2.0,
+                    "expected_rotation": 0.0,
+                    "font_exact_match": False,
+                    "font_asset_id": "sha256:" + ("a" * 64),
+                    "font_asset_sha256": "a" * 64,
+                    "resolved_font_filename": None,
+                },
+            }
+        ],
+    }
+
+    _verify_serialized_text_deliveries(doc, [delivery])
 
 
 def _item(
