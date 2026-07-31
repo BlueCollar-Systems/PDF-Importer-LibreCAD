@@ -664,6 +664,7 @@ class EmbeddedFontCatalog:
         assets: dict[str, EmbeddedFontAsset] = {}
         failures: dict[str, EmbeddedFontFailure] = {}
         ambiguous_names: set[str] = set()
+        ambiguous_exact_names: set[str] = set()
         glyph_maps, ambiguous_maps, trace_failure = _page_unicode_glyph_maps(page)
         try:
             records = tuple(page.get_fonts(full=True))
@@ -830,6 +831,8 @@ class EmbeddedFontCatalog:
                         ambiguous_names.discard(delivery_name)
                         failures.pop(delivery_name, None)
                         continue
+                    if previous_is_exact and current_is_exact:
+                        ambiguous_exact_names.add(delivery_name)
                     assets.pop(delivery_name, None)
                     ambiguous_names.add(delivery_name)
                     failures[delivery_name] = EmbeddedFontFailure(
@@ -837,6 +840,11 @@ class EmbeddedFontCatalog:
                         "ambiguous_exact_embedded_font_match", xref,
                         proof_category="source_font_ambiguous_for_item",
                     )
+                    continue
+                if delivery_name in ambiguous_exact_names:
+                    # Distinct exact inventory programs are conclusive
+                    # ambiguity. Repeating either program later cannot make
+                    # the source name exact again.
                     continue
                 if (
                     delivery_name in ambiguous_names
