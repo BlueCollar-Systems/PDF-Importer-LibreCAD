@@ -30,10 +30,11 @@ def test_titleblock_date_time_is_never_accepted_as_drawing_scale() -> None:
 
 
 def test_clock_time_is_never_accepted_as_ratio_scale() -> None:
-    result = resolve_page_scale(_page("9:10:47 AM"))
+    for clock in ("9:10:47 AM", "9:10:47", "23:10:47"):
+        result = resolve_page_scale(_page(clock))
 
-    assert result.source == "default"
-    assert result.fallback_reason == "no_scale_detected"
+        assert result.source == "default", clock
+        assert result.fallback_reason == "no_scale_detected", clock
 
 
 def test_real_architectural_and_ratio_scales_remain_valid() -> None:
@@ -44,3 +45,13 @@ def test_real_architectural_and_ratio_scales_remain_valid() -> None:
     assert architectural.source == "titleblock"
     assert ratio.factor == 50.0
     assert ratio.source == "titleblock"
+
+
+def test_temporal_context_is_removed_without_discarding_a_real_scale() -> None:
+    with_date = resolve_page_scale(_page("SCALE 1:50 DATE 5/27/2016"))
+    with_time = resolve_page_scale(_page("SCALE 1:50 9:10:47"))
+
+    assert with_date.factor == 50.0
+    assert with_date.source == "titleblock"
+    assert with_time.factor == 50.0
+    assert with_time.source == "titleblock"
