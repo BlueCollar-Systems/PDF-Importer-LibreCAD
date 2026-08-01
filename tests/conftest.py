@@ -105,29 +105,30 @@ def deterministic_exact_font(tmp_path_factory):
         yield font_path
 
 
-def _supplied_pdf(filename: str) -> Path:
+def _supplied_pdf(filename_pattern: str) -> Path:
     roots = []
     for variable in ("BCS_PDF_TEST_FILES", "BCS_CORPUS_ROOT"):
         configured = str(os.environ.get(variable, "") or "").strip()
         if configured:
             roots.append(Path(configured).expanduser())
-    roots.append(Path.home() / "Desktop" / "PDFTest Files")
 
     for root in roots:
-        for candidate in (root / filename, root / "fixtures" / filename, root / "pdfs" / filename):
-            if candidate.is_file():
-                return candidate.resolve()
+        for directory in (root, root / "fixtures", root / "pdfs"):
+            for candidate in sorted(directory.glob(filename_pattern)):
+                if candidate.is_file():
+                    return candidate.resolve()
 
     pytest.skip(
-        f"supplied PDF fixture {filename!r} is unavailable; set BCS_PDF_TEST_FILES",
+        f"supplied PDF fixture matching {filename_pattern!r} is unavailable; "
+        "set BCS_PDF_TEST_FILES",
     )
 
 
 @pytest.fixture
 def welding_symbol_chart() -> Path:
-    return _supplied_pdf("Welding-Symbol-Chart.pdf")
+    return _supplied_pdf("[Ww]elding*[Ss]ymbol*[Cc]hart*.pdf")
 
 
 @pytest.fixture
 def aws_weld_symbol_chart() -> Path:
-    return _supplied_pdf("AWSWeldSymbolchart.pdf")
+    return _supplied_pdf("[Aa][Ww][Ss]*[Ww]eld*[Ss]ymbol*[Cc]hart*.pdf")

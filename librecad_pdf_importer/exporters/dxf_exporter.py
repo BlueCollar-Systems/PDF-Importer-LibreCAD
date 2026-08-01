@@ -1,4 +1,5 @@
 """DXF export adapter for LibreCAD workflows."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -6,6 +7,7 @@ import hashlib
 import math
 from pathlib import Path
 import re
+import shutil
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
@@ -14,6 +16,7 @@ import numpy as np
 from ezdxf import path as ezdxf_path
 from ezdxf.colors import RGB, aci2rgb, rgb2int
 from ezdxf.units import MM
+
 try:
     import pymupdf as fitz  # PyMuPDF >= 1.24 preferred name
 except ImportError:
@@ -45,8 +48,12 @@ TERMINAL_TILE_BLEED_PIXELS = 4
 TERMINAL_MAX_PAGE_PIXELS = 134_217_728
 TERMINAL_MAX_PAGE_DIMENSION = 24_576
 TERMINAL_MAX_TILES = 256
+TERMINAL_MAX_JOB_PIXELS = 268_435_456
+TERMINAL_MAX_JOB_TILES = 512
+TERMINAL_MAX_JOB_ASSET_BYTES = 805_306_368
 TERMINAL_MIN_DPI = 36.0
 RECTANGULAR_CROP_MAX_PIXELS = 4_000_000
+OPAQUE_ALPHA_NORMALIZE_MAX_PIXELS = 16_000_000
 
 
 @dataclass
@@ -129,9 +136,7 @@ def summarize_text_delivery(
         if item.get("final_representation")
     }
     delivered = (
-        next(iter(final_modes))
-        if len(final_modes) == 1
-        else ("mixed" if final_modes else "none")
+        next(iter(final_modes)) if len(final_modes) == 1 else ("mixed" if final_modes else "none")
     )
     fallback_count = sum(bool(item.get("fallback_used")) for item in items)
     entity_count = sum(len(item.get("entity_handles") or []) for item in items)
@@ -192,9 +197,7 @@ def _append_text_fallback(
 def _serialized_entity(doc: Any, handle: str, source_id: str) -> Any:
     entity = doc.entitydb.get(str(handle))
     if entity is None or not getattr(entity, "is_alive", True):
-        raise RuntimeError(
-            f"serialized text delivery {source_id}: missing live handle {handle}"
-        )
+        raise RuntimeError(f"serialized text delivery {source_id}: missing live handle {handle}")
     return entity
 
 
@@ -227,9 +230,7 @@ def _verify_serialized_text_deliveries(
                 f"serialized text delivery {source_id}: unverified final representation"
             )
         entity_handles = [str(value) for value in delivery.get("entity_handles") or []]
-        support_handles = [
-            str(value) for value in delivery.get("support_entity_handles") or []
-        ]
+        support_handles = [str(value) for value in delivery.get("support_entity_handles") or []]
         referenced_handles = [
             str(value) for value in delivery.get("referenced_entity_handles") or []
         ]
@@ -252,9 +253,7 @@ def _verify_serialized_text_deliveries(
                 raise RuntimeError(
                     f"serialized text delivery {source_id}: zero-ink omission owns entities"
                 )
-            if final_attempt.get("entity_handles") or final_attempt.get(
-                "support_entity_handles"
-            ):
+            if final_attempt.get("entity_handles") or final_attempt.get("support_entity_handles"):
                 raise RuntimeError(
                     f"serialized text delivery {source_id}: zero-ink attempt owns entities"
                 )
@@ -264,9 +263,7 @@ def _verify_serialized_text_deliveries(
                 f"serialized text delivery {source_id}: missing or duplicate main handles"
             )
         main_handles.update(entity_handles)
-        entities = [
-            _serialized_entity(doc, handle, source_id) for handle in entity_handles
-        ]
+        entities = [_serialized_entity(doc, handle, source_id) for handle in entity_handles]
         actual_types = {entity.dxftype() for entity in entities}
         if not actual_types.issubset(expected_types[representation]):
             raise RuntimeError(
@@ -288,7 +285,10 @@ def _verify_serialized_text_deliveries(
                     str(entity.dxf.image_def_handle),
                     source_id,
                 )
-                asset_path = Path(str(image_definition.dxf.filename))
+                asset_path = _resolve_serialized_asset_path(
+                    doc,
+                    str(image_definition.dxf.filename),
+                )
                 if not asset_path.is_file():
                     raise RuntimeError(
                         f"serialized text delivery {source_id}: raster asset missing"
@@ -303,8 +303,7 @@ def _verify_serialized_text_deliveries(
             for entity in entities:
                 depth = float(getattr(entity.dxf, "thickness", 0.0) or 0.0)
                 extrusion = tuple(
-                    float(value)
-                    for value in getattr(entity.dxf, "extrusion", (0.0, 0.0, 0.0))
+                    float(value) for value in getattr(entity.dxf, "extrusion", (0.0, 0.0, 0.0))
                 )
                 depth_ok = math.isfinite(depth) and depth > 0.0
                 extrusion_ok = len(extrusion) == 3 and all(
@@ -323,14 +322,10 @@ def _verify_serialized_text_deliveries(
         for handle in support_handles + referenced_handles:
             _serialized_entity(doc, handle, source_id)
 
-        if set(map(str, final_attempt.get("entity_handles") or [])) != set(
-            entity_handles
-        ) or set(map(str, final_attempt.get("support_entity_handles") or [])) != set(
-            support_handles
-        ):
-            raise RuntimeError(
-                f"serialized text delivery {source_id}: attempt handles disagree"
-            )
+        if set(map(str, final_attempt.get("entity_handles") or [])) != set(entity_handles) or set(
+            map(str, final_attempt.get("support_entity_handles") or [])
+        ) != set(support_handles):
+            raise RuntimeError(f"serialized text delivery {source_id}: attempt handles disagree")
 
         if representation in {"text", "labels", "3d_text"}:
             if len(entities) != 1 or entities[0].dxftype() not in {"TEXT", "MTEXT"}:
@@ -340,22 +335,16 @@ def _verify_serialized_text_deliveries(
             native = entities[0]
             evidence = dict(final_attempt.get("evidence") or {})
             actual_content = str(
-                native.dxf.text
-                if native.dxftype() == "TEXT"
-                else native.plain_text()
+                native.dxf.text if native.dxftype() == "TEXT" else native.plain_text()
             )
             expected_content = str(evidence.get("delivered_content") or "")
             expected_insert = tuple(
                 float(value) for value in evidence.get("expected_insert") or []
             )
-            actual_insert = tuple(
-                float(value) for value in tuple(native.dxf.insert)[:2]
-            )
+            actual_insert = tuple(float(value) for value in tuple(native.dxf.insert)[:2])
             expected_height = float(evidence.get("expected_height") or 0.0)
             actual_height = float(
-                native.dxf.height
-                if native.dxftype() == "TEXT"
-                else native.dxf.char_height
+                native.dxf.height if native.dxftype() == "TEXT" else native.dxf.char_height
             )
             expected_rotation = float(evidence.get("expected_rotation") or 0.0)
             actual_rotation = float(native.dxf.rotation or 0.0)
@@ -403,9 +392,7 @@ def _verify_serialized_text_deliveries(
                     raise RuntimeError(
                         f"serialized text delivery {source_id}: FIT alignment changed"
                     )
-                align_point = tuple(
-                    float(value) for value in tuple(native.dxf.align_point)[:2]
-                )
+                align_point = tuple(float(value) for value in tuple(native.dxf.align_point)[:2])
                 angle = math.radians(expected_rotation)
                 expected_endpoint = (
                     expected_insert[0] + target_width * math.cos(angle),
@@ -419,9 +406,7 @@ def _verify_serialized_text_deliveries(
                         strict=True,
                     )
                 ):
-                    raise RuntimeError(
-                        f"serialized text delivery {source_id}: FIT width changed"
-                    )
+                    raise RuntimeError(f"serialized text delivery {source_id}: FIT width changed")
 
         if representation == "glyphs":
             support_set = set(support_handles)
@@ -452,9 +437,7 @@ def _verify_serialized_text_deliveries(
             asset_path = Path(str(evidence.get("asset_path") or ""))
             expected_sha = str(evidence.get("asset_sha256") or "")
             if not asset_path.is_file() or not expected_sha:
-                raise RuntimeError(
-                    f"serialized text delivery {source_id}: raster asset missing"
-                )
+                raise RuntimeError(f"serialized text delivery {source_id}: raster asset missing")
             if hashlib.sha256(asset_path.read_bytes()).hexdigest() != expected_sha:
                 raise RuntimeError(
                     f"serialized text delivery {source_id}: raster asset hash mismatch"
@@ -464,12 +447,8 @@ def _verify_serialized_text_deliveries(
                     f"serialized text delivery {source_id}: raster must own one IMAGE"
                 )
             raster = entities[0]
-            target_bbox = [
-                float(value) for value in evidence.get("target_bbox_model") or []
-            ]
-            pixel_size = [
-                int(value) for value in evidence.get("pixel_size") or []
-            ]
+            target_bbox = [float(value) for value in evidence.get("target_bbox_model") or []]
+            pixel_size = [int(value) for value in evidence.get("pixel_size") or []]
             if len(target_bbox) != 4 or len(pixel_size) != 2:
                 raise RuntimeError(
                     f"serialized text delivery {source_id}: raster evidence incomplete"
@@ -500,17 +479,16 @@ def _verify_serialized_text_deliveries(
                 )
             image_def_handle = str(raster.dxf.image_def_handle or "")
             reactor_handle = str(raster.dxf.image_def_reactor_handle or "")
-            exact_support = {
-                handle for handle in (image_def_handle, reactor_handle) if handle
-            }
+            exact_support = {handle for handle in (image_def_handle, reactor_handle) if handle}
             if exact_support != set(support_handles):
                 raise RuntimeError(
                     f"serialized text delivery {source_id}: raster support mismatch"
                 )
             image_def = _serialized_entity(doc, image_def_handle, source_id)
-            actual_asset_path = Path(
-                str(image_def.dxf.filename or "")
-            ).expanduser().resolve()
+            actual_asset_path = _resolve_serialized_asset_path(
+                doc,
+                str(image_def.dxf.filename or ""),
+            )
             actual_pixels = (
                 int(round(float(image_def.dxf.image_size.x))),
                 int(round(float(image_def.dxf.image_size.y))),
@@ -526,10 +504,7 @@ def _verify_serialized_text_deliveries(
                 )
         else:
             evidence = dict(final_attempt.get("evidence") or {})
-            if (
-                evidence.get("font_asset_id")
-                and evidence.get("font_exact_match") is True
-            ):
+            if evidence.get("font_asset_id") and evidence.get("font_exact_match") is True:
                 font_path = Path(str(evidence.get("resolved_font_filename") or ""))
                 font_sha = str(evidence.get("font_asset_sha256") or "")
                 if not font_path.is_file() or not font_sha:
@@ -556,6 +531,7 @@ class _StagedImageAsset:
     size_px: Tuple[int, int]
     source_size_px: Tuple[int, int]
     crop_box_px: Tuple[int, int, int, int]
+    draw_below_editable: bool = False
 
 
 @dataclass(frozen=True)
@@ -565,7 +541,8 @@ class _SerializedImageExpectation:
     asset_path: Path
     asset_sha256: str
     insert: Tuple[float, float]
-    size_in_units: Tuple[float, float]
+    u_pixel: Tuple[float, float]
+    v_pixel: Tuple[float, float]
     size_in_pixel: Tuple[int, int]
 
 
@@ -617,12 +594,8 @@ def _stage_embedded_font_assets(
             if asset is None:
                 continue
             previous = assets.get(str(asset.asset_id))
-            if previous is not None and bytes(previous.usable_bytes) != bytes(
-                asset.usable_bytes
-            ):
-                raise RuntimeError(
-                    f"embedded font asset identity collision: {asset.asset_id}"
-                )
+            if previous is not None and bytes(previous.usable_bytes) != bytes(asset.usable_bytes):
+                raise RuntimeError(f"embedded font asset identity collision: {asset.asset_id}")
             assets[str(asset.asset_id)] = asset
 
     if not assets:
@@ -652,6 +625,56 @@ def _normalized_image_source_path(raw_path: str) -> str:
     return str(Path(raw_path).expanduser().resolve())
 
 
+def _serialized_asset_filename(asset_path: Path, output_parent: Path) -> str:
+    """Return a portable path anchored to the accepted DXF directory."""
+
+    try:
+        return asset_path.resolve().relative_to(output_parent.resolve()).as_posix()
+    except ValueError as exc:
+        raise RuntimeError(f"owned asset escaped the DXF output directory: {asset_path}") from exc
+
+
+def _resolve_serialized_asset_path(doc: Any, raw_path: str) -> Path:
+    path = Path(str(raw_path or "")).expanduser()
+    if not path.is_absolute():
+        document_name = str(getattr(doc, "filename", "") or "")
+        if not document_name:
+            raise RuntimeError("serialized DXF has no path for relative assets")
+        document_path = Path(document_name)
+        path = document_path.resolve().parent / path
+    return path.resolve()
+
+
+def _owned_sessions_referenced_by_output(output: Path, asset_parent: Path) -> set[Path]:
+    """Find only UUID session directories referenced by the prior accepted DXF."""
+
+    if not output.is_file() or not asset_parent.is_dir():
+        return set()
+    try:
+        prior = ezdxf.readfile(str(output))
+    except (OSError, ezdxf.DXFError):
+        return set()
+    raw_paths = [
+        str(image_def.dxf.filename or "") for image_def in prior.objects.query("IMAGEDEF")
+    ]
+    raw_paths.extend(
+        str(style.dxf.font or "") for style in prior.styles if str(style.dxf.font or "")
+    )
+    sessions: set[Path] = set()
+    for raw_path in raw_paths:
+        try:
+            path = _resolve_serialized_asset_path(prior, raw_path)
+            relative = path.relative_to(asset_parent.resolve())
+        except (RuntimeError, ValueError):
+            continue
+        if not relative.parts or not re.fullmatch(r"[0-9a-f]{32}", relative.parts[0]):
+            continue
+        session = (asset_parent / relative.parts[0]).resolve()
+        if session.parent == asset_parent.resolve() and session.is_dir():
+            sessions.add(session)
+    return sessions
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -663,7 +686,7 @@ def _file_sha256(path: Path) -> str:
 def _placement_alpha_profile(
     source_path: Path,
     placements: List[ImagePlacement],
-) -> Tuple[Tuple[int, int], str, Tuple[int, int, int, int]]:
+) -> Tuple[Tuple[int, int], str, Tuple[int, int, int, int], bool]:
     """Use extraction-time alpha facts, decoding only legacy/caller-owned assets."""
 
     known = {
@@ -671,6 +694,7 @@ def _placement_alpha_profile(
             tuple(placement.pixel_size or ()),
             str(placement.alpha_kind or "unknown"),
             tuple(placement.alpha_bbox_px or ()),
+            bool(placement.alpha_present),
         )
         for placement in placements
         if placement.pixel_size
@@ -680,10 +704,10 @@ def _placement_alpha_profile(
     if len(known) > 1:
         raise RuntimeError(f"image alpha metadata conflicts: {source_path}")
     if known:
-        raw_size, alpha_kind, raw_bbox = next(iter(known))
+        raw_size, alpha_kind, raw_bbox, alpha_present = next(iter(known))
         size_px = (int(raw_size[0]), int(raw_size[1]))
         bbox = tuple(int(value) for value in raw_bbox)
-        return size_px, alpha_kind, bbox  # type: ignore[return-value]
+        return size_px, alpha_kind, bbox, alpha_present  # type: ignore[return-value]
 
     try:
         pixmap = fitz.Pixmap(str(source_path))
@@ -691,7 +715,7 @@ def _placement_alpha_profile(
         alpha_kind, bbox = _classify_pixmap_alpha(pixmap)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         raise RuntimeError(f"image asset is unreadable: {source_path}: {exc}") from exc
-    return size_px, alpha_kind, bbox
+    return size_px, alpha_kind, bbox, bool(pixmap.alpha)
 
 
 def _rectangular_opaque_crop(
@@ -732,6 +756,46 @@ def _rectangular_opaque_crop(
     return prepared
 
 
+def _opaque_rgb_asset(source_path: Path, *, matte_transparency: bool) -> bytes:
+    """Strip a safe alpha channel, optionally compositing binary holes on white."""
+
+    try:
+        source = fitz.Pixmap(str(source_path))
+        if source.colorspace is None or int(source.colorspace.n) != 3:
+            source = fitz.Pixmap(fitz.csRGB, source)
+        channels = int(source.n)
+        rows = np.frombuffer(source.samples_mv, dtype=np.uint8).reshape(
+            int(source.height),
+            int(source.stride),
+        )
+        pixels = rows[:, : int(source.width) * channels].reshape(
+            int(source.height),
+            int(source.width),
+            channels,
+        )
+        rgb = np.array(pixels[:, :, :3], copy=True)
+        if bool(source.alpha) and matte_transparency:
+            alpha = pixels[:, :, channels - 1].astype(np.uint16)
+            rgb = np.minimum(
+                rgb.astype(np.uint16) + (255 - alpha)[:, :, np.newaxis],
+                255,
+            ).astype(np.uint8)
+        rgb = np.ascontiguousarray(rgb)
+        opaque = fitz.Pixmap(
+            fitz.csRGB,
+            int(source.width),
+            int(source.height),
+            rgb.tobytes(),
+            False,
+        )
+        prepared = bytes(opaque.tobytes("png"))
+    except (MemoryError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"opaque RGB image normalization failed: {source_path}: {exc}") from exc
+    if not prepared.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise RuntimeError(f"opaque RGB image encoding failed: {source_path}")
+    return prepared
+
+
 def _stage_image_assets(
     extraction: DocumentExtraction,
     asset_root: Path,
@@ -741,19 +805,22 @@ def _stage_image_assets(
 
     from pdfcadcore.atomic_io import atomic_write_bytes
 
-    marker_kind = "inline_image_page_fidelity_required"
+    marker_kinds = {
+        "inline_image_page_fidelity_required",
+        "xobject_image_page_fidelity_required",
+    }
     marker_pages = {
         int(placement.page_number)
         for page in extraction.pages
         for placement in page.images
-        if str(placement.source_kind) == marker_kind
+        if str(placement.source_kind) in marker_kinds
     }
     source_paths = sorted(
         {
             _normalized_image_source_path(str(placement.path))
             for page in extraction.pages
             for placement in page.images
-            if str(placement.source_kind) != marker_kind
+            if str(placement.source_kind) not in marker_kinds
         }
     )
     if not source_paths:
@@ -769,11 +836,12 @@ def _stage_image_assets(
     placements_by_source: Dict[str, List[ImagePlacement]] = {}
     profiles_by_source: Dict[
         str,
-        Tuple[Tuple[int, int], str, Tuple[int, int, int, int]],
+        Tuple[Tuple[int, int], str, Tuple[int, int, int, int], bool],
     ] = {}
+    masked_page_rasters: set[str] = set()
     for page in extraction.pages:
         for placement in page.images:
-            if str(placement.source_kind) == marker_kind:
+            if str(placement.source_kind) in marker_kinds:
                 continue
             placements_by_source.setdefault(
                 _normalized_image_source_path(str(placement.path)), []
@@ -782,42 +850,67 @@ def _stage_image_assets(
         source_path = Path(source_key)
         if not source_path.is_file():
             raise RuntimeError(f"image asset is missing: {source_path}")
-        size_px, alpha_kind, crop_box_px = _placement_alpha_profile(
+        size_px, alpha_kind, crop_box_px, alpha_present = _placement_alpha_profile(
             source_path,
             placements_by_source[source_key],
         )
-        profiles_by_source[source_key] = (size_px, alpha_kind, crop_box_px)
+        profiles_by_source[source_key] = (
+            size_px,
+            alpha_kind,
+            crop_box_px,
+            alpha_present,
+        )
+        masked_page_raster = all(
+            placement.source_kind == "page_raster" and bool(placement.masked_text_bboxes_pdf)
+            for placement in placements_by_source[source_key]
+        )
+        if masked_page_raster:
+            masked_page_rasters.add(source_key)
         if alpha_kind == "zero":
             omitted_sources.add(source_key)
         elif (
-            alpha_kind == "rectangular_opaque"
-            and (crop_box_px[2] - crop_box_px[0])
-            * (crop_box_px[3] - crop_box_px[1])
+            not masked_page_raster
+            and alpha_kind == "rectangular_opaque"
+            and (crop_box_px[2] - crop_box_px[0]) * (crop_box_px[3] - crop_box_px[1])
             > RECTANGULAR_CROP_MAX_PIXELS
         ):
             profiles_by_source[source_key] = (
                 size_px,
                 "compositing_required",
                 crop_box_px,
+                alpha_present,
             )
             compositing_pages.update(
-                int(placement.page_number)
+                int(placement.page_number) for placement in placements_by_source[source_key]
+            )
+        elif (
+            not masked_page_raster
+            and alpha_kind == "binary_mask"
+            and not all(
+                placement.source_kind == "page_raster"
                 for placement in placements_by_source[source_key]
             )
-        elif alpha_kind == "compositing_required":
+        ):
             compositing_pages.update(
-                int(placement.page_number)
-                for placement in placements_by_source[source_key]
+                int(placement.page_number) for placement in placements_by_source[source_key]
+            )
+        elif not masked_page_raster and (
+            alpha_kind == "compositing_required"
+            or (
+                alpha_kind == "opaque"
+                and alpha_present
+                and size_px[0] * size_px[1] > OPAQUE_ALPHA_NORMALIZE_MAX_PIXELS
+            )
+        ):
+            compositing_pages.update(
+                int(placement.page_number) for placement in placements_by_source[source_key]
             )
 
     for source_key in source_paths:
         if source_key in omitted_sources:
             continue
         placements = placements_by_source[source_key]
-        if all(
-            int(placement.page_number) in compositing_pages
-            for placement in placements
-        ):
+        if all(int(placement.page_number) in compositing_pages for placement in placements):
             continue
         if not image_root_ready:
             image_root.mkdir(parents=True, exist_ok=True)
@@ -826,21 +919,33 @@ def _stage_image_assets(
             transaction.register_directory(image_root)
             image_root_ready = True
         source_path = Path(source_key)
-        size_px, alpha_kind, crop_box_px = profiles_by_source[source_key]
+        size_px, alpha_kind, crop_box_px, alpha_present = profiles_by_source[source_key]
         try:
             content = source_path.read_bytes()
         except OSError as exc:
             raise RuntimeError(f"image asset is unreadable: {source_path}: {exc}") from exc
         if not content:
             raise RuntimeError(f"image asset is empty: {source_path}")
-        if alpha_kind == "rectangular_opaque":
+        if source_key in masked_page_rasters:
+            prepared = _opaque_rgb_asset(source_path, matte_transparency=True)
+            prepared_size_px = size_px
+            crop_box_px = (0, 0, size_px[0], size_px[1])
+        elif alpha_kind == "rectangular_opaque":
             prepared = _rectangular_opaque_crop(source_path, crop_box_px)
             prepared_size_px = (
                 crop_box_px[2] - crop_box_px[0],
                 crop_box_px[3] - crop_box_px[1],
             )
+        elif alpha_kind == "binary_mask":
+            prepared = _opaque_rgb_asset(source_path, matte_transparency=True)
+            prepared_size_px = size_px
+            crop_box_px = (0, 0, size_px[0], size_px[1])
         elif alpha_kind == "opaque":
-            prepared = content
+            prepared = (
+                _opaque_rgb_asset(source_path, matte_transparency=False)
+                if alpha_present
+                else content
+            )
             prepared_size_px = size_px
             crop_box_px = (0, 0, size_px[0], size_px[1])
         else:
@@ -873,6 +978,9 @@ def _stage_image_assets(
             size_px=prepared_size_px,
             source_size_px=size_px,
             crop_box_px=crop_box_px,
+            draw_below_editable=bool(
+                alpha_kind == "binary_mask" or source_key in masked_page_rasters
+            ),
         )
         staged_by_source[source_key] = staged
 
@@ -891,9 +999,7 @@ def _render_terminal_page_tiles(
     from pdfcadcore.atomic_io import atomic_write_bytes
 
     extracted_page = next(
-        page
-        for page in extraction.pages
-        if int(page.page_data.page_number) == int(page_number)
+        page for page in extraction.pages if int(page.page_data.page_number) == int(page_number)
     )
     requested_dpi = max(TERMINAL_MIN_DPI, float(dpi or 200))
     image_root = asset_root / "images"
@@ -912,9 +1018,7 @@ def _render_terminal_page_tiles(
         if base_width <= 0.0 or base_height <= 0.0:
             raise RuntimeError(f"page {page_number} has invalid physical dimensions")
         requested_zoom = requested_dpi / 72.0
-        pixel_budget_zoom = math.sqrt(
-            float(TERMINAL_MAX_PAGE_PIXELS) / (base_width * base_height)
-        )
+        pixel_budget_zoom = math.sqrt(float(TERMINAL_MAX_PAGE_PIXELS) / (base_width * base_height))
         dimension_budget_zoom = min(
             float(TERMINAL_MAX_PAGE_DIMENSION) / base_width,
             float(TERMINAL_MAX_PAGE_DIMENSION) / base_height,
@@ -934,9 +1038,7 @@ def _render_terminal_page_tiles(
             raise RuntimeError(f"page {page_number} rendered to an empty image")
 
         tile_limit = max(64, int(TERMINAL_TILE_PIXELS))
-        tile_count = math.ceil(full_width / tile_limit) * math.ceil(
-            full_height / tile_limit
-        )
+        tile_count = math.ceil(full_width / tile_limit) * math.ceil(full_height / tile_limit)
         if tile_count > TERMINAL_MAX_TILES:
             raise RuntimeError(
                 f"page {page_number} requires {tile_count} fidelity tiles; safe "
@@ -1014,9 +1116,7 @@ def _render_terminal_page_tiles(
                     atomic_write_bytes(staged_path, content)
                     transaction.register_file(staged_path)
                     if _image_size_pixels(str(staged_path)) != tile_size:
-                        raise RuntimeError(
-                            f"staged page tile dimensions changed: {staged_path}"
-                        )
+                        raise RuntimeError(f"staged page tile dimensions changed: {staged_path}")
                     staged_by_digest[digest] = staged_path
 
                 source_key = _normalized_image_source_path(str(staged_path))
@@ -1027,6 +1127,7 @@ def _render_terminal_page_tiles(
                     size_px=tile_size,
                     source_size_px=tile_size,
                     crop_box_px=(0, 0, tile_size[0], tile_size[1]),
+                    draw_below_editable=True,
                 )
                 page_width = float(extracted_page.page_data.width)
                 page_height = float(extracted_page.page_data.height)
@@ -1034,11 +1135,7 @@ def _render_terminal_page_tiles(
                     ImagePlacement(
                         page_number=int(page_number),
                         x_mm=float(left_px) / float(full_width) * page_width,
-                        y_mm=(
-                            float(full_height - bottom_px)
-                            / float(full_height)
-                            * page_height
-                        ),
+                        y_mm=(float(full_height - bottom_px) / float(full_height) * page_height),
                         width_mm=float(tile_size[0]) / float(full_width) * page_width,
                         height_mm=float(tile_size[1]) / float(full_height) * page_height,
                         path=str(staged_path),
@@ -1056,9 +1153,55 @@ def _render_terminal_page_tiles(
                         pixel_size=tile_size,
                         alpha_kind="opaque",
                         alpha_bbox_px=(0, 0, tile_size[0], tile_size[1]),
+                        alpha_present=False,
                     )
                 )
     return placements, staged_assets, effective_dpi
+
+
+def _image_geometry(
+    placement: ImagePlacement,
+    staged_asset: _StagedImageAsset,
+    page_offset_y: float,
+) -> Tuple[
+    Tuple[float, float],
+    Tuple[float, float],
+    Tuple[float, float],
+    Tuple[float, float],
+]:
+    """Return insert, per-pixel U/V vectors, and total axis lengths."""
+
+    source_width_px, source_height_px = staged_asset.source_size_px
+    crop_left, crop_top, crop_right, crop_bottom = staged_asset.crop_box_px
+    if placement.affine_model is not None:
+        insert_x, insert_y, u_x, u_y, v_x, v_y = (float(value) for value in placement.affine_model)
+        insert = (
+            insert_x
+            + u_x * (float(crop_left) / float(source_width_px))
+            + v_x * (1.0 - float(crop_bottom) / float(source_height_px)),
+            insert_y
+            + page_offset_y
+            + u_y * (float(crop_left) / float(source_width_px))
+            + v_y * (1.0 - float(crop_bottom) / float(source_height_px)),
+        )
+        u_pixel = (u_x / float(source_width_px), u_y / float(source_width_px))
+        v_pixel = (v_x / float(source_height_px), v_y / float(source_height_px))
+    else:
+        unit_width_per_pixel = float(placement.width_mm) / float(source_width_px)
+        unit_height_per_pixel = float(placement.height_mm) / float(source_height_px)
+        insert = (
+            float(placement.x_mm) + crop_left * unit_width_per_pixel,
+            float(placement.y_mm)
+            + page_offset_y
+            + (source_height_px - crop_bottom) * unit_height_per_pixel,
+        )
+        u_pixel = (unit_width_per_pixel, 0.0)
+        v_pixel = (0.0, unit_height_per_pixel)
+    size_in_units = (
+        math.hypot(*u_pixel) * (crop_right - crop_left),
+        math.hypot(*v_pixel) * (crop_bottom - crop_top),
+    )
+    return insert, u_pixel, v_pixel, size_in_units
 
 
 def _verify_serialized_image_assets(
@@ -1111,7 +1254,10 @@ def _verify_serialized_image_assets(
                 f"serialized image delivery handle {expected.image_def_handle} is not IMAGEDEF"
             )
 
-        asset_path = Path(str(image_def.dxf.filename or "")).expanduser().resolve()
+        asset_path = _resolve_serialized_asset_path(
+            doc,
+            str(image_def.dxf.filename or ""),
+        )
         if asset_path != expected.asset_path.resolve() or not asset_path.is_file():
             raise RuntimeError(
                 f"serialized image delivery {expected.image_handle} references a missing or foreign asset"
@@ -1126,12 +1272,8 @@ def _verify_serialized_image_assets(
             )
 
         actual_insert = tuple(image.dxf.insert)[:2]
-        actual_width = math.hypot(image.dxf.u_pixel.x, image.dxf.u_pixel.y) * float(
-            image.dxf.image_size.x
-        )
-        actual_height = math.hypot(image.dxf.v_pixel.x, image.dxf.v_pixel.y) * float(
-            image.dxf.image_size.y
-        )
+        actual_u_pixel = tuple(float(value) for value in tuple(image.dxf.u_pixel)[:2])
+        actual_v_pixel = tuple(float(value) for value in tuple(image.dxf.v_pixel)[:2])
         actual_pixels = (
             int(round(float(image_def.dxf.image_size.x))),
             int(round(float(image_def.dxf.image_size.y))),
@@ -1140,22 +1282,17 @@ def _verify_serialized_image_assets(
             math.isclose(left, right, rel_tol=0.0, abs_tol=1e-9)
             for left, right in zip(actual_insert, expected.insert, strict=True)
         ):
-            raise RuntimeError(
-                f"serialized image delivery {expected.image_handle} insert changed"
+            raise RuntimeError(f"serialized image delivery {expected.image_handle} insert changed")
+        if not all(
+            math.isclose(left, right, rel_tol=0.0, abs_tol=1e-9)
+            for left, right in zip(
+                actual_u_pixel + actual_v_pixel,
+                expected.u_pixel + expected.v_pixel,
+                strict=True,
             )
-        if not math.isclose(
-            actual_width,
-            expected.size_in_units[0],
-            rel_tol=0.0,
-            abs_tol=1e-9,
-        ) or not math.isclose(
-            actual_height,
-            expected.size_in_units[1],
-            rel_tol=0.0,
-            abs_tol=1e-9,
         ):
             raise RuntimeError(
-                f"serialized image delivery {expected.image_handle} size changed"
+                f"serialized image delivery {expected.image_handle} orientation changed"
             )
         if actual_pixels != expected.size_in_pixel:
             raise RuntimeError(
@@ -1297,12 +1434,8 @@ def _attempt_terminal_text_raster(
     try:
         if not delivery.source_id:
             raise ValueError("terminal raster has no stable source identity")
-        whitespace_only = not str(
-            getattr(source_text, "text", "") or ""
-        ).strip()
-        requested_raster = (
-            _normalized_text_mode(delivery.requested_representation) == "raster"
-        )
+        whitespace_only = not str(getattr(source_text, "text", "") or "").strip()
+        requested_raster = _normalized_text_mode(delivery.requested_representation) == "raster"
         if whitespace_only and not requested_raster:
             raise ValueError(
                 "terminal raster cannot certify a whitespace-only source item "
@@ -1390,12 +1523,8 @@ def _attempt_terminal_text_raster(
         dpi = max(72, int(raster_dpi or 300))
         zero_ink_confirmation_dpi: Optional[int] = None
         if whitespace_only:
-            pixel_width = max(
-                1, int(math.ceil(float(clip.width) * dpi / 72.0))
-            )
-            pixel_height = max(
-                1, int(math.ceil(float(clip.height) * dpi / 72.0))
-            )
+            pixel_width = max(1, int(math.ceil(float(clip.width) * dpi / 72.0)))
+            pixel_height = max(1, int(math.ceil(float(clip.height) * dpi / 72.0)))
             pixmap = fitz.Pixmap(
                 fitz.csRGB,
                 fitz.IRect(0, 0, pixel_width, pixel_height),
@@ -1419,9 +1548,7 @@ def _attempt_terminal_text_raster(
                 # Bound the confirmation to protect older hardware.
                 max_confirmation_pixels = 8_000_000
                 area_points = max(float(clip.width) * float(clip.height), 1e-12)
-                dpi_cap = int(
-                    math.floor(72.0 * math.sqrt(max_confirmation_pixels / area_points))
-                )
+                dpi_cap = int(math.floor(72.0 * math.sqrt(max_confirmation_pixels / area_points)))
                 zero_ink_confirmation_dpi = min(dpi * 2, 1200, dpi_cap)
                 if zero_ink_confirmation_dpi <= dpi:
                     raise ValueError(
@@ -1447,9 +1574,7 @@ def _attempt_terminal_text_raster(
             raise ValueError("terminal raster output is not a PNG")
         contains_ink = _pixmap_contains_ink(pixmap)
         if whitespace_only and contains_ink:
-            raise ValueError(
-                "requested whitespace raster contains unrelated visible ink"
-            )
+            raise ValueError("requested whitespace raster contains unrelated visible ink")
         verified_source_zero_ink = bool(
             requested_raster
             and not whitespace_only
@@ -1511,7 +1636,7 @@ def _attempt_terminal_text_raster(
         safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", delivery.source_id)
         asset_path = asset_root / f"{safe_id}.png"
         image_def = doc.add_image_def(
-            filename=str(asset_path),
+            filename=_serialized_asset_filename(asset_path, asset_root.parent.parent),
             size_in_pixel=(int(pixmap.width), int(pixmap.height)),
             name=f"BCS_TEXT_{safe_id}"[:255],
         )
@@ -1525,9 +1650,7 @@ def _attempt_terminal_text_raster(
         image_handle = str(image.dxf.handle or "")
         image_def_handle = str(image_def.dxf.handle or "")
         reactor_handle = str(image.dxf.image_def_reactor_handle or "")
-        support_handles = [
-            handle for handle in (image_def_handle, reactor_handle) if handle
-        ]
+        support_handles = [handle for handle in (image_def_handle, reactor_handle) if handle]
         attempt.created_entity_handles = [image_handle] + support_handles
         attempt.entity_handles = [image_handle]
         attempt.support_entity_handles = support_handles
@@ -1541,22 +1664,14 @@ def _attempt_terminal_text_raster(
         )
         insert_ok = all(
             math.isclose(left, right, rel_tol=0.0, abs_tol=1e-9)
-            for left, right in zip(
-                actual_insert, (target_x0, target_y0), strict=True
-            )
+            for left, right in zip(actual_insert, (target_x0, target_y0), strict=True)
         )
         size_ok = math.isclose(
             actual_width, visible_placed_width, rel_tol=1e-8, abs_tol=1e-9
-        ) and math.isclose(
-            actual_height, visible_placed_height, rel_tol=1e-8, abs_tol=1e-9
-        )
+        ) and math.isclose(actual_height, visible_placed_height, rel_tol=1e-8, abs_tol=1e-9)
         attempt.type_verified = image.dxftype() == "IMAGE"
         visible_ink_expected = not (whitespace_only or verified_source_zero_ink)
-        content_ok = (
-            not contains_ink
-            if not visible_ink_expected
-            else contains_ink
-        )
+        content_ok = not contains_ink if not visible_ink_expected else contains_ink
         attempt.visual_verified = insert_ok and size_ok and content_ok
         attempt.cleanup_verified = all(
             doc.entitydb.get(handle) is not None
@@ -1597,11 +1712,7 @@ def _attempt_terminal_text_raster(
             "anchor_verified": insert_ok,
             "size_verified": size_ok,
         }
-        if not (
-            attempt.type_verified
-            and attempt.visual_verified
-            and attempt.cleanup_verified
-        ):
+        if not (attempt.type_verified and attempt.visual_verified and attempt.cleanup_verified):
             raise ValueError("terminal raster failed type, visual, or ownership verification")
         attempt.outcome = "verified"
         return (
@@ -1697,6 +1808,7 @@ def _export_to_dxf_impl(
     session_token = uuid.uuid4().hex
     asset_parent = output.with_name(f"{output.stem}_assets")
     asset_root = asset_parent / session_token
+    prior_owned_sessions = _owned_sessions_referenced_by_output(output, asset_parent)
     pending_raster_assets: List[_PendingRasterAsset] = []
     embedded_font_paths = (
         _stage_embedded_font_assets(extraction, asset_root, asset_transaction)
@@ -1709,6 +1821,9 @@ def _export_to_dxf_impl(
         else ({}, set(), set())
     )
     terminal_page_tiles: Dict[int, List[ImagePlacement]] = {}
+    terminal_job_pixels = 0
+    terminal_job_tiles = 0
+    terminal_job_asset_paths: set[Path] = set()
     if compositing_pages:
         raster_dpi = int(
             getattr(opts.provenance_opts, "raster_dpi", 200)
@@ -1723,12 +1838,29 @@ def _export_to_dxf_impl(
                 asset_root,
                 asset_transaction,
             )
+            terminal_job_tiles += len(tiles)
+            terminal_job_pixels += sum(
+                int(placement.pixel_size[0]) * int(placement.pixel_size[1])
+                for placement in tiles
+                if placement.pixel_size is not None
+            )
+            terminal_job_asset_paths.update(asset.path.resolve() for asset in tile_assets.values())
+            terminal_job_asset_bytes = sum(
+                path.stat().st_size for path in terminal_job_asset_paths
+            )
+            if (
+                terminal_job_pixels > TERMINAL_MAX_JOB_PIXELS
+                or terminal_job_tiles > TERMINAL_MAX_JOB_TILES
+                or terminal_job_asset_bytes > TERMINAL_MAX_JOB_ASSET_BYTES
+            ):
+                raise RuntimeError(
+                    "document fidelity-surface resource budget exceeded; import "
+                    "fewer pages per job"
+                )
             terminal_page_tiles[page_number] = tiles
             staged_image_assets.update(tile_assets)
             extracted_page = next(
-                page
-                for page in extraction.pages
-                if int(page.page_data.page_number) == page_number
+                page for page in extraction.pages if int(page.page_data.page_number) == page_number
             )
             prior_reason = str(extracted_page.resolved_reason or "").strip()
             fallback_reason = (
@@ -1737,8 +1869,7 @@ def _export_to_dxf_impl(
             )
             if effective_dpi + 1e-9 < float(raster_dpi):
                 fallback_reason += (
-                    f" at resource-bounded {effective_dpi:.1f} DPI "
-                    f"(requested {raster_dpi} DPI)"
+                    f" at resource-bounded {effective_dpi:.1f} DPI (requested {raster_dpi} DPI)"
                 )
             extracted_page.resolved_mode = "hybrid"
             extracted_page.resolved_reason = (
@@ -1761,6 +1892,7 @@ def _export_to_dxf_impl(
     seen_text_source_ids: set[str] = set()
     seen_text_entity_handles: set[str] = set()
     serialized_image_expectations: List[_SerializedImageExpectation] = []
+    background_image_handles: List[str] = []
     if opts.provenance_opts is not None:
         # This transient export state is consumed by write_import_report after
         # the DXF is built, so stale data from a prior export cannot lie.
@@ -1786,6 +1918,7 @@ def _export_to_dxf_impl(
         opts.provenance_opts._export_requested_text_mode = (  # noqa: B010
             _normalized_text_mode(opts.text_mode)
         )
+
     dash_cache: Dict[str, str] = {}
     image_def_cache: Dict[str, object] = {}
 
@@ -1854,11 +1987,7 @@ def _export_to_dxf_impl(
                 page_width=page_w,
                 page_height=page_h,
             )
-            if (
-                fill_rgb is not None
-                and not page_background_fill
-                and len(offset_pts) >= 3
-            ):
+            if fill_rgb is not None and not page_background_fill and len(offset_pts) >= 3:
                 fills = _add_filled_path(
                     msp,
                     offset_pts,
@@ -1932,6 +2061,7 @@ def _export_to_dxf_impl(
                 ti = text
                 if dy != 0.0:
                     from dataclasses import replace as _dc_replace
+
                     ti = _dc_replace(
                         text,
                         insertion=(
@@ -1962,9 +2092,8 @@ def _export_to_dxf_impl(
                 if not isinstance(delivery, TextDeliveryResult):
                     raise RuntimeError("text builder returned no delivery evidence")
                 if (
-                    (not delivery.verified or not delivery.final_representation)
-                    and delivery.terminal_fallback_authorized
-                ):
+                    not delivery.verified or not delivery.final_representation
+                ) and delivery.terminal_fallback_authorized:
                     if source_pdf_sha256 is None:
                         source_pdf_sha256 = _file_sha256(source_pdf)
                     delivery, pending_asset = _attempt_terminal_text_raster(
@@ -2000,9 +2129,7 @@ def _export_to_dxf_impl(
                     raise RuntimeError(
                         f"{delivery.source_id}: duplicate stable text source identity"
                     )
-                duplicate_handles = seen_text_entity_handles.intersection(
-                    delivery.entity_handles
-                )
+                duplicate_handles = seen_text_entity_handles.intersection(delivery.entity_handles)
                 if duplicate_handles:
                     raise RuntimeError(
                         f"{delivery.source_id}: duplicate delivered DXF handles "
@@ -2025,8 +2152,7 @@ def _export_to_dxf_impl(
                 if created > 0:
                     delivered_bucket = _delivered_text_entity_bucket(delivered_kind)
                     delivered_text_entity_counts[delivered_bucket] = (
-                        int(delivered_text_entity_counts.get(delivered_bucket, 0) or 0)
-                        + created
+                        int(delivered_text_entity_counts.get(delivered_bucket, 0) or 0) + created
                     )
                     if delivery.fallback_used:
                         _append_text_fallback(
@@ -2051,9 +2177,7 @@ def _export_to_dxf_impl(
                         span_id = None
                     bucket = ensure_provenance_bucket(opts.provenance_opts)
                     fallback_reason = (
-                        _fallback_reason_code(delivery)
-                        if delivery.fallback_used
-                        else ""
+                        _fallback_reason_code(delivery) if delivery.fallback_used else ""
                     )
                     for handle in delivery.entity_handles:
                         bucket.append(
@@ -2061,9 +2185,7 @@ def _export_to_dxf_impl(
                                 object_id=f"{delivery.source_id}:entity:{handle}",
                                 page=int(page.page_data.page_number),
                                 source_kind="text_span",
-                                created_entity_type=str(
-                                    doc.entitydb.get(str(handle)).dxftype()
-                                ),
+                                created_entity_type=str(doc.entitydb.get(str(handle)).dxftype()),
                                 parent_handle=str(handle),
                                 source_bbox_pdf=(
                                     [float(value) for value in source_bbox[:4]]
@@ -2076,10 +2198,7 @@ def _export_to_dxf_impl(
                                     else None
                                 ),
                                 selected_import_mode=str(
-                                    getattr(
-                                        opts.provenance_opts, "import_mode", ""
-                                    )
-                                    or ""
+                                    getattr(opts.provenance_opts, "import_mode", "") or ""
                                 ),
                                 selected_text_mode=str(opts.text_mode or ""),
                                 fallback_reason=fallback_reason,
@@ -2104,7 +2223,7 @@ def _export_to_dxf_impl(
                 image_def = image_def_cache.get(str(img_path))
                 if image_def is None:
                     image_def = doc.add_image_def(
-                        filename=str(img_path),
+                        filename=_serialized_asset_filename(img_path, output.parent),
                         size_in_pixel=staged_asset.size_px,
                         name=f"IMG_{len(image_def_cache) + 1}",
                     )
@@ -2112,21 +2231,10 @@ def _export_to_dxf_impl(
 
                 layer = _layer_name(page.page_data.page_number, "IMAGES", None, opts)
                 _ensure_layer(doc, layer, None)
-                source_width_px, source_height_px = staged_asset.source_size_px
-                crop_left, crop_top, crop_right, crop_bottom = staged_asset.crop_box_px
-                unit_width_per_pixel = float(placement.width_mm) / float(source_width_px)
-                unit_height_per_pixel = float(placement.height_mm) / float(
-                    source_height_px
-                )
-                insert = (
-                    float(placement.x_mm) + crop_left * unit_width_per_pixel,
-                    float(placement.y_mm)
-                    + dy
-                    + (source_height_px - crop_bottom) * unit_height_per_pixel,
-                )
-                size_in_units = (
-                    (crop_right - crop_left) * unit_width_per_pixel,
-                    (crop_bottom - crop_top) * unit_height_per_pixel,
+                insert, u_pixel, v_pixel, size_in_units = _image_geometry(
+                    placement,
+                    staged_asset,
+                    dy,
                 )
                 image = msp.add_image(
                     image_def,
@@ -2134,7 +2242,11 @@ def _export_to_dxf_impl(
                     size_in_units=size_in_units,
                     dxfattribs={"layer": layer},
                 )
+                image.dxf.u_pixel = (u_pixel[0], u_pixel[1], 0.0)
+                image.dxf.v_pixel = (v_pixel[0], v_pixel[1], 0.0)
                 image.dxf.flags = int(image.dxf.flags or 0) | 8
+                if staged_asset.draw_below_editable:
+                    background_image_handles.append(str(image.dxf.handle or ""))
                 serialized_image_expectations.append(
                     _SerializedImageExpectation(
                         image_handle=str(image.dxf.handle or ""),
@@ -2142,7 +2254,8 @@ def _export_to_dxf_impl(
                         asset_path=staged_asset.path,
                         asset_sha256=staged_asset.sha256,
                         insert=insert,
-                        size_in_units=size_in_units,
+                        u_pixel=u_pixel,
+                        v_pixel=v_pixel,
                         size_in_pixel=staged_asset.size_px,
                     )
                 )
@@ -2153,8 +2266,7 @@ def _export_to_dxf_impl(
                     )
 
                     source_kind = str(
-                        getattr(placement, "source_kind", "xobject_image")
-                        or "xobject_image"
+                        getattr(placement, "source_kind", "xobject_image") or "xobject_image"
                     )
                     source_count = max(
                         1,
@@ -2162,6 +2274,27 @@ def _export_to_dxf_impl(
                     )
                     source_number = getattr(placement, "source_number", None)
                     source_bbox = getattr(placement, "source_bbox_pdf", None)
+                    crop_width = staged_asset.crop_box_px[2] - staged_asset.crop_box_px[0]
+                    crop_height = staged_asset.crop_box_px[3] - staged_asset.crop_box_px[1]
+                    image_corners = [
+                        insert,
+                        (
+                            insert[0] + u_pixel[0] * crop_width,
+                            insert[1] + u_pixel[1] * crop_width,
+                        ),
+                        (
+                            insert[0] + v_pixel[0] * crop_height,
+                            insert[1] + v_pixel[1] * crop_height,
+                        ),
+                        (
+                            insert[0] + u_pixel[0] * crop_width + v_pixel[0] * crop_height,
+                            insert[1] + u_pixel[1] * crop_width + v_pixel[1] * crop_height,
+                        ),
+                    ]
+                    image_min_x = min(point[0] for point in image_corners)
+                    image_min_y = min(point[1] for point in image_corners)
+                    image_max_x = max(point[0] for point in image_corners)
+                    image_max_y = max(point[1] for point in image_corners)
                     ensure_provenance_bucket(opts.provenance_opts).append(
                         SourceProvenanceObject(
                             object_id=(
@@ -2179,10 +2312,10 @@ def _export_to_dxf_impl(
                                 else None
                             ),
                             target_bbox_model=[
-                                float(insert[0]),
-                                float(insert[1]),
-                                float(insert[0] + size_in_units[0]),
-                                float(insert[1] + size_in_units[1]),
+                                float(image_min_x),
+                                float(image_min_y),
+                                float(image_max_x),
+                                float(image_max_y),
                             ],
                             selected_import_mode=str(
                                 getattr(opts.provenance_opts, "import_mode", "") or ""
@@ -2192,8 +2325,18 @@ def _export_to_dxf_impl(
                             ),
                         )
                     )
-                _track_xy(float(placement.x_mm), float(placement.y_mm) + dy)
-                _track_xy(float(placement.x_mm + placement.width_mm), float(placement.y_mm + placement.height_mm) + dy)
+                crop_width = staged_asset.crop_box_px[2] - staged_asset.crop_box_px[0]
+                crop_height = staged_asset.crop_box_px[3] - staged_asset.crop_box_px[1]
+                for u_factor, v_factor in (
+                    (0, 0),
+                    (crop_width, 0),
+                    (0, crop_height),
+                    (crop_width, crop_height),
+                ):
+                    _track_xy(
+                        float(insert[0] + u_pixel[0] * u_factor + v_pixel[0] * v_factor),
+                        float(insert[1] + u_pixel[1] * u_factor + v_pixel[1] * v_factor),
+                    )
                 entity_count += 1
                 image_count += 1
 
@@ -2223,6 +2366,21 @@ def _export_to_dxf_impl(
             vp.dxf.center = center
             vp.dxf.height = height * 1.1
 
+    if background_image_handles:
+        background_set = set(background_image_handles)
+        ordered_entities = [
+            entity for entity in msp if str(entity.dxf.handle or "") in background_set
+        ]
+        ordered_entities.extend(
+            entity for entity in msp if str(entity.dxf.handle or "") not in background_set
+        )
+        msp.set_redraw_order(
+            [
+                (str(entity.dxf.handle), f"{index:X}")
+                for index, entity in enumerate(ordered_entities, start=1)
+            ]
+        )
+
     output.parent.mkdir(parents=True, exist_ok=True)
     temp_output = output.with_name(f".{output.name}.{session_token}.tmp")
     written_assets: List[Path] = []
@@ -2248,8 +2406,7 @@ def _export_to_dxf_impl(
         auditor = candidate.audit()
         if auditor.has_errors:
             raise RuntimeError(
-                "serialized DXF candidate failed audit with "
-                f"{len(auditor.errors)} error(s)"
+                f"serialized DXF candidate failed audit with {len(auditor.errors)} error(s)"
             )
         _verify_serialized_text_deliveries(candidate, text_deliveries)
         _verify_serialized_image_assets(candidate, serialized_image_expectations)
@@ -2283,6 +2440,18 @@ def _export_to_dxf_impl(
         opts.provenance_opts._result_status = "success"  # noqa: B010
         _sync_text_evidence()
 
+    for prior_session in sorted(prior_owned_sessions):
+        if prior_session == asset_root.resolve():
+            continue
+        try:
+            if prior_session.parent == asset_parent.resolve() and re.fullmatch(
+                r"[0-9a-f]{32}", prior_session.name
+            ):
+                shutil.rmtree(prior_session)
+        except OSError:
+            # A locked prior asset must never invalidate the newly accepted DXF.
+            pass
+
     return DxfExportResult(
         output_path=str(output),
         entity_count=entity_count,
@@ -2294,8 +2463,9 @@ def _export_to_dxf_impl(
     )
 
 
-def _layer_name(page_number: int, source_layer: Optional[str], stroke_color,
-                opts: DxfExportOptions) -> str:
+def _layer_name(
+    page_number: int, source_layer: Optional[str], stroke_color, opts: DxfExportOptions
+) -> str:
     parts = []
     if opts.group_by_page:
         parts.append(f"P{page_number:03d}")
@@ -2335,10 +2505,7 @@ def _color_key(rgb) -> str:
 
 
 def _rgb_bytes(rgb) -> Tuple[int, int, int]:
-    return tuple(
-        int(max(0, min(255, round(float(component) * 255))))
-        for component in rgb[:3]
-    )
+    return tuple(int(max(0, min(255, round(float(component) * 255)))) for component in rgb[:3])
 
 
 def _nearest_r12_aci(rgb) -> int:
@@ -2416,15 +2583,10 @@ def _add_filled_path(
         if len(vertices) != 3:
             continue
         p0, p1, p2 = vertices
-        area2 = abs(
-            (p1[0] - p0[0]) * (p2[1] - p0[1])
-            - (p1[1] - p0[1]) * (p2[0] - p0[0])
-        )
+        area2 = abs((p1[0] - p0[0]) * (p2[1] - p0[1]) - (p1[1] - p0[1]) * (p2[0] - p0[0]))
         if not math.isfinite(area2) or area2 <= 1e-14:
             continue
-        solids.append(
-            msp.add_solid([p0, p1, p2, p2], dxfattribs=dict(attribs))
-        )
+        solids.append(msp.add_solid([p0, p1, p2, p2], dxfattribs=dict(attribs)))
     return solids
 
 
@@ -2469,7 +2631,9 @@ def _ensure_layer(doc: ezdxf.EzDxf, name: str, rgb) -> None:
         return
     kwargs = {}
     if rgb is not None:
-        kwargs["true_color"] = rgb2int(tuple(int(max(0, min(255, round(float(c) * 255)))) for c in rgb))
+        kwargs["true_color"] = rgb2int(
+            tuple(int(max(0, min(255, round(float(c) * 255)))) for c in rgb)
+        )
     doc.layers.new(name=name, dxfattribs=kwargs)
 
 

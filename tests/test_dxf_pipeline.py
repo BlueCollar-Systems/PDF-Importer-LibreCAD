@@ -33,6 +33,13 @@ from librecad_pdf_importer.exporters.dxf_exporter import (
 from librecad_pdf_importer.importer import run_import, write_import_report
 
 
+def _dxf_linked_asset(drawing, image_def) -> Path:
+    path = Path(str(image_def.dxf.filename))
+    if not path.is_absolute():
+        path = Path(str(drawing.filename)).resolve().parent / path
+    return path.resolve()
+
+
 class TestDxfPipeline(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="lc_pdf_importer_test_")
@@ -406,7 +413,7 @@ class TestDxfPipeline(unittest.TestCase):
         delivered_def = drawing.entitydb.get(
             str(delivered_image.dxf.image_def_handle)
         )
-        delivered_pixmap = fitz.Pixmap(str(delivered_def.dxf.filename))
+        delivered_pixmap = fitz.Pixmap(str(_dxf_linked_asset(drawing, delivered_def)))
         with fitz.open(source) as source_document:
             reference_page = source_document[0].get_pixmap(
                 matrix=fitz.Matrix(2.0, 2.0),
@@ -493,7 +500,7 @@ class TestDxfPipeline(unittest.TestCase):
                 Path(path).write_bytes(b"precomposed-alpha-png")
 
         class Page:
-            rect = SimpleNamespace(height=100.0)
+            rect = SimpleNamespace(width=100.0, height=100.0, x0=0.0, y0=0.0)
 
             @staticmethod
             def get_images(*, full=False):
@@ -501,9 +508,13 @@ class TestDxfPipeline(unittest.TestCase):
                 return [(7, 8)]
 
             @staticmethod
-            def get_image_rects(_image_info):
+            def get_image_rects(_image_info, *, transform=False):
+                self.assertTrue(transform)
                 return [
-                    SimpleNamespace(x0=10.0, y0=20.0, x1=30.0, y1=40.0)
+                    (
+                        SimpleNamespace(x0=10.0, y0=20.0, x1=30.0, y1=40.0),
+                        (20.0, 0.0, 0.0, 20.0, 10.0, 20.0),
+                    )
                 ]
 
         with patch(
@@ -541,7 +552,7 @@ class TestDxfPipeline(unittest.TestCase):
         self.assertEqual(int(raster_variables[0].dxf.frame), 0)
         self.assertEqual(int(raster_variables[0].dxf.units), 1)
         image_def = drawing.entitydb.get(str(image.dxf.image_def_handle))
-        staged_asset = Path(str(image_def.dxf.filename)).resolve()
+        staged_asset = _dxf_linked_asset(drawing, image_def)
         asset_parent = self.dxf_path.with_name(f"{self.dxf_path.stem}_assets").resolve()
         self.assertIn(asset_parent, staged_asset.parents)
         self.assertNotEqual(staged_asset, source_asset.resolve())
@@ -586,7 +597,7 @@ class TestDxfPipeline(unittest.TestCase):
                 staged_images.append((candidate, candidate_def))
         self.assertEqual(len(staged_images), 1)
         image, image_def = staged_images[0]
-        staged_pixmap = fitz.Pixmap(str(image_def.dxf.filename))
+        staged_pixmap = fitz.Pixmap(str(_dxf_linked_asset(drawing, image_def)))
         self.assertFalse(staged_pixmap.alpha)
         self.assertEqual((staged_pixmap.width, staged_pixmap.height), (2, 2))
         self.assertEqual(staged_pixmap.pixel(0, 0), (255, 0, 0))
@@ -655,7 +666,7 @@ class TestDxfPipeline(unittest.TestCase):
         drawing = ezdxf.readfile(output)
         image = next(iter(drawing.modelspace().query("IMAGE")))
         image_definition = drawing.entitydb.get(str(image.dxf.image_def_handle))
-        delivered = fitz.Pixmap(str(image_definition.dxf.filename))
+        delivered = fitz.Pixmap(str(_dxf_linked_asset(drawing, image_definition)))
         with fitz.open(source) as source_document:
             expected = source_document[0].get_pixmap(
                 matrix=fitz.Matrix(1, 1),
@@ -759,7 +770,7 @@ class TestDxfPipeline(unittest.TestCase):
         self.assertEqual(result.image_count, 1)
         self.assertEqual(len(images), 1)
         image_def = drawing.entitydb.get(str(images[0].dxf.image_def_handle))
-        delivered = fitz.Pixmap(str(image_def.dxf.filename))
+        delivered = fitz.Pixmap(str(_dxf_linked_asset(drawing, image_def)))
         with fitz.open(source) as reference_document:
             reference = reference_document[0].get_pixmap(
                 matrix=fitz.Matrix(1, 1), alpha=False
@@ -802,7 +813,7 @@ class TestDxfPipeline(unittest.TestCase):
         self.assertEqual(len(images), 9)
         for image in images:
             image_def = drawing.entitydb.get(str(image.dxf.image_def_handle))
-            delivered = fitz.Pixmap(str(image_def.dxf.filename))
+            delivered = fitz.Pixmap(str(_dxf_linked_asset(drawing, image_def)))
             self.assertFalse(delivered.alpha)
             self.assertLessEqual(delivered.width, 64)
             self.assertLessEqual(delivered.height, 64)
@@ -839,7 +850,7 @@ class TestDxfPipeline(unittest.TestCase):
         drawing = ezdxf.readfile(output)
         delivered = next(iter(drawing.modelspace().query("IMAGE")))
         image_def = drawing.entitydb.get(str(delivered.dxf.image_def_handle))
-        actual = fitz.Pixmap(str(image_def.dxf.filename))
+        actual = fitz.Pixmap(str(_dxf_linked_asset(drawing, image_def)))
         with fitz.open(source) as document:
             expected = document[0].get_pixmap(
                 matrix=fitz.Matrix(1, 1),
@@ -904,7 +915,7 @@ class TestDxfPipeline(unittest.TestCase):
                 self.assertGreater(len(images), 1)
                 for image in images:
                     image_def = drawing.entitydb.get(str(image.dxf.image_def_handle))
-                    tile = fitz.Pixmap(str(image_def.dxf.filename))
+                    tile = fitz.Pixmap(str(_dxf_linked_asset(drawing, image_def)))
                     tile_width = int(tile.width)
                     tile_height = int(tile.height)
                     width_units = (
@@ -998,7 +1009,7 @@ class TestDxfPipeline(unittest.TestCase):
         delivered_pixels = 0
         for image in drawing.modelspace().query("IMAGE"):
             image_definition = drawing.entitydb.get(str(image.dxf.image_def_handle))
-            tile = fitz.Pixmap(str(image_definition.dxf.filename))
+            tile = fitz.Pixmap(str(_dxf_linked_asset(drawing, image_definition)))
             delivered_pixels += int(tile.width) * int(tile.height)
             self.assertLessEqual(tile.width, 64)
             self.assertLessEqual(tile.height, 64)
@@ -1266,6 +1277,62 @@ class TestDxfPipeline(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "no viable vector/text representation"):
                 run_import(str(blank_pdf), mode="raster", overrides={"pages": "1"})
+
+    def test_forced_page_raster_reports_the_exact_resource_limit(self) -> None:
+        source = self.tmp_path / "bounded-raster-diagnostic.pdf"
+        document = fitz.open()
+        page = document.new_page(width=100, height=100)
+        page.draw_line((5, 5), (95, 95), color=(0, 0, 0), width=1)
+        document.save(source)
+        document.close()
+
+        with (
+            patch(
+                "librecad_pdf_importer.core.document.PAGE_RASTER_MAX_PIXELS",
+                100,
+            ),
+            patch(
+                "librecad_pdf_importer.core.document.PAGE_RASTER_MAX_DIMENSION",
+                10,
+            ),
+        ):
+            run = run_import(
+                str(source),
+                mode="raster",
+                overrides={"pages": "1", "raster_dpi": 300},
+            )
+        extracted_page = run.extraction.pages[0]
+        self.assertTrue(extracted_page.raster_fallback_failed)
+        self.assertIn(
+            "safe raster resource budget even at 36 DPI",
+            extracted_page.resolved_reason,
+        )
+
+    def test_page_raster_document_budget_stops_before_unbounded_growth(self) -> None:
+        source = self.tmp_path / "bounded-raster-document.pdf"
+        document = fitz.open()
+        for _ in range(2):
+            page = document.new_page(width=10, height=10)
+            page.draw_line((1, 1), (9, 9), color=(0, 0, 0), width=1)
+        document.save(source)
+        document.close()
+
+        with patch(
+            "librecad_pdf_importer.core.document.PAGE_RASTER_MAX_JOB_PIXELS",
+            150,
+        ):
+            run = run_import(
+                str(source),
+                mode="raster",
+                overrides={"pages": "All", "raster_dpi": 72},
+            )
+
+        first_page, second_page = run.extraction.pages
+        self.assertEqual(len(first_page.images), 1)
+        self.assertEqual(first_page.images[0].pixel_size, (10, 10))
+        self.assertEqual(second_page.images, [])
+        self.assertTrue(second_page.raster_fallback_failed)
+        self.assertIn("document raster budget exceeded", second_page.resolved_reason)
 
     def test_geometry_text_mode_outputs_noneditable_outlines(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})

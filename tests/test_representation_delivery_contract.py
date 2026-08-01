@@ -1395,7 +1395,8 @@ def test_serialized_image_verification_hashes_a_shared_asset_once(tmp_path) -> N
                 asset_path=asset_path.resolve(),
                 asset_sha256=asset_sha256,
                 insert=insert,
-                size_in_units=(1.0, 1.0),
+                u_pixel=(0.5, 0.0),
+                v_pixel=(0.0, 0.5),
                 size_in_pixel=(2, 2),
             )
         )
@@ -1454,6 +1455,9 @@ def test_explicit_item_raster_is_verified_without_being_reported_as_fallback(
     assert evidence["host_safe_opaque_image_verified"] is True
     image_definition = drawing.entitydb.get(str(image.dxf.image_def_handle))
     raster_path = Path(str(image_definition.dxf.filename))
+    if not raster_path.is_absolute():
+        raster_path = output.parent / raster_path
+    raster_path = raster_path.resolve()
     delivered_raster = fitz.Pixmap(str(raster_path))
     assert bool(delivered_raster.alpha) is False
     original_insert = tuple(image.dxf.insert)

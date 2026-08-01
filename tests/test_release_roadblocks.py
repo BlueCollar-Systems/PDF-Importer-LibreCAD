@@ -22,18 +22,18 @@ from scripts import smoke_portable_zip
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_ci_clones_optional_corpus_before_tests_and_runs_minimum_dependencies() -> None:
+def test_ci_clones_optional_corpus_before_tests_and_rechecks_declared_dependencies() -> None:
     workflow = (ROOT / ".github" / "workflows" / "lc-pdfimporter-ci.yml").read_text(
         encoding="utf-8"
     )
 
     assert workflow.index("Optional corpus clone") < workflow.index("Run unit tests")
-    assert "minimum-dependencies:" in workflow
-    assert '"PyMuPDF==1.24.0"' in workflow
-    assert '"ezdxf==1.1.0"' in workflow
-    assert '"fonttools==4.50.0"' in workflow
-    assert '"numpy==1.23.5"' in workflow
-    assert '"matplotlib==3.7.0"' in workflow
+    assert "declared-dependencies:" in workflow
+    assert '"PyMuPDF==1.28.0"' in workflow
+    assert '"ezdxf==1.4.4"' in workflow
+    assert '"fonttools==4.63.0"' in workflow
+    assert '"numpy==2.5.1"' in workflow
+    assert '"matplotlib==3.11.1"' in workflow
     assert "pip install --no-deps -e ." in workflow
     assert workflow.count("python -m pytest tests/ -v") >= 2
 
@@ -438,6 +438,32 @@ def test_source_and_portable_archives_are_mtime_independent(
     assert all(info.create_system == 3 for info in infos)
     modes = {info.filename: (info.external_attr >> 16) & 0o777 for info in infos}
     assert modes == {"NOTICE.txt": 0o644, "pdf2dxf.exe": 0o755}
+
+
+def test_source_release_from_git_excludes_untracked_benign_extension(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    build_release = __import__("build_release")
+    project = tmp_path / "tracked-source"
+    project.mkdir()
+    (project / "pdf2dxf.py").write_text('__version__ = "9.9.9"\n', encoding="utf-8")
+    (project / "payload.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (project / "local-notes.txt").write_text(
+        "working-environment-only\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    subprocess.run(
+        ["git", "add", "pdf2dxf.py", "payload.py"],
+        cwd=project,
+        check=True,
+    )
+    monkeypatch.setattr(build_release, "_PROJECT_ROOT", project)
+
+    archive = build_release.build(str(tmp_path / "dist"))
+    with zipfile.ZipFile(archive) as built:
+        assert built.namelist() == ["payload.py", "pdf2dxf.py"]
 
 
 @pytest.mark.parametrize(

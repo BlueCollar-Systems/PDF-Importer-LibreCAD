@@ -22,6 +22,7 @@ from pdfcadcore.geometry_cleanup import circle_fit
 from pdfcadcore.primitive_extractor import (
     _page_rotation_transform,
     _transform_pdf_point,
+    _transform_pdf_vector,
     extract_page,
 )
 from pdfcadcore.primitives import PageData
@@ -49,6 +50,11 @@ AUTO_FILL_PURE_LARGE_RECT_RATIO = 0.03
 # thousands of host IMAGE entities. Smaller rectilinear sets remain editable.
 INLINE_IMAGE_COMPOSITE_THRESHOLD = 256
 INLINE_IMAGE_COMPOSITE_MAX_PIXELS = 16_000_000
+XOBJECT_IMAGE_COMPOSITE_THRESHOLD = 256
+PAGE_RASTER_MAX_PIXELS = 16_000_000
+PAGE_RASTER_MAX_DIMENSION = 8_192
+PAGE_RASTER_MAX_JOB_PIXELS = 134_217_728
+PAGE_RASTER_MIN_DPI = 36.0
 
 
 @dataclass
@@ -68,6 +74,10 @@ class ImagePlacement:
     pixel_size: Optional[Tuple[int, int]] = None
     alpha_kind: str = "unknown"
     alpha_bbox_px: Optional[Tuple[int, int, int, int]] = None
+    alpha_present: Optional[bool] = None
+    affine_pdf: Optional[Tuple[float, float, float, float, float, float]] = None
+    affine_model: Optional[Tuple[float, float, float, float, float, float]] = None
+    masked_text_bboxes_pdf: Tuple[Tuple[float, float, float, float], ...] = ()
 
 
 @dataclass
@@ -239,7 +249,7 @@ def _classify_pixmap_alpha(
         if bbox == full_box:
             return "opaque", full_box
         return "rectangular_opaque", bbox
-    return "compositing_required", bbox
+    return "binary_mask", bbox
 
 
 @dataclass
@@ -382,6 +392,7 @@ def _extract_document_impl(
 
     mode = _normalize_import_mode(opts.import_mode)
     extracted: list[ExtractedPage] = []
+    page_raster_job_pixels = 0
 
     with safe_open(pdf_path) as doc:
         pages = parse_pages_spec(opts.pages, len(doc))
@@ -495,8 +506,26 @@ def _extract_document_impl(
                         ),
                     )
                     if rendered is not None:
-                        images.append(rendered)
-                        raster_failure_detail = ""
+                        rendered_pixels = int(rendered.pixel_size[0]) * int(
+                            rendered.pixel_size[1]
+                        )
+                        if (
+                            page_raster_job_pixels + rendered_pixels
+                            > PAGE_RASTER_MAX_JOB_PIXELS
+                        ):
+                            try:
+                                Path(rendered.path).unlink(missing_ok=True)
+                            except OSError:
+                                pass
+                            rendered = None
+                            raster_failure_detail = (
+                                "document raster budget exceeded; import fewer pages "
+                                "per job"
+                            )
+                        else:
+                            page_raster_job_pixels += rendered_pixels
+                            images.append(rendered)
+                            raster_failure_detail = ""
                 elif effective_mode == "vector":
                     images = _extract_images(doc, page, page_number, opts, image_dir)
                     inline_placements = [
@@ -542,10 +571,28 @@ def _extract_document_impl(
                             ),
                         )
                         if rendered is not None:
-                            images.append(rendered)
-                            effective_mode = "raster"
-                            resolved_reason = "Vector empty -- raster fallback"
-                            raster_failure_detail = ""
+                            rendered_pixels = int(rendered.pixel_size[0]) * int(
+                                rendered.pixel_size[1]
+                            )
+                            if (
+                                page_raster_job_pixels + rendered_pixels
+                                > PAGE_RASTER_MAX_JOB_PIXELS
+                            ):
+                                try:
+                                    Path(rendered.path).unlink(missing_ok=True)
+                                except OSError:
+                                    pass
+                                rendered = None
+                                raster_failure_detail = (
+                                    "document raster budget exceeded; import fewer "
+                                    "pages per job"
+                                )
+                            else:
+                                page_raster_job_pixels += rendered_pixels
+                                images.append(rendered)
+                                effective_mode = "raster"
+                                resolved_reason = "Vector empty -- raster fallback"
+                                raster_failure_detail = ""
             elif effective_mode in {"raster", "hybrid"}:
                 raster_failure_detail = "image delivery disabled"
 
@@ -920,7 +967,7 @@ def _extract_inline_images_individually(
     written_assets: dict[str, Path] = {}
     asset_profiles: dict[
         str,
-        tuple[Tuple[int, int], str, Tuple[int, int, int, int]],
+        tuple[Tuple[int, int], str, Tuple[int, int, int, int], bool],
     ] = {}
     page_height = float(page.rect.height)
     for info, block in inline_blocks:
@@ -952,9 +999,10 @@ def _extract_inline_images_individually(
                 (int(decoded.width), int(decoded.height)),
                 alpha_kind,
                 alpha_bbox,
+                bool(decoded.alpha),
             )
 
-        pixel_size, alpha_kind, alpha_bbox = asset_profiles[asset_digest]
+        pixel_size, alpha_kind, alpha_bbox, alpha_present = asset_profiles[asset_digest]
 
         bbox = fitz.Rect(info.get("bbox") or block.get("bbox"))
         if bbox.is_empty or bbox.is_infinite:
@@ -989,6 +1037,7 @@ def _extract_inline_images_individually(
                 pixel_size=pixel_size,
                 alpha_kind=alpha_kind,
                 alpha_bbox_px=alpha_bbox,
+                alpha_present=alpha_present,
             )
         )
     return placements
@@ -1081,6 +1130,7 @@ def _render_inline_image_composite(
         pixel_size=(int(pixmap.width), int(pixmap.height)),
         alpha_kind=alpha_kind,
         alpha_bbox_px=alpha_bbox,
+        alpha_present=bool(pixmap.alpha),
     )
 
 
@@ -1132,6 +1182,7 @@ def _inline_image_page_fidelity_marker(
         pixel_size=pixel_size,
         alpha_kind="compositing_required",
         alpha_bbox_px=(0, 0, pixel_size[0], pixel_size[1]),
+        alpha_present=True,
     )
 
 
@@ -1142,7 +1193,12 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
         return placements
 
     inline_blocks = _inline_image_blocks(page)
-    page_height = float(page.rect.height)
+    page_rect = page.rect
+    page_height = float(page_rect.height)
+    rotation_matrix = _page_rotation_transform(
+        page_rect,
+        getattr(page, "rotation_matrix", None),
+    )
     seen: set[tuple[int, int]] = set()
     for img_info in page.get_images(full=True):
         xref = int(img_info[0])
@@ -1199,32 +1255,74 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
                 f"page_{page_number:03d}_xref_{xref}{mask_suffix}.png"
             )
             pix.save(str(img_path))
-            rects = page.get_image_rects(img_info)
+            rects = page.get_image_rects(img_info, transform=True)
         except (RuntimeError, OSError, ValueError, TypeError) as exc:
             raise RuntimeError(
                 f"page {page_number} image xref {xref} soft-mask {smask} "
                 f"could not be extracted faithfully: {exc}"
             ) from exc
 
-        for rect in rects:
+        for rect, image_matrix in rects:
             x0, y0, x1, y1 = float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)
-            left = min(x0, x1)
-            right = max(x0, x1)
+            a, b, c, d, e, f = (float(value) for value in image_matrix)
+            model_scale = MM_PER_PT * options.scale
+
+            # ``get_image_rects(..., transform=True)`` returns the image CTM
+            # in crop-local, unrotated PDF coordinates. Compose it with the
+            # visible page /Rotate transform before the model Y flip so IMAGE
+            # entities stay registered with vectors and text on rotated pages.
+            display_e, display_f = _transform_pdf_point(e, f, rotation_matrix)
+            display_a, display_b = _transform_pdf_vector(a, b, rotation_matrix)
+            display_c, display_d = _transform_pdf_vector(c, d, rotation_matrix)
+            display_corners = (
+                (display_e, display_f),
+                (display_e + display_a, display_f + display_b),
+                (display_e + display_c, display_f + display_d),
+                (
+                    display_e + display_a + display_c,
+                    display_f + display_b + display_d,
+                ),
+            )
 
             if options.flip_y:
-                bottom_pt = page_height - max(y0, y1)
-                top_pt = page_height - min(y0, y1)
+                model_corners = tuple(
+                    (x * model_scale, (page_height - y) * model_scale)
+                    for x, y in display_corners
+                )
+                affine_model = (
+                    (display_c + display_e) * model_scale,
+                    (page_height - (display_d + display_f)) * model_scale,
+                    display_a * model_scale,
+                    -display_b * model_scale,
+                    -display_c * model_scale,
+                    display_d * model_scale,
+                )
             else:
-                bottom_pt = min(y0, y1)
-                top_pt = max(y0, y1)
+                model_corners = tuple(
+                    (x * model_scale, y * model_scale)
+                    for x, y in display_corners
+                )
+                affine_model = (
+                    (display_c + display_e) * model_scale,
+                    (display_d + display_f) * model_scale,
+                    display_a * model_scale,
+                    display_b * model_scale,
+                    -display_c * model_scale,
+                    -display_d * model_scale,
+                )
+
+            left = min(point[0] for point in model_corners)
+            right = max(point[0] for point in model_corners)
+            bottom = min(point[1] for point in model_corners)
+            top = max(point[1] for point in model_corners)
 
             placements.append(
                 ImagePlacement(
                     page_number=page_number,
-                    x_mm=left * MM_PER_PT * options.scale,
-                    y_mm=bottom_pt * MM_PER_PT * options.scale,
-                    width_mm=(right - left) * MM_PER_PT * options.scale,
-                    height_mm=(top_pt - bottom_pt) * MM_PER_PT * options.scale,
+                    x_mm=left,
+                    y_mm=bottom,
+                    width_mm=right - left,
+                    height_mm=top - bottom,
                     path=str(img_path),
                     xref=xref,
                     source_kind="xobject_image",
@@ -1233,8 +1331,57 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
                     pixel_size=(int(pix.width), int(pix.height)),
                     alpha_kind=alpha_kind,
                     alpha_bbox_px=alpha_bbox,
+                    alpha_present=bool(pix.alpha),
+                    affine_pdf=tuple(float(value) for value in image_matrix),
+                    affine_model=affine_model,
                 )
             )
+
+    xobject_placements = [
+        placement
+        for placement in placements
+        if placement.source_kind == "xobject_image"
+    ]
+    if len(xobject_placements) > XOBJECT_IMAGE_COMPOSITE_THRESHOLD:
+        digest = hashlib.sha256()
+        for placement in xobject_placements:
+            digest.update(str(int(placement.xref)).encode("ascii"))
+            digest.update(repr(tuple(placement.affine_pdf or ())).encode("ascii"))
+        page_rect = page.rect
+        dpi = max(36, int(options.raster_dpi or 200))
+        pixel_size = (
+            max(1, int(math.ceil(float(page_rect.width) * dpi / 72.0))),
+            max(1, int(math.ceil(float(page_rect.height) * dpi / 72.0))),
+        )
+        placements = [
+            placement
+            for placement in placements
+            if placement.source_kind != "xobject_image"
+        ]
+        placements.append(
+            ImagePlacement(
+                page_number=page_number,
+                x_mm=0.0,
+                y_mm=0.0,
+                width_mm=float(page_rect.width) * MM_PER_PT * options.scale,
+                height_mm=float(page_rect.height) * MM_PER_PT * options.scale,
+                path="",
+                xref=0,
+                source_kind="xobject_image_page_fidelity_required",
+                source_instance_count=len(xobject_placements),
+                source_bbox_pdf=(
+                    float(page_rect.x0),
+                    float(page_rect.y0),
+                    float(page_rect.x1),
+                    float(page_rect.y1),
+                ),
+                source_digest=digest.hexdigest(),
+                pixel_size=pixel_size,
+                alpha_kind="compositing_required",
+                alpha_bbox_px=(0, 0, pixel_size[0], pixel_size[1]),
+                alpha_present=True,
+            )
+        )
 
     if inline_blocks:
         use_composite = (
@@ -1293,83 +1440,75 @@ def _render_page_raster(
     if image_dir is None:
         return None
 
-    dpi = int(max(36, options.raster_dpi or 200))
-    zoom = dpi / 72.0
+    requested_dpi = max(PAGE_RASTER_MIN_DPI, float(options.raster_dpi or 200))
+    width = float(page.rect.width)
+    height = float(page.rect.height)
+    if width <= 0.0 or height <= 0.0:
+        raise ValueError("page raster has invalid physical dimensions")
+    requested_zoom = requested_dpi / 72.0
+    pixel_budget_zoom = math.sqrt(PAGE_RASTER_MAX_PIXELS / (width * height))
+    dimension_budget_zoom = min(
+        PAGE_RASTER_MAX_DIMENSION / width,
+        PAGE_RASTER_MAX_DIMENSION / height,
+    )
+    zoom = min(requested_zoom, pixel_budget_zoom, dimension_budget_zoom)
+    effective_dpi = zoom * 72.0
+    if effective_dpi + 1e-9 < PAGE_RASTER_MIN_DPI:
+        raise RuntimeError(
+            "page exceeds the safe raster resource budget even at "
+            f"{PAGE_RASTER_MIN_DPI:g} DPI"
+        )
+    dpi = int(round(effective_dpi))
     matrix = fitz.Matrix(zoom, zoom)
 
+    filtered_document = None
     try:
-        pix = page.get_pixmap(matrix=matrix, alpha=bool(masked_text_items))
+        render_page = page
         if masked_text_items:
-            rotation_matrix = _page_rotation_transform(
-                page.rect,
-                getattr(page, "rotation_matrix", None),
+            parent = getattr(page, "parent", None)
+            source_page_number = getattr(page, "number", None)
+            if parent is None or source_page_number is None:
+                raise ValueError("cannot isolate source text from a detached PDF page")
+            filtered_document = fitz.open()
+            filtered_document.insert_pdf(
+                parent,
+                from_page=int(source_page_number),
+                to_page=int(source_page_number),
             )
+            render_page = filtered_document[0]
             for item in masked_text_items:
                 source_bbox = getattr(item, "source_bbox_pdf", None)
                 if not source_bbox or len(source_bbox) < 4:
                     raise ValueError(
                         "cannot remove duplicate page-raster text without an exact source bbox"
                     )
-                x0, y0, x1, y1 = [float(value) for value in source_bbox[:4]]
-                corners = [
-                    _transform_pdf_point(x, y, rotation_matrix)
-                    for x, y in (
-                        (x0, y0),
-                        (x1, y0),
-                        (x1, y1),
-                        (x0, y1),
-                    )
-                ]
-                # One-pixel antialias margin prevents a residual fringe from
-                # backing the separately delivered requested representation.
-                left = max(
-                    0,
-                    int(
-                        math.floor(
-                            (min(point[0] for point in corners) - float(page.rect.x0))
-                            * zoom
-                        )
-                    )
-                    - 1,
+                source_rect = fitz.Rect(
+                    *[float(value) for value in source_bbox[:4]]
                 )
-                top = max(
-                    0,
-                    int(
-                        math.floor(
-                            (min(point[1] for point in corners) - float(page.rect.y0))
-                            * zoom
-                        )
-                    )
-                    - 1,
+                if source_rect.is_empty or source_rect.is_infinite:
+                    raise ValueError("source text bbox is invalid for text isolation")
+                render_page.add_redact_annot(
+                    source_rect,
+                    fill=False,
+                    cross_out=False,
                 )
-                right = min(
-                    pix.width,
-                    int(
-                        math.ceil(
-                            (max(point[0] for point in corners) - float(page.rect.x0))
-                            * zoom
-                        )
-                    )
-                    + 1,
-                )
-                bottom = min(
-                    pix.height,
-                    int(
-                        math.ceil(
-                            (max(point[1] for point in corners) - float(page.rect.y0))
-                            * zoom
-                        )
-                    )
-                    + 1,
-                )
-                if right <= left or bottom <= top:
-                    raise ValueError("source text bbox maps to an empty raster region")
-                pix.set_rect(fitz.IRect(left, top, right, bottom), (0, 0, 0, 0))
+            applied = render_page.apply_redactions(
+                images=fitz.PDF_REDACT_IMAGE_NONE,
+                graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                text=fitz.PDF_REDACT_TEXT_REMOVE,
+            )
+            if not applied:
+                raise RuntimeError("source text isolation did not apply")
+
+        pix = render_page.get_pixmap(matrix=matrix, alpha=bool(masked_text_items))
         alpha_kind, alpha_bbox = _classify_pixmap_alpha(pix)
         img_path = image_dir / f"page_{page_number:03d}_raster_{dpi}dpi.png"
         pix.save(str(img_path))
-    except (RuntimeError, OSError, ValueError, TypeError):
+    except (MemoryError, RuntimeError, OSError, ValueError, TypeError):
         return None
+    finally:
+        if filtered_document is not None:
+            filtered_document.close()
 
     width_mm = float(page.rect.width) * MM_PER_PT * options.scale
     height_mm = float(page.rect.height) * MM_PER_PT * options.scale
@@ -1392,4 +1531,10 @@ def _render_page_raster(
         pixel_size=(int(pix.width), int(pix.height)),
         alpha_kind=alpha_kind,
         alpha_bbox_px=alpha_bbox,
+        alpha_present=bool(pix.alpha),
+        masked_text_bboxes_pdf=tuple(
+            tuple(float(value) for value in item.source_bbox_pdf[:4])
+            for item in masked_text_items
+            if getattr(item, "source_bbox_pdf", None)
+        ),
     )

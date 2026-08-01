@@ -12,12 +12,22 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 from deterministic_zip import write_deterministic_zip
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
+_PACKAGE_DIRECTORIES = {
+    "pdfcadcore",
+    "librecad_pdf_importer",
+    "plugin",
+    "tools",
+    "third_party",
+    "installer",
+    "scripts",
+}
 
 
 def _read_version() -> str:
@@ -123,6 +133,43 @@ def _should_include(rel_path: str) -> bool:
     return True
 
 
+def _tracked_project_files(project_root: Path) -> list[Path] | None:
+    """Return tracked files for a checkout, or ``None`` for a source archive."""
+
+    if not (project_root / ".git").exists():
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "-c",
+                f"safe.directory={project_root.resolve()}",
+                "ls-files",
+                "-z",
+            ],
+            cwd=project_root,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(
+            "release build could not enumerate tracked repository files"
+        ) from exc
+
+    tracked = []
+    for raw_path in completed.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        relative = Path(raw_path.decode("utf-8", errors="surrogateescape"))
+        candidate = (project_root / relative).resolve()
+        if not candidate.is_relative_to(project_root.resolve()):
+            raise RuntimeError(f"tracked release path escapes repository: {relative}")
+        if candidate.is_file():
+            tracked.append(candidate)
+    return tracked
+
+
 def build(output_dir: str | None = None) -> Path:
     """Create the release zip and return its path."""
     version = _read_version()
@@ -135,35 +182,35 @@ def build(output_dir: str | None = None) -> Path:
     dist_dir.mkdir(parents=True, exist_ok=True)
     zip_path = dist_dir / zip_name
 
-    # Collect files
+    # Collect files. A live checkout is fail-closed to tracked paths so ignored
+    # working-environment notes or fixtures cannot enter an accepted archive.
     files_to_add: list[tuple[Path, str]] = []
-
-    # Walk project root (top-level files)
-    for item in _PROJECT_ROOT.iterdir():
-        if item.is_file():
-            rel = item.relative_to(_PROJECT_ROOT).as_posix()
-            if _should_include(rel):
-                files_to_add.append((item, rel))
-
-    # Walk package and auxiliary directories
-    for package_dir_name in (
-        "pdfcadcore",
-        "librecad_pdf_importer",
-        "plugin",
-        "tools",
-        "third_party",
-        "installer",
-        "scripts",
-    ):
-        package_dir = _PROJECT_ROOT / package_dir_name
-        if not package_dir.is_dir():
-            continue
-        for root, _dirs, filenames in os.walk(package_dir):
-            for fname in filenames:
-                full = Path(root) / fname
-                rel = full.relative_to(_PROJECT_ROOT).as_posix()
+    tracked_files = _tracked_project_files(_PROJECT_ROOT)
+    if tracked_files is not None:
+        for item in tracked_files:
+            relative = item.relative_to(_PROJECT_ROOT)
+            if len(relative.parts) == 1 or relative.parts[0] in _PACKAGE_DIRECTORIES:
+                rel = relative.as_posix()
                 if _should_include(rel):
-                    files_to_add.append((full, rel))
+                    files_to_add.append((item, rel))
+    else:
+        # A distributed source ZIP has no .git metadata. Its contents were
+        # already produced by the tracked-only checkout path above.
+        for item in _PROJECT_ROOT.iterdir():
+            if item.is_file():
+                rel = item.relative_to(_PROJECT_ROOT).as_posix()
+                if _should_include(rel):
+                    files_to_add.append((item, rel))
+        for package_dir_name in sorted(_PACKAGE_DIRECTORIES):
+            package_dir = _PROJECT_ROOT / package_dir_name
+            if not package_dir.is_dir():
+                continue
+            for root, _dirs, filenames in os.walk(package_dir):
+                for fname in filenames:
+                    full = Path(root) / fname
+                    rel = full.relative_to(_PROJECT_ROOT).as_posix()
+                    if _should_include(rel):
+                        files_to_add.append((full, rel))
 
     # Build a byte-reproducible ZIP. Checkout mtimes and host OS metadata must
     # never change the accepted release hash for an identical source tree.

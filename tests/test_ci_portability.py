@@ -5,6 +5,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 import re
+import subprocess
+import tomllib
 import zipfile
 
 import pytest
@@ -83,11 +85,63 @@ def test_supplied_pdf_locator_resolves_an_explicit_fixture_root(
 ) -> None:
     from conftest import _supplied_pdf
 
-    fixture = tmp_path / "Welding-Symbol-Chart.pdf"
+    fixture = tmp_path / "external-fixture.pdf"
     fixture.write_bytes(b"fixture")
     monkeypatch.setenv("BCS_PDF_TEST_FILES", str(tmp_path))
 
     assert _supplied_pdf(fixture.name) == fixture.resolve()
+
+
+def test_external_fixture_discovery_has_no_owner_desktop_fallback() -> None:
+    source = (ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")
+
+    assert "Desktop" not in source
+
+
+def test_gitignore_covers_artifact_classes_without_customer_stems() -> None:
+    ignored = (
+        "external-source-without-extension",
+        "incoming-fixture.pdf",
+        "external-test-corpus/source-without-extension",
+        "Imported Evidence/LibreCAD/result.png",
+    )
+    for relative_path in ignored:
+        result = subprocess.run(
+            [
+                "git",
+                "-c",
+                f"safe.directory={ROOT.as_posix()}",
+                "check-ignore",
+                "--no-index",
+                relative_path,
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, relative_path
+
+    for relative_path in ("LICENSE", "README.md", "tests/conftest.py"):
+        result = subprocess.run(
+            [
+                "git",
+                "-c",
+                f"safe.directory={ROOT.as_posix()}",
+                "check-ignore",
+                "--no-index",
+                relative_path,
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 1, relative_path
+
+    ignore_source = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert "Desktop" not in ignore_source
+    assert "owner" not in ignore_source.lower()
 
 
 def test_supplied_pdf_locator_visible_skips_when_fixture_is_unavailable(
@@ -204,6 +258,19 @@ def test_ci_does_not_swallow_shared_core_failures_or_cancel_sibling_versions() -
     assert "fail-fast: false" in workflow
     assert '|| echo "No tests yet"' not in workflow
     assert "cd pdfcadcore" not in workflow
+
+
+def test_ci_python_jobs_match_the_declared_supported_floor() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    workflow = (ROOT / ".github" / "workflows" / "lc-pdfimporter-ci.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert project["project"]["requires-python"] == ">=3.12"
+    assert 'python-version: ["3.12"]' in workflow
+    assert 'python-version: "3.12"' in workflow
+    assert 'python-version: "3.10"' not in workflow
+    assert '"3.11"' not in workflow
 
 
 def test_controlled_font_bytes_and_ascii_space_are_deterministic(tmp_path) -> None:

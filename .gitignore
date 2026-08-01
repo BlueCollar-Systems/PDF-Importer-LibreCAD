@@ -1,3 +1,10 @@
+# Top-level extensionless arrivals are treated as external source artifacts.
+# Root directories, ordinary dotted files, and the project license stay visible.
+/*
+!/*/
+!/*.*
+!/LICENSE
+
 __pycache__/
 *.pyc
 *.pyo
@@ -39,10 +46,10 @@ _LLM_CONTROL_PACK/
 /lib.stage.*/
 /lib.backup.*/
 
-# --- BCS test-corpus containment (owner instruction 2026-07-31) ---
-# Supplied test PDFs and any CAD output derived from them are licensed to this
-# project only and must never be committed or distributed. Keep the corpus in
-# the owner's Desktop\PDFTest Files and sweep outputs under C:\TMP.
+# --- External test-corpus containment ---
+# Supplied fixtures and derived CAD/model evidence must never be committed or
+# distributed. Keep external corpus trees outside the repository and configure
+# their locations through the test environment.
 *.pdf
 *.PDF
 *.dxf
@@ -58,26 +65,9 @@ _LLM_CONTROL_PACK/
 *_import_report*.json
 *_failed_import_report*.json
 *_assets/
-PDFTest*/
+*[Pp][Dd][Ff]*[Tt]est*/
 *test-corpus*/
 Imported Evidence/
 **/Imported Evidence/
 .pytest_tmp*/
-
-# --- BCS corpus name-stem guard (extension-less leak, 2026-07-31) ---
-# Two leaked files were PDFs with no extension, so extension rules alone are
-# not enough. Match the owner's corpus by name stem as well.
-*TX_Alvord*
-*SCOMBINED*
-*Attachment-C-Drawings*
-*AWSWeldSymbolchart*
-*Welding-Symbol-Chart*
-*CMJ Report*
-alvord*
-Alvord*
-*plant_list*
-*Zoning-Map*
-* - Rev 0*
-*PDF with embedded images*
-PDF_Vector_Importer_Master_Bundle*/
 /.worktrees/
