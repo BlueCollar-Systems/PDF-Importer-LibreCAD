@@ -7,7 +7,7 @@
   "dimension_parser.py": "a8a5b53d5a10a07b3fafe6683d832f7d0bfbbff74e11ba7d31b9fb3581066989",
   "document_profiler.py": "d423c6a2c980a712e91cb698e7a1fe199b883ec38f93dc87b01d87a2b8b4e877",
   "embedded_fonts.py": "09b2bf1bcde11b7ae4c9d9b8f689147952bed1bfaf2c872c3583f47dd98def5b",
-  "fitz_loader.py": "190241667080e0d06d5c62e3587531a38ee6a73e8a3ec08c5e529d546cadf34a",
+  "fitz_loader.py": "32274c459d595051dfb279d00f773f008149e170537aa5a476130de2a92e7998",
   "generic_classifier.py": "a3920341cde7ddea96463fbc1d88943b3ef7a1625a6352abe4f79875a18fec5e",
   "generic_recognizer.py": "1784218d428ce1c897e8936695ddab16ce57734452515b1d2adb07d2f9a6123f",
   "geometry_cleanup.py": "e8a2ad96aea1186e719aa248fea09f79b52fe65b8369c63287272a86457e4708",
