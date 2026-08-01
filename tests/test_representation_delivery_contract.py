@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import hashlib
 import math
+import weakref
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +14,7 @@ from unittest.mock import patch
 
 import ezdxf
 import pytest
+from ezdxf import bbox as ezdxf_bbox
 from ezdxf.tools.text_size import text_size
 from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.ttGlyphPen import TTGlyphPen
@@ -21,6 +24,9 @@ from dxf_text_builder import (
     TextDeliveryResult,
     _ExactFontResolution,
     _embedded_ezdxf_cap_height_ratio,
+    _exact_font_cache_identity,
+    _nested_outline_tolerance,
+    _source_outline_bbox_key,
     _staged_font_matches_source,
     _ensure_text_style,
     _normalized_mode,
@@ -137,6 +143,34 @@ def test_staged_embedded_font_bytes_are_read_once_per_document(
         reset_text_styles()
         assert _staged_font_matches_source(font_path, digest, font_bytes) is True
         assert reader.call_count == 2
+
+
+def test_glyph_caches_isolate_same_name_fonts_by_exact_asset_digest() -> None:
+    doc = ezdxf.new("R2010")
+    doc.styles.add("SAME_NAME", font="same-reported-name.ttf")
+    entity = doc.modelspace().add_text(
+        "A",
+        dxfattribs={"style": "SAME_NAME", "height": 1.0},
+    )
+    common = {
+        "source_name": "Same Reported Name",
+        "family": "Same Reported Name",
+        "style": "Regular",
+        "filename": "same-reported-name.ttf",
+        "exact": True,
+        "resolution_source": "embedded_font_asset",
+    }
+    first = _ExactFontResolution(**common, asset_sha256="1" * 64)
+    second = _ExactFontResolution(**common, asset_sha256="2" * 64)
+
+    first_identity = _exact_font_cache_identity(entity, first)
+    second_identity = _exact_font_cache_identity(entity, second)
+
+    assert first_identity != second_identity
+    assert _source_outline_bbox_key(entity, first_identity) != (
+        _source_outline_bbox_key(entity, second_identity)
+    )
+    assert (first_identity, "A") != (second_identity, "A")
 
 
 def test_serialized_fallback_text_keeps_unused_embedded_font_provenance() -> None:
@@ -578,12 +612,37 @@ def test_glyphs_are_block_references_and_geometry_is_raw_edges() -> None:
     block_child_handles = {entity.dxf.handle for entity in block}
     support_handles = set(glyph_result.support_entity_handles)
     assert block_child_handles < support_handles
-    structure_handles = support_handles - block_child_handles
-    assert len(structure_handles) == 3
+    structure_handles = {
+        block.block_record.dxf.handle,
+        block.block.dxf.handle,
+        block.endblk.dxf.handle,
+    }
+    assert structure_handles < support_handles
     assert {
         glyph_doc.entitydb[handle].dxftype() for handle in structure_handles
     } == {"BLOCK_RECORD", "BLOCK", "ENDBLK"}
-    glyph_types = {entity.dxftype() for entity in block}
+    assert {entity.dxftype() for entity in block} == {"INSERT"}
+    evidence = glyph_result.attempts[-1].evidence
+    assert evidence["nested_glyph_definitions"] is True
+    definition_blocks = [
+        glyph_doc.blocks.get(name) for name in evidence["glyph_definition_names"]
+    ]
+    assert definition_blocks
+    assert all(
+        {
+            definition.block_record.dxf.handle,
+            definition.block.dxf.handle,
+            definition.endblk.dxf.handle,
+            *(child.dxf.handle for child in definition),
+        }
+        <= support_handles
+        for definition in definition_blocks
+    )
+    glyph_types = {
+        child.dxftype()
+        for definition in definition_blocks
+        for child in definition
+    }
     assert "SOLID" in glyph_types
     assert glyph_types <= {"LWPOLYLINE", "POLYLINE", "SOLID"}
     assert glyph_result.attempts[-1].evidence["solid_fill_verified"] is True
@@ -601,6 +660,512 @@ def test_glyphs_are_block_references_and_geometry_is_raw_edges() -> None:
     }
     assert any(entity.dxftype() == "SOLID" for entity in geometry_entities)
     assert "INSERT" not in {entity.dxftype() for entity in geometry_msp}
+
+
+def test_repeated_glyph_spans_share_nested_definitions_without_geometry_drift() -> None:
+    reset_text_styles()
+    glyph_doc = ezdxf.new("R2010")
+    glyph_msp = glyph_doc.modelspace()
+    config = ImportConfig(text_mode="glyphs")
+    items = [
+        __import__("dataclasses").replace(
+            _item(item_id=17 + index),
+            insertion=(12.25 + index * 3.0, 24.5 + index * 2.0),
+        )
+        for index in range(40)
+    ]
+    with (
+        patch(
+            "dxf_text_builder._to_solid_fill_entities",
+            wraps=_to_solid_fill_entities,
+        ) as fill_builder,
+        patch(
+            "dxf_text_builder._to_outline_entities",
+            wraps=__import__("dxf_text_builder")._to_outline_entities,
+        ) as outline_builder,
+        patch(
+            "dxf_text_builder.text2path.make_paths_from_entity",
+            wraps=__import__(
+                "dxf_text_builder"
+            ).text2path.make_paths_from_entity,
+        ) as source_path_builder,
+        patch(
+            "dxf_text_builder._path_geometry_fingerprint",
+            wraps=__import__("dxf_text_builder")._path_geometry_fingerprint,
+        ) as path_fingerprint_builder,
+    ):
+        results = [
+            build_text(
+                item,
+                glyph_msp,
+                "TEXT",
+                config,
+                target_app="librecad",
+                dxf_version="R2010",
+                return_delivery_result=True,
+            )
+            for item in items
+        ]
+
+    assert all(isinstance(result, TextDeliveryResult) for result in results)
+    assert all(result.final_representation == "glyphs" for result in results)
+    first_attempt = results[0].attempts[0]
+    assert first_attempt.strategy == "entity_text2path"
+    assert first_attempt.outcome == "verified", (
+        f"{first_attempt.reason}; "
+        f"expected={first_attempt.evidence.get('expected_outline_bbox')!r}; "
+        f"actual={first_attempt.evidence.get('actual_outline_bbox')!r}; "
+        f"insert={first_attempt.evidence.get('actual_block_insert')!r}"
+    )
+    assert len(list(glyph_msp)) == len(items)
+    outer_blocks = [
+        glyph_doc.blocks.get(entity.dxf.name) for entity in glyph_msp
+    ]
+    assert all(
+        {child.dxftype() for child in block} == {"INSERT"}
+        for block in outer_blocks
+    ), [
+        [
+            attempt.strategy,
+            attempt.outcome,
+            attempt.reason,
+            attempt.evidence,
+        ]
+        for attempt in results[0].attempts
+    ]
+    definition_blocks = [
+        block
+        for block in glyph_doc.blocks
+        if str(block.name).startswith("BCS_GDEF_")
+    ]
+    assert 0 < len(definition_blocks) <= len(set(items[0].text))
+    assert fill_builder.call_count == len(definition_blocks)
+    glyph_occurrences = len(items[0].text) * len(items)
+    construction_reduction = glyph_occurrences / fill_builder.call_count
+    assert construction_reduction == 40.0
+    assert fill_builder.call_count * 10 < glyph_occurrences
+    assert outline_builder.call_count == len(definition_blocks)
+    assert path_fingerprint_builder.call_count == len(definition_blocks)
+    assert source_path_builder.call_count == 1
+    assert all(
+        {child.dxftype() for child in block}
+        <= {"LWPOLYLINE", "POLYLINE", "SOLID"}
+        for block in definition_blocks
+    )
+    _, legacy_msp, _ = _deliver("geometry", items[0])
+    legacy_support_entities = (
+        len(list(legacy_msp)) + 3
+    ) * len(items)
+    nested_support_entities = sum(
+        len(list(block)) + 3 for block in outer_blocks + definition_blocks
+    )
+    persisted_reduction = legacy_support_entities / nested_support_entities
+    assert persisted_reduction == pytest.approx(12.33, abs=0.01)
+    assert nested_support_entities * 10 < legacy_support_entities
+
+    second_evidence = results[1].attempts[-1].evidence
+    assert second_evidence["glyph_definition_created_count"] == 0
+    assert second_evidence["glyph_definition_reused_count"] == len(items[1].text)
+    assert second_evidence["canonical_glyph_created_count"] == 0
+    assert second_evidence["canonical_glyph_reused_count"] == len(items[1].text)
+    for index in (0, len(items) - 1):
+        item = items[index]
+        glyph_ref = list(glyph_msp)[index]
+        _, geometry_msp, geometry_result = _deliver("geometry", item)
+        assert geometry_result.final_representation == "geometry"
+        glyph_box = ezdxf_bbox.extents([glyph_ref])
+        geometry_box = ezdxf_bbox.extents(list(geometry_msp))
+        assert tuple(glyph_box.extmin) == pytest.approx(
+            tuple(geometry_box.extmin),
+            abs=0.01,
+        )
+        assert tuple(glyph_box.extmax) == pytest.approx(
+            tuple(geometry_box.extmax),
+            abs=0.01,
+        )
+        assert tuple(glyph_ref.dxf.insert)[:2] == pytest.approx(item.insertion)
+
+
+def test_small_nested_glyph_uses_scale_aware_tessellation_tolerance() -> None:
+    item = __import__("dataclasses").replace(
+        _item(height=0.08, width=0.08, rotation=0.0),
+        text="A",
+        normalized="A",
+    )
+
+    _, _, result = _deliver("glyphs", item)
+
+    assert result.final_representation == "glyphs"
+    evidence = result.attempts[-1].evidence
+    tolerance_x, tolerance_y = tuple(
+        float(value) for value in evidence["outline_bbox_tessellation_tolerance"]
+    )
+    assert 0.0 < tolerance_x < 0.009
+    assert 0.0 < tolerance_y < 0.009
+    assert float(evidence["outline_bbox_max_abs_error"]) <= max(
+        tolerance_x,
+        tolerance_y,
+    )
+
+
+def test_per_document_glyph_cache_does_not_keep_drawing_alive() -> None:
+    reset_text_styles()
+    doc, msp, result = _deliver("glyphs")
+    drawing_ref = weakref.ref(doc)
+    del result
+    del msp
+    del doc
+
+    gc.collect()
+
+    assert drawing_ref() is None
+
+
+def test_reopened_nested_definition_geometry_mutation_is_rejected(tmp_path) -> None:
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / "nested-glyphs.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    delivery = result.to_dict()
+    _verify_serialized_text_deliveries(reopened, [delivery])
+
+    evidence = result.attempts[-1].evidence
+    definition = reopened.blocks.get(evidence["glyph_definition_names"][0])
+    outline = next(
+        entity for entity in definition if entity.dxftype() == "LWPOLYLINE"
+    )
+    points = list(outline.get_points(format="xyseb"))
+    first = points[0]
+    points[0] = (first[0] + 1000.0, *first[1:])
+    outline.set_points(points, format="xyseb")
+
+    with pytest.raises(
+        RuntimeError,
+        match="glyph definition geometry changed",
+    ):
+        _verify_serialized_text_deliveries(reopened, [delivery])
+
+
+def test_reopened_nested_transform_drift_exceeding_scale_bound_is_rejected(
+    tmp_path,
+) -> None:
+    item = __import__("dataclasses").replace(
+        _item(height=0.08, width=0.08, rotation=0.0),
+        text="A",
+        normalized="A",
+    )
+    doc, _, result = _deliver("glyphs", item)
+    output = tmp_path / "nested-transform.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    delivery = result.to_dict()
+    outer_ref = next(iter(reopened.modelspace()))
+    outer_block = reopened.blocks.get(outer_ref.dxf.name)
+    nested_ref = next(iter(outer_block))
+    original_insert = tuple(nested_ref.dxf.insert)
+    nested_ref.dxf.insert = (
+        original_insert[0] + 0.009,
+        original_insert[1],
+        original_insert[2],
+    )
+    verified_attempt = next(
+        attempt
+        for attempt in delivery["attempts"]
+        if attempt["outcome"] == "verified"
+    )
+    text_builder = __import__("dxf_text_builder")
+    verified_attempt["evidence"]["glyph_instance_transform_sha256"] = (
+        text_builder._glyph_instance_transform_fingerprint(list(outer_block))
+    )
+    verified_attempt["evidence"]["glyph_outer_block_structure_sha256"] = (
+        text_builder._glyph_outer_block_structure_fingerprint(outer_block)
+    )
+
+    with pytest.raises(RuntimeError, match="serialized glyph bbox changed"):
+        _verify_serialized_text_deliveries(reopened, [delivery])
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "outer_true_color",
+        "nested_true_color",
+        "definition_base_point",
+        "solid_extrusion",
+        "outer_invisible",
+        "nested_invisible",
+        "outline_invisible",
+        "solid_invisible",
+        "outline_transparency",
+        "solid_transparency",
+        "outline_const_width",
+    ],
+)
+def test_reopened_nested_delivery_visual_attribute_mutation_is_rejected(
+    tmp_path,
+    mutation,
+) -> None:
+    doc, _, result = _deliver("glyphs")
+    output = tmp_path / f"nested-{mutation}.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    delivery = result.to_dict()
+    outer_ref = next(iter(reopened.modelspace()))
+    outer_block = reopened.blocks.get(outer_ref.dxf.name)
+    nested_ref = next(iter(outer_block))
+    definition = reopened.blocks.get(nested_ref.dxf.name)
+    outline = next(
+        entity for entity in definition if entity.dxftype() == "LWPOLYLINE"
+    )
+    solid = next(entity for entity in definition if entity.dxftype() == "SOLID")
+
+    if mutation == "outer_true_color":
+        outer_ref.dxf.true_color = 0x102030
+    elif mutation == "nested_true_color":
+        nested_ref.dxf.true_color = 0x102030
+    elif mutation == "definition_base_point":
+        definition.block.dxf.base_point = (1.0, 0.0, 0.0)
+    elif mutation == "solid_extrusion":
+        solid.dxf.extrusion = (1.0, 0.0, 0.0)
+    elif mutation == "outer_invisible":
+        outer_ref.dxf.invisible = 1
+    elif mutation == "nested_invisible":
+        nested_ref.dxf.invisible = 1
+    elif mutation == "outline_invisible":
+        outline.dxf.invisible = 1
+    elif mutation == "solid_invisible":
+        solid.dxf.invisible = 1
+    elif mutation == "outline_transparency":
+        outline.dxf.transparency = 0x020000FF
+    elif mutation == "outline_const_width":
+        outline.dxf.const_width = 0.5
+    else:
+        solid.dxf.transparency = 0x020000FF
+
+    with pytest.raises(
+        RuntimeError,
+            match=(
+                "outer INSERT attributes changed|outer BLOCK structure changed|"
+                "nested glyph evidence changed|"
+                "glyph definition geometry changed|serialized glyph bbox changed"
+            ),
+    ):
+        _verify_serialized_text_deliveries(reopened, [delivery])
+
+
+@pytest.mark.parametrize(
+    "width_attribute",
+    ["default_start_width", "default_end_width"],
+)
+def test_reopened_r12_polyline_default_width_mutation_is_rejected(
+    tmp_path,
+    width_attribute,
+) -> None:
+    doc = ezdxf.new("R12")
+    result = build_text(
+        _item(),
+        doc.modelspace(),
+        "TEXT",
+        ImportConfig(text_mode="glyphs"),
+        is_r12=True,
+        target_app="librecad",
+        dxf_version="R12",
+        return_delivery_result=True,
+    )
+    assert isinstance(result, TextDeliveryResult)
+    output = tmp_path / f"r12-{width_attribute}.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    delivery = result.to_dict()
+    outer_ref = next(iter(reopened.modelspace()))
+    outer_block = reopened.blocks.get(outer_ref.dxf.name)
+    definition = reopened.blocks.get(next(iter(outer_block)).dxf.name)
+    outline = next(entity for entity in definition if entity.dxftype() == "POLYLINE")
+    setattr(outline.dxf, width_attribute, 0.5)
+
+    with pytest.raises(RuntimeError, match="glyph definition geometry changed"):
+        _verify_serialized_text_deliveries(reopened, [delivery])
+
+
+@pytest.mark.parametrize("dxf_version", ["R2010", "R12"])
+def test_reopened_outer_block_small_base_point_drift_is_rejected(
+    tmp_path,
+    dxf_version,
+) -> None:
+    doc = ezdxf.new(dxf_version)
+    result = build_text(
+        _item(),
+        doc.modelspace(),
+        "TEXT",
+        ImportConfig(text_mode="glyphs"),
+        is_r12=dxf_version == "R12",
+        target_app="librecad",
+        dxf_version=dxf_version,
+        return_delivery_result=True,
+    )
+    assert isinstance(result, TextDeliveryResult)
+    assert result.final_representation == "glyphs"
+    output = tmp_path / f"outer-block-{dxf_version}.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    delivery = result.to_dict()
+    _verify_serialized_text_deliveries(reopened, [delivery])
+    outer_ref = next(iter(reopened.modelspace()))
+    outer_block = reopened.blocks.get(outer_ref.dxf.name)
+    outer_block.block.dxf.base_point = (0.0005, 0.0, 0.0)
+
+    with pytest.raises(RuntimeError, match="outer BLOCK structure changed"):
+        _verify_serialized_text_deliveries(reopened, [delivery])
+
+
+@pytest.mark.parametrize("dxf_version", ["R2010", "R12"])
+def test_fresh_nested_glyph_creation_accepts_block_schema(dxf_version) -> None:
+    doc = ezdxf.new(dxf_version)
+
+    result = build_text(
+        _item(),
+        doc.modelspace(),
+        "TEXT",
+        ImportConfig(text_mode="glyphs"),
+        is_r12=dxf_version == "R12",
+        target_app="librecad",
+        dxf_version=dxf_version,
+        return_delivery_result=True,
+    )
+
+    assert isinstance(result, TextDeliveryResult)
+    assert result.final_representation == "glyphs"
+    assert result.verified is True
+
+
+@pytest.mark.parametrize("dxf_version", ["R2010", "R12"])
+def test_reopened_main_delivery_cannot_be_redirected_out_of_modelspace(
+    tmp_path,
+    dxf_version,
+) -> None:
+    doc = ezdxf.new(dxf_version)
+    result = build_text(
+        _item(),
+        doc.modelspace(),
+        "TEXT",
+        ImportConfig(text_mode="glyphs"),
+        is_r12=dxf_version == "R12",
+        target_app="librecad",
+        dxf_version=dxf_version,
+        return_delivery_result=True,
+    )
+    assert isinstance(result, TextDeliveryResult)
+    assert result.final_representation == "glyphs"
+    outer_ref = next(iter(doc.modelspace()))
+    doc.modelspace().unlink_entity(outer_ref)
+    redirect = doc.blocks.new("REDIRECTED_DELIVERY")
+    redirect.add_entity(outer_ref)
+    output = tmp_path / f"redirected-{dxf_version}.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+
+    with pytest.raises(RuntimeError, match="main entity ownership changed"):
+        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+
+
+def test_nested_tessellation_tolerance_is_axis_and_rotation_aware() -> None:
+    doc = ezdxf.new("R2010")
+    definition = doc.blocks.new("NONUNIFORM")
+    nested_ref = doc.modelspace().add_blockref(
+        definition.name,
+        (0.0, 0.0),
+        dxfattribs={"xscale": 0.8, "yscale": 0.08, "rotation": 0.0},
+    )
+
+    tolerance_x, tolerance_y = _nested_outline_tolerance(
+        [nested_ref],
+        (0.0, 0.0, 1.0, 1.0),
+    )
+
+    assert tolerance_x == pytest.approx(0.008, abs=1e-10)
+    assert tolerance_y == pytest.approx(0.0008, abs=1e-10)
+    assert 0.007 > tolerance_y
+
+
+@pytest.mark.parametrize("dxf_version", ["R2010", "R12"])
+@pytest.mark.parametrize(
+    "scales",
+    [
+        (1.0, 1.0, 1.0),
+        (1.0, 2.0, 1.0),
+        (2.0, 1.0, 1.0),
+    ],
+)
+def test_insert_fingerprint_normalizes_writer_omitted_unit_scale_defaults(
+    tmp_path,
+    dxf_version,
+    scales,
+) -> None:
+    doc = ezdxf.new(dxf_version)
+    doc.blocks.new("UNIT_SCALE_TARGET")
+    outer = doc.blocks.new("UNIT_SCALE_OUTER")
+    nested = outer.add_blockref(
+        "UNIT_SCALE_TARGET",
+        (1.0, 2.0, 0.0),
+        dxfattribs={
+            "xscale": scales[0],
+            "yscale": scales[1],
+            "zscale": scales[2],
+        },
+    )
+    fingerprint = __import__(
+        "dxf_text_builder"
+    )._glyph_instance_transform_fingerprint
+    expected = fingerprint([nested])
+    output = tmp_path / f"insert-unit-scale-{dxf_version}.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    reopened_nested = next(iter(reopened.blocks.get("UNIT_SCALE_OUTER")))
+
+    assert fingerprint([reopened_nested]) == expected
+
+
+@pytest.mark.parametrize("dxf_version", ["R2010", "R12"])
+@pytest.mark.parametrize(
+    ("mutation", "changed_value"),
+    [
+        ("row_count", 2),
+        ("column_count", 2),
+        ("row_spacing", 0.5),
+        ("column_spacing", 0.5),
+    ],
+)
+def test_insert_fingerprint_normalizes_writer_omitted_array_defaults(
+    tmp_path,
+    dxf_version,
+    mutation,
+    changed_value,
+) -> None:
+    doc = ezdxf.new(dxf_version)
+    doc.blocks.new("ARRAY_DEFAULT_TARGET")
+    outer = doc.blocks.new("ARRAY_DEFAULT_OUTER")
+    nested = outer.add_blockref(
+        "ARRAY_DEFAULT_TARGET",
+        (1.0, 2.0, 0.0),
+        dxfattribs={
+            "row_count": 1,
+            "column_count": 1,
+            "row_spacing": 0.0,
+            "column_spacing": 0.0,
+        },
+    )
+    fingerprint = __import__(
+        "dxf_text_builder"
+    )._glyph_instance_transform_fingerprint
+    expected = fingerprint([nested])
+    output = tmp_path / f"insert-array-default-{dxf_version}-{mutation}.dxf"
+    doc.saveas(output)
+    reopened = ezdxf.readfile(output)
+    reopened_nested = next(iter(reopened.blocks.get("ARRAY_DEFAULT_OUTER")))
+
+    assert fingerprint([reopened_nested]) == expected
+    setattr(reopened_nested.dxf, mutation, changed_value)
+    assert fingerprint([reopened_nested]) != expected
 
 
 def test_glyph_block_reference_carries_source_color_for_librecad_parent() -> None:
@@ -637,8 +1202,17 @@ def test_r12_glyph_fill_uses_serializable_solid_triangles(tmp_path) -> None:
     block_ref = next(iter(msp))
     block = doc.blocks.get(block_ref.dxf.name)
     block_types = {entity.dxftype() for entity in block}
-    assert "SOLID" in block_types
-    assert "HATCH" not in block_types
+    assert block_types == {"INSERT"}
+    definition_blocks = [
+        doc.blocks.get(entity.dxf.name) for entity in block
+    ]
+    definition_types = {
+        entity.dxftype()
+        for definition in definition_blocks
+        for entity in definition
+    }
+    assert "SOLID" in definition_types
+    assert "HATCH" not in definition_types
     assert result.attempts[-1].evidence["solid_fill_verified"] is True
     assert result.attempts[-1].evidence["solid_fill_entity_type"] == "SOLID"
 
@@ -647,7 +1221,13 @@ def test_r12_glyph_fill_uses_serializable_solid_triangles(tmp_path) -> None:
     reopened = ezdxf.readfile(output)
     reopened_ref = next(iter(reopened.modelspace()))
     reopened_block = reopened.blocks.get(reopened_ref.dxf.name)
-    assert "SOLID" in {entity.dxftype() for entity in reopened_block}
+    assert {entity.dxftype() for entity in reopened_block} == {"INSERT"}
+    reopened_definition_types = {
+        entity.dxftype()
+        for entity in reopened_block
+        for entity in reopened.blocks.get(entity.dxf.name)
+    }
+    assert "SOLID" in reopened_definition_types
 
 
 def test_solid_fill_discards_degenerate_triangulator_artifacts() -> None:

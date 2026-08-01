@@ -13,8 +13,10 @@ import uuid
 
 import ezdxf
 import numpy as np
+from ezdxf import bbox as ezdxf_bbox
 from ezdxf import path as ezdxf_path
 from ezdxf.colors import RGB, aci2rgb, rgb2int
+from ezdxf.disassemble import recursive_decompose
 from ezdxf.units import MM
 
 try:
@@ -38,6 +40,10 @@ from pdfcadcore.primitive_extractor import (
 from dxf_text_builder import (
     TextDeliveryAttempt,
     TextDeliveryResult,
+    _glyph_definition_geometry_fingerprint,
+    _glyph_instance_transform_fingerprint,
+    _glyph_outer_block_structure_fingerprint,
+    _nested_outline_tolerance,
     build_text,
     reset_text_styles,
 )
@@ -264,6 +270,31 @@ def _verify_serialized_text_deliveries(
             )
         main_handles.update(entity_handles)
         entities = [_serialized_entity(doc, handle, source_id) for handle in entity_handles]
+        serialized_modelspace = doc.modelspace()
+        modelspace_handle_counts: Dict[str, int] = {}
+        for modelspace_entity in serialized_modelspace:
+            modelspace_handle = str(modelspace_entity.dxf.handle or "")
+            modelspace_handle_counts[modelspace_handle] = (
+                modelspace_handle_counts.get(modelspace_handle, 0) + 1
+            )
+        modelspace_record = getattr(serialized_modelspace, "block_record", None)
+        expected_modelspace_owner = str(
+            getattr(getattr(modelspace_record, "dxf", None), "handle", "") or ""
+        )
+        for entity in entities:
+            try:
+                actual_owner = str(entity.dxf.get("owner", "") or "")
+            except Exception:
+                actual_owner = ""
+            handle = str(entity.dxf.handle or "")
+            if (
+                modelspace_handle_counts.get(handle, 0) != 1
+                or actual_owner != expected_modelspace_owner
+            ):
+                raise RuntimeError(
+                    f"serialized text delivery {source_id}: "
+                    "main entity ownership changed"
+                )
         actual_types = {entity.dxftype() for entity in entities}
         if not actual_types.issubset(expected_types[representation]):
             raise RuntimeError(
@@ -322,9 +353,14 @@ def _verify_serialized_text_deliveries(
         for handle in support_handles + referenced_handles:
             _serialized_entity(doc, handle, source_id)
 
-        if set(map(str, final_attempt.get("entity_handles") or [])) != set(entity_handles) or set(
-            map(str, final_attempt.get("support_entity_handles") or [])
-        ) != set(support_handles):
+        if (
+            set(map(str, final_attempt.get("entity_handles") or []))
+            != set(entity_handles)
+            or set(map(str, final_attempt.get("support_entity_handles") or []))
+            != set(support_handles)
+            or set(map(str, final_attempt.get("referenced_entity_handles") or []))
+            != set(referenced_handles)
+        ):
             raise RuntimeError(f"serialized text delivery {source_id}: attempt handles disagree")
 
         if representation in {"text", "labels", "3d_text"}:
@@ -410,6 +446,11 @@ def _verify_serialized_text_deliveries(
 
         if representation == "glyphs":
             support_set = set(support_handles)
+            referenced_set = set(referenced_handles)
+            if support_set & referenced_set:
+                raise RuntimeError(
+                    f"serialized text delivery {source_id}: glyph ownership overlaps"
+                )
             for insert in entities:
                 try:
                     block = doc.blocks.get(str(insert.dxf.name))
@@ -417,7 +458,7 @@ def _verify_serialized_text_deliveries(
                     raise RuntimeError(
                         f"serialized text delivery {source_id}: glyph block missing"
                     ) from exc
-                exact_support = {
+                outer_support = {
                     str(value.dxf.handle or "")
                     for value in (
                         *(() if doc.dxfversion == "AC1009" else (block.block_record,)),
@@ -427,9 +468,266 @@ def _verify_serialized_text_deliveries(
                     )
                     if str(value.dxf.handle or "")
                 }
-                if exact_support != support_set:
+                if final_evidence.get("nested_glyph_definitions") is not True:
+                    if outer_support != support_set:
+                        raise RuntimeError(
+                            f"serialized text delivery {source_id}: glyph support mismatch"
+                        )
+                    continue
+
+                if _glyph_outer_block_structure_fingerprint(block) != str(
+                    final_evidence.get("glyph_outer_block_structure_sha256") or ""
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: "
+                        "outer BLOCK structure changed"
+                    )
+                outer_children = list(block)
+                expected_definition_names = {
+                    str(value)
+                    for value in final_evidence.get("glyph_definition_names") or []
+                    if str(value)
+                }
+                expected_definition_fingerprints = {
+                    str(name): str(digest)
+                    for name, digest in dict(
+                        final_evidence.get("glyph_definition_geometry_sha256") or {}
+                    ).items()
+                }
+                actual_definition_names = {
+                    str(child.dxf.name)
+                    for child in outer_children
+                    if child.dxftype() == "INSERT"
+                }
+                expected_instance_count = int(
+                    final_evidence.get("glyph_instance_count") or 0
+                )
+                expected_created_count = int(
+                    final_evidence.get("glyph_definition_created_count") or 0
+                )
+                expected_reused_count = int(
+                    final_evidence.get("glyph_definition_reused_count") or 0
+                )
+                expected_outer_insert = tuple(
+                    float(value)
+                    for value in final_evidence.get("expected_block_insert") or []
+                )
+                actual_outer_insert = tuple(
+                    float(value) for value in tuple(insert.dxf.insert)[:2]
+                )
+                outer_transform_ok = bool(
+                    len(expected_outer_insert) == 2
+                    and all(
+                        math.isclose(left, right, rel_tol=0.0, abs_tol=1e-9)
+                        for left, right in zip(
+                            actual_outer_insert,
+                            expected_outer_insert,
+                            strict=True,
+                        )
+                    )
+                    and math.isclose(
+                        float(insert.dxf.xscale or 1.0),
+                        1.0,
+                        rel_tol=0.0,
+                        abs_tol=1e-12,
+                    )
+                    and math.isclose(
+                        float(insert.dxf.yscale or 1.0),
+                        1.0,
+                        rel_tol=0.0,
+                        abs_tol=1e-12,
+                    )
+                    and math.isclose(
+                        float(insert.dxf.rotation or 0.0),
+                        0.0,
+                        rel_tol=0.0,
+                        abs_tol=1e-12,
+                    )
+                )
+                if _glyph_instance_transform_fingerprint([insert]) != str(
+                    final_evidence.get("glyph_outer_insert_sha256") or ""
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: "
+                        "outer INSERT attributes changed"
+                    )
+                nested_shape_ok = bool(
+                    len(entities) == 1
+                    and outer_children
+                    and outer_transform_ok
+                    and all(child.dxftype() == "INSERT" for child in outer_children)
+                    and len(outer_children) == expected_instance_count
+                    and expected_created_count + expected_reused_count
+                    == expected_instance_count
+                    and actual_definition_names == expected_definition_names
+                    and set(expected_definition_fingerprints)
+                    == expected_definition_names
+                    and str(insert.dxf.name)
+                    == str(final_evidence.get("block_name") or "")
+                    and final_evidence.get("block_insert_verified") is True
+                    and final_evidence.get("outline_bbox_verified") is True
+                    and _glyph_instance_transform_fingerprint(outer_children)
+                    == str(
+                        final_evidence.get("glyph_instance_transform_sha256") or ""
+                    )
+                )
+                if not nested_shape_ok:
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: nested glyph evidence changed"
+                    )
+
+                owned_definitions: set[str] = set()
+                owned_definition_names: set[str] = set()
+                referenced_definitions: set[str] = set()
+                for definition_name in expected_definition_names:
+                    try:
+                        definition = doc.blocks.get(definition_name)
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"serialized text delivery {source_id}: "
+                            "glyph definition missing"
+                        ) from exc
+                    definition_children = list(definition)
+                    if (
+                        not definition_children
+                        or any(
+                            child.dxftype()
+                            not in {"LWPOLYLINE", "POLYLINE", "SOLID"}
+                            for child in definition_children
+                        )
+                        or not any(
+                            child.dxftype() == "SOLID" for child in definition_children
+                        )
+                    ):
+                        raise RuntimeError(
+                            f"serialized text delivery {source_id}: "
+                            "glyph definition geometry changed"
+                        )
+                    if (
+                        _glyph_definition_geometry_fingerprint(definition)
+                        != expected_definition_fingerprints[definition_name]
+                    ):
+                        raise RuntimeError(
+                            f"serialized text delivery {source_id}: "
+                            "glyph definition geometry changed"
+                        )
+                    definition_support = {
+                        str(value.dxf.handle or "")
+                        for value in (
+                            *(
+                                ()
+                                if doc.dxfversion == "AC1009"
+                                else (definition.block_record,)
+                            ),
+                            definition.block,
+                            definition.endblk,
+                            *definition_children,
+                        )
+                        if str(value.dxf.handle or "")
+                    }
+                    if definition_support.issubset(support_set):
+                        owned_definitions.update(definition_support)
+                        owned_definition_names.add(definition_name)
+                    elif definition_support.issubset(referenced_set):
+                        referenced_definitions.update(definition_support)
+                    else:
+                        raise RuntimeError(
+                            f"serialized text delivery {source_id}: "
+                            "glyph definition ownership mismatch"
+                        )
+
+                if len(owned_definition_names) != expected_created_count:
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: "
+                        "glyph creation evidence changed"
+                    )
+                if outer_support | owned_definitions != support_set:
                     raise RuntimeError(
                         f"serialized text delivery {source_id}: glyph support mismatch"
+                    )
+                extra_references = referenced_set - referenced_definitions
+                if any(
+                    _serialized_entity(doc, handle, source_id).dxftype() != "STYLE"
+                    for handle in extra_references
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: "
+                        "unexpected glyph reference"
+                    )
+
+                expected_bbox = tuple(
+                    float(value)
+                    for value in final_evidence.get("expected_outline_bbox") or []
+                )
+                recorded_tolerance = tuple(
+                    float(value)
+                    for value in final_evidence.get(
+                        "outline_bbox_tessellation_tolerance"
+                    )
+                    or []
+                )
+                computed_tolerance = _nested_outline_tolerance(
+                    outer_children,
+                    expected_bbox,
+                )
+                tolerance_evidence_ok = bool(
+                    len(expected_bbox) == 4
+                    and len(recorded_tolerance) == 2
+                    and all(value > 0.0 for value in recorded_tolerance)
+                    and all(
+                        math.isclose(
+                            recorded,
+                            computed,
+                            rel_tol=1e-12,
+                            abs_tol=1e-15,
+                        )
+                        for recorded, computed in zip(
+                            recorded_tolerance,
+                            computed_tolerance,
+                            strict=True,
+                        )
+                    )
+                )
+                if not tolerance_evidence_ok:
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: "
+                        "glyph bbox tolerance evidence changed"
+                    )
+                serialized_outlines = [
+                    entity
+                    for entity in recursive_decompose([insert])
+                    if entity.dxftype() in {"LWPOLYLINE", "POLYLINE"}
+                ]
+                serialized_box = ezdxf_bbox.extents(serialized_outlines)
+                if not serialized_box.has_data:
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: "
+                        "serialized glyph bbox missing"
+                    )
+                serialized_bbox = (
+                    float(serialized_box.extmin.x) - actual_outer_insert[0],
+                    float(serialized_box.extmin.y) - actual_outer_insert[1],
+                    float(serialized_box.extmax.x) - actual_outer_insert[0],
+                    float(serialized_box.extmax.y) - actual_outer_insert[1],
+                )
+                serialized_bbox_errors = tuple(
+                    abs(left - right)
+                    for left, right in zip(
+                        serialized_bbox,
+                        expected_bbox,
+                        strict=True,
+                    )
+                )
+                serialized_bbox_ok = bool(
+                    serialized_bbox_errors[0] <= computed_tolerance[0]
+                    and serialized_bbox_errors[2] <= computed_tolerance[0]
+                    and serialized_bbox_errors[1] <= computed_tolerance[1]
+                    and serialized_bbox_errors[3] <= computed_tolerance[1]
+                )
+                if not serialized_bbox_ok:
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: "
+                        "serialized glyph bbox changed"
                     )
 
         if representation == "raster":

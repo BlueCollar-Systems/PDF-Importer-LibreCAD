@@ -24,6 +24,7 @@ import math
 from pathlib import Path
 import re
 import unicodedata
+import weakref
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import ezdxf
@@ -44,6 +45,26 @@ _MTEXT_THRESHOLD = 120
 _created_styles: Dict[str, str] = {}
 _embedded_cap_height_cache: Dict[str, float] = {}
 _staged_font_verification_cache: Dict[Tuple[str, str, int, int], bool] = {}
+_glyph_block_cache: weakref.WeakKeyDictionary[
+    Any,
+    Dict[Tuple[bool, str], str],
+] = weakref.WeakKeyDictionary()
+_canonical_glyph_path_cache: Dict[
+    Tuple[Tuple[str, ...], str],
+    Optional[Any],
+] = {}
+_scaled_glyph_geometry_cache: Dict[
+    Tuple[Tuple[str, ...], str, float, bool, Tuple[Tuple[str, str], ...]],
+    Tuple[List[Any], str],
+] = {}
+_source_outline_bbox_cache: Dict[
+    Tuple[Any, ...],
+    Optional[Tuple[float, float, float, float]],
+] = {}
+_glyph_definition_fingerprint_cache: weakref.WeakKeyDictionary[
+    Any,
+    Dict[str, str],
+] = weakref.WeakKeyDictionary()
 _style_counter = 0
 
 
@@ -128,6 +149,28 @@ class TextDeliveryResult:
             "failure_reason": self.failure_reason,
             "attempts": [attempt.to_dict() for attempt in self.attempts],
         }
+
+
+@dataclass
+class _NestedGlyphGeometry:
+    """One exact glyph instance backed by a reusable definition block."""
+
+    insertion: Tuple[float, float]
+    xscale: float
+    yscale: float
+    rotation: float
+    paths: List[Any]
+    attribs: Dict[str, Any]
+    fingerprint: str
+
+
+@dataclass
+class _NestedGlyphRun:
+    """Reusable definition geometry plus per-span cache-work evidence."""
+
+    geometries: List[_NestedGlyphGeometry]
+    canonical_created_count: int = 0
+    canonical_reused_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -1400,6 +1443,611 @@ def _solid_fill_verified(fills: Sequence[Any], *, is_r12: bool) -> bool:
     return True
 
 
+def _path_geometry_fingerprint(
+    paths: Sequence[Any],
+    *,
+    is_r12: bool,
+    attribs: Dict[str, Any],
+) -> str:
+    """Return a translation-independent key for one persisted glyph definition."""
+
+    path_records = []
+    for glyph_path in paths:
+        vertices = tuple(
+            (
+                round(float(vertex.x), 12),
+                round(float(vertex.y), 12),
+                round(float(vertex.z), 12),
+            )
+            for vertex in glyph_path.control_vertices()
+        )
+        path_records.append((tuple(glyph_path.command_codes()), vertices))
+    attribute_record = tuple(
+        (str(key), repr(value)) for key, value in sorted(attribs.items())
+    )
+    payload = repr((bool(is_r12), attribute_record, tuple(path_records))).encode(
+        "utf-8"
+    )
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _entity_visual_attribute_record(entity: Any) -> Tuple[Any, ...]:
+    """Normalize common DXF attributes that can hide or restyle geometry."""
+
+    def value(name: str, default: Any) -> Any:
+        try:
+            return entity.dxf.get(name, default)
+        except Exception:
+            return default
+
+    return (
+        int(value("paperspace", 0) or 0),
+        str(value("layer", "0") or "0"),
+        str(value("linetype", "BYLAYER") or "BYLAYER"),
+        int(value("color", 256)),
+        (
+            int(entity.dxf.true_color)
+            if entity.dxf.hasattr("true_color")
+            else None
+        ),
+        (
+            str(entity.dxf.color_name)
+            if entity.dxf.hasattr("color_name")
+            else None
+        ),
+        (
+            int(entity.dxf.transparency)
+            if entity.dxf.hasattr("transparency")
+            else None
+        ),
+        int(value("invisible", 0) or 0),
+        int(value("lineweight", -1)),
+        round(float(value("ltscale", 1.0) or 1.0), 12),
+        str(value("material_handle", "") or ""),
+        str(value("plotstyle_handle", "") or ""),
+        int(value("plotstyle_enum", 0) or 0),
+        str(value("visualstyle_handle", "") or ""),
+        int(value("shadow_mode", 0) or 0),
+    )
+
+
+def _canonical_dxf_fingerprint_value(value: Any) -> Any:
+    """Normalize one persisted DXF namespace value for a stable hash."""
+
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        if math.isnan(value):
+            return ("float", "nan")
+        if math.isinf(value):
+            return ("float", "+inf" if value > 0.0 else "-inf")
+        return round(value, 12)
+    if isinstance(value, bytes):
+        return ("bytes", value.hex())
+    if isinstance(value, dict):
+        return tuple(
+            (
+                str(key),
+                _canonical_dxf_fingerprint_value(item),
+            )
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        )
+    if isinstance(value, (tuple, list)):
+        return tuple(_canonical_dxf_fingerprint_value(item) for item in value)
+    try:
+        return tuple(_canonical_dxf_fingerprint_value(item) for item in value)
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+def _existing_dxf_attribute_record(entity: Any) -> Tuple[Any, ...]:
+    """Bind every present DXF attribute except unstable identity/ownership tags."""
+
+    try:
+        attributes = dict(entity.dxfattribs())
+    except Exception:
+        return ()
+    entity_type = str(entity.dxftype())
+    if entity_type in {"LWPOLYLINE", "POLYLINE"}:
+        # ezdxf's writer materializes the absent, default-equivalent group 70.
+        attributes.setdefault("flags", 0)
+    if entity_type == "POLYLINE":
+        # The R12 reader likewise materializes the absent zero elevation.
+        attributes.setdefault("elevation", (0.0, 0.0, 0.0))
+    if entity_type == "INSERT":
+        # The writer omits explicitly stored INSERT defaults. Canonicalize only
+        # those exact defaults so non-default transforms and arrays stay bound.
+        for name, default in (
+            ("xscale", 1.0),
+            ("yscale", 1.0),
+            ("zscale", 1.0),
+            ("rotation", 0.0),
+            ("row_spacing", 0.0),
+            ("column_spacing", 0.0),
+        ):
+            try:
+                current = float(attributes.get(name, default))
+            except (TypeError, ValueError):
+                continue
+            if current == default:
+                attributes[name] = default
+        for name in ("row_count", "column_count"):
+            try:
+                current = int(attributes.get(name, 1))
+            except (TypeError, ValueError):
+                continue
+            if current == 1:
+                attributes[name] = 1
+    return tuple(
+        (str(name), _canonical_dxf_fingerprint_value(value))
+        for name, value in sorted(attributes.items(), key=lambda pair: str(pair[0]))
+        if str(name) not in {"handle", "owner"}
+    )
+
+
+def _glyph_instance_transform_fingerprint(entities: Sequence[Any]) -> str:
+    """Bind every delivery-relevant INSERT attribute to durable evidence."""
+
+    records = []
+    for entity in entities:
+        if entity.dxftype() != "INSERT":
+            return ""
+        insert = tuple(
+            round(float(value), 12) for value in tuple(entity.dxf.insert)[:3]
+        )
+        records.append(
+            (
+                str(entity.dxf.name),
+                insert,
+                round(float(entity.dxf.xscale or 1.0), 12),
+                round(float(entity.dxf.yscale or 1.0), 12),
+                round(float(entity.dxf.zscale or 1.0), 12),
+                round(float(entity.dxf.rotation or 0.0), 12),
+                tuple(
+                    round(float(value), 12)
+                    for value in tuple(
+                        entity.dxf.get("extrusion", (0.0, 0.0, 1.0))
+                    )
+                ),
+                int(entity.dxf.get("row_count", 1)),
+                int(entity.dxf.get("column_count", 1)),
+                round(float(entity.dxf.get("row_spacing", 0.0) or 0.0), 12),
+                round(float(entity.dxf.get("column_spacing", 0.0) or 0.0), 12),
+                _entity_visual_attribute_record(entity),
+                _existing_dxf_attribute_record(entity),
+                str(entity.dxf.get("layer", "0") or "0"),
+                int(entity.dxf.get("color", 256)),
+                (
+                    int(entity.dxf.true_color)
+                    if entity.dxf.hasattr("true_color")
+                    else None
+                ),
+                (
+                    int(entity.dxf.transparency)
+                    if entity.dxf.hasattr("transparency")
+                    else None
+                ),
+                str(entity.dxf.get("linetype", "BYLAYER") or "BYLAYER"),
+                int(entity.dxf.get("lineweight", -1)),
+                tuple(
+                    (
+                        str(attrib.dxf.get("tag", "") or ""),
+                        str(attrib.dxf.get("text", "") or ""),
+                        tuple(
+                            round(float(value), 12)
+                            for value in tuple(attrib.dxf.insert)
+                        ),
+                        round(float(attrib.dxf.get("height", 0.0) or 0.0), 12),
+                        round(float(attrib.dxf.get("rotation", 0.0) or 0.0), 12),
+                        str(attrib.dxf.get("style", "Standard") or "Standard"),
+                        str(attrib.dxf.get("layer", "0") or "0"),
+                        int(attrib.dxf.get("color", 256)),
+                        (
+                            int(attrib.dxf.true_color)
+                            if attrib.dxf.hasattr("true_color")
+                            else None
+                        ),
+                        _existing_dxf_attribute_record(attrib),
+                    )
+                    for attrib in getattr(entity, "attribs", ())
+                ),
+            )
+        )
+    return hashlib.sha256(repr(tuple(records)).encode("utf-8")).hexdigest()
+
+
+def _rounded_vector(value: Any) -> Tuple[float, ...]:
+    return tuple(round(float(component), 12) for component in tuple(value))
+
+
+def _glyph_block_header_record(block: Any) -> Tuple[Any, ...]:
+    """Normalize rendering/reference-relevant BLOCK/BLOCK_RECORD header state."""
+
+    header = block.block
+    record = block.block_record
+
+    def header_value(name: str, default: Any) -> Any:
+        try:
+            return header.dxf.get(name, default)
+        except Exception:
+            return default
+
+    def record_value(name: str, default: Any) -> Any:
+        try:
+            return record.dxf.get(name, default)
+        except Exception:
+            return default
+
+    layout = str(record_value("layout", "") or "")
+    normalized_layout = "" if layout in {"", "0"} else layout
+    return (
+        str(block.name),
+        str(header_value("name", "") or ""),
+        _rounded_vector(header.dxf.base_point),
+        int(header_value("flags", 0) or 0),
+        str(header_value("xref_path", "") or ""),
+        str(header_value("description", "") or ""),
+        str(header_value("layer", "0") or "0"),
+        int(header_value("paperspace", 0) or 0),
+        str(record_value("name", "") or ""),
+        int(record_value("units", 0) or 0),
+        int(record_value("explode", 1)),
+        int(record_value("scale", 0) or 0),
+        normalized_layout,
+    )
+
+
+def _glyph_outer_block_structure_fingerprint(block: Any) -> str:
+    """Hash the outer BLOCK header and its ordered nested INSERT structures."""
+
+    children = list(block)
+    payload = (
+        _glyph_block_header_record(block),
+        tuple(entity.dxftype() for entity in children),
+        _glyph_instance_transform_fingerprint(children),
+    )
+    return hashlib.sha256(repr(payload).encode("utf-8")).hexdigest()
+
+
+def _glyph_definition_geometry_fingerprint(block: Any) -> str:
+    """Hash ordered persisted geometry and visual attributes without handles."""
+
+    header_record = _glyph_block_header_record(block)
+    records = []
+    for entity in block:
+        entity_type = entity.dxftype()
+        visual_attributes = (
+            _entity_visual_attribute_record(entity),
+            _existing_dxf_attribute_record(entity),
+            str(entity.dxf.get("layer", "0") or "0"),
+            int(entity.dxf.get("color", 256)),
+            (
+                int(entity.dxf.true_color)
+                if entity.dxf.hasattr("true_color")
+                else None
+            ),
+            str(entity.dxf.get("linetype", "BYLAYER") or "BYLAYER"),
+            int(entity.dxf.get("lineweight", -1)),
+            round(float(entity.dxf.get("thickness", 0.0) or 0.0), 12),
+            _rounded_vector(
+                entity.dxf.get("extrusion", (0.0, 0.0, 1.0))
+            ),
+        )
+        if entity_type == "LWPOLYLINE":
+            geometry = (
+                int(entity.dxf.get("flags", 0) or 0),
+                round(float(entity.dxf.get("elevation", 0.0) or 0.0), 12),
+                _rounded_vector(
+                    entity.dxf.get("extrusion", (0.0, 0.0, 1.0))
+                ),
+                tuple(
+                    tuple(round(float(value), 12) for value in point)
+                    for point in entity.get_points(format="xyseb")
+                ),
+            )
+        elif entity_type == "POLYLINE":
+            geometry = (
+                int(entity.dxf.get("flags", 0) or 0),
+                _rounded_vector(
+                    entity.dxf.get("elevation", (0.0, 0.0, 0.0))
+                ),
+                _rounded_vector(
+                    entity.dxf.get("extrusion", (0.0, 0.0, 1.0))
+                ),
+                tuple(
+                    (
+                        _rounded_vector(vertex.dxf.location),
+                        round(float(vertex.dxf.get("start_width", 0.0) or 0.0), 12),
+                        round(float(vertex.dxf.get("end_width", 0.0) or 0.0), 12),
+                        round(float(vertex.dxf.get("bulge", 0.0) or 0.0), 12),
+                        _existing_dxf_attribute_record(vertex),
+                    )
+                    for vertex in entity.vertices
+                ),
+            )
+        elif entity_type == "SOLID":
+            geometry = tuple(
+                _rounded_vector(entity.dxf.get(name, (0.0, 0.0, 0.0)))
+                for name in ("vtx0", "vtx1", "vtx2", "vtx3")
+            )
+        else:
+            geometry = ("unsupported",)
+        records.append((entity_type, visual_attributes, geometry))
+    return hashlib.sha256(
+        repr((header_record, tuple(records))).encode("utf-8")
+    ).hexdigest()
+
+
+def _nested_outline_tolerance(
+    entities: Sequence[Any],
+    expected_bbox: Optional[Sequence[float]],
+) -> Tuple[float, float]:
+    """Project local definition sagitta onto world X/Y plus roundoff."""
+
+    tolerance_x = 0.0
+    tolerance_y = 0.0
+    for entity in entities:
+        if entity.dxftype() != "INSERT":
+            continue
+        xscale = abs(float(entity.dxf.xscale or 1.0))
+        yscale = abs(float(entity.dxf.yscale or 1.0))
+        angle = math.radians(float(entity.dxf.rotation or 0.0))
+        cosine = abs(math.cos(angle))
+        sine = abs(math.sin(angle))
+        tolerance_x = max(
+            tolerance_x,
+            0.01 * (cosine * xscale + sine * yscale),
+        )
+        tolerance_y = max(
+            tolerance_y,
+            0.01 * (sine * xscale + cosine * yscale),
+        )
+    bbox_values = tuple(float(value) for value in expected_bbox or ())
+    magnitude_x = max(
+        (abs(bbox_values[index]) for index in (0, 2) if index < len(bbox_values)),
+        default=1.0,
+    )
+    magnitude_y = max(
+        (abs(bbox_values[index]) for index in (1, 3) if index < len(bbox_values)),
+        default=1.0,
+    )
+    return (
+        tolerance_x + max(1.0, magnitude_x) * 1e-12,
+        tolerance_y + max(1.0, magnitude_y) * 1e-12,
+    )
+
+
+def _path_bbox_tuple(
+    paths: Sequence[Any],
+) -> Optional[Tuple[float, float, float, float]]:
+    box = ezdxf_path.bbox(paths, fast=False)
+    if not box.has_data:
+        return None
+    return (
+        float(box.extmin.x),
+        float(box.extmin.y),
+        float(box.extmax.x),
+        float(box.extmax.y),
+    )
+
+
+def _exact_font_cache_identity(
+    entity: Any,
+    resolution: _ExactFontResolution,
+) -> Tuple[str, ...]:
+    """Identify the exact font program, never only its reported family name."""
+
+    try:
+        style = entity.doc.styles.get(str(entity.dxf.style or ""))
+        style_font = str(style.dxf.get("font", "") or "")
+        style_bigfont = str(style.dxf.get("bigfont", "") or "")
+    except Exception:
+        style_font = ""
+        style_bigfont = ""
+    return (
+        str(resolution.asset_sha256 or resolution.source_sha256 or "").lower(),
+        str(resolution.asset_id or ""),
+        str(resolution.filename or "").replace("\\", "/").lower(),
+        style_font.replace("\\", "/").lower(),
+        style_bigfont.replace("\\", "/").lower(),
+        str(resolution.family or "").lower(),
+        str(resolution.style or "").lower(),
+        str(resolution.resolution_source or "").lower(),
+    )
+
+
+def _source_outline_bbox_key(
+    entity: Any,
+    font_identity: Tuple[str, ...],
+) -> Tuple[Any, ...]:
+    """Capture every source TEXT field that can change text2path geometry."""
+
+    return (
+        font_identity,
+        str(entity.plain_text()),
+        str(entity.font_name()),
+        float(entity.dxf.height or 0.0),
+        float(entity.dxf.get("width", 1.0) or 1.0),
+        float(entity.dxf.get("rotation", 0.0) or 0.0),
+        float(entity.dxf.get("oblique", 0.0) or 0.0),
+        int(entity.dxf.get("halign", 0) or 0),
+        int(entity.dxf.get("valign", 0) or 0),
+        int(entity.dxf.get("text_generation_flag", 0) or 0),
+        tuple(float(value) for value in tuple(entity.dxf.insert)),
+        tuple(
+            float(value)
+            for value in tuple(
+                entity.dxf.get("align_point", (0.0, 0.0, 0.0))
+            )
+        ),
+        tuple(
+            float(value)
+            for value in tuple(entity.dxf.get("extrusion", (0.0, 0.0, 1.0)))
+        ),
+    )
+
+
+def _source_outline_bbox(
+    entity: Any,
+    font_identity: Tuple[str, ...],
+) -> Optional[Tuple[float, float, float, float]]:
+    cache_key = _source_outline_bbox_key(entity, font_identity)
+    if cache_key not in _source_outline_bbox_cache:
+        paths = text2path.make_paths_from_entity(entity)
+        _source_outline_bbox_cache[cache_key] = _path_bbox_tuple(paths)
+    return _source_outline_bbox_cache[cache_key]
+
+
+def _definition_scale_for_transform(xscale: float, yscale: float) -> float:
+    """Keep nested scaling at or below one so tessellation never gets coarser."""
+
+    largest = max(abs(float(xscale)), abs(float(yscale)))
+    if not math.isfinite(largest) or largest <= 0.0:
+        raise ValueError("glyph transform scale is invalid")
+    if largest <= 1.0:
+        return 1.0
+    return float(2 ** math.ceil(math.log2(largest)))
+
+
+def _decompose_nested_transform(matrix: Matrix44) -> Tuple[float, float, float]:
+    """Return DXF INSERT x/y scales and rotation for an orthogonal 2D matrix."""
+
+    x_axis = matrix.transform_direction((1.0, 0.0, 0.0))
+    y_axis = matrix.transform_direction((0.0, 1.0, 0.0))
+    xscale = math.hypot(float(x_axis.x), float(x_axis.y))
+    yscale = math.hypot(float(y_axis.x), float(y_axis.y))
+    if xscale <= 0.0 or yscale <= 0.0:
+        raise ValueError("glyph transform has a zero scale")
+    dot = float(x_axis.x) * float(y_axis.x) + float(x_axis.y) * float(y_axis.y)
+    tolerance = max(1.0, xscale * yscale) * 1e-10
+    if not math.isclose(dot, 0.0, rel_tol=0.0, abs_tol=tolerance):
+        raise ValueError("glyph transform contains unsupported shear")
+    determinant = (
+        float(x_axis.x) * float(y_axis.y)
+        - float(x_axis.y) * float(y_axis.x)
+    )
+    if determinant <= 0.0:
+        raise ValueError("glyph transform contains unsupported reflection")
+    rotation = math.degrees(math.atan2(float(x_axis.y), float(x_axis.x)))
+    return xscale, yscale, rotation
+
+
+def _nested_glyph_geometry_from_entity(
+    entity: Any,
+    *,
+    font_identity: Tuple[str, ...],
+    is_r12: bool,
+    attribs: Dict[str, Any],
+) -> _NestedGlyphRun:
+    """Reproduce ezdxf's text path transform as reusable per-glyph INSERTs."""
+
+    content = str(entity.plain_text())
+    height = _positive_finite(entity.dxf.height)
+    if height is None:
+        raise ValueError("glyph source height is invalid")
+    face = ezdxf_fonts.get_font_face(entity.font_name())
+    font = text2path.get_font(face)
+    font_key = font_identity
+    run_unit_paths = font.text_glyph_paths(content, 1.0, 1.0)
+    canonical_unit_paths: List[Tuple[str, Any]] = []
+    canonical_created_count = 0
+    canonical_reused_count = 0
+    for character in content:
+        canonical_key = (font_key, character)
+        if canonical_key not in _canonical_glyph_path_cache:
+            character_paths = font.text_glyph_paths(character, 1.0, 1.0)
+            _canonical_glyph_path_cache[canonical_key] = (
+                character_paths[0] if character_paths else None
+            )
+            canonical_created_count += 1
+        else:
+            canonical_reused_count += 1
+        canonical_path = _canonical_glyph_path_cache[canonical_key]
+        if canonical_path is not None:
+            canonical_unit_paths.append((character, canonical_path))
+    if len(run_unit_paths) != len(canonical_unit_paths):
+        raise ValueError("glyph path decomposition lost a visible character")
+    if not run_unit_paths:
+        return _NestedGlyphRun(
+            geometries=[],
+            canonical_created_count=canonical_created_count,
+            canonical_reused_count=canonical_reused_count,
+        )
+
+    sized_path = font.text_path_ex(content, height, 1.0)
+    sized_box = ezdxf_path.bbox([sized_path.to_path()], fast=True)
+    measurements = font.measurements.scale_from_baseline(height)
+    alignment = text2path.alignment_transformation(
+        measurements,
+        sized_box,
+        entity.get_align_enum(),
+        entity.fit_length(),
+    )
+    transform = Matrix44.scale(height, height, 1.0)
+    transform *= alignment
+    transform *= entity.wcs_transformation_matrix()
+    xscale, yscale, rotation = _decompose_nested_transform(transform)
+    definition_scale = _definition_scale_for_transform(xscale, yscale)
+    nested_xscale = xscale / definition_scale
+    nested_yscale = yscale / definition_scale
+    attribute_record = tuple(
+        (str(key), repr(value)) for key, value in sorted(attribs.items())
+    )
+
+    geometries: List[_NestedGlyphGeometry] = []
+    for run_path, (character, canonical_path) in zip(
+        run_unit_paths,
+        canonical_unit_paths,
+        strict=True,
+    ):
+        run_start = run_path.start
+        canonical_start = canonical_path.start
+        unit_offset = (
+            float(run_start.x) - float(canonical_start.x),
+            float(run_start.y) - float(canonical_start.y),
+            0.0,
+        )
+        insertion_point = transform.transform(unit_offset)
+        scaled_cache_key = (
+            font_key,
+            character,
+            round(definition_scale, 12),
+            bool(is_r12),
+            attribute_record,
+        )
+        cached_geometry = _scaled_glyph_geometry_cache.get(scaled_cache_key)
+        if cached_geometry is None:
+            definition_path = canonical_path.clone()
+            definition_path.transform_inplace(
+                Matrix44.scale(definition_scale, definition_scale, 1.0)
+            )
+            paths = list(definition_path.to_path().sub_paths())
+            fingerprint = _path_geometry_fingerprint(
+                paths,
+                is_r12=is_r12,
+                attribs=attribs,
+            )
+            _scaled_glyph_geometry_cache[scaled_cache_key] = (paths, fingerprint)
+        else:
+            paths, fingerprint = cached_geometry
+        geometries.append(
+            _NestedGlyphGeometry(
+                insertion=(float(insertion_point.x), float(insertion_point.y)),
+                xscale=nested_xscale,
+                yscale=nested_yscale,
+                rotation=rotation,
+                paths=paths,
+                attribs=dict(attribs),
+                fingerprint=fingerprint,
+            )
+        )
+    return _NestedGlyphRun(
+        geometries=geometries,
+        canonical_created_count=canonical_created_count,
+        canonical_reused_count=canonical_reused_count,
+    )
+
+
 def _unique_block_name(doc: ezdxf.document.Drawing, source_id: str) -> str:
     base = "BCS_GLYPH_" + re.sub(r"[^A-Za-z0-9_]+", "_", source_id).strip("_")
     if not base or base == "BCS_GLYPH_":
@@ -1431,6 +2079,129 @@ def _block_structure_handles(
     ]
 
 
+def _unique_glyph_definition_name(
+    doc: ezdxf.document.Drawing,
+    fingerprint: str,
+) -> str:
+    base = f"BCS_GDEF_{fingerprint[:32]}"
+    candidate = base
+    suffix = 1
+    while candidate in doc.blocks:
+        suffix += 1
+        candidate = f"{base[:245]}_{suffix}"
+    return candidate
+
+
+def _add_nested_glyph_definitions(
+    attempt: TextDeliveryAttempt,
+    outer_block: Any,
+    geometries: Sequence[_NestedGlyphGeometry],
+    *,
+    is_r12: bool,
+    block_attribs: Dict[str, Any],
+) -> Tuple[List[Any], int, int, List[str], List[str], Dict[str, str], int, bool]:
+    """Populate one span block with references to shared glyph definitions."""
+
+    doc = outer_block.doc
+    doc_block_cache = _glyph_block_cache.setdefault(doc, {})
+    doc_fingerprint_cache = _glyph_definition_fingerprint_cache.setdefault(doc, {})
+    definition_blocks: List[Any] = []
+    definition_names: List[str] = []
+    definition_fingerprints: Dict[str, str] = {}
+    created_count = 0
+    reused_count = 0
+    support_handles: List[str] = []
+    for geometry in geometries:
+        cache_key = (bool(is_r12), geometry.fingerprint)
+        block_name = doc_block_cache.get(cache_key, "")
+        if block_name and block_name not in doc.blocks:
+            doc_block_cache.pop(cache_key, None)
+            block_name = ""
+        if block_name:
+            definition = doc.blocks.get(block_name)
+            reused_count += 1
+            if block_name not in attempt.owned_block_names:
+                referenced = _block_structure_handles(
+                    definition,
+                    include_block_record=not is_r12,
+                ) + [_handle(entity) for entity in definition]
+                attempt.referenced_entity_handles.extend(
+                    handle
+                    for handle in referenced
+                    if handle and handle not in attempt.referenced_entity_handles
+                )
+        else:
+            block_name = _unique_glyph_definition_name(doc, geometry.fingerprint)
+            definition = doc.blocks.new(name=block_name)
+            doc_block_cache[cache_key] = block_name
+            attempt.owned_block_names.append(block_name)
+            definition_support = _block_structure_handles(
+                definition,
+                include_block_record=not is_r12,
+            )
+            attempt.created_entity_handles.extend(definition_support)
+            outlines = _to_outline_entities(
+                geometry.paths,
+                is_r12=is_r12,
+                attribs=geometry.attribs,
+            )
+            fills = _to_solid_fill_entities(
+                geometry.paths,
+                is_r12=is_r12,
+                attribs=geometry.attribs,
+            )
+            if not outlines or not _solid_fill_verified(fills, is_r12=is_r12):
+                raise ValueError("shared glyph definition is not visibly complete")
+            for entity in outlines + fills:
+                definition.add_entity(entity)
+                handle = _handle(entity)
+                attempt.created_entity_handles.append(handle)
+                definition_support.append(handle)
+            support_handles.extend(definition_support)
+            created_count += 1
+        definition_blocks.append(definition)
+        definition_names.append(block_name)
+        definition_fingerprint = doc_fingerprint_cache.get(block_name)
+        if not definition_fingerprint:
+            definition_fingerprint = _glyph_definition_geometry_fingerprint(definition)
+            doc_fingerprint_cache[block_name] = definition_fingerprint
+        definition_fingerprints[block_name] = definition_fingerprint
+        nested_attribs = {
+            **block_attribs,
+            "xscale": geometry.xscale,
+            "yscale": geometry.yscale,
+            "rotation": geometry.rotation,
+        }
+        nested_ref = outer_block.add_blockref(
+            block_name,
+            geometry.insertion,
+            dxfattribs=nested_attribs,
+        )
+        nested_handle = _handle(nested_ref)
+        attempt.created_entity_handles.append(nested_handle)
+        support_handles.append(nested_handle)
+    unique_definitions = {
+        name: definition
+        for name, definition in zip(definition_names, definition_blocks, strict=True)
+    }
+    definition_fills = [
+        entity
+        for definition in unique_definitions.values()
+        for entity in definition
+        if entity.dxftype() == "SOLID"
+    ]
+    return (
+        definition_blocks,
+        created_count,
+        reused_count,
+        support_handles,
+        definition_names,
+        definition_fingerprints,
+        len(definition_fills),
+        _solid_fill_verified(definition_fills, is_r12=is_r12),
+    )
+
+
 def _commit_outlines(
     attempt: TextDeliveryAttempt,
     outlines: List[Any],
@@ -1441,15 +2212,19 @@ def _commit_outlines(
     insertion: Tuple[float, float],
     expected_bbox: Optional[Tuple[float, float, float, float]],
     is_r12: bool,
+    glyph_geometries: Optional[Sequence[_NestedGlyphGeometry]] = None,
 ) -> None:
     doc = msp.doc
-    if not outlines:
+    nested_glyphs = bool(glyph_geometries)
+    if not outlines and not nested_glyphs:
         raise ValueError("outline strategy returned zero entities")
-    fill_verified = _solid_fill_verified(fills, is_r12=is_r12)
+    fill_verified = (
+        True if nested_glyphs else _solid_fill_verified(fills, is_r12=is_r12)
+    )
     attempt.evidence.update(
         {
             "solid_fill_entity_type": "SOLID",
-            "solid_fill_entity_count": len(fills),
+            "solid_fill_entity_count": 0 if nested_glyphs else len(fills),
             "solid_fill_verified": fill_verified,
         }
     )
@@ -1479,6 +2254,33 @@ def _commit_outlines(
         )
         return
 
+    if outlines:
+        block_attribs: Dict[str, Any] = {
+            "layer": str(outlines[0].dxf.layer or "0"),
+        }
+        outline_true_color = (
+            int(outlines[0].dxf.true_color)
+            if outlines[0].dxf.hasattr("true_color")
+            else None
+        )
+        outline_color = (
+            int(outlines[0].dxf.color)
+            if outlines[0].dxf.hasattr("color")
+            else None
+        )
+    else:
+        glyph_attribs = dict(glyph_geometries[0].attribs)  # type: ignore[index]
+        block_attribs = {"layer": str(glyph_attribs.get("layer") or "0")}
+        outline_true_color = glyph_attribs.get("true_color")
+        outline_color = glyph_attribs.get("color")
+    # LibreCAD resolves a block reference's display color before child entity
+    # true-color in several export/render paths.  Carry the exact source color
+    # on both the glyph children and their parent INSERT so a blue source glyph
+    # cannot reopen or print as black.
+    if outline_true_color is not None:
+        block_attribs["true_color"] = int(outline_true_color)
+    if outline_color is not None:
+        block_attribs["color"] = int(outline_color)
     block_name = _unique_block_name(doc, attempt.source_id)
     block = doc.blocks.new(name=block_name)
     attempt.owned_block_names.append(block_name)
@@ -1490,20 +2292,44 @@ def _commit_outlines(
         include_block_record=not is_r12,
     )
     attempt.created_entity_handles.extend(block_structure_handles)
-    for entity in outlines + fills:
-        block.add_entity(entity)
-        attempt.created_entity_handles.append(_handle(entity))
-    block_attribs: Dict[str, Any] = {
-        "layer": str(outlines[0].dxf.layer or "0"),
-    }
-    # LibreCAD resolves a block reference's display color before child entity
-    # true-color in several export/render paths.  Carry the exact source color
-    # on both the glyph children and their parent INSERT so a blue source glyph
-    # cannot reopen or print as black.
-    if outlines[0].dxf.hasattr("true_color"):
-        block_attribs["true_color"] = int(outlines[0].dxf.true_color)
-    if outlines[0].dxf.hasattr("color"):
-        block_attribs["color"] = int(outlines[0].dxf.color)
+    definition_blocks: List[Any] = []
+    definition_created_count = 0
+    definition_reused_count = 0
+    definition_names: List[str] = []
+    definition_fingerprints: Dict[str, str] = {}
+    nested_support: List[str] = []
+    definition_fill_count = 0
+    if glyph_geometries:
+        (
+            definition_blocks,
+            definition_created_count,
+            definition_reused_count,
+            nested_support,
+            definition_names,
+            definition_fingerprints,
+            definition_fill_count,
+            fill_verified,
+        ) = _add_nested_glyph_definitions(
+            attempt,
+            block,
+            glyph_geometries,
+            is_r12=is_r12,
+            block_attribs=block_attribs,
+        )
+        attempt.owned_block_names.remove(block_name)
+        attempt.owned_block_names.append(block_name)
+        attempt.evidence.update(
+            {
+                "solid_fill_entity_count": definition_fill_count,
+                "solid_fill_verified": fill_verified,
+            }
+        )
+        if not fill_verified:
+            raise ValueError("shared glyph definitions lost verified solid fill")
+    else:
+        for entity in outlines + fills:
+            block.add_entity(entity)
+            attempt.created_entity_handles.append(_handle(entity))
     block_ref = msp.add_blockref(
         block_name,
         insertion,
@@ -1511,10 +2337,32 @@ def _commit_outlines(
     )
     attempt.created_entity_handles.append(_handle(block_ref))
     attempt.entity_handles = [_handle(block_ref)]
-    attempt.support_entity_handles = block_structure_handles + [
-        _handle(entity) for entity in outlines + fills
-    ]
-    actual_bbox = _bbox_tuple(outlines)
+    attempt.support_entity_handles = block_structure_handles + nested_support
+    if not glyph_geometries:
+        attempt.support_entity_handles.extend(
+            _handle(entity) for entity in outlines + fills
+        )
+    if glyph_geometries:
+        from ezdxf.disassemble import recursive_decompose
+
+        resolved_outlines = [
+            entity
+            for entity in recursive_decompose([block_ref])
+            if entity.dxftype() in {"LWPOLYLINE", "POLYLINE"}
+        ]
+        resolved_bbox = _bbox_tuple(resolved_outlines)
+    else:
+        resolved_bbox = None
+    actual_bbox = (
+        (
+            resolved_bbox[0] - insertion[0],
+            resolved_bbox[1] - insertion[1],
+            resolved_bbox[2] - insertion[0],
+            resolved_bbox[3] - insertion[1],
+        )
+        if resolved_bbox is not None
+        else _bbox_tuple(outlines)
+    )
     actual_insert = tuple(float(value) for value in tuple(block_ref.dxf.insert)[:2])
     insert_verified = all(
         math.isclose(left, right, rel_tol=0.0, abs_tol=1e-12)
@@ -1536,16 +2384,50 @@ def _commit_outlines(
     attempt.type_verified = (
         block_ref.dxftype() == "INSERT"
         and bool(attempt.support_entity_handles)
-        and all(
-            entity.dxftype() in {"LWPOLYLINE", "POLYLINE", "SOLID"}
-            for entity in block
+        and (
+            all(entity.dxftype() == "INSERT" for entity in block)
+            and all(
+                entity.dxftype() in {"LWPOLYLINE", "POLYLINE", "SOLID"}
+                for definition in definition_blocks
+                for entity in definition
+            )
+            if glyph_geometries
+            else all(
+                entity.dxftype() in {"LWPOLYLINE", "POLYLINE", "SOLID"}
+                for entity in block
+            )
         )
-        and _solid_fill_verified(fills, is_r12=is_r12)
+        and fill_verified
+    )
+    bbox_errors = (
+        tuple(
+            abs(float(left) - float(right))
+            for left, right in zip(expected_bbox, actual_bbox, strict=True)
+        )
+        if expected_bbox is not None and actual_bbox is not None
+        else ()
+    )
+    bbox_error = max(bbox_errors, default=math.inf)
+    bbox_tolerance = (
+        _nested_outline_tolerance(list(block), expected_bbox)
+        if glyph_geometries
+        else None
+    )
+    bbox_verified = (
+        bool(
+            len(bbox_errors) == 4
+            and bbox_errors[0] <= bbox_tolerance[0]
+            and bbox_errors[2] <= bbox_tolerance[0]
+            and bbox_errors[1] <= bbox_tolerance[1]
+            and bbox_errors[3] <= bbox_tolerance[1]
+        )
+        if bbox_tolerance is not None
+        else _bbox_matches(expected_bbox, actual_bbox)
     )
     attempt.visual_verified = bool(
         insert_verified
         and insert_color_verified
-        and _bbox_matches(expected_bbox, actual_bbox)
+        and bbox_verified
     )
     attempt.evidence.update(
         {
@@ -1558,6 +2440,32 @@ def _commit_outlines(
             "block_insert_verified": insert_verified,
             "block_insert_color_verified": insert_color_verified,
             "block_insert_true_color": expected_true_color,
+            "nested_glyph_definitions": bool(glyph_geometries),
+            "glyph_instance_count": len(glyph_geometries or []),
+            "glyph_definition_created_count": definition_created_count,
+            "glyph_definition_reused_count": definition_reused_count,
+            "glyph_definition_names": sorted(set(definition_names)),
+            "glyph_definition_geometry_sha256": definition_fingerprints,
+            "glyph_outer_block_structure_sha256": (
+                _glyph_outer_block_structure_fingerprint(block)
+                if glyph_geometries
+                else None
+            ),
+            "glyph_outer_insert_sha256": (
+                _glyph_instance_transform_fingerprint([block_ref])
+                if glyph_geometries
+                else None
+            ),
+            "glyph_instance_transform_sha256": (
+                _glyph_instance_transform_fingerprint(list(block))
+                if glyph_geometries
+                else None
+            ),
+            "outline_bbox_max_abs_error": bbox_error,
+            "outline_bbox_tessellation_tolerance": (
+                list(bbox_tolerance) if bbox_tolerance is not None else None
+            ),
+            "outline_bbox_verified": bbox_verified,
         }
     )
 
@@ -1570,6 +2478,7 @@ def _rollback_outline_attempt(attempt: TextDeliveryAttempt, msp: Any) -> None:
         if entity is not None and getattr(entity, "is_alive", True):
             if _delete_entity(msp, entity):
                 attempt.removed_entity_handles.append(handle)
+    deleted_block_names: set[str] = set()
     for block_name in reversed(attempt.owned_block_names):
         block = doc.blocks.get(block_name)
         child_handles = (
@@ -1578,12 +2487,22 @@ def _rollback_outline_attempt(attempt: TextDeliveryAttempt, msp: Any) -> None:
             else []
         )
         if _delete_block(doc, block_name):
+            deleted_block_names.add(block_name)
             attempt.removed_entity_handles.extend(
                 handle
                 for handle in child_handles
                 if handle in attempt.created_entity_handles
                 and handle not in attempt.removed_entity_handles
             )
+    doc_block_cache = _glyph_block_cache.get(doc)
+    if doc_block_cache is not None:
+        for cache_key, block_name in list(doc_block_cache.items()):
+            if block_name in deleted_block_names:
+                doc_block_cache.pop(cache_key, None)
+    doc_fingerprint_cache = _glyph_definition_fingerprint_cache.get(doc)
+    if doc_fingerprint_cache is not None:
+        for block_name in deleted_block_names:
+            doc_fingerprint_cache.pop(block_name, None)
     # Raw Geometry edges are final modelspace entities, not support entities.
     for handle in list(attempt.created_entity_handles):
         if handle in attempt.removed_entity_handles:
@@ -1683,16 +2602,46 @@ def _attempt_outline_entity(
             raise ValueError(
                 "outline source text failed content, anchor, size, rotation, or width verification"
             )
-        paths = text2path.make_paths_from_entity(source)
-        outlines = _to_outline_entities(
-            paths, is_r12=is_r12, attribs=_outline_attributes(attribs)
+        font_cache_identity = _exact_font_cache_identity(source, font_resolution)
+        glyph_run = (
+            _nested_glyph_geometry_from_entity(
+                source,
+                font_identity=font_cache_identity,
+                is_r12=is_r12,
+                attribs=_outline_attributes(attribs),
+            )
+            if representation == "glyphs"
+            else None
         )
-        fills = _to_solid_fill_entities(
-            paths,
-            is_r12=is_r12,
-            attribs=_outline_attributes(attribs),
-        )
-        if not outlines and str(text_item.text) and not str(text_item.text).strip():
+        glyph_geometries = glyph_run.geometries if glyph_run else None
+        if glyph_run is not None:
+            attempt.evidence.update(
+                {
+                    "canonical_glyph_created_count": (
+                        glyph_run.canonical_created_count
+                    ),
+                    "canonical_glyph_reused_count": (
+                        glyph_run.canonical_reused_count
+                    ),
+                }
+            )
+            expected_bbox = _source_outline_bbox(source, font_cache_identity)
+            outlines: List[Any] = []
+            fills: List[Any] = []
+        else:
+            paths = text2path.make_paths_from_entity(source)
+            outlines = _to_outline_entities(
+                paths,
+                is_r12=is_r12,
+                attribs=_outline_attributes(attribs),
+            )
+            fills = _to_solid_fill_entities(
+                paths,
+                is_r12=is_r12,
+                attribs=_outline_attributes(attribs),
+            )
+            expected_bbox = _bbox_tuple(outlines)
+        if expected_bbox is None and str(text_item.text) and not str(text_item.text).strip():
             attempt.evidence.update(
                 {
                     "source_content_whitespace_only": True,
@@ -1704,7 +2653,17 @@ def _attempt_outline_entity(
             raise _RepresentationImpossible(
                 "whitespace-only source item has no outline ink"
             )
-        expected_bbox = _bbox_tuple(outlines)
+        if expected_bbox is None:
+            attempt.evidence.update(
+                {
+                    "visible_ink_expected": True,
+                    "zero_outline_result_verified": False,
+                    "item_specific_creation_attempted": True,
+                }
+            )
+            raise ValueError(
+                "non-whitespace outline source produced no visible geometry"
+            )
         if _delete_entity(msp, source):
             attempt.removed_entity_handles.append(source_handle)
         source = None
@@ -1720,6 +2679,7 @@ def _attempt_outline_entity(
             insertion=insertion,
             expected_bbox=expected_bbox,
             is_r12=is_r12,
+            glyph_geometries=glyph_geometries,
         )
         if not attempt.type_verified:
             raise ValueError("outline delivery failed type verification")
@@ -2112,6 +3072,11 @@ def reset_text_styles() -> None:
     _created_styles.clear()
     _embedded_cap_height_cache.clear()
     _staged_font_verification_cache.clear()
+    _glyph_block_cache.clear()
+    _canonical_glyph_path_cache.clear()
+    _scaled_glyph_geometry_cache.clear()
+    _source_outline_bbox_cache.clear()
+    _glyph_definition_fingerprint_cache.clear()
     _style_counter = 0
 
 

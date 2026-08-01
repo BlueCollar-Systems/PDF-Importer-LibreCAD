@@ -1528,13 +1528,19 @@ class TestDxfPipeline(unittest.TestCase):
         self.assertGreater(len(glyph_refs), 0)
         for glyph_ref in glyph_refs:
             block = dxf.blocks.get(glyph_ref.dxf.name)
+            nested_refs = list(block)
+            self.assertGreater(len(nested_refs), 0)
+            self.assertTrue(all(entity.dxftype() == "INSERT" for entity in nested_refs))
+            definition_entities = [
+                entity
+                for nested_ref in nested_refs
+                for entity in dxf.blocks.get(nested_ref.dxf.name)
+            ]
+            definition_types = {entity.dxftype() for entity in definition_entities}
             self.assertTrue(
-                all(
-                    entity.dxftype() in {"LWPOLYLINE", "POLYLINE", "SOLID"}
-                    for entity in block
-                )
+                definition_types <= {"LWPOLYLINE", "POLYLINE", "SOLID"}
             )
-            self.assertIn("SOLID", {entity.dxftype() for entity in block})
+            self.assertIn("SOLID", definition_types)
 
     def test_dxf_version_override(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
