@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# dependency_manager.py — PyMuPDF / ezdxf / FontTools dependency management
+# dependency_manager.py — complete runtime dependency management
 # Copyright (c) 2024-2026 BlueCollar Systems — BUILT. NOT BOUGHT.
 from __future__ import annotations
 
@@ -61,6 +61,16 @@ def check_fonttools() -> bool:
         return False
 
 
+def check_pillow() -> bool:
+    ensure_lib_path()
+    try:
+        from PIL import Image  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def install_runtime_deps() -> bool:
     lib_dir = get_lib_dir()
     parent = lib_dir.parent.resolve()
@@ -108,7 +118,7 @@ def install_runtime_deps() -> bool:
             timeout=120,
         )
         (stage_dir / "THIRD_PARTY_NOTICES.txt").write_text(
-            "Vendored runtime: PyMuPDF, ezdxf, FontTools\n",
+            "Vendored runtime: PyMuPDF, ezdxf, FontTools, Matplotlib, Pillow\n",
             encoding="utf-8",
         )
 
@@ -156,13 +166,15 @@ def print_diagnostics() -> int:
     pymupdf_ok = check_pymupdf()
     ezdxf_ok = check_ezdxf()
     fonttools_ok = check_fonttools()
+    pillow_ok = check_pillow()
     print("[LibreCAD PDF Importer] --- Dependency Diagnostics ---")
     print(f"Python: {sys.version}")
     print(f"Lib dir: {get_lib_dir()}")
     print(f"PyMuPDF: {'OK' if pymupdf_ok else 'MISSING'}")
     print(f"ezdxf: {'OK' if ezdxf_ok else 'MISSING'}")
     print(f"FontTools: {'OK' if fonttools_ok else 'MISSING'}")
-    if not (pymupdf_ok and ezdxf_ok and fonttools_ok):
+    print(f"Pillow: {'OK' if pillow_ok else 'MISSING'}")
+    if not (pymupdf_ok and ezdxf_ok and fonttools_ok and pillow_ok):
         print("Install with:")
         requirements = " ".join(
             f'"{requirement}"' for requirement in load_runtime_requirements(PROJECT_ROOT)

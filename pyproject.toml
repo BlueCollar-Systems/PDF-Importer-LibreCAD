@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pdf2dxf"
-version = "1.0.70"
+version = "1.0.71"
 description = "PDF to DXF converter for LibreCAD, AutoCAD, DraftSight, and QCAD"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -16,7 +16,8 @@ dependencies = [
   "PyMuPDF==1.28.0",
   "ezdxf==1.4.4",
   "fonttools==4.63.0",
-  "matplotlib==3.11.1"
+  "matplotlib==3.11.1",
+  "Pillow==12.3.0"
 ]
 
 [project.scripts]

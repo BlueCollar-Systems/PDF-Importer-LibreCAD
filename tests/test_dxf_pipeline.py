@@ -531,6 +531,75 @@ class TestDxfPipeline(unittest.TestCase):
             expected_sha,
         )
 
+    def test_export_crops_and_mattes_alpha_images_for_librecad_save_stability(self) -> None:
+        source = self.tmp_path / "alpha-crop.pdf"
+        pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 6, 6), 1)
+        for y in range(6):
+            for x in range(6):
+                pix.set_pixel(x, y, (0, 0, 0, 0))
+        for y in range(1, 3):
+            for x in range(2, 4):
+                pix.set_pixel(x, y, (255, 0, 0, 255))
+        document = fitz.open()
+        page = document.new_page(width=100, height=100)
+        page.insert_image(fitz.Rect(10, 20, 70, 80), stream=pix.tobytes("png"))
+        document.save(source)
+        document.close()
+
+        run = run_import(str(source), mode="vector", overrides={"pages": "1"})
+        placement = run.extraction.pages[0].images[0]
+        exact_alpha_asset = self.tmp_path / "exact-alpha-source.png"
+        exact_alpha_asset.write_bytes(pix.tobytes("png"))
+        placement.path = str(exact_alpha_asset)
+        export_to_dxf(
+            run.extraction,
+            str(self.dxf_path),
+            DxfExportOptions(include_text=False, include_images=True),
+        )
+
+        drawing = ezdxf.readfile(self.dxf_path)
+        staged_images = []
+        for candidate in drawing.modelspace().query("IMAGE"):
+            candidate_def = drawing.entitydb.get(str(candidate.dxf.image_def_handle))
+            candidate_size = tuple(round(value) for value in candidate_def.dxf.image_size)
+            if candidate_size[:2] == (2, 2):
+                staged_images.append((candidate, candidate_def))
+        self.assertEqual(len(staged_images), 1)
+        image, image_def = staged_images[0]
+        staged_pixmap = fitz.Pixmap(str(image_def.dxf.filename))
+        self.assertFalse(staged_pixmap.alpha)
+        self.assertEqual((staged_pixmap.width, staged_pixmap.height), (2, 2))
+        self.assertEqual(staged_pixmap.pixel(0, 0), (255, 0, 0))
+        self.assertEqual(staged_pixmap.pixel(1, 1), (255, 0, 0))
+        expected_insert = (
+            float(placement.x_mm) + float(placement.width_mm) * (2.0 / 6.0),
+            float(placement.y_mm) + float(placement.height_mm) * (3.0 / 6.0),
+        )
+        expected_size = (
+            float(placement.width_mm) * (2.0 / 6.0),
+            float(placement.height_mm) * (2.0 / 6.0),
+        )
+        self.assertTrue(
+            all(
+                math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-9)
+                for actual, expected in zip(
+                    tuple(image.dxf.insert)[:2], expected_insert, strict=True
+                )
+            )
+        )
+        actual_size = (
+            math.hypot(image.dxf.u_pixel.x, image.dxf.u_pixel.y)
+            * float(image.dxf.image_size.x),
+            math.hypot(image.dxf.v_pixel.x, image.dxf.v_pixel.y)
+            * float(image.dxf.image_size.y),
+        )
+        self.assertTrue(
+            all(
+                math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-9)
+                for actual, expected in zip(actual_size, expected_size, strict=True)
+            )
+        )
+
     def test_import_run_close_reclaims_only_importer_owned_image_workspace(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
         source_asset = Path(run.extraction.pages[0].images[0].path)

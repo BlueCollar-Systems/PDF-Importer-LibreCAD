@@ -103,7 +103,7 @@ def test_supplied_pdf_locator_visible_skips_when_fixture_is_unavailable(
         _supplied_pdf("not-present.pdf")
 
 
-def test_every_runtime_distribution_path_includes_fonttools() -> None:
+def test_every_runtime_distribution_path_includes_image_and_font_dependencies() -> None:
     standalone = (ROOT / "build_standalone.py").read_text(encoding="utf-8")
     portable = (ROOT / "build_windows_portable.py").read_text(encoding="utf-8")
     requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
@@ -116,6 +116,7 @@ def test_every_runtime_distribution_path_includes_fonttools() -> None:
 
     assert "fonttools==4.63.0" in requirements.lower()
     assert "matplotlib==3.11.1" in requirements.lower()
+    assert "pillow==12.3.0" in requirements.lower()
     assert "create_release_venv(ROOT, VENV_ROOT)" in standalone
     assert '"--collect-all", "fonttools"' in standalone.lower()
     assert '"--copy-metadata", "fonttools"' in standalone.lower()
@@ -124,6 +125,7 @@ def test_every_runtime_distribution_path_includes_fonttools() -> None:
     assert 'copy_metadata = ["fonttools"]' in portable.lower()
     assert "load_runtime_requirements(PROJECT_ROOT)" in dependencies
     assert "def check_fonttools()" in dependencies
+    assert "def check_pillow()" in dependencies
     assert "preflight_check.py" in fetch_script
     assert "--install" in fetch_script
 

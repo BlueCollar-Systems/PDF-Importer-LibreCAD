@@ -26,7 +26,7 @@ Portable Windows ZIP smoke-tested at release; full GUI verification is manual.
 | **Python 3.12.10** | Portable bundle; source/dev requires Python 3.12+ |
 | Ruby | Not used |
 
-Release portable ZIP bundles Python + PyMuPDF + ezdxf + FontTools + Matplotlib — no system Python required.
+Release portable ZIP bundles Python + PyMuPDF + ezdxf + FontTools + Matplotlib + Pillow — no system Python required.
 
 ## Bundled dependencies
 
@@ -37,6 +37,7 @@ Release portable ZIP bundles Python + PyMuPDF + ezdxf + FontTools + Matplotlib �
 | ezdxf 1.4.4 | ✅ Bundled | `preflight_check.py --install` |
 | FontTools 4.63.0 | ✅ Bundled | `preflight_check.py --install` |
 | Matplotlib 3.11.1 | ✅ Bundled | `preflight_check.py --install` |
+| Pillow 12.3.0 | ✅ Bundled | `preflight_check.py --install` |
 | pdfcadcore | ✅ Bundled | Same |
 
 ## Legacy hardware notes

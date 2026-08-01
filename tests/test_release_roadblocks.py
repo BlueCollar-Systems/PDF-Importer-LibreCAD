@@ -48,6 +48,14 @@ def test_declared_ezdxf_floor_matches_the_production_font_api() -> None:
     assert '"ezdxf==1.4.4"' in project
 
 
+def test_pillow_is_an_exact_direct_runtime_dependency() -> None:
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert "Pillow==12.3.0" in requirements
+    assert '"Pillow==12.3.0"' in project
+
+
 def test_runtime_requirements_have_one_source_of_truth() -> None:
     from runtime_requirements import load_runtime_requirements
 

@@ -2,3 +2,4 @@ PyMuPDF==1.28.0
 ezdxf==1.4.4
 fonttools==4.63.0
 matplotlib==3.11.1
+Pillow==12.3.0

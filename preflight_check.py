@@ -23,7 +23,7 @@ def main() -> int:
         "--install",
         action="store_true",
         help=(
-            "Install PyMuPDF, ezdxf, FontTools, and Matplotlib into ./lib "
+            "Install PyMuPDF, ezdxf, FontTools, Matplotlib, and Pillow into ./lib "
             "(no admin required)"
         ),
     )

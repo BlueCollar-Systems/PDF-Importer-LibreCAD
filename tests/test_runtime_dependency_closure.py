@@ -78,6 +78,7 @@ def test_dependency_installer_requests_and_verifies_fonttools(
 
     assert dependency_manager.install_runtime_deps() is True
     assert 'fonttools==4.63.0' in commands[0]
+    assert 'Pillow==12.3.0' in commands[0]
     assert commands[1][1:3] == ["-I", "-S"]
     assert not list(tmp_path.glob("lib.stage.*"))
     assert not list(tmp_path.glob("lib.backup.*"))
@@ -115,11 +116,27 @@ def test_dependency_diagnostics_fail_closed_when_fonttools_is_missing(
     monkeypatch.setattr(dependency_manager, "check_pymupdf", lambda: True)
     monkeypatch.setattr(dependency_manager, "check_ezdxf", lambda: True)
     monkeypatch.setattr(dependency_manager, "check_fonttools", lambda: False)
+    monkeypatch.setattr(dependency_manager, "check_pillow", lambda: True)
 
     assert dependency_manager.print_diagnostics() == 1
     output = capsys.readouterr().out
     assert "FontTools: MISSING" in output
     assert '"fonttools==4.63.0"' in output
+
+
+def test_dependency_diagnostics_fail_closed_when_pillow_is_missing(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(dependency_manager, "check_pymupdf", lambda: True)
+    monkeypatch.setattr(dependency_manager, "check_ezdxf", lambda: True)
+    monkeypatch.setattr(dependency_manager, "check_fonttools", lambda: True)
+    monkeypatch.setattr(dependency_manager, "check_pillow", lambda: False)
+
+    assert dependency_manager.print_diagnostics() == 1
+    output = capsys.readouterr().out
+    assert "Pillow: MISSING" in output
+    assert '"Pillow==12.3.0"' in output
 
 
 def test_dependency_install_timeout_returns_a_clean_failure(
@@ -271,6 +288,7 @@ def test_runtime_probe_imports_the_complete_ezdxf_text_production_surface() -> N
     assert "from ezdxf.fonts import fonts as ezdxf_fonts" in source
     assert "from ezdxf.fonts.font_face import FontFace" in source
     assert "Matplotlib" in source
+    assert "from PIL import Image" in source
 
     dependency_manager_source = (
         Path(__file__).resolve().parents[1]

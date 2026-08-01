@@ -3,16 +3,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import hashlib
+from io import BytesIO
 import math
 from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
+import warnings
 
 import ezdxf
 from ezdxf import path as ezdxf_path
 from ezdxf.colors import RGB, aci2rgb, rgb2int
 from ezdxf.units import MM
+from PIL import Image
 try:
     import pymupdf as fitz  # PyMuPDF >= 1.24 preferred name
 except ImportError:
@@ -497,6 +500,8 @@ class _StagedImageAsset:
     path: Path
     sha256: str
     size_px: Tuple[int, int]
+    source_size_px: Tuple[int, int]
+    crop_box_px: Tuple[int, int, int, int]
 
 
 @dataclass(frozen=True)
@@ -601,6 +606,48 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _host_safe_image_asset(
+    source_path: Path,
+    content: bytes,
+    size_px: Tuple[int, int],
+) -> Tuple[bytes, Tuple[int, int], Tuple[int, int, int, int]]:
+    """Crop alpha margins and matte pixels so LibreCAD saves cannot expose black."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+        with Image.open(BytesIO(content)) as source:
+            source.load()
+            actual_size = (int(source.width), int(source.height))
+            if actual_size != size_px:
+                raise RuntimeError(
+                    f"decoded image dimensions changed: {source_path}: "
+                    f"{actual_size} != {size_px}"
+                )
+            has_alpha = "A" in source.getbands() or "transparency" in source.info
+            full_box = (0, 0, size_px[0], size_px[1])
+            if not has_alpha:
+                return content, size_px, full_box
+            # Avoid duplicating hundreds of megabytes for large RGBA plan sheets.
+            rgba = source if source.mode == "RGBA" else source.convert("RGBA")
+            alpha = rgba.getchannel("A")
+            alpha_min, _alpha_max = alpha.getextrema()
+            if int(alpha_min) == 255:
+                return content, size_px, full_box
+            crop_box = alpha.getbbox()
+            if crop_box is None:
+                raise RuntimeError(
+                    f"fully transparent image asset cannot be host-safely serialized: {source_path}"
+                )
+            cropped = rgba.crop(crop_box)
+            matte = Image.new("RGB", cropped.size, (255, 255, 255))
+            matte.paste(cropped, mask=cropped.getchannel("A"))
+            output = BytesIO()
+            matte.save(output, format="PNG", compress_level=9, optimize=False)
+            prepared = output.getvalue()
+            if not prepared.startswith(b"\x89PNG\r\n\x1a\n"):
+                raise RuntimeError(f"host-safe image encoding failed: {source_path}")
+            return prepared, (int(cropped.width), int(cropped.height)), crop_box
+
+
 def _stage_image_assets(
     extraction: DocumentExtraction,
     asset_root: Path,
@@ -626,7 +673,7 @@ def _stage_image_assets(
     transaction.register_directory(asset_root)
     transaction.register_directory(image_root)
 
-    staged_by_digest: Dict[str, _StagedImageAsset] = {}
+    staged_by_digest: Dict[str, Path] = {}
     staged_by_source: Dict[str, _StagedImageAsset] = {}
     for source_key in source_paths:
         source_path = Path(source_key)
@@ -640,31 +687,36 @@ def _stage_image_assets(
         if not content:
             raise RuntimeError(f"image asset is empty: {source_path}")
 
-        digest = hashlib.sha256(content).hexdigest()
-        staged = staged_by_digest.get(digest)
-        if staged is None:
-            if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        prepared, prepared_size_px, crop_box_px = _host_safe_image_asset(
+            source_path, content, size_px
+        )
+        digest = hashlib.sha256(prepared).hexdigest()
+        staged_path = staged_by_digest.get(digest)
+        if staged_path is None:
+            if prepared.startswith(b"\x89PNG\r\n\x1a\n"):
                 suffix = ".png"
-            elif content.startswith(b"\xff\xd8\xff"):
+            elif prepared.startswith(b"\xff\xd8\xff"):
                 suffix = ".jpg"
             else:
                 suffix = source_path.suffix.lower()
                 if suffix not in {".bmp", ".gif", ".tif", ".tiff"}:
                     suffix = ".img"
             staged_path = image_root / f"{digest}{suffix}"
-            atomic_write_bytes(staged_path, content)
+            atomic_write_bytes(staged_path, prepared)
             transaction.register_file(staged_path)
             if hashlib.sha256(staged_path.read_bytes()).hexdigest() != digest:
                 raise RuntimeError(f"staged image asset hash mismatch: {staged_path}")
-            if _image_size_pixels(str(staged_path)) != size_px:
+            if _image_size_pixels(str(staged_path)) != prepared_size_px:
                 raise RuntimeError(f"staged image asset dimensions changed: {staged_path}")
-            staged = _StagedImageAsset(
-                source_path=source_path,
-                path=staged_path,
-                sha256=digest,
-                size_px=size_px,
-            )
-            staged_by_digest[digest] = staged
+            staged_by_digest[digest] = staged_path
+        staged = _StagedImageAsset(
+            source_path=source_path,
+            path=staged_path,
+            sha256=digest,
+            size_px=prepared_size_px,
+            source_size_px=size_px,
+            crop_box_px=crop_box_px,
+        )
         staged_by_source[source_key] = staged
 
     return staged_by_source
@@ -1615,10 +1667,21 @@ def _export_to_dxf_impl(
 
                 layer = _layer_name(page.page_data.page_number, "IMAGES", None, opts)
                 _ensure_layer(doc, layer, None)
-                insert = (float(placement.x_mm), float(placement.y_mm) + dy)
+                source_width_px, source_height_px = staged_asset.source_size_px
+                crop_left, crop_top, crop_right, crop_bottom = staged_asset.crop_box_px
+                unit_width_per_pixel = float(placement.width_mm) / float(source_width_px)
+                unit_height_per_pixel = float(placement.height_mm) / float(
+                    source_height_px
+                )
+                insert = (
+                    float(placement.x_mm) + crop_left * unit_width_per_pixel,
+                    float(placement.y_mm)
+                    + dy
+                    + (source_height_px - crop_bottom) * unit_height_per_pixel,
+                )
                 size_in_units = (
-                    float(placement.width_mm),
-                    float(placement.height_mm),
+                    (crop_right - crop_left) * unit_width_per_pixel,
+                    (crop_bottom - crop_top) * unit_height_per_pixel,
                 )
                 image = msp.add_image(
                     image_def,

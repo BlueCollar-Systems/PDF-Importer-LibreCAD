@@ -2,7 +2,7 @@
 
 **BlueCollar Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.70](https://img.shields.io/badge/Version-1.0.70-blue.svg)
+![Version: 1.0.71](https://img.shields.io/badge/Version-1.0.71-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
@@ -39,7 +39,7 @@ See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the full host version matrix (L
 
 - Windows release installer or portable ZIP: no separate Python or pip packages.
 - Source/dev install: Python 3.12+, PyMuPDF 1.28.0, ezdxf 1.4.4,
-  FontTools 4.63.0, and Matplotlib 3.11.1. All are free software dependencies.
+  FontTools 4.63.0, Matplotlib 3.11.1, and Pillow 12.3.0. All are free software dependencies.
 
 Release binaries are built with exact CPython 3.12.10 AMD64 and hash-locked
 wheel closures. The builder removes only pip `RECORD` rows for generated venv
@@ -55,7 +55,7 @@ Download `LibreCAD-PDF-Importer-Windows-Portable_vX.Y.Z.zip` from
 [Releases](https://github.com/BlueCollar-Systems/PDF-Importer-LibreCAD/releases),
 extract it anywhere you can write files, then run `lcpdf-gui.exe`.
 
-The portable ZIP bundles Python, PyMuPDF, ezdxf, FontTools, Matplotlib, pdfcadcore, the GUI, and the
+The portable ZIP bundles Python, PyMuPDF, ezdxf, FontTools, Matplotlib, Pillow, pdfcadcore, the GUI, and the
 CLI launchers. No system Python, pip, or administrator rights are required.
 
 **Offline install:** The portable ZIP and published installer work without internet after download. Source ZIP dev installs may run `preflight_check.py --install` once if `lib/` is empty (requires network for that step only).
@@ -82,7 +82,7 @@ python pdf2dxf.py --gui
 ```
 
 The source ZIP requires **Python 3.12+** once; `preflight_check.py --install`
-downloads PyMuPDF, ezdxf, FontTools, and Matplotlib into a private `./lib` folder with no
+downloads PyMuPDF, ezdxf, FontTools, Matplotlib, and Pillow into a private `./lib` folder with no
 admin rights.
 
 ### From source
@@ -94,7 +94,7 @@ pip install -e .
 
 Source installs are intended for development. Use `python preflight_check.py`
 to check dependencies, or `python preflight_check.py --install` to install
-PyMuPDF, ezdxf, FontTools, and Matplotlib into this checkout's private `lib/` folder
+PyMuPDF, ezdxf, FontTools, Matplotlib, and Pillow into this checkout's private `lib/` folder
 without admin rights.
 
 Optional: install the native LibreCAD menu plugin (Windows):
