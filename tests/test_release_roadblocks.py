@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -12,6 +14,7 @@ import pytest
 
 import build_standalone
 import build_windows_portable
+import deterministic_zip
 from scripts import smoke_portable_zip
 
 
@@ -38,11 +41,10 @@ def test_declared_ezdxf_floor_matches_the_production_font_api() -> None:
     requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
     project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
-    # ezdxf 1.0.x has ezdxf.tools.fonts only.  Production imports the
-    # ezdxf.fonts package introduced in 1.1.0, so every installer must reject
-    # the older, import-incompatible runtime before conversion starts.
-    assert "ezdxf>=1.1" in requirements
-    assert '"ezdxf>=1.1"' in project
+    # ezdxf 1.0.x has ezdxf.tools.fonts only. The accepted runtime is exact so
+    # source installs and portable builds cannot silently resolve different APIs.
+    assert "ezdxf==1.4.4" in requirements
+    assert '"ezdxf==1.4.4"' in project
 
 
 def test_runtime_requirements_have_one_source_of_truth() -> None:
@@ -54,8 +56,100 @@ def test_runtime_requirements_have_one_source_of_truth() -> None:
         if line.strip() and not line.lstrip().startswith("#")
     )
     assert load_runtime_requirements(ROOT) == expected
-    assert build_standalone.BUILD_REQUIREMENTS == ["pyinstaller", *expected]
-    assert build_windows_portable.BUILD_REQUIREMENTS == ["pyinstaller", *expected]
+    assert all("==" in requirement for requirement in expected)
+
+
+def test_release_build_is_hash_locked_and_ci_hash_verifies_before_publish() -> None:
+    lock_path = ROOT / "requirements-release-win-py312.lock"
+    lock = lock_path.read_text(encoding="utf-8")
+    requirements = [
+        line.strip()
+        for line in lock.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert len(requirements) == 21
+    assert all("==" in requirement and "--hash=sha256:" in requirement for requirement in requirements)
+    project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'requires-python = ">=3.12"' in project
+
+    contract = (ROOT / "release_build_contract.py").read_text(encoding="utf-8")
+    assert 'EXPECTED_PYTHON_VERSION = (3, 12, 10)' in contract
+    assert 'SOURCE_DATE_EPOCH = "315532800"' in contract
+    assert 'PYTHONHASHSEED = "0"' in contract
+    assert '"--require-hashes"' in contract
+    assert '"--only-binary=:all:"' in contract
+
+    for builder_name in ("build_windows_portable.py", "build_standalone.py"):
+        builder = (ROOT / builder_name).read_text(encoding="utf-8")
+        assert "create_release_venv" in builder
+        assert "release_environment" in builder
+
+    workflow = (ROOT / ".github" / "workflows" / "auto-release.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "runs-on: windows-2025" in workflow
+    assert 'python-version: "3.12.10"' in workflow
+    assert "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd" in workflow
+    assert "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405" in workflow
+    verify = workflow.index("scripts/verify_release_artifacts.py")
+    publish = workflow.index("gh release create")
+    assert verify < publish
+
+
+def test_release_artifact_manifest_verifier_rejects_byte_mutation(tmp_path) -> None:
+    from release_build_contract import (
+        EXPECTED_ARCHITECTURE,
+        EXPECTED_PYTHON_VERSION,
+        PYTHONHASHSEED,
+        SOURCE_DATE_EPOCH,
+    )
+    from scripts.verify_release_artifacts import (
+        ArtifactVerificationError,
+        REQUIRED_ARTIFACTS,
+        verify_release_artifacts,
+    )
+
+    lock = tmp_path / "requirements-release-win-py312.lock"
+    lock.write_text("locked\n", encoding="utf-8")
+    artifacts = {}
+    for index, name in enumerate(REQUIRED_ARTIFACTS, start=1):
+        path = tmp_path / f"{name}.bin"
+        path.write_bytes(f"artifact-{index}".encode())
+        artifacts[name] = {
+            "path": path.name,
+            "size_bytes": path.stat().st_size,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+    manifest = {
+        "schema": "bcs.release_artifacts/1.0",
+        "version": "9.9.9",
+        "build_contract": {
+            "python": ".".join(map(str, EXPECTED_PYTHON_VERSION)),
+            "architecture": EXPECTED_ARCHITECTURE,
+            "source_date_epoch": SOURCE_DATE_EPOCH,
+            "pythonhashseed": PYTHONHASHSEED,
+            "requirements_lock": lock.name,
+            "requirements_lock_sha256": hashlib.sha256(lock.read_bytes()).hexdigest(),
+        },
+        "artifacts": artifacts,
+    }
+    manifest_path = tmp_path / "accepted-artifacts.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    verified = verify_release_artifacts(
+        manifest_path=manifest_path,
+        root=tmp_path,
+        expected_version="9.9.9",
+    )
+    assert set(verified) == set(REQUIRED_ARTIFACTS)
+
+    (tmp_path / artifacts["portable_zip"]["path"]).write_bytes(b"mutated")
+    with pytest.raises(ArtifactVerificationError, match="portable_zip.*SHA-256"):
+        verify_release_artifacts(
+            manifest_path=manifest_path,
+            root=tmp_path,
+            expected_version="9.9.9",
+        )
 
 
 def test_powershell_fetcher_delegates_to_transactional_python_preflight() -> None:
@@ -210,3 +304,75 @@ def test_release_workflow_smokes_the_built_source_and_portable_archives() -> Non
     )
     assert "--source-zip" in smoke_line
     assert "LibreCAD-PDF-Importer_v*.zip" in smoke_line
+
+
+def test_source_and_portable_archives_are_mtime_independent(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pdf2dxf.py").write_text('__version__ = "9.9.9"\n', encoding="utf-8")
+    (project / "payload.py").write_text("VALUE = 1\n", encoding="utf-8")
+    package = project / "pdfcadcore"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    output = tmp_path / "source-dist"
+    monkeypatch.setattr(__import__("build_release"), "_PROJECT_ROOT", project)
+
+    source_first = __import__("build_release").build(str(output)).read_bytes()
+    os.utime(project / "payload.py", (2_000_000_000, 2_000_000_000))
+    os.utime(package / "__init__.py", (1_000_000_000, 1_000_000_000))
+    source_second = __import__("build_release").build(str(output)).read_bytes()
+    assert source_first == source_second
+
+    clean_checkout = tmp_path / "clean-checkout"
+    clean_checkout.mkdir()
+    (clean_checkout / "pdf2dxf.py").write_text(
+        '__version__ = "9.9.9"\n', encoding="utf-8"
+    )
+    (clean_checkout / "payload.py").write_text("VALUE = 1\n", encoding="utf-8")
+    clean_package = clean_checkout / "pdfcadcore"
+    clean_package.mkdir()
+    (clean_package / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(__import__("build_release"), "_PROJECT_ROOT", clean_checkout)
+    clean_source = __import__("build_release").build(
+        str(tmp_path / "clean-dist")
+    ).read_bytes()
+    assert source_first == clean_source
+
+    portable_root = tmp_path / "portable"
+    portable_root.mkdir()
+    (portable_root / "pdf2dxf.exe").write_bytes(b"portable exe")
+    (portable_root / "NOTICE.txt").write_text("notice\n", encoding="utf-8")
+    portable_zip = tmp_path / "portable.zip"
+    build_windows_portable.archive_portable(portable_root, portable_zip)
+    portable_first = portable_zip.read_bytes()
+    os.utime(portable_root / "pdf2dxf.exe", (2_000_000_000, 2_000_000_000))
+    os.utime(portable_root / "NOTICE.txt", (1_000_000_000, 1_000_000_000))
+    build_windows_portable.archive_portable(portable_root, portable_zip)
+    portable_second = portable_zip.read_bytes()
+    assert portable_first == portable_second
+
+    with zipfile.ZipFile(portable_zip) as archive:
+        infos = archive.infolist()
+    assert [info.filename for info in infos] == ["NOTICE.txt", "pdf2dxf.exe"]
+    assert {info.date_time for info in infos} == {(1980, 1, 1, 0, 0, 0)}
+    assert all(info.create_system == 3 for info in infos)
+    modes = {info.filename: (info.external_attr >> 16) & 0o777 for info in infos}
+    assert modes == {"NOTICE.txt": 0o644, "pdf2dxf.exe": 0o755}
+
+
+@pytest.mark.parametrize(
+    "arcname",
+    ["/absolute.txt", "\\absolute.txt", "C:/absolute.txt", "../escape.txt", "."],
+)
+def test_deterministic_zip_rejects_unsafe_member_paths(tmp_path, arcname) -> None:
+    payload = tmp_path / "payload.txt"
+    payload.write_text("payload\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unsafe ZIP member path"):
+        deterministic_zip.write_deterministic_zip(
+            tmp_path / "unsafe.zip",
+            [(payload, arcname)],
+        )

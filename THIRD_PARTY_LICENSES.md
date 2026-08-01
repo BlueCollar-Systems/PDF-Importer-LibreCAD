@@ -7,15 +7,15 @@ license.
 
 | Component | Version | License | Source |
 |---|---|---|---|
-| CPython | bundled by PyInstaller | PSF License | https://www.python.org/ |
-| PyMuPDF (embeds MuPDF) | >=1.24,<2.0 | AGPL-3.0 (or Artifex commercial) | https://github.com/pymupdf/PyMuPDF — https://mupdf.com/ |
-| ezdxf | >=1.1 | MIT | https://github.com/mozman/ezdxf |
-| FontTools | >=4.50,<5.0 | MIT | https://github.com/fonttools/fonttools |
-| Matplotlib (`ezdxf.addons.text2path` runtime) | >=3.7,<4.0 | PSF-based Matplotlib license | https://github.com/matplotlib/matplotlib |
-| NumPy (ezdxf dependency) | resolved at build | BSD-3-Clause and bundled notices | https://github.com/numpy/numpy |
-| pyparsing (ezdxf dependency) | resolved at build | MIT | https://github.com/pyparsing/pyparsing |
-| typing_extensions (ezdxf dependency) | resolved at build | PSF-2.0 | https://github.com/python/typing_extensions |
-| PyInstaller + build dependencies | resolved at build | upstream licenses, including bootloader exception | https://github.com/pyinstaller/pyinstaller |
+| CPython | 3.12.10 | PSF License | https://www.python.org/ |
+| PyMuPDF (embeds MuPDF) | 1.28.0 | AGPL-3.0 (or Artifex commercial) | https://github.com/pymupdf/PyMuPDF — https://mupdf.com/ |
+| ezdxf | 1.4.4 | MIT | https://github.com/mozman/ezdxf |
+| FontTools | 4.63.0 | MIT | https://github.com/fonttools/fonttools |
+| Matplotlib (`ezdxf.addons.text2path` runtime) | 3.11.1 | PSF-based Matplotlib license | https://github.com/matplotlib/matplotlib |
+| NumPy (ezdxf dependency) | 2.5.1 | BSD-3-Clause and bundled notices | https://github.com/numpy/numpy |
+| pyparsing (ezdxf dependency) | 3.3.2 | MIT | https://github.com/pyparsing/pyparsing |
+| typing_extensions (ezdxf dependency) | 4.16.0 | PSF-2.0 | https://github.com/python/typing_extensions |
+| PyInstaller + build dependencies | 6.21.0 + exact release lock | upstream licenses, including bootloader exception | https://github.com/pyinstaller/pyinstaller |
 | Tcl/Tk (Tkinter) | bundled with CPython | Tcl/Tk (BSD-style) | https://www.tcl.tk/ |
 
 The exact FontTools notices accompany every frozen/portable artifact at

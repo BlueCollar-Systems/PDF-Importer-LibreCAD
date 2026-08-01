@@ -77,7 +77,7 @@ def test_dependency_installer_requests_and_verifies_fonttools(
     )
 
     assert dependency_manager.install_runtime_deps() is True
-    assert 'fonttools>=4.50,<5.0' in commands[0]
+    assert 'fonttools==4.63.0' in commands[0]
     assert commands[1][1:3] == ["-I", "-S"]
     assert not list(tmp_path.glob("lib.stage.*"))
     assert not list(tmp_path.glob("lib.backup.*"))
@@ -119,7 +119,7 @@ def test_dependency_diagnostics_fail_closed_when_fonttools_is_missing(
     assert dependency_manager.print_diagnostics() == 1
     output = capsys.readouterr().out
     assert "FontTools: MISSING" in output
-    assert '"fonttools>=4.50,<5.0"' in output
+    assert '"fonttools==4.63.0"' in output
 
 
 def test_dependency_install_timeout_returns_a_clean_failure(

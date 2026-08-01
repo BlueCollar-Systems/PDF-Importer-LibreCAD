@@ -33,13 +33,13 @@ Conversions write `<output>_import_report.json` with optional `extra.resolved_sc
 
 ## Compatibility
 
-See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the full host version matrix (LibreCAD 2.2+, Python 3.10+, DXF consumers).
+See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the full host version matrix (LibreCAD 2.2+, Python 3.12+, DXF consumers).
 
 ## Requirements
 
 - Windows release installer or portable ZIP: no separate Python or pip packages.
-- Source/dev install: Python 3.10+, PyMuPDF >=1.24,<2.0, ezdxf >=1.1,
-  FontTools >=4.50,<5.0, and Matplotlib >=3.7,<4.0. All are free software dependencies.
+- Source/dev install: Python 3.12+, PyMuPDF 1.28.0, ezdxf 1.4.4,
+  FontTools 4.63.0, and Matplotlib 3.11.1. All are free software dependencies.
 
 ## Installation
 
@@ -75,7 +75,7 @@ python preflight_check.py --install
 python pdf2dxf.py --gui
 ```
 
-The source ZIP requires **Python 3.10+** once; `preflight_check.py --install`
+The source ZIP requires **Python 3.12+** once; `preflight_check.py --install`
 downloads PyMuPDF, ezdxf, FontTools, and Matplotlib into a private `./lib` folder with no
 admin rights.
 

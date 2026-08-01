@@ -19,7 +19,6 @@ dependencies needed for the release artifact.
 """
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import subprocess
@@ -27,7 +26,7 @@ import sys
 from pathlib import Path
 
 from release_notices import copy_python_distribution_notices, copy_release_notices
-from runtime_requirements import load_runtime_requirements
+from release_build_contract import create_release_venv, release_environment
 
 ROOT = Path(__file__).resolve().parent
 APP_NAME = "LibreCAD-PDF-Importer"
@@ -38,9 +37,6 @@ WORK_ROOT = ROOT / "build" / "pyinstaller_standalone"
 SPEC_ROOT = ROOT / "build" / "pyinstaller_standalone_specs"
 DIST_ROOT = ROOT / "dist"
 APP_DIST = DIST_ROOT / APP_NAME
-BUILD_REQUIREMENTS = ["pyinstaller", *load_runtime_requirements(ROOT)]
-
-
 def _read_version() -> str:
     """Single source of truth: pdf2dxf.__version__."""
     text = (ROOT / "pdf2dxf.py").read_text(encoding="utf-8")
@@ -51,21 +47,7 @@ def _read_version() -> str:
 
 
 def _build_python() -> Path:
-    if not VENV_ROOT.exists():
-        subprocess.run([sys.executable, "-m", "venv", str(VENV_ROOT)], cwd=ROOT, check=True)
-    python_exe = VENV_ROOT / "Scripts" / "python.exe"
-    subprocess.run(
-        [
-            str(python_exe),
-            "-m",
-            "pip",
-            "install",
-            *BUILD_REQUIREMENTS,
-        ],
-        cwd=ROOT,
-        check=True,
-    )
-    return python_exe
+    return create_release_venv(ROOT, VENV_ROOT)
 
 
 def _remove_tree_strict(path: Path, *, allowed_parent: Path) -> None:
@@ -122,9 +104,7 @@ def main() -> int:
     cmd.append(str(ENTRY))
 
     print("Running:", " ".join(cmd))
-    env = dict(os.environ)
-    env.pop("PYTHONPATH", None)
-    env["PYTHONNOUSERSITE"] = "1"
+    env = release_environment()
     result = subprocess.run(cmd, cwd=str(ROOT), env=env)
     if result.returncode != 0:
         print("PyInstaller build FAILED", file=sys.stderr)

@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Verify exact accepted release bytes before any GitHub publication."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import re
+import sys
+from typing import Any, Mapping
+
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from release_build_contract import (  # noqa: E402
+    EXPECTED_ARCHITECTURE,
+    EXPECTED_PYTHON_VERSION,
+    PYTHONHASHSEED,
+    RELEASE_LOCK_FILENAME,
+    SOURCE_DATE_EPOCH,
+)
+
+
+DEFAULT_MANIFEST = ROOT / ".release" / "accepted-artifacts.json"
+REQUIRED_ARTIFACTS = (
+    "source_zip",
+    "portable_zip",
+    "pdf2dxf_exe",
+    "lcpdf_import_exe",
+    "lcpdf_batch_exe",
+    "lcpdf_gui_exe",
+)
+
+
+class ArtifactVerificationError(RuntimeError):
+    """Accepted release manifest or artifact bytes are not exact."""
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _confined(root: Path, raw_path: object) -> Path:
+    candidate = (root / str(raw_path)).resolve()
+    if not candidate.is_relative_to(root):
+        raise ArtifactVerificationError(f"artifact path escapes repository: {raw_path}")
+    return candidate
+
+
+def _read_project_version(root: Path) -> str:
+    source = (root / "pdf2dxf.py").read_text(encoding="utf-8")
+    match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', source)
+    if match is None:
+        raise ArtifactVerificationError("cannot read project version from pdf2dxf.py")
+    return match.group(1)
+
+
+def verify_release_artifacts(
+    *,
+    manifest_path: Path = DEFAULT_MANIFEST,
+    root: Path = ROOT,
+    expected_version: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    root = Path(root).resolve()
+    manifest_path = Path(manifest_path).resolve()
+    try:
+        manifest: Mapping[str, Any] = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ArtifactVerificationError(f"cannot read accepted artifact manifest: {exc}") from exc
+    if manifest.get("schema") != "bcs.release_artifacts/1.0":
+        raise ArtifactVerificationError("accepted artifact manifest schema is invalid")
+    version = expected_version or _read_project_version(root)
+    if manifest.get("version") != version:
+        raise ArtifactVerificationError(
+            f"accepted artifact version mismatch: expected {version}, got {manifest.get('version')}"
+        )
+
+    contract = manifest.get("build_contract", {})
+    expected_contract = {
+        "python": ".".join(map(str, EXPECTED_PYTHON_VERSION)),
+        "architecture": EXPECTED_ARCHITECTURE,
+        "source_date_epoch": SOURCE_DATE_EPOCH,
+        "pythonhashseed": PYTHONHASHSEED,
+        "requirements_lock": RELEASE_LOCK_FILENAME,
+    }
+    for key, expected in expected_contract.items():
+        if contract.get(key) != expected:
+            raise ArtifactVerificationError(
+                f"accepted build contract mismatch for {key}: expected {expected}, got {contract.get(key)}"
+            )
+    lock_path = _confined(root, contract["requirements_lock"])
+    if not lock_path.is_file():
+        raise ArtifactVerificationError(f"release dependency lock is missing: {lock_path}")
+    actual_lock_hash = _sha256(lock_path)
+    if contract.get("requirements_lock_sha256") != actual_lock_hash:
+        raise ArtifactVerificationError("release dependency lock SHA-256 mismatch")
+
+    artifact_contracts = manifest.get("artifacts", {})
+    if set(artifact_contracts) != set(REQUIRED_ARTIFACTS):
+        raise ArtifactVerificationError(
+            "accepted artifact set mismatch: "
+            f"expected {sorted(REQUIRED_ARTIFACTS)}, got {sorted(artifact_contracts)}"
+        )
+    verified = {}
+    for name in REQUIRED_ARTIFACTS:
+        expected = artifact_contracts[name]
+        path = _confined(root, expected.get("path"))
+        if not path.is_file():
+            raise ArtifactVerificationError(f"{name} is missing: {path}")
+        actual_hash = _sha256(path)
+        actual_size = path.stat().st_size
+        if (
+            actual_hash != expected.get("sha256")
+            or actual_size != int(expected.get("size_bytes", -1))
+        ):
+            raise ArtifactVerificationError(
+                f"{name} SHA-256/size mismatch: expected "
+                f"{expected.get('sha256')}/{expected.get('size_bytes')}, "
+                f"got {actual_hash}/{actual_size}"
+            )
+        verified[name] = {
+            "path": str(path),
+            "sha256": actual_hash,
+            "size_bytes": actual_size,
+        }
+    return verified
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    args = parser.parse_args(argv)
+    verified = verify_release_artifacts(manifest_path=args.manifest)
+    print(json.dumps({"status": "PASS", "artifacts": verified}, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

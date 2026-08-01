@@ -1,0 +1,47 @@
+{
+  "artifacts": {
+    "lcpdf_batch_exe": {
+      "path": "dist/windows-portable/lcpdf-batch.exe",
+      "sha256": "f0ff3b6c7f98c46c05030ea5c93d080473520a2bf4ff3510df9625b038798551",
+      "size_bytes": 66372630
+    },
+    "lcpdf_gui_exe": {
+      "path": "dist/windows-portable/lcpdf-gui.exe",
+      "sha256": "c45a8b895e410c9af3a0b7e135194dbf293dbe42bd2918ea8731e25d5fbd128e",
+      "size_bytes": 66365292
+    },
+    "lcpdf_import_exe": {
+      "path": "dist/windows-portable/lcpdf-import.exe",
+      "sha256": "55a6a15e83b12a14cbf250f030092e41067c936195817466e574f9b249460b26",
+      "size_bytes": 66374088
+    },
+    "pdf2dxf_exe": {
+      "path": "dist/windows-portable/pdf2dxf.exe",
+      "sha256": "dc9051a993fd9ac62130da233b330e9e0e8f77991b02fa8f48e6d8ef9acc4a55",
+      "size_bytes": 66368546
+    },
+    "portable_zip": {
+      "path": "dist/LibreCAD-PDF-Importer-Windows-Portable_v1.0.70.zip",
+      "sha256": "cabcd826a07c987f350c75502c8c5048fea4723ca36f6ce4da370310745c675d",
+      "size_bytes": 263173519
+    },
+    "source_zip": {
+      "path": "dist/LibreCAD-PDF-Importer_v1.0.70.zip",
+      "sha256": "513955affa1fefd8b34278381c4423dd4cccb08c886daf4066eac3f12332da2d",
+      "size_bytes": 239017
+    }
+  },
+  "build_contract": {
+    "architecture": "AMD64",
+    "checkout_action": "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
+    "python": "3.12.10",
+    "python_setup_action": "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405",
+    "pythonhashseed": "0",
+    "requirements_lock": "requirements-release-win-py312.lock",
+    "requirements_lock_sha256": "070d1887ed6e3f1c7bddf70067a8d29ebc5e2e7ef95ab7bc6c48146d4ea03594",
+    "runner": "windows-2025",
+    "source_date_epoch": "315532800"
+  },
+  "schema": "bcs.release_artifacts/1.0",
+  "version": "1.0.70"
+}

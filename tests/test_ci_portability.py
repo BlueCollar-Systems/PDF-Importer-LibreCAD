@@ -17,7 +17,7 @@ def test_runtime_declares_the_free_fonttools_dependency() -> None:
     project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     assert re.search(
-        r'^\s*"fonttools>=4\.50,<5\.0"\s*,?\s*$',
+        r'^\s*"fonttools==4\.63\.0"\s*,?\s*$',
         project,
         flags=re.MULTILINE | re.IGNORECASE,
     )
@@ -114,12 +114,12 @@ def test_every_runtime_distribution_path_includes_fonttools() -> None:
         encoding="utf-8"
     )
 
-    assert "fonttools>=4.50,<5.0" in requirements.lower()
-    assert "matplotlib>=3.7,<4.0" in requirements.lower()
-    assert "load_runtime_requirements(ROOT)" in standalone
+    assert "fonttools==4.63.0" in requirements.lower()
+    assert "matplotlib==3.11.1" in requirements.lower()
+    assert "create_release_venv(ROOT, VENV_ROOT)" in standalone
     assert '"--collect-all", "fonttools"' in standalone.lower()
     assert '"--copy-metadata", "fonttools"' in standalone.lower()
-    assert "load_runtime_requirements(ROOT)" in portable
+    assert "create_release_venv(ROOT, VENV_ROOT)" in portable
     assert 'collect_all = ["fonttools"]' in portable.lower()
     assert 'copy_metadata = ["fonttools"]' in portable.lower()
     assert "load_runtime_requirements(PROJECT_ROOT)" in dependencies
@@ -133,9 +133,9 @@ def test_fonttools_runtime_and_license_are_documented_truthfully() -> None:
     install = (ROOT / "INSTALL.md").read_text(encoding="utf-8")
     notices = (ROOT / "THIRD_PARTY_LICENSES.md").read_text(encoding="utf-8")
 
-    assert "FontTools >=4.50,<5.0" in readme
+    assert "FontTools 4.63.0" in readme
     assert "FontTools" in install
-    assert "| FontTools | >=4.50,<5.0 | MIT |" in notices
+    assert "| FontTools | 4.63.0 | MIT |" in notices
     assert "https://github.com/fonttools/fonttools" in notices
 
 

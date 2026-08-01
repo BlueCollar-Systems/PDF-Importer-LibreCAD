@@ -33,10 +33,12 @@ concurrency:
 jobs:
   release:
     if: "!startsWith(github.event.head_commit.message, 'chore: bump version to') && !contains(github.event.head_commit.message, 'automation/version-bump') && !contains(github.event.head_commit.message, '[skip release]')"
-    runs-on: windows-latest
+    # The image label is explicit; the accepted-artifact SHA gate below remains
+    # authoritative because GitHub-hosted image contents can still evolve.
+    runs-on: windows-2025
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -44,14 +46,15 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: "3.12"
+          python-version: "3.12.10"
+          architecture: "x64"
 
       - name: Run release gate tests
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pytest
+          python -m pip install --require-hashes --only-binary=:all: -r requirements-release-win-py312.lock
+          python -m pip install pytest==8.4.2
           python pdfcadcore_sync_check.py --skip-cross-repo
           python preflight_check.py
           python -m pytest tests/ -q --basetemp "$RUNNER_TEMP/pytest-librecad"
@@ -101,6 +104,9 @@ jobs:
 
       - name: Smoke Windows portable zip
         run: python scripts/smoke_portable_zip.py "dist/LibreCAD-PDF-Importer-Windows-Portable_v*.zip" --source-zip "dist/LibreCAD-PDF-Importer_v*.zip"
+
+      - name: Verify exact accepted release bytes
+        run: python scripts/verify_release_artifacts.py
 
       - name: Create release
         id: mint

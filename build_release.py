@@ -13,8 +13,9 @@ from __future__ import annotations
 import os
 import re
 import sys
-import zipfile
 from pathlib import Path
+
+from deterministic_zip import write_deterministic_zip
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -164,12 +165,12 @@ def build(output_dir: str | None = None) -> Path:
                 if _should_include(rel):
                     files_to_add.append((full, rel))
 
-    # Build zip
+    # Build a byte-reproducible ZIP. Checkout mtimes and host OS metadata must
+    # never change the accepted release hash for an identical source tree.
     print(f"Building {zip_path.name} ...")
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for full_path, arc_name in sorted(files_to_add, key=lambda x: x[1]):
-            zf.write(full_path, arc_name)
-            print(f"  + {arc_name}")
+    write_deterministic_zip(zip_path, files_to_add)
+    for _full_path, arc_name in sorted(files_to_add, key=lambda x: x[1]):
+        print(f"  + {arc_name}")
 
     print(f"\nRelease archive: {zip_path}")
     print(f"  Files: {len(files_to_add)}")

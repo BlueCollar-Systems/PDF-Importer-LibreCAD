@@ -146,7 +146,8 @@ is an exact source-item `IMAGE`.
 ## Requirements
 
 - Standalone installer: no separate Python or pip packages.
-- Source/dev checkout: Python 3.10+, PyMuPDF, ezdxf, FontTools, and Matplotlib, either installed into
+- Source/dev checkout: Python 3.12+, PyMuPDF 1.28.0, ezdxf 1.4.4,
+  FontTools 4.63.0, and Matplotlib 3.11.1, either installed into
   your active environment or vendored into `./lib` with
   `tools/fetch_runtime_wheels.ps1`.
 
