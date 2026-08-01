@@ -66,6 +66,37 @@ def test_shared_catalog_type3_without_xref_is_item_scoped_impossibility():
     assert catalog.failure_for_span("OtherFont").reason == "no_exact_embedded_font_match"
 
 
+def test_shared_catalog_type3_with_xref_is_item_scoped_impossibility():
+    class Document:
+        @staticmethod
+        def extract_font(_xref):
+            raise AssertionError("a Type3 font has no extractable program")
+
+    class Page:
+        parent = Document()
+
+        @staticmethod
+        def get_texttrace():
+            return []
+
+        @staticmethod
+        def get_fonts(*, full=False):
+            assert full is True
+            return [(21, "n/a", "Type3", "", "R47", "")]
+
+    catalog = EmbeddedFontCatalog.from_page(Page(), page_number=34)
+
+    assert catalog.assets == ()
+    synthetic = catalog.failure_for_span("Type3 (21 0 R)")
+    assert synthetic.reason == "embedded_type3_font_program_unavailable"
+    assert synthetic.proof_category == "source_specific_impossibility"
+    assert (
+        catalog.failure_for_span("R47").reason
+        == "embedded_type3_font_program_unavailable"
+    )
+    assert catalog.failure_for_span("Arial").reason == "no_exact_embedded_font_match"
+
+
 def test_shared_catalog_non_type3_without_xref_remains_terminal_page_failure():
     class Document:
         @staticmethod

@@ -688,9 +688,25 @@ class EmbeddedFontCatalog:
         for record in records:
             try:
                 source_type_hint = str(record[2] or "").strip()
-                if record[0] is None and source_type_hint.lower() == "type3":
+                if source_type_hint.lower() == "type3":
+                    # A Type3 font never has an extractable font program: its
+                    # glyphs are PDF content streams, not a TTF/CFF payload.
+                    # That holds whether or not the row carries an xref, and
+                    # real documents DO carry one -- every Type3 row measured on
+                    # the owner's corpus has an xref with an empty BaseFont
+                    # name. Gating on `record[0] is None` sent them down the
+                    # extraction path and aborted the import as corrupt data.
                     observed_names = []
+                    # PyMuPDF reports such a span as "Type3 (<xref> 0 R)"; that
+                    # synthetic span name must be observed or the text item
+                    # never matches any recorded failure.
+                    synthetic_type3_name = (
+                        "Type3 (%d 0 R)" % record[0]
+                        if isinstance(record[0], int)
+                        else ""
+                    )
                     for observed_name in (
+                        synthetic_type3_name,
                         _without_subset_prefix(record[3]).strip(),
                         str(record[4] or "").strip(),
                     ):
