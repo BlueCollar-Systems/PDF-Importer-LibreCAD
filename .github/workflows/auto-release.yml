@@ -54,7 +54,7 @@ jobs:
       - name: Run release gate tests
         run: |
           python -m pip install --require-hashes --only-binary=:all: -r requirements-release-win-py312.lock
-          python -m pip install pytest==8.4.2
+          python -m pip install --require-hashes --only-binary=:all: -r requirements-ci-win-py312.lock
           python pdfcadcore_sync_check.py --skip-cross-repo
           python preflight_check.py
           python -m pytest tests/ -q --basetemp "$RUNNER_TEMP/pytest-librecad"
@@ -157,7 +157,7 @@ jobs:
 
       - name: Dispatch website release update
         if: steps.mint.outputs.minted == 'true' && steps.website_dispatch_token.outputs.has_token == 'true'
-        uses: actions/github-script@v9
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
         with:
           github-token: ${{ secrets.WEBSITE_DISPATCH_TOKEN || secrets.BLUECOLLAR_WEBSITE_DISPATCH_TOKEN || secrets.REPO_DISPATCH_TOKEN }}
           script: |

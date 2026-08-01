@@ -17,10 +17,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from release_build_contract import (  # noqa: E402
+    CHECKOUT_ACTION,
+    CI_LOCK_FILENAME,
     EXPECTED_ARCHITECTURE,
     EXPECTED_PYTHON_VERSION,
+    GITHUB_SCRIPT_ACTION,
     PYTHONHASHSEED,
+    RELEASE_RUNNER,
     RELEASE_LOCK_FILENAME,
+    SETUP_PYTHON_ACTION,
     SOURCE_DATE_EPOCH,
 )
 
@@ -90,6 +95,11 @@ def verify_release_artifacts(
         "source_date_epoch": SOURCE_DATE_EPOCH,
         "pythonhashseed": PYTHONHASHSEED,
         "requirements_lock": RELEASE_LOCK_FILENAME,
+        "ci_lock": CI_LOCK_FILENAME,
+        "runner": RELEASE_RUNNER,
+        "checkout_action": CHECKOUT_ACTION,
+        "python_setup_action": SETUP_PYTHON_ACTION,
+        "github_script_action": GITHUB_SCRIPT_ACTION,
     }
     for key, expected in expected_contract.items():
         if contract.get(key) != expected:
@@ -102,6 +112,12 @@ def verify_release_artifacts(
     actual_lock_hash = _sha256(lock_path)
     if contract.get("requirements_lock_sha256") != actual_lock_hash:
         raise ArtifactVerificationError("release dependency lock SHA-256 mismatch")
+    ci_lock_path = _confined(root, contract["ci_lock"])
+    if not ci_lock_path.is_file():
+        raise ArtifactVerificationError(f"CI dependency lock is missing: {ci_lock_path}")
+    actual_ci_lock_hash = _sha256(ci_lock_path)
+    if contract.get("ci_lock_sha256") != actual_ci_lock_hash:
+        raise ArtifactVerificationError("CI dependency lock SHA-256 mismatch")
 
     artifact_contracts = manifest.get("artifacts", {})
     if set(artifact_contracts) != set(REQUIRED_ARTIFACTS):

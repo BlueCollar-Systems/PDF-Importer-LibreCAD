@@ -41,6 +41,12 @@ See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the full host version matrix (L
 - Source/dev install: Python 3.12+, PyMuPDF 1.28.0, ezdxf 1.4.4,
   FontTools 4.63.0, and Matplotlib 3.11.1. All are free software dependencies.
 
+Release binaries are built with exact CPython 3.12.10 AMD64 and hash-locked
+wheel closures. The builder removes only pip `RECORD` rows for generated venv
+launchers (which embed the checkout path and are not shipped), then verifies the
+accepted artifact bytes before publication. Release-gate pytest dependencies and
+all token-bearing GitHub Actions are pinned as part of the same provenance chain.
+
 ## Installation
 
 ### Windows portable release (recommended)

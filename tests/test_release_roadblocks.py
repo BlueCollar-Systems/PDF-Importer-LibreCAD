@@ -15,6 +15,7 @@ import pytest
 import build_standalone
 import build_windows_portable
 import deterministic_zip
+import release_build_contract
 from scripts import smoke_portable_zip
 
 
@@ -69,6 +70,17 @@ def test_release_build_is_hash_locked_and_ci_hash_verifies_before_publish() -> N
     ]
     assert len(requirements) == 21
     assert all("==" in requirement and "--hash=sha256:" in requirement for requirement in requirements)
+    ci_lock = (ROOT / "requirements-ci-win-py312.lock").read_text(encoding="utf-8")
+    ci_requirements = [
+        line.strip()
+        for line in ci_lock.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert len(ci_requirements) == 6
+    assert all(
+        "==" in requirement and "--hash=sha256:" in requirement
+        for requirement in ci_requirements
+    )
     project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'requires-python = ">=3.12"' in project
 
@@ -78,6 +90,7 @@ def test_release_build_is_hash_locked_and_ci_hash_verifies_before_publish() -> N
     assert 'PYTHONHASHSEED = "0"' in contract
     assert '"--require-hashes"' in contract
     assert '"--only-binary=:all:"' in contract
+    assert "normalize_release_metadata_records" in contract
 
     for builder_name in ("build_windows_portable.py", "build_standalone.py"):
         builder = (ROOT / builder_name).read_text(encoding="utf-8")
@@ -91,16 +104,64 @@ def test_release_build_is_hash_locked_and_ci_hash_verifies_before_publish() -> N
     assert 'python-version: "3.12.10"' in workflow
     assert "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd" in workflow
     assert "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405" in workflow
+    assert "actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9" in workflow
+    assert (
+        "pip install --require-hashes --only-binary=:all: "
+        "-r requirements-ci-win-py312.lock"
+    ) in workflow
+    assert "pip install pytest==" not in workflow
     verify = workflow.index("scripts/verify_release_artifacts.py")
     publish = workflow.index("gh release create")
     assert verify < publish
 
 
+def test_release_record_normalization_removes_only_path_sensitive_launchers(
+    tmp_path,
+) -> None:
+    python_exe = tmp_path / "venv-with-an-arbitrary-name" / "Scripts" / "python.exe"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_bytes(b"")
+    metadata = python_exe.parent.parent / "Lib" / "site-packages" / "demo-1.0.dist-info"
+    metadata.mkdir(parents=True)
+    record = metadata / "RECORD"
+    record.write_text(
+        "\n".join(
+            [
+                "demo/__init__.py,sha256=runtime,10",
+                "../../Scripts/demo.exe,sha256=path-sensitive,123",
+                "..\\..\\Scripts\\demo-helper.exe,sha256=path-sensitive-too,124",
+                "demo/Scripts/data.txt,sha256=runtime-data,20",
+                "demo-1.0.dist-info/RECORD,,",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = release_build_contract.normalize_release_metadata_records(python_exe)
+
+    assert result == {"records_changed": 1, "launcher_rows_removed": 2}
+    assert record.read_text(encoding="utf-8") == "\n".join(
+        [
+            "demo/__init__.py,sha256=runtime,10",
+            "demo/Scripts/data.txt,sha256=runtime-data,20",
+            "demo-1.0.dist-info/RECORD,,",
+            "",
+        ]
+    )
+
+
 def test_release_artifact_manifest_verifier_rejects_byte_mutation(tmp_path) -> None:
     from release_build_contract import (
+        CHECKOUT_ACTION,
+        CI_LOCK_FILENAME,
         EXPECTED_ARCHITECTURE,
         EXPECTED_PYTHON_VERSION,
+        GITHUB_SCRIPT_ACTION,
         PYTHONHASHSEED,
+        RELEASE_RUNNER,
+        RELEASE_LOCK_FILENAME,
+        SETUP_PYTHON_ACTION,
         SOURCE_DATE_EPOCH,
     )
     from scripts.verify_release_artifacts import (
@@ -111,6 +172,8 @@ def test_release_artifact_manifest_verifier_rejects_byte_mutation(tmp_path) -> N
 
     lock = tmp_path / "requirements-release-win-py312.lock"
     lock.write_text("locked\n", encoding="utf-8")
+    ci_lock = tmp_path / CI_LOCK_FILENAME
+    ci_lock.write_text("ci locked\n", encoding="utf-8")
     artifacts = {}
     for index, name in enumerate(REQUIRED_ARTIFACTS, start=1):
         path = tmp_path / f"{name}.bin"
@@ -128,8 +191,14 @@ def test_release_artifact_manifest_verifier_rejects_byte_mutation(tmp_path) -> N
             "architecture": EXPECTED_ARCHITECTURE,
             "source_date_epoch": SOURCE_DATE_EPOCH,
             "pythonhashseed": PYTHONHASHSEED,
-            "requirements_lock": lock.name,
+            "requirements_lock": RELEASE_LOCK_FILENAME,
             "requirements_lock_sha256": hashlib.sha256(lock.read_bytes()).hexdigest(),
+            "ci_lock": CI_LOCK_FILENAME,
+            "ci_lock_sha256": hashlib.sha256(ci_lock.read_bytes()).hexdigest(),
+            "runner": RELEASE_RUNNER,
+            "checkout_action": CHECKOUT_ACTION,
+            "python_setup_action": SETUP_PYTHON_ACTION,
+            "github_script_action": GITHUB_SCRIPT_ACTION,
         },
         "artifacts": artifacts,
     }

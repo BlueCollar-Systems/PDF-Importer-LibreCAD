@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import os
 import platform
 import re
@@ -17,6 +19,13 @@ EXPECTED_ARCHITECTURE = "AMD64"
 SOURCE_DATE_EPOCH = "315532800"
 PYTHONHASHSEED = "0"
 RELEASE_LOCK_FILENAME = "requirements-release-win-py312.lock"
+CI_LOCK_FILENAME = "requirements-ci-win-py312.lock"
+RELEASE_RUNNER = "windows-2025"
+CHECKOUT_ACTION = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
+SETUP_PYTHON_ACTION = "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405"
+GITHUB_SCRIPT_ACTION = (
+    "actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553"
+)
 _LOCK_LINE = re.compile(
     r"^([A-Za-z0-9_.-]+)==([^\s]+)\s+--hash=sha256:([0-9a-f]{64})$"
 )
@@ -92,6 +101,65 @@ def _freeze_versions(python_exe: Path, environment: Mapping[str, str]) -> dict[s
     return frozen
 
 
+def normalize_release_metadata_records(python_exe: Path) -> dict[str, int]:
+    """Remove venv-path-dependent launcher rows from installed wheel RECORDs.
+
+    Pip-generated launchers embed the absolute venv interpreter path. Their
+    hashes and sizes therefore vary with the checkout path, and PyInstaller
+    collects those rows as package metadata even though it does not collect the
+    launchers themselves. Runtime/package rows remain byte-for-byte intact.
+    """
+
+    venv_root = Path(python_exe).resolve().parent.parent
+    site_packages = (venv_root / "Lib" / "site-packages").resolve()
+    if site_packages.parent.parent != venv_root or not site_packages.is_dir():
+        raise RuntimeError(f"release site-packages path is invalid: {site_packages}")
+
+    records_changed = 0
+    launcher_rows_removed = 0
+    for record_path in sorted(
+        site_packages.glob("*.dist-info/RECORD"),
+        key=lambda path: path.as_posix().casefold(),
+    ):
+        if record_path.is_symlink() or not record_path.resolve().is_relative_to(
+            site_packages
+        ):
+            raise RuntimeError(f"release metadata RECORD escapes venv: {record_path}")
+        with record_path.open("r", encoding="utf-8", newline="") as stream:
+            rows = list(csv.reader(stream))
+        for row in rows:
+            if len(row) != 3:
+                raise RuntimeError(f"malformed release metadata RECORD: {record_path}")
+        kept_rows = [
+            row
+            for row in rows
+            if not row[0].replace("\\", "/").casefold().startswith("../../scripts/")
+        ]
+        removed = len(rows) - len(kept_rows)
+        if not removed:
+            continue
+
+        payload = io.StringIO(newline="")
+        csv.writer(payload, lineterminator="\n").writerows(kept_rows)
+        temporary = record_path.with_name("RECORD.normalized.tmp")
+        try:
+            with temporary.open("w", encoding="utf-8", newline="") as stream:
+                stream.write(payload.getvalue())
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, record_path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+        records_changed += 1
+        launcher_rows_removed += removed
+
+    return {
+        "records_changed": records_changed,
+        "launcher_rows_removed": launcher_rows_removed,
+    }
+
+
 def create_release_venv(root: Path, venv_root: Path) -> Path:
     """Create a clean venv and install only the exact hash-locked wheels."""
 
@@ -142,4 +210,10 @@ def create_release_venv(root: Path, venv_root: Path) -> Path:
             "release environment differs from the exact lock: "
             f"expected {locked_versions}, got {frozen_versions}"
         )
+    normalization = normalize_release_metadata_records(python_exe)
+    print(
+        "Normalized release metadata RECORDs: "
+        f"{normalization['records_changed']} files, "
+        f"{normalization['launcher_rows_removed']} launcher rows"
+    )
     return python_exe
