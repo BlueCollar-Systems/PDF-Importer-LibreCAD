@@ -90,8 +90,12 @@ def safe_open(path: str, *, prefer_lib_dir: Optional[str] = None) -> Any:
         raise PdfOpenError("not_a_pdf", "This file is not a valid PDF.")
 
     fitz = import_fitz(prefer_lib_dir=prefer_lib_dir)
+    # Open via Python-read bytes + stream so Windows wide/Unicode paths (e.g.
+    # CP1252 em-dash filenames) do not depend on MuPDF's narrow path open.
     try:
-        doc = fitz.open(pdf_path)
+        with open(pdf_path, "rb") as handle:
+            pdf_bytes = handle.read()
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     except Exception as exc:  # noqa: BLE001 — normalize host-facing open failures
         raise _classify_open_failure(exc) from exc
 
