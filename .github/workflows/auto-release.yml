@@ -106,7 +106,24 @@ jobs:
         run: python scripts/smoke_portable_zip.py "dist/LibreCAD-PDF-Importer-Windows-Portable_v*.zip" --source-zip "dist/LibreCAD-PDF-Importer_v*.zip"
 
       - name: Verify exact accepted release bytes
+        id: verify
         run: python scripts/verify_release_artifacts.py
+
+      # A mismatched hosted-runner build must never publish, but retaining the
+      # exact candidate briefly lets maintainers inspect and explicitly accept
+      # a runner-distribution difference instead of weakening this gate.
+      - name: Retain failed release candidate for acceptance
+        if: failure() && steps.verify.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: failed-release-candidate-${{ github.run_id }}
+          path: |
+            dist/LibreCAD-PDF-Importer-Windows-Portable_v*.zip
+            dist/LibreCAD-PDF-Importer_v*.zip
+            .release/accepted-artifacts.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
 
       - name: Create release
         id: mint

@@ -121,6 +121,12 @@ def test_release_build_is_hash_locked_and_ci_hash_verifies_before_publish() -> N
     verify = workflow.index("scripts/verify_release_artifacts.py")
     publish = workflow.index("gh release create")
     assert verify < publish
+    candidate_upload = workflow.index(
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+    )
+    assert verify < candidate_upload < publish
+    assert "if: failure() && steps.verify.outcome == 'failure'" in workflow
+    assert "retention-days: 1" in workflow
 
 
 def test_release_record_normalization_removes_only_path_sensitive_launchers(
