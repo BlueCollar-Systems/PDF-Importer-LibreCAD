@@ -34,6 +34,67 @@ def _load_font(data: bytes) -> TTFont:
     return font
 
 
+def test_shared_catalog_type3_without_xref_is_item_scoped_impossibility():
+    class Document:
+        @staticmethod
+        def extract_font(_xref):
+            raise AssertionError("Type3 without an xref must not be extracted")
+
+    class Page:
+        parent = Document()
+
+        @staticmethod
+        def get_texttrace():
+            return []
+
+        @staticmethod
+        def get_fonts(*, full=False):
+            assert full is True
+            return [(None, "", "Type3", "", "Type3Resource")]
+
+    catalog = EmbeddedFontCatalog.from_page(Page(), page_number=32)
+    failure = catalog.failure_for_span("Type3Resource")
+
+    assert catalog.assets == ()
+    assert len(catalog.failures) == 1
+    assert failure.span_font_name == "Type3Resource"
+    assert failure.reason == "embedded_type3_font_program_unavailable"
+    assert failure.source_xref is None
+    assert failure.error_type == "ExactFontSourceImpossible"
+    assert failure.detail == "PDF Type3 resource has no extractable font program"
+    assert failure.proof_category == "source_specific_impossibility"
+    assert catalog.failure_for_span("OtherFont").reason == "no_exact_embedded_font_match"
+
+
+def test_shared_catalog_non_type3_without_xref_remains_terminal_page_failure():
+    class Document:
+        @staticmethod
+        def extract_font(_xref):
+            raise AssertionError("an invalid inventory row must stop extraction")
+
+    class Page:
+        parent = Document()
+
+        @staticmethod
+        def get_texttrace():
+            return []
+
+        @staticmethod
+        def get_fonts(*, full=False):
+            assert full is True
+            return [(None, "", "Type1", "Siwa-Regular", "F1", "")]
+
+    catalog = EmbeddedFontCatalog.from_page(Page(), page_number=33)
+
+    assert catalog.assets == ()
+    assert len(catalog.failures) == 1
+    page_failure = catalog.failures[0]
+    assert page_failure.span_font_name == ""
+    assert page_failure.reason == "invalid_page_font_record"
+    assert page_failure.proof_category == "source_inventory_invalid_for_page"
+    assert catalog.failure_for_span("Siwa-Regular").reason == "invalid_page_font_record"
+
+
 def test_cmap_repair_adds_host_safe_names_to_anonymous_subset_font():
     """Repaired PDF subset fonts must be loadable by native host font APIs."""
     builder = FontBuilder(1000, isTTF=True)
