@@ -12,8 +12,8 @@ license.
 | ezdxf | 1.4.4 | MIT | https://github.com/mozman/ezdxf |
 | FontTools | 4.63.0 | MIT | https://github.com/fonttools/fonttools |
 | Matplotlib (`ezdxf.addons.text2path` runtime) | 3.11.1 | PSF-based Matplotlib license | https://github.com/matplotlib/matplotlib |
-| Pillow (host-safe image preparation) | 12.3.0 | HPND | https://github.com/python-pillow/Pillow |
-| NumPy (ezdxf dependency) | 2.5.1 | BSD-3-Clause and bundled notices | https://github.com/numpy/numpy |
+| Pillow (Matplotlib dependency) | 12.3.0 | HPND and bundled notices | https://github.com/python-pillow/Pillow |
+| NumPy (direct importer and ezdxf dependency) | 2.5.1 | BSD-3-Clause and bundled notices | https://github.com/numpy/numpy |
 | pyparsing (ezdxf dependency) | 3.3.2 | MIT | https://github.com/pyparsing/pyparsing |
 | typing_extensions (ezdxf dependency) | 4.16.0 | PSF-2.0 | https://github.com/python/typing_extensions |
 | PyInstaller + build dependencies | 6.21.0 + exact release lock | upstream licenses, including bootloader exception | https://github.com/pyinstaller/pyinstaller |

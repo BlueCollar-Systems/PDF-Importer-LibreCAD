@@ -9,6 +9,8 @@ from pathlib import Path
 import tempfile
 from typing import Iterable, List, Optional, Sequence, Tuple
 
+import numpy as np
+
 try:
     import pymupdf as fitz  # PyMuPDF >= 1.24 preferred name
 except ImportError:
@@ -46,6 +48,7 @@ AUTO_FILL_PURE_LARGE_RECT_RATIO = 0.03
 # Dense inline-image PDFs (BI / ID / EI operators) must not create tens of
 # thousands of host IMAGE entities. Smaller rectilinear sets remain editable.
 INLINE_IMAGE_COMPOSITE_THRESHOLD = 256
+INLINE_IMAGE_COMPOSITE_MAX_PIXELS = 16_000_000
 
 
 @dataclass
@@ -62,6 +65,9 @@ class ImagePlacement:
     source_bbox_pdf: Optional[Tuple[float, float, float, float]] = None
     source_number: Optional[int] = None
     source_digest: str = ""
+    pixel_size: Optional[Tuple[int, int]] = None
+    alpha_kind: str = "unknown"
+    alpha_bbox_px: Optional[Tuple[int, int, int, int]] = None
 
 
 @dataclass
@@ -109,6 +115,7 @@ class DocumentExtraction:
     @property
     def image_count(self) -> int:
         return sum(len(p.images) for p in self.pages)
+
 
     def summary(self) -> dict:
         per_page_auto = [
@@ -175,6 +182,64 @@ class DocumentExtraction:
                 "summary": auto_summary,
             },
         }
+
+
+def _classify_pixmap_alpha(
+    pixmap,
+    *,
+    rows_per_chunk: int = 256,
+) -> Tuple[str, Tuple[int, int, int, int]]:
+    """Classify visible support without allocating a second full-size raster."""
+
+    width = int(pixmap.width)
+    height = int(pixmap.height)
+    if width <= 0 or height <= 0:
+        raise ValueError("image pixmap dimensions are invalid")
+    full_box = (0, 0, width, height)
+    if not bool(pixmap.alpha):
+        return "opaque", full_box
+
+    channels = int(pixmap.n)
+    stride = int(getattr(pixmap, "stride", width * channels))
+    raw_samples = getattr(pixmap, "samples_mv", None)
+    if raw_samples is None:
+        raw_samples = pixmap.samples
+    rows = np.frombuffer(raw_samples, dtype=np.uint8).reshape(height, stride)
+    pixels = rows[:, : width * channels].reshape(height, width, channels)
+    alpha = pixels[:, :, channels - 1]
+    nonzero_count = 0
+    partial = False
+    left = width
+    top = height
+    right = 0
+    bottom = 0
+    chunk_rows = max(1, int(rows_per_chunk))
+    for start in range(0, height, chunk_rows):
+        block = alpha[start : min(height, start + chunk_rows)]
+        visible = block != 0
+        count = int(np.count_nonzero(visible))
+        if count == 0:
+            continue
+        nonzero_count += count
+        partial = partial or bool(np.any((block > 0) & (block < 255)))
+        visible_rows = np.flatnonzero(np.any(visible, axis=1))
+        visible_columns = np.flatnonzero(np.any(visible, axis=0))
+        top = min(top, start + int(visible_rows[0]))
+        bottom = max(bottom, start + int(visible_rows[-1]) + 1)
+        left = min(left, int(visible_columns[0]))
+        right = max(right, int(visible_columns[-1]) + 1)
+
+    if nonzero_count == 0:
+        return "zero", (0, 0, 0, 0)
+    bbox = (left, top, right, bottom)
+    if partial:
+        return "compositing_required", bbox
+    bbox_area = (right - left) * (bottom - top)
+    if nonzero_count == bbox_area:
+        if bbox == full_box:
+            return "opaque", full_box
+        return "rectangular_opaque", bbox
+    return "compositing_required", bbox
 
 
 @dataclass
@@ -445,11 +510,15 @@ def _extract_document_impl(
                     )
                     if inline_source_count:
                         if any(
-                            placement.source_kind == "inline_image_composite"
+                            placement.source_kind
+                            in {
+                                "inline_image_composite",
+                                "inline_image_page_fidelity_required",
+                            }
                             for placement in inline_placements
                         ):
                             delivery_detail = (
-                                "one transparent images-only page composite"
+                                "one exact page-fidelity image surface"
                             )
                         else:
                             delivery_detail = (
@@ -849,6 +918,10 @@ def _extract_inline_images_individually(
 
     placements: list[ImagePlacement] = []
     written_assets: dict[str, Path] = {}
+    asset_profiles: dict[
+        str,
+        tuple[Tuple[int, int], str, Tuple[int, int, int, int]],
+    ] = {}
     page_height = float(page.rect.height)
     for info, block in inline_blocks:
         number = int(info.get("number", -1))
@@ -871,9 +944,17 @@ def _extract_inline_images_individually(
                 ) from exc
             if int(decoded.width) <= 0 or int(decoded.height) <= 0:
                 raise RuntimeError(f"inline image instance {number} has invalid dimensions")
+            alpha_kind, alpha_bbox = _classify_pixmap_alpha(decoded)
             asset_path = image_dir / f"page_{page_number:03d}_inline_{asset_digest}.{extension}"
             asset_path.write_bytes(image_bytes)
             written_assets[asset_digest] = asset_path
+            asset_profiles[asset_digest] = (
+                (int(decoded.width), int(decoded.height)),
+                alpha_kind,
+                alpha_bbox,
+            )
+
+        pixel_size, alpha_kind, alpha_bbox = asset_profiles[asset_digest]
 
         bbox = fitz.Rect(info.get("bbox") or block.get("bbox"))
         if bbox.is_empty or bbox.is_infinite:
@@ -905,6 +986,9 @@ def _extract_inline_images_individually(
                 ),
                 source_number=number,
                 source_digest=_inline_source_digest(info, block),
+                pixel_size=pixel_size,
+                alpha_kind=alpha_kind,
+                alpha_bbox_px=alpha_bbox,
             )
         )
     return placements
@@ -923,8 +1007,7 @@ def _render_inline_image_composite(
     definitions: list[str] = []
     uses: list[str] = []
     asset_ids: dict[str, str] = {}
-    source_digest = hashlib.sha256()
-    for info, block in inline_blocks:
+    for _info, block in inline_blocks:
         image_bytes = _inline_delivery_image_bytes(block)
         asset_digest = hashlib.sha256(image_bytes).hexdigest()
         asset_id = asset_ids.get(asset_digest)
@@ -947,8 +1030,6 @@ def _render_inline_image_composite(
             )
         transform = " ".join(_svg_number(value) for value in block["transform"])
         uses.append(f'<use href="#{asset_id}" transform="matrix({transform})"/>')
-        source_digest.update(bytes.fromhex(_inline_source_digest(info, block)))
-        source_digest.update(transform.encode("ascii"))
 
     page_rect = page.rect
     width = float(page_rect.width)
@@ -971,6 +1052,7 @@ def _render_inline_image_composite(
             )
             if not pixmap.alpha:
                 raise RuntimeError("inline image composite lost transparency")
+            alpha_kind, alpha_bbox = _classify_pixmap_alpha(pixmap)
             asset_path = image_dir / (
                 f"page_{page_number:03d}_inline_composite_"
                 f"{len(inline_blocks)}_{dpi}dpi.png"
@@ -995,7 +1077,61 @@ def _render_inline_image_composite(
             float(page_rect.x1),
             float(page_rect.y1),
         ),
-        source_digest=source_digest.hexdigest(),
+        source_digest=_inline_composite_source_digest(inline_blocks),
+        pixel_size=(int(pixmap.width), int(pixmap.height)),
+        alpha_kind=alpha_kind,
+        alpha_bbox_px=alpha_bbox,
+    )
+
+
+def _inline_composite_source_digest(
+    inline_blocks: list[tuple[dict, dict]],
+) -> str:
+    digest = hashlib.sha256()
+    for info, block in inline_blocks:
+        digest.update(bytes.fromhex(_inline_source_digest(info, block)))
+        transform = " ".join(_svg_number(value) for value in block["transform"])
+        digest.update(transform.encode("ascii"))
+    return digest.hexdigest()
+
+
+def _inline_image_page_fidelity_marker(
+    inline_blocks: list[tuple[dict, dict]],
+    *,
+    page: fitz.Page,
+    page_number: int,
+    options: ExtractionOptions,
+) -> ImagePlacement:
+    """Record compositing need without allocating a large transparent page raster."""
+
+    page_rect = page.rect
+    width = float(page_rect.width)
+    height = float(page_rect.height)
+    dpi = max(36, int(options.raster_dpi or 200))
+    pixel_size = (
+        max(1, int(math.ceil(width * dpi / 72.0))),
+        max(1, int(math.ceil(height * dpi / 72.0))),
+    )
+    return ImagePlacement(
+        page_number=page_number,
+        x_mm=0.0,
+        y_mm=0.0,
+        width_mm=width * MM_PER_PT * options.scale,
+        height_mm=height * MM_PER_PT * options.scale,
+        path="",
+        xref=0,
+        source_kind="inline_image_page_fidelity_required",
+        source_instance_count=len(inline_blocks),
+        source_bbox_pdf=(
+            float(page_rect.x0),
+            float(page_rect.y0),
+            float(page_rect.x1),
+            float(page_rect.y1),
+        ),
+        source_digest=_inline_composite_source_digest(inline_blocks),
+        pixel_size=pixel_size,
+        alpha_kind="compositing_required",
+        alpha_bbox_px=(0, 0, pixel_size[0], pixel_size[1]),
     )
 
 
@@ -1022,9 +1158,9 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
             if smask > 0 and not base_pix.alpha:
                 # Only merge when PyMuPDF handed back an opaque image. When the
                 # base pixmap already carries alpha, PyMuPDF has applied the
-                # soft mask itself -- verified on alvord-2013.pdf, where the
-                # base alpha channel is byte-identical to the soft mask's
-                # samples across every image on the page. Merging again is not
+                # soft mask itself -- verified on a representative source where
+                # the base alpha channel was byte-identical to the soft mask's
+                # samples for every page image. Merging again is not
                 # merely redundant: fz_new_pixmap_from_color_and_mask rejects a
                 # colour pixmap that has an alpha channel, which aborted the
                 # whole import for every text mode, not just raster.
@@ -1051,13 +1187,12 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
             if needs_rgb:
                 pix = fitz.Pixmap(fitz.csRGB, pix)
 
-            if pix.alpha:
-                alpha_samples = bytes(pix.samples)[pix.n - 1 :: pix.n]
-                if not any(alpha_samples):
-                    # A fully transparent source image has no visible PDF
-                    # contribution. Emitting an IMAGE entity can expose its
-                    # otherwise invisible boundary in CAD hosts.
-                    continue
+            alpha_kind, alpha_bbox = _classify_pixmap_alpha(pix)
+            if alpha_kind == "zero":
+                # A fully transparent source image has no visible PDF
+                # contribution. Emitting an IMAGE entity can expose its
+                # otherwise invisible boundary in CAD hosts.
+                continue
 
             mask_suffix = f"_smask_{smask}" if smask > 0 else ""
             img_path = image_dir / (
@@ -1095,6 +1230,9 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
                     source_kind="xobject_image",
                     source_instance_count=1,
                     source_bbox_pdf=(x0, y0, x1, y1),
+                    pixel_size=(int(pix.width), int(pix.height)),
+                    alpha_kind=alpha_kind,
+                    alpha_bbox_px=alpha_bbox,
                 )
             )
 
@@ -1106,15 +1244,30 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
             )
         )
         if use_composite:
-            placements.append(
-                _render_inline_image_composite(
-                    inline_blocks,
-                    page=page,
-                    page_number=page_number,
-                    options=options,
-                    image_dir=image_dir,
-                )
+            dpi = max(36, int(options.raster_dpi or 200))
+            projected_pixels = (
+                max(1, int(math.ceil(float(page.rect.width) * dpi / 72.0)))
+                * max(1, int(math.ceil(float(page.rect.height) * dpi / 72.0)))
             )
+            if projected_pixels > INLINE_IMAGE_COMPOSITE_MAX_PIXELS:
+                placements.append(
+                    _inline_image_page_fidelity_marker(
+                        inline_blocks,
+                        page=page,
+                        page_number=page_number,
+                        options=options,
+                    )
+                )
+            else:
+                placements.append(
+                    _render_inline_image_composite(
+                        inline_blocks,
+                        page=page,
+                        page_number=page_number,
+                        options=options,
+                        image_dir=image_dir,
+                    )
+                )
         else:
             placements.extend(
                 _extract_inline_images_individually(
@@ -1212,6 +1365,7 @@ def _render_page_raster(
                 if right <= left or bottom <= top:
                     raise ValueError("source text bbox maps to an empty raster region")
                 pix.set_rect(fitz.IRect(left, top, right, bottom), (0, 0, 0, 0))
+        alpha_kind, alpha_bbox = _classify_pixmap_alpha(pix)
         img_path = image_dir / f"page_{page_number:03d}_raster_{dpi}dpi.png"
         pix.save(str(img_path))
     except (RuntimeError, OSError, ValueError, TypeError):
@@ -1235,4 +1389,7 @@ def _render_page_raster(
             float(page.rect.x1),
             float(page.rect.y1),
         ),
+        pixel_size=(int(pix.width), int(pix.height)),
+        alpha_kind=alpha_kind,
+        alpha_bbox_px=alpha_bbox,
     )

@@ -21,10 +21,15 @@ from pdfcadcore.primitives import NormalizedText
 from dxf_text_builder import build_text
 from librecad_pdf_importer.core.document import (
     ExtractionOptions,
+    _classify_pixmap_alpha,
     _extract_images,
     extract_document,
 )
-from librecad_pdf_importer.exporters.dxf_exporter import DxfExportOptions, export_to_dxf
+from librecad_pdf_importer.exporters.dxf_exporter import (
+    DxfExportOptions,
+    _rectangular_opaque_crop,
+    export_to_dxf,
+)
 from librecad_pdf_importer.importer import run_import, write_import_report
 
 
@@ -393,9 +398,24 @@ class TestDxfPipeline(unittest.TestCase):
         self.assertEqual(len(list(drawing.modelspace().query("IMAGE"))), 1)
         self.assertTrue(
             any(
-                item.source_kind == "inline_image_composite"
+                item.source_kind == "page_raster_alpha_fidelity_fallback"
                 for item in run.config._source_provenance_objects
             )
+        )
+        delivered_image = next(iter(drawing.modelspace().query("IMAGE")))
+        delivered_def = drawing.entitydb.get(
+            str(delivered_image.dxf.image_def_handle)
+        )
+        delivered_pixmap = fitz.Pixmap(str(delivered_def.dxf.filename))
+        with fitz.open(source) as source_document:
+            reference_page = source_document[0].get_pixmap(
+                matrix=fitz.Matrix(2.0, 2.0),
+                alpha=False,
+            )
+        self.assertFalse(delivered_pixmap.alpha)
+        self.assertEqual(
+            delivered_pixmap.tobytes("png"),
+            reference_page.tobytes("png"),
         )
 
         report_path = self.tmp_path / "inline-dense-mixed_import_report.json"
@@ -531,7 +551,7 @@ class TestDxfPipeline(unittest.TestCase):
             expected_sha,
         )
 
-    def test_export_crops_and_mattes_alpha_images_for_librecad_save_stability(self) -> None:
+    def test_export_crops_rectangular_opaque_alpha_for_save_stability(self) -> None:
         source = self.tmp_path / "alpha-crop.pdf"
         pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 6, 6), 1)
         for y in range(6):
@@ -599,6 +619,430 @@ class TestDxfPipeline(unittest.TestCase):
                 for actual, expected in zip(actual_size, expected_size, strict=True)
             )
         )
+
+    def test_oversized_rectangular_alpha_crop_uses_bounded_page_surface(self) -> None:
+        source = self.tmp_path / "oversized-alpha-crop.pdf"
+        output = self.tmp_path / "oversized-alpha-crop.dxf"
+        pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 8, 8), 1)
+        for y in range(8):
+            for x in range(8):
+                pixmap.set_pixel(x, y, (0, 0, 0, 0))
+        for y in range(1, 7):
+            for x in range(1, 7):
+                pixmap.set_pixel(x, y, (0, 128, 255, 255))
+        document = fitz.open()
+        page = document.new_page(width=100, height=100)
+        page.insert_image(fitz.Rect(10, 10, 90, 90), stream=pixmap.tobytes("png"))
+        document.save(source)
+        document.close()
+
+        run = run_import(
+            str(source),
+            mode="vector",
+            overrides={"pages": "1", "raster_dpi": 72, "import_text": False},
+        )
+        with patch(
+            "librecad_pdf_importer.exporters.dxf_exporter.RECTANGULAR_CROP_MAX_PIXELS",
+            1,
+        ):
+            result = export_to_dxf(
+                run.extraction,
+                str(output),
+                DxfExportOptions(include_text=False, provenance_opts=run.config),
+            )
+
+        self.assertEqual(result.image_count, 1)
+        drawing = ezdxf.readfile(output)
+        image = next(iter(drawing.modelspace().query("IMAGE")))
+        image_definition = drawing.entitydb.get(str(image.dxf.image_def_handle))
+        delivered = fitz.Pixmap(str(image_definition.dxf.filename))
+        with fitz.open(source) as source_document:
+            expected = source_document[0].get_pixmap(
+                matrix=fitz.Matrix(1, 1),
+                colorspace=fitz.csRGB,
+                alpha=False,
+            )
+        self.assertFalse(delivered.alpha)
+        self.assertEqual(delivered.tobytes("png"), expected.tobytes("png"))
+        self.assertIn("host-safe opaque page", run.extraction.pages[0].resolved_reason)
+
+    def test_alpha_classifier_uses_zero_copy_samples_view_when_available(self) -> None:
+        class ZeroCopyPixmap:
+            width = 1
+            height = 1
+            n = 4
+            stride = 4
+            alpha = True
+            samples_mv = memoryview(bytes((1, 2, 3, 255)))
+
+            @property
+            def samples(self):
+                raise AssertionError("full raster copy was accessed")
+
+        self.assertEqual(
+            _classify_pixmap_alpha(ZeroCopyPixmap()),
+            ("opaque", (0, 0, 1, 1)),
+        )
+
+    def test_rectangular_alpha_crop_normalizes_grayscale_to_rgb(self) -> None:
+        source = self.tmp_path / "grayscale-alpha.png"
+        pixmap = fitz.Pixmap(fitz.csGRAY, fitz.IRect(0, 0, 4, 4), 1)
+        for y in range(4):
+            for x in range(4):
+                pixmap.set_pixel(x, y, (0, 0))
+        for y in range(1, 3):
+            for x in range(1, 3):
+                pixmap.set_pixel(x, y, (128, 255))
+        pixmap.save(source)
+
+        delivered = fitz.Pixmap(
+            _rectangular_opaque_crop(source, (1, 1, 3, 3))
+        )
+        self.assertFalse(delivered.alpha)
+        self.assertEqual(int(delivered.colorspace.n), 3)
+        self.assertEqual((delivered.width, delivered.height), (2, 2))
+        self.assertEqual(delivered.pixel(0, 0), (128, 128, 128))
+
+    def test_text_only_hybrid_omits_zero_ink_backing_image(self) -> None:
+        source = self.tmp_path / "text-only-hybrid.pdf"
+        output = self.tmp_path / "text-only-hybrid.dxf"
+        document = fitz.open()
+        page = document.new_page(width=200, height=100)
+        page.insert_text((20, 50), "EDITABLE", fontsize=12)
+        document.save(source)
+        document.close()
+
+        run = run_import(
+            str(source),
+            mode="hybrid",
+            overrides={"pages": "1", "raster_dpi": 72, "text_mode": "text"},
+        )
+        result = export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(text_mode="text", provenance_opts=run.config),
+        )
+        drawing = ezdxf.readfile(output)
+
+        self.assertEqual(result.image_count, 0)
+        self.assertEqual(len(list(drawing.modelspace().query("IMAGE"))), 0)
+        self.assertGreater(len(run.extraction.pages[0].page_data.text_items), 0)
+        self.assertGreater(result.entity_count, 0)
+        self.assertTrue(result.text_deliveries)
+
+    def test_partial_alpha_over_vector_uses_exact_opaque_page_fallback(self) -> None:
+        source = self.tmp_path / "partial-alpha-over-vector.pdf"
+        output = self.tmp_path / "partial-alpha-over-vector.dxf"
+        alpha = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 4, 4), 1)
+        for y in range(4):
+            for x in range(4):
+                alpha.set_pixel(x, y, (255, 0, 0, 128))
+        document = fitz.open()
+        page = document.new_page(width=100, height=100)
+        page.draw_rect(page.rect, color=(0, 0, 0), fill=(0, 0, 0))
+        page.insert_image(fitz.Rect(25, 25, 75, 75), stream=alpha.tobytes("png"))
+        document.save(source)
+        document.close()
+
+        run = run_import(
+            str(source),
+            mode="vector",
+            overrides={"pages": "1", "raster_dpi": 72, "import_text": False},
+        )
+        result = export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(include_text=False, provenance_opts=run.config),
+        )
+        drawing = ezdxf.readfile(output)
+        images = list(drawing.modelspace().query("IMAGE"))
+        self.assertEqual(result.image_count, 1)
+        self.assertEqual(len(images), 1)
+        image_def = drawing.entitydb.get(str(images[0].dxf.image_def_handle))
+        delivered = fitz.Pixmap(str(image_def.dxf.filename))
+        with fitz.open(source) as reference_document:
+            reference = reference_document[0].get_pixmap(
+                matrix=fitz.Matrix(1, 1), alpha=False
+            )
+        self.assertFalse(delivered.alpha)
+        self.assertEqual(delivered.tobytes("png"), reference.tobytes("png"))
+        self.assertEqual(run.extraction.pages[0].resolved_mode, "hybrid")
+        self.assertIn("host-safe opaque page", run.extraction.pages[0].resolved_reason)
+
+    def test_compositing_fallback_tiles_bound_large_page_assets(self) -> None:
+        source = self.tmp_path / "partial-alpha-tiled.pdf"
+        output = self.tmp_path / "partial-alpha-tiled.dxf"
+        alpha = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 2, 2), 1)
+        for y in range(2):
+            for x in range(2):
+                alpha.set_pixel(x, y, (0, 0, 255, 128))
+        document = fitz.open()
+        page = document.new_page(width=130, height=130)
+        page.insert_image(fitz.Rect(10, 10, 120, 120), stream=alpha.tobytes("png"))
+        document.save(source)
+        document.close()
+
+        run = run_import(
+            str(source),
+            mode="vector",
+            overrides={"pages": "1", "raster_dpi": 72, "import_text": False},
+        )
+        with patch(
+            "librecad_pdf_importer.exporters.dxf_exporter.TERMINAL_TILE_PIXELS",
+            64,
+        ):
+            result = export_to_dxf(
+                run.extraction,
+                str(output),
+                DxfExportOptions(include_text=False, provenance_opts=run.config),
+            )
+        drawing = ezdxf.readfile(output)
+        images = list(drawing.modelspace().query("IMAGE"))
+        self.assertEqual(result.image_count, 9)
+        self.assertEqual(len(images), 9)
+        for image in images:
+            image_def = drawing.entitydb.get(str(image.dxf.image_def_handle))
+            delivered = fitz.Pixmap(str(image_def.dxf.filename))
+            self.assertFalse(delivered.alpha)
+            self.assertLessEqual(delivered.width, 64)
+            self.assertLessEqual(delivered.height, 64)
+
+    def test_large_inline_composite_uses_lightweight_page_fidelity_marker(self) -> None:
+        source = self.tmp_path / "inline-marker.pdf"
+        output = self.tmp_path / "inline-marker.dxf"
+        self._build_inline_image_pdf(
+            source,
+            image_count=300,
+            include_vector_content=True,
+            unique_colors=True,
+        )
+        with patch(
+            "librecad_pdf_importer.core.document.INLINE_IMAGE_COMPOSITE_MAX_PIXELS",
+            1,
+        ):
+            run = run_import(
+                str(source),
+                mode="vector",
+                overrides={"pages": "1", "raster_dpi": 72},
+            )
+        marker = run.extraction.pages[0].images[0]
+        self.assertEqual(marker.source_kind, "inline_image_page_fidelity_required")
+        self.assertEqual(marker.path, "")
+        self.assertEqual(marker.alpha_kind, "compositing_required")
+
+        result = export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(provenance_opts=run.config),
+        )
+        self.assertEqual(result.image_count, 1)
+        drawing = ezdxf.readfile(output)
+        delivered = next(iter(drawing.modelspace().query("IMAGE")))
+        image_def = drawing.entitydb.get(str(delivered.dxf.image_def_handle))
+        actual = fitz.Pixmap(str(image_def.dxf.filename))
+        with fitz.open(source) as document:
+            expected = document[0].get_pixmap(
+                matrix=fitz.Matrix(1, 1),
+                colorspace=fitz.csRGB,
+                alpha=False,
+            )
+        self.assertEqual(actual.tobytes("png"), expected.tobytes("png"))
+
+    def test_tiled_page_surface_matches_monolithic_with_bounded_antialias_delta(
+        self,
+    ) -> None:
+        for rotation in (0, 90, 180, 270):
+            with self.subTest(rotation=rotation):
+                source = self.tmp_path / f"tile-transform-{rotation}.pdf"
+                output = self.tmp_path / f"tile-transform-{rotation}.dxf"
+                alpha = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 3, 3), 1)
+                for y in range(3):
+                    for x in range(3):
+                        alpha.set_pixel(x, y, (255, 0, 0, 128))
+                document = fitz.open()
+                page = document.new_page(width=180, height=140)
+                page.draw_line((7, 11), (170, 129), color=(0, 0, 1), width=1)
+                page.insert_image(
+                    fitz.Rect(30, 30, 91, 92),
+                    stream=alpha.tobytes("png"),
+                )
+                page.set_cropbox(fitz.Rect(7, 11, 170, 129))
+                page.set_rotation(rotation)
+                document.xref_set_key(page.xref, "UserUnit", "2")
+                document.save(source)
+                document.close()
+
+                run = run_import(
+                    str(source),
+                    mode="vector",
+                    overrides={"pages": "1", "raster_dpi": 72, "import_text": False},
+                )
+                with patch(
+                    "librecad_pdf_importer.exporters.dxf_exporter.TERMINAL_TILE_PIXELS",
+                    64,
+                ):
+                    export_to_dxf(
+                        run.extraction,
+                        str(output),
+                        DxfExportOptions(include_text=False, provenance_opts=run.config),
+                    )
+
+                drawing = ezdxf.readfile(output)
+                with fitz.open(source) as source_document:
+                    expected = source_document[0].get_pixmap(
+                        matrix=fitz.Matrix(1, 1),
+                        colorspace=fitz.csRGB,
+                        alpha=False,
+                    )
+                width = int(expected.width)
+                height = int(expected.height)
+                reconstructed = bytearray(width * height * 3)
+                coverage = bytearray(width * height)
+                page_width = float(run.extraction.pages[0].page_data.width)
+                page_height = float(run.extraction.pages[0].page_data.height)
+                images = list(drawing.modelspace().query("IMAGE"))
+                self.assertGreater(len(images), 1)
+                for image in images:
+                    image_def = drawing.entitydb.get(str(image.dxf.image_def_handle))
+                    tile = fitz.Pixmap(str(image_def.dxf.filename))
+                    tile_width = int(tile.width)
+                    tile_height = int(tile.height)
+                    width_units = (
+                        math.hypot(image.dxf.u_pixel.x, image.dxf.u_pixel.y)
+                        * float(image.dxf.image_size.x)
+                    )
+                    height_units = (
+                        math.hypot(image.dxf.v_pixel.x, image.dxf.v_pixel.y)
+                        * float(image.dxf.image_size.y)
+                    )
+                    left = round(float(image.dxf.insert.x) / page_width * width)
+                    bottom = round(float(image.dxf.insert.y) / page_height * height)
+                    top = height - bottom - round(height_units / page_height * height)
+                    self.assertEqual(
+                        round(width_units / page_width * width),
+                        tile_width,
+                    )
+                    samples = memoryview(tile.samples)
+                    for row in range(tile_height):
+                        source_start = row * tile_width * 3
+                        target_start = ((top + row) * width + left) * 3
+                        reconstructed[
+                            target_start : target_start + tile_width * 3
+                        ] = samples[source_start : source_start + tile_width * 3]
+                        coverage_start = (top + row) * width + left
+                        coverage[
+                            coverage_start : coverage_start + tile_width
+                        ] = b"\x01" * tile_width
+                self.assertTrue(coverage and all(coverage))
+                expected_samples = bytes(expected.samples)
+                channel_deltas = [
+                    abs(actual - reference)
+                    for actual, reference in zip(
+                        reconstructed,
+                        expected_samples,
+                        strict=True,
+                    )
+                ]
+                max_channel_delta = max(channel_deltas, default=0)
+                changed_ratio = sum(delta != 0 for delta in channel_deltas) / len(
+                    channel_deltas
+                )
+                mean_channel_delta = sum(channel_deltas) / len(channel_deltas)
+                # MuPDF rerasterizes anti-aliased edges for each bounded clip.
+                # These strict aggregate bounds accept sparse edge rounding
+                # while rejecting a visible seam, displaced content, or a
+                # wrong transparency composite.
+                self.assertLessEqual(max_channel_delta, 32)
+                self.assertLessEqual(changed_ratio, 0.02)
+                self.assertLessEqual(mean_channel_delta, 0.25)
+
+    def test_page_surface_reduces_dpi_to_stay_inside_resource_budget(self) -> None:
+        source = self.tmp_path / "resource-bounded-surface.pdf"
+        output = self.tmp_path / "resource-bounded-surface.dxf"
+        alpha = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 2, 2), 1)
+        for y in range(2):
+            for x in range(2):
+                alpha.set_pixel(x, y, (255, 0, 0, 128))
+        document = fitz.open()
+        page = document.new_page(width=200, height=100)
+        page.insert_image(fitz.Rect(10, 10, 190, 90), stream=alpha.tobytes("png"))
+        document.save(source)
+        document.close()
+
+        run = run_import(
+            str(source),
+            mode="vector",
+            overrides={"pages": "1", "raster_dpi": 300, "import_text": False},
+        )
+        with (
+            patch(
+                "librecad_pdf_importer.exporters.dxf_exporter.TERMINAL_MAX_PAGE_PIXELS",
+                20_000,
+            ),
+            patch(
+                "librecad_pdf_importer.exporters.dxf_exporter.TERMINAL_MAX_PAGE_DIMENSION",
+                200,
+            ),
+            patch(
+                "librecad_pdf_importer.exporters.dxf_exporter.TERMINAL_TILE_PIXELS",
+                64,
+            ),
+        ):
+            result = export_to_dxf(
+                run.extraction,
+                str(output),
+                DxfExportOptions(include_text=False, provenance_opts=run.config),
+            )
+
+        drawing = ezdxf.readfile(output)
+        delivered_pixels = 0
+        for image in drawing.modelspace().query("IMAGE"):
+            image_definition = drawing.entitydb.get(str(image.dxf.image_def_handle))
+            tile = fitz.Pixmap(str(image_definition.dxf.filename))
+            delivered_pixels += int(tile.width) * int(tile.height)
+            self.assertLessEqual(tile.width, 64)
+            self.assertLessEqual(tile.height, 64)
+            self.assertFalse(tile.alpha)
+        self.assertEqual(result.image_count, 8)
+        self.assertEqual(delivered_pixels, 20_000)
+        self.assertIn("resource-bounded 72.0 DPI", run.extraction.pages[0].resolved_reason)
+
+    def test_page_surface_fails_closed_below_minimum_safe_dpi(self) -> None:
+        source = self.tmp_path / "over-budget-surface.pdf"
+        output = self.tmp_path / "over-budget-surface.dxf"
+        alpha = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 2, 2), 1)
+        for y in range(2):
+            for x in range(2):
+                alpha.set_pixel(x, y, (255, 0, 0, 128))
+        document = fitz.open()
+        page = document.new_page(width=100, height=100)
+        page.insert_image(fitz.Rect(10, 10, 90, 90), stream=alpha.tobytes("png"))
+        document.save(source)
+        document.close()
+
+        run = run_import(
+            str(source),
+            mode="vector",
+            overrides={"pages": "1", "raster_dpi": 300, "import_text": False},
+        )
+        with (
+            patch(
+                "librecad_pdf_importer.exporters.dxf_exporter.TERMINAL_MAX_PAGE_PIXELS",
+                100,
+            ),
+            patch(
+                "librecad_pdf_importer.exporters.dxf_exporter.TERMINAL_MAX_PAGE_DIMENSION",
+                10,
+            ),
+            self.assertRaisesRegex(RuntimeError, "exceeds the safe fidelity-surface"),
+        ):
+            export_to_dxf(
+                run.extraction,
+                str(output),
+                DxfExportOptions(include_text=False, provenance_opts=run.config),
+            )
+        self.assertFalse(output.exists())
+        self.assertFalse(output.with_name(f"{output.stem}_assets").exists())
 
     def test_import_run_close_reclaims_only_importer_owned_image_workspace(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})

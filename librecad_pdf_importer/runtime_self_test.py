@@ -23,7 +23,7 @@ def load_runtime_dependencies() -> None:
     from ezdxf.addons import text2path  # noqa: F401
     from ezdxf.fonts import fonts as ezdxf_fonts  # noqa: F401
     from ezdxf.fonts.font_face import FontFace  # noqa: F401
-    from PIL import Image  # noqa: F401
+    import numpy  # noqa: F401
     import librecad_pdf_importer  # noqa: F401
     import pdfcadcore  # noqa: F401
 
@@ -43,6 +43,6 @@ def run_runtime_self_test() -> int:
         return 1
     print(
         "LibreCAD PDF Importer self-test OK "
-        "(PyMuPDF, ezdxf font/text2path, FontTools, Matplotlib, Pillow)"
+        "(PyMuPDF, ezdxf font/text2path, FontTools, Matplotlib, NumPy)"
     )
     return 0

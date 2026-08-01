@@ -3,27 +3,30 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import hashlib
-from io import BytesIO
 import math
 from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
-import warnings
 
 import ezdxf
+import numpy as np
 from ezdxf import path as ezdxf_path
 from ezdxf.colors import RGB, aci2rgb, rgb2int
 from ezdxf.units import MM
-from PIL import Image
 try:
     import pymupdf as fitz  # PyMuPDF >= 1.24 preferred name
 except ImportError:
     import fitz  # Legacy fallback
 
-from ..core.document import DocumentExtraction
+from ..core.document import (
+    DocumentExtraction,
+    ImagePlacement,
+    _classify_pixmap_alpha,
+)
 
 from pdfcadcore.import_config import ImportConfig
+from pdfcadcore.fitz_loader import safe_open
 from pdfcadcore.primitive_extractor import (
     _page_rotation_transform,
     _transform_pdf_point,
@@ -35,6 +38,15 @@ from dxf_text_builder import (
     build_text,
     reset_text_styles,
 )
+
+
+TERMINAL_TILE_PIXELS = 1536
+TERMINAL_TILE_BLEED_PIXELS = 4
+TERMINAL_MAX_PAGE_PIXELS = 134_217_728
+TERMINAL_MAX_PAGE_DIMENSION = 24_576
+TERMINAL_MAX_TILES = 256
+TERMINAL_MIN_DPI = 36.0
+RECTANGULAR_CROP_MAX_PIXELS = 4_000_000
 
 
 @dataclass
@@ -221,6 +233,32 @@ def _verify_serialized_text_deliveries(
         referenced_handles = [
             str(value) for value in delivery.get("referenced_entity_handles") or []
         ]
+        verified_attempts = [
+            attempt
+            for attempt in delivery.get("attempts") or []
+            if attempt.get("outcome") == "verified"
+        ]
+        if len(verified_attempts) != 1:
+            raise RuntimeError(
+                f"serialized text delivery {source_id}: expected one verified attempt"
+            )
+        final_attempt = verified_attempts[0]
+        final_evidence = dict(final_attempt.get("evidence") or {})
+        zero_ink_omitted = bool(
+            representation == "raster" and final_evidence.get("zero_ink_omitted") is True
+        )
+        if zero_ink_omitted:
+            if entity_handles or support_handles or referenced_handles:
+                raise RuntimeError(
+                    f"serialized text delivery {source_id}: zero-ink omission owns entities"
+                )
+            if final_attempt.get("entity_handles") or final_attempt.get(
+                "support_entity_handles"
+            ):
+                raise RuntimeError(
+                    f"serialized text delivery {source_id}: zero-ink attempt owns entities"
+                )
+            continue
         if not entity_handles or main_handles.intersection(entity_handles):
             raise RuntimeError(
                 f"serialized text delivery {source_id}: missing or duplicate main handles"
@@ -235,6 +273,32 @@ def _verify_serialized_text_deliveries(
                 f"serialized text delivery {source_id}: expected {representation}, "
                 f"found {sorted(actual_types)}"
             )
+        if representation == "raster":
+            if (
+                final_evidence.get("host_safe_opaque_image_required") is not True
+                or final_evidence.get("host_safe_opaque_image_verified") is not True
+            ):
+                raise RuntimeError(
+                    f"serialized text delivery {source_id}: missing host-safe "
+                    "opaque-image evidence"
+                )
+            for entity in entities:
+                image_definition = _serialized_entity(
+                    doc,
+                    str(entity.dxf.image_def_handle),
+                    source_id,
+                )
+                asset_path = Path(str(image_definition.dxf.filename))
+                if not asset_path.is_file():
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: raster asset missing"
+                    )
+                raster_asset = fitz.Pixmap(str(asset_path))
+                if bool(raster_asset.alpha):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: raster asset is not "
+                        "host-safe opaque RGB"
+                    )
         if representation == "3d_text":
             for entity in entities:
                 depth = float(getattr(entity.dxf, "thickness", 0.0) or 0.0)
@@ -259,16 +323,6 @@ def _verify_serialized_text_deliveries(
         for handle in support_handles + referenced_handles:
             _serialized_entity(doc, handle, source_id)
 
-        verified_attempts = [
-            attempt
-            for attempt in delivery.get("attempts") or []
-            if attempt.get("outcome") == "verified"
-        ]
-        if len(verified_attempts) != 1:
-            raise RuntimeError(
-                f"serialized text delivery {source_id}: expected one verified attempt"
-            )
-        final_attempt = verified_attempts[0]
         if set(map(str, final_attempt.get("entity_handles") or [])) != set(
             entity_handles
         ) or set(map(str, final_attempt.get("support_entity_handles") or [])) != set(
@@ -606,90 +660,193 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _host_safe_image_asset(
+def _placement_alpha_profile(
     source_path: Path,
-    content: bytes,
-    size_px: Tuple[int, int],
-) -> Tuple[bytes, Tuple[int, int], Tuple[int, int, int, int]]:
-    """Crop alpha margins and matte pixels so LibreCAD saves cannot expose black."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", Image.DecompressionBombWarning)
-        with Image.open(BytesIO(content)) as source:
-            source.load()
-            actual_size = (int(source.width), int(source.height))
-            if actual_size != size_px:
-                raise RuntimeError(
-                    f"decoded image dimensions changed: {source_path}: "
-                    f"{actual_size} != {size_px}"
-                )
-            has_alpha = "A" in source.getbands() or "transparency" in source.info
-            full_box = (0, 0, size_px[0], size_px[1])
-            if not has_alpha:
-                return content, size_px, full_box
-            # Avoid duplicating hundreds of megabytes for large RGBA plan sheets.
-            rgba = source if source.mode == "RGBA" else source.convert("RGBA")
-            alpha = rgba.getchannel("A")
-            alpha_min, _alpha_max = alpha.getextrema()
-            if int(alpha_min) == 255:
-                return content, size_px, full_box
-            crop_box = alpha.getbbox()
-            if crop_box is None:
-                raise RuntimeError(
-                    f"fully transparent image asset cannot be host-safely serialized: {source_path}"
-                )
-            cropped = rgba.crop(crop_box)
-            matte = Image.new("RGB", cropped.size, (255, 255, 255))
-            matte.paste(cropped, mask=cropped.getchannel("A"))
-            output = BytesIO()
-            matte.save(output, format="PNG", compress_level=9, optimize=False)
-            prepared = output.getvalue()
-            if not prepared.startswith(b"\x89PNG\r\n\x1a\n"):
-                raise RuntimeError(f"host-safe image encoding failed: {source_path}")
-            return prepared, (int(cropped.width), int(cropped.height)), crop_box
+    placements: List[ImagePlacement],
+) -> Tuple[Tuple[int, int], str, Tuple[int, int, int, int]]:
+    """Use extraction-time alpha facts, decoding only legacy/caller-owned assets."""
+
+    known = {
+        (
+            tuple(placement.pixel_size or ()),
+            str(placement.alpha_kind or "unknown"),
+            tuple(placement.alpha_bbox_px or ()),
+        )
+        for placement in placements
+        if placement.pixel_size
+        and placement.alpha_kind != "unknown"
+        and placement.alpha_bbox_px is not None
+    }
+    if len(known) > 1:
+        raise RuntimeError(f"image alpha metadata conflicts: {source_path}")
+    if known:
+        raw_size, alpha_kind, raw_bbox = next(iter(known))
+        size_px = (int(raw_size[0]), int(raw_size[1]))
+        bbox = tuple(int(value) for value in raw_bbox)
+        return size_px, alpha_kind, bbox  # type: ignore[return-value]
+
+    try:
+        pixmap = fitz.Pixmap(str(source_path))
+        size_px = (int(pixmap.width), int(pixmap.height))
+        alpha_kind, bbox = _classify_pixmap_alpha(pixmap)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"image asset is unreadable: {source_path}: {exc}") from exc
+    return size_px, alpha_kind, bbox
+
+
+def _rectangular_opaque_crop(
+    source_path: Path,
+    crop_box: Tuple[int, int, int, int],
+) -> bytes:
+    """Encode only a proven fully opaque rectangular support region."""
+
+    left, top, right, bottom = crop_box
+    try:
+        source = fitz.Pixmap(str(source_path))
+        if source.colorspace is None or int(source.colorspace.n) != 3:
+            source = fitz.Pixmap(fitz.csRGB, source)
+        channels = int(source.n)
+        stride = int(source.stride)
+        rows = np.frombuffer(source.samples_mv, dtype=np.uint8).reshape(
+            int(source.height),
+            stride,
+        )
+        pixels = rows[:, : int(source.width) * channels].reshape(
+            int(source.height),
+            int(source.width),
+            channels,
+        )
+        rgb = np.ascontiguousarray(pixels[top:bottom, left:right, :3])
+        clipped = fitz.Pixmap(
+            fitz.csRGB,
+            int(right - left),
+            int(bottom - top),
+            rgb.tobytes(),
+            False,
+        )
+        prepared = bytes(clipped.tobytes("png"))
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"image crop failed: {source_path}: {exc}") from exc
+    if not prepared.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise RuntimeError(f"host-safe image crop encoding failed: {source_path}")
+    return prepared
 
 
 def _stage_image_assets(
     extraction: DocumentExtraction,
     asset_root: Path,
     transaction: _AssetTransaction,
-) -> Dict[str, _StagedImageAsset]:
+) -> Tuple[Dict[str, _StagedImageAsset], set[str], set[int]]:
     """Copy every extracted image into this accepted DXF's owned asset set."""
 
     from pdfcadcore.atomic_io import atomic_write_bytes
 
+    marker_kind = "inline_image_page_fidelity_required"
+    marker_pages = {
+        int(placement.page_number)
+        for page in extraction.pages
+        for placement in page.images
+        if str(placement.source_kind) == marker_kind
+    }
     source_paths = sorted(
         {
             _normalized_image_source_path(str(placement.path))
             for page in extraction.pages
             for placement in page.images
+            if str(placement.source_kind) != marker_kind
         }
     )
     if not source_paths:
-        return {}
+        return {}, set(), marker_pages
 
     image_root = asset_root / "images"
-    image_root.mkdir(parents=True, exist_ok=True)
-    transaction.register_directory(asset_root.parent)
-    transaction.register_directory(asset_root)
-    transaction.register_directory(image_root)
+    image_root_ready = False
 
     staged_by_digest: Dict[str, Path] = {}
     staged_by_source: Dict[str, _StagedImageAsset] = {}
+    omitted_sources: set[str] = set()
+    compositing_pages: set[int] = set(marker_pages)
+    placements_by_source: Dict[str, List[ImagePlacement]] = {}
+    profiles_by_source: Dict[
+        str,
+        Tuple[Tuple[int, int], str, Tuple[int, int, int, int]],
+    ] = {}
+    for page in extraction.pages:
+        for placement in page.images:
+            if str(placement.source_kind) == marker_kind:
+                continue
+            placements_by_source.setdefault(
+                _normalized_image_source_path(str(placement.path)), []
+            ).append(placement)
     for source_key in source_paths:
         source_path = Path(source_key)
         if not source_path.is_file():
             raise RuntimeError(f"image asset is missing: {source_path}")
+        size_px, alpha_kind, crop_box_px = _placement_alpha_profile(
+            source_path,
+            placements_by_source[source_key],
+        )
+        profiles_by_source[source_key] = (size_px, alpha_kind, crop_box_px)
+        if alpha_kind == "zero":
+            omitted_sources.add(source_key)
+        elif (
+            alpha_kind == "rectangular_opaque"
+            and (crop_box_px[2] - crop_box_px[0])
+            * (crop_box_px[3] - crop_box_px[1])
+            > RECTANGULAR_CROP_MAX_PIXELS
+        ):
+            profiles_by_source[source_key] = (
+                size_px,
+                "compositing_required",
+                crop_box_px,
+            )
+            compositing_pages.update(
+                int(placement.page_number)
+                for placement in placements_by_source[source_key]
+            )
+        elif alpha_kind == "compositing_required":
+            compositing_pages.update(
+                int(placement.page_number)
+                for placement in placements_by_source[source_key]
+            )
+
+    for source_key in source_paths:
+        if source_key in omitted_sources:
+            continue
+        placements = placements_by_source[source_key]
+        if all(
+            int(placement.page_number) in compositing_pages
+            for placement in placements
+        ):
+            continue
+        if not image_root_ready:
+            image_root.mkdir(parents=True, exist_ok=True)
+            transaction.register_directory(asset_root.parent)
+            transaction.register_directory(asset_root)
+            transaction.register_directory(image_root)
+            image_root_ready = True
+        source_path = Path(source_key)
+        size_px, alpha_kind, crop_box_px = profiles_by_source[source_key]
         try:
             content = source_path.read_bytes()
-            size_px = _image_size_pixels(str(source_path))
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        except OSError as exc:
             raise RuntimeError(f"image asset is unreadable: {source_path}: {exc}") from exc
         if not content:
             raise RuntimeError(f"image asset is empty: {source_path}")
-
-        prepared, prepared_size_px, crop_box_px = _host_safe_image_asset(
-            source_path, content, size_px
-        )
+        if alpha_kind == "rectangular_opaque":
+            prepared = _rectangular_opaque_crop(source_path, crop_box_px)
+            prepared_size_px = (
+                crop_box_px[2] - crop_box_px[0],
+                crop_box_px[3] - crop_box_px[1],
+            )
+        elif alpha_kind == "opaque":
+            prepared = content
+            prepared_size_px = size_px
+            crop_box_px = (0, 0, size_px[0], size_px[1])
+        else:
+            raise RuntimeError(
+                f"unsupported image alpha classification {alpha_kind}: {source_path}"
+            )
         digest = hashlib.sha256(prepared).hexdigest()
         staged_path = staged_by_digest.get(digest)
         if staged_path is None:
@@ -719,7 +876,189 @@ def _stage_image_assets(
         )
         staged_by_source[source_key] = staged
 
-    return staged_by_source
+    return staged_by_source, omitted_sources, compositing_pages
+
+
+def _render_terminal_page_tiles(
+    extraction: DocumentExtraction,
+    page_number: int,
+    dpi: int,
+    asset_root: Path,
+    transaction: _AssetTransaction,
+) -> Tuple[List[ImagePlacement], Dict[str, _StagedImageAsset], float]:
+    """Render an opaque, host-safe page surface in memory-bounded tiles."""
+
+    from pdfcadcore.atomic_io import atomic_write_bytes
+
+    extracted_page = next(
+        page
+        for page in extraction.pages
+        if int(page.page_data.page_number) == int(page_number)
+    )
+    requested_dpi = max(TERMINAL_MIN_DPI, float(dpi or 200))
+    image_root = asset_root / "images"
+    image_root.mkdir(parents=True, exist_ok=True)
+    transaction.register_directory(asset_root.parent)
+    transaction.register_directory(asset_root)
+    transaction.register_directory(image_root)
+
+    placements: List[ImagePlacement] = []
+    staged_assets: Dict[str, _StagedImageAsset] = {}
+    staged_by_digest: Dict[str, Path] = {}
+    with safe_open(extraction.pdf_path) as document:
+        source_page = document[int(page_number) - 1]
+        base_width = float(source_page.rect.width)
+        base_height = float(source_page.rect.height)
+        if base_width <= 0.0 or base_height <= 0.0:
+            raise RuntimeError(f"page {page_number} has invalid physical dimensions")
+        requested_zoom = requested_dpi / 72.0
+        pixel_budget_zoom = math.sqrt(
+            float(TERMINAL_MAX_PAGE_PIXELS) / (base_width * base_height)
+        )
+        dimension_budget_zoom = min(
+            float(TERMINAL_MAX_PAGE_DIMENSION) / base_width,
+            float(TERMINAL_MAX_PAGE_DIMENSION) / base_height,
+        )
+        zoom = min(requested_zoom, pixel_budget_zoom, dimension_budget_zoom)
+        effective_dpi = zoom * 72.0
+        if effective_dpi + 1e-9 < TERMINAL_MIN_DPI:
+            raise RuntimeError(
+                f"page {page_number} exceeds the safe fidelity-surface resource "
+                f"budget even at {TERMINAL_MIN_DPI:g} DPI"
+            )
+        matrix = fitz.Matrix(zoom, zoom)
+        rendered_bounds = (source_page.rect * matrix).irect
+        full_width = int(rendered_bounds.width)
+        full_height = int(rendered_bounds.height)
+        if full_width <= 0 or full_height <= 0:
+            raise RuntimeError(f"page {page_number} rendered to an empty image")
+
+        tile_limit = max(64, int(TERMINAL_TILE_PIXELS))
+        tile_count = math.ceil(full_width / tile_limit) * math.ceil(
+            full_height / tile_limit
+        )
+        if tile_count > TERMINAL_MAX_TILES:
+            raise RuntimeError(
+                f"page {page_number} requires {tile_count} fidelity tiles; safe "
+                f"maximum is {TERMINAL_MAX_TILES}"
+            )
+        for top_px in range(0, full_height, tile_limit):
+            bottom_px = min(full_height, top_px + tile_limit)
+            for left_px in range(0, full_width, tile_limit):
+                right_px = min(full_width, left_px + tile_limit)
+                bleed = max(0, int(TERMINAL_TILE_BLEED_PIXELS))
+                render_left = max(0, left_px - bleed)
+                render_top = max(0, top_px - bleed)
+                render_right = min(full_width, right_px + bleed)
+                render_bottom = min(full_height, bottom_px + bleed)
+                render_clip = fitz.Rect(
+                    float(source_page.rect.x0) + float(render_left) / zoom,
+                    float(source_page.rect.y0) + float(render_top) / zoom,
+                    float(source_page.rect.x0) + float(render_right) / zoom,
+                    float(source_page.rect.y0) + float(render_bottom) / zoom,
+                )
+                rendered = source_page.get_pixmap(
+                    matrix=matrix,
+                    clip=render_clip,
+                    colorspace=fitz.csRGB,
+                    alpha=False,
+                )
+                rendered_size = (int(rendered.width), int(rendered.height))
+                expected_rendered_size = (
+                    render_right - render_left,
+                    render_bottom - render_top,
+                )
+                if rendered_size != expected_rendered_size:
+                    raise RuntimeError(
+                        f"page {page_number} bleed tile dimensions changed: "
+                        f"expected {expected_rendered_size}, got {rendered_size}"
+                    )
+                channels = int(rendered.n)
+                rows = np.frombuffer(rendered.samples_mv, dtype=np.uint8).reshape(
+                    int(rendered.height),
+                    int(rendered.stride),
+                )
+                pixels = rows[:, : int(rendered.width) * channels].reshape(
+                    int(rendered.height),
+                    int(rendered.width),
+                    channels,
+                )
+                crop_left = left_px - render_left
+                crop_top = top_px - render_top
+                tile_rgb = np.ascontiguousarray(
+                    pixels[
+                        crop_top : crop_top + (bottom_px - top_px),
+                        crop_left : crop_left + (right_px - left_px),
+                        :3,
+                    ]
+                )
+                pixmap = fitz.Pixmap(
+                    fitz.csRGB,
+                    int(right_px - left_px),
+                    int(bottom_px - top_px),
+                    tile_rgb.tobytes(),
+                    False,
+                )
+                tile_size = (int(pixmap.width), int(pixmap.height))
+                expected_size = (right_px - left_px, bottom_px - top_px)
+                if tile_size != expected_size:
+                    raise RuntimeError(
+                        f"page {page_number} tile dimensions changed: "
+                        f"expected {expected_size}, got {tile_size}"
+                    )
+                content = bytes(pixmap.tobytes("png"))
+                digest = hashlib.sha256(content).hexdigest()
+                staged_path = staged_by_digest.get(digest)
+                if staged_path is None:
+                    staged_path = image_root / f"{digest}.png"
+                    atomic_write_bytes(staged_path, content)
+                    transaction.register_file(staged_path)
+                    if _image_size_pixels(str(staged_path)) != tile_size:
+                        raise RuntimeError(
+                            f"staged page tile dimensions changed: {staged_path}"
+                        )
+                    staged_by_digest[digest] = staged_path
+
+                source_key = _normalized_image_source_path(str(staged_path))
+                staged_assets[source_key] = _StagedImageAsset(
+                    source_path=staged_path,
+                    path=staged_path,
+                    sha256=digest,
+                    size_px=tile_size,
+                    source_size_px=tile_size,
+                    crop_box_px=(0, 0, tile_size[0], tile_size[1]),
+                )
+                page_width = float(extracted_page.page_data.width)
+                page_height = float(extracted_page.page_data.height)
+                placements.append(
+                    ImagePlacement(
+                        page_number=int(page_number),
+                        x_mm=float(left_px) / float(full_width) * page_width,
+                        y_mm=(
+                            float(full_height - bottom_px)
+                            / float(full_height)
+                            * page_height
+                        ),
+                        width_mm=float(tile_size[0]) / float(full_width) * page_width,
+                        height_mm=float(tile_size[1]) / float(full_height) * page_height,
+                        path=str(staged_path),
+                        xref=0,
+                        source_kind="page_raster_alpha_fidelity_fallback",
+                        source_instance_count=1,
+                        source_bbox_pdf=(
+                            float(source_page.rect.x0) + float(left_px) / zoom,
+                            float(source_page.rect.y0) + float(top_px) / zoom,
+                            float(source_page.rect.x0) + float(right_px) / zoom,
+                            float(source_page.rect.y0) + float(bottom_px) / zoom,
+                        ),
+                        source_number=len(placements) + 1,
+                        source_digest=digest,
+                        pixel_size=tile_size,
+                        alpha_kind="opaque",
+                        alpha_bbox_px=(0, 0, tile_size[0], tile_size[1]),
+                    )
+                )
+    return placements, staged_assets, effective_dpi
 
 
 def _verify_serialized_image_assets(
@@ -825,15 +1164,29 @@ def _verify_serialized_image_assets(
 
 
 def _pixmap_contains_ink(pixmap: Any) -> bool:
-    samples = bytes(pixmap.samples)
     channels = int(pixmap.n)
-    if not samples or channels <= 0:
+    width = int(pixmap.width)
+    height = int(pixmap.height)
+    if width <= 0 or height <= 0 or channels <= 0:
         return False
-    if bool(pixmap.alpha):
-        return any(value > 0 for value in samples[channels - 1 :: channels])
-    color_channels = min(3, channels)
-    for offset in range(0, len(samples), channels):
-        if any(samples[offset + channel] < 250 for channel in range(color_channels)):
+    stride = int(getattr(pixmap, "stride", width * channels))
+    raw_samples = getattr(pixmap, "samples_mv", None)
+    if raw_samples is None:
+        raw_samples = pixmap.samples
+    rows = np.frombuffer(raw_samples, dtype=np.uint8).reshape(height, stride)
+    pixels = rows[:, : width * channels].reshape(height, width, channels)
+    sample_channels = pixels[:, :, : min(3, channels)]
+    for start in range(0, height, 256):
+        block = sample_channels[start : min(height, start + 256)]
+        if bool(pixmap.alpha):
+            alpha = pixels[
+                start : min(height, start + 256),
+                :,
+                channels - 1,
+            ]
+            if np.any(alpha > 0):
+                return True
+        elif np.any(block < 250):
             return True
     return False
 
@@ -934,7 +1287,7 @@ def _attempt_terminal_text_raster(
         source_id=delivery.source_id,
         requested_representation=delivery.requested_representation,
         attempted_representation="raster",
-        strategy="pymupdf_item_clip",
+        strategy="pymupdf_opaque_source_item_clip",
     )
     attempts.append(attempt)
     doc = msp.doc
@@ -1055,7 +1408,8 @@ def _attempt_terminal_text_raster(
             pixmap = page_display_list.get_pixmap(
                 matrix=fitz.Matrix(dpi / 72.0, dpi / 72.0),
                 clip=clip,
-                alpha=True,
+                colorspace=fitz.csRGB,
+                alpha=False,
             )
             if not _pixmap_contains_ink(pixmap) and requested_raster:
                 # A non-empty text record can legitimately paint no page
@@ -1086,10 +1440,9 @@ def _attempt_terminal_text_raster(
                         "terminal raster zero-ink result was not confirmed at higher resolution"
                     )
                 attempt.strategy = "verified_source_zero_ink_transparent_item"
-        png = bytes(pixmap.tobytes("png"))
-
         if pixmap.width <= 0 or pixmap.height <= 0:
             raise ValueError("terminal raster rendered zero pixels")
+        png = bytes(pixmap.tobytes("png"))
         if not png.startswith(b"\x89PNG\r\n\x1a\n"):
             raise ValueError("terminal raster output is not a PNG")
         contains_ink = _pixmap_contains_ink(pixmap)
@@ -1105,6 +1458,55 @@ def _attempt_terminal_text_raster(
         )
         if not whitespace_only and not contains_ink and not verified_source_zero_ink:
             raise ValueError("terminal raster crop contains no visible source ink")
+
+        if whitespace_only or verified_source_zero_ink:
+            attempt.strategy = (
+                "verified_whitespace_zero_ink_omission"
+                if whitespace_only
+                else "verified_source_zero_ink_omission"
+            )
+            attempt.type_verified = True
+            attempt.visual_verified = True
+            attempt.cleanup_verified = True
+            attempt.evidence = {
+                "source_pdf_path": str(Path(extraction.pdf_path).expanduser().resolve()),
+                "source_pdf_sha256": source_pdf_sha256,
+                "source_page_number": int(page_number),
+                "source_id": delivery.source_id,
+                "source_clip_pdf": [
+                    float(clip.x0),
+                    float(clip.y0),
+                    float(clip.x1),
+                    float(clip.y1),
+                ],
+                "source_bbox_pdf": [sx0, sy0, sx1, sy1],
+                "source_bbox_clipped_to_page": bool(source_bbox_clipped),
+                "source_to_display_rotation": [float(value) for value in rotation_matrix],
+                "target_bbox_model": [target_x0, target_y0, target_x1, target_y1],
+                "pixel_size": [int(pixmap.width), int(pixmap.height)],
+                "raster_dpi": dpi,
+                "zero_ink_confirmation_dpi": zero_ink_confirmation_dpi,
+                "visible_ink_expected": False,
+                "visible_ink_verified": False,
+                "zero_ink_verified": True,
+                "zero_ink_omitted": True,
+                "host_safe_opaque_image_required": False,
+                "anchor_verified": True,
+                "size_verified": True,
+            }
+            attempt.outcome = "verified"
+            return (
+                TextDeliveryResult(
+                    source_id=delivery.source_id,
+                    requested_representation=delivery.requested_representation,
+                    final_representation="raster",
+                    verified=True,
+                    entity_handles=[],
+                    support_entity_handles=[],
+                    attempts=attempts,
+                ),
+                None,
+            )
 
         safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", delivery.source_id)
         asset_path = asset_root / f"{safe_id}.png"
@@ -1189,6 +1591,9 @@ def _attempt_terminal_text_raster(
             "visible_ink_expected": visible_ink_expected,
             "visible_ink_verified": bool(contains_ink),
             "zero_ink_verified": bool(not visible_ink_expected and not contains_ink),
+            "zero_ink_omitted": False,
+            "host_safe_opaque_image_required": True,
+            "host_safe_opaque_image_verified": not bool(pixmap.alpha),
             "anchor_verified": insert_ok,
             "size_verified": size_ok,
         }
@@ -1298,11 +1703,47 @@ def _export_to_dxf_impl(
         if opts.include_text
         else {}
     )
-    staged_image_assets = (
+    staged_image_assets, omitted_image_sources, compositing_pages = (
         _stage_image_assets(extraction, asset_root, asset_transaction)
         if opts.include_images
-        else {}
+        else ({}, set(), set())
     )
+    terminal_page_tiles: Dict[int, List[ImagePlacement]] = {}
+    if compositing_pages:
+        raster_dpi = int(
+            getattr(opts.provenance_opts, "raster_dpi", 200)
+            if opts.provenance_opts is not None
+            else 200
+        )
+        for page_number in sorted(compositing_pages):
+            tiles, tile_assets, effective_dpi = _render_terminal_page_tiles(
+                extraction,
+                page_number,
+                raster_dpi,
+                asset_root,
+                asset_transaction,
+            )
+            terminal_page_tiles[page_number] = tiles
+            staged_image_assets.update(tile_assets)
+            extracted_page = next(
+                page
+                for page in extraction.pages
+                if int(page.page_data.page_number) == page_number
+            )
+            prior_reason = str(extracted_page.resolved_reason or "").strip()
+            fallback_reason = (
+                "compositing-required transparency delivered as a host-safe "
+                "opaque page fidelity surface"
+            )
+            if effective_dpi + 1e-9 < float(raster_dpi):
+                fallback_reason += (
+                    f" at resource-bounded {effective_dpi:.1f} DPI "
+                    f"(requested {raster_dpi} DPI)"
+                )
+            extracted_page.resolved_mode = "hybrid"
+            extracted_page.resolved_reason = (
+                f"{prior_reason}; {fallback_reason}" if prior_reason else fallback_reason
+            )
     dxf_ver = _normalize_dxf_version(opts.dxf_version)
     is_r12 = dxf_ver == "R12"
     reset_text_styles()
@@ -1647,8 +2088,12 @@ def _export_to_dxf_impl(
                         )
 
         if opts.include_images:
-            for placement in page.images:
+            page_number = int(page.page_data.page_number)
+            image_placements = terminal_page_tiles.get(page_number, page.images)
+            for placement in image_placements:
                 source_key = _normalized_image_source_path(str(placement.path))
+                if source_key in omitted_image_sources:
+                    continue
                 staged_asset = staged_image_assets.get(source_key)
                 if staged_asset is None:
                     raise RuntimeError(

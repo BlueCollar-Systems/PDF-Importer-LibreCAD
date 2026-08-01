@@ -1300,9 +1300,11 @@ def test_terminal_raster_reuses_one_display_list_without_changing_pixels(
                     evidence["raster_dpi"] / 72.0,
                 ),
                 clip=clip,
-                alpha=True,
+                colorspace=fitz.csRGB,
+                alpha=False,
             ).tobytes("png")
             assert Path(evidence["asset_path"]).read_bytes() == expected_png
+            assert not bool(fitz.Pixmap(evidence["asset_path"]).alpha)
 
 
 def test_raster_render_session_isolates_pages_and_source_documents(tmp_path) -> None:
@@ -1447,9 +1449,27 @@ def test_explicit_item_raster_is_verified_without_being_reported_as_fallback(
     drawing = ezdxf.readfile(output)
     assert [entity.dxftype() for entity in drawing.modelspace()] == ["IMAGE"]
     image = next(iter(drawing.modelspace()))
+    evidence = delivery["attempts"][0]["evidence"]
+    assert evidence["host_safe_opaque_image_required"] is True
+    assert evidence["host_safe_opaque_image_verified"] is True
+    image_definition = drawing.entitydb.get(str(image.dxf.image_def_handle))
+    raster_path = Path(str(image_definition.dxf.filename))
+    delivered_raster = fitz.Pixmap(str(raster_path))
+    assert bool(delivered_raster.alpha) is False
     original_insert = tuple(image.dxf.insert)
     image.dxf.insert = (original_insert[0] + 1.0, original_insert[1], 0.0)
     with pytest.raises(RuntimeError, match="raster placement changed"):
+        _verify_serialized_text_deliveries(drawing, result.text_deliveries)
+    image.dxf.insert = original_insert
+
+    unsafe_raster = fitz.Pixmap(
+        fitz.csRGB,
+        fitz.IRect(0, 0, delivered_raster.width, delivered_raster.height),
+        True,
+    )
+    unsafe_raster.clear_with(0)
+    unsafe_raster.save(str(raster_path))
+    with pytest.raises(RuntimeError, match="host-safe opaque RGB"):
         _verify_serialized_text_deliveries(drawing, result.text_deliveries)
 
     report_path = tmp_path / "requested_item_raster_import_report.json"
@@ -1834,7 +1854,7 @@ def test_terminal_raster_cannot_borrow_neighboring_ink_for_whitespace(tmp_path) 
     assert not list(tmp_path.rglob("*.png"))
 
 
-def test_requested_raster_delivers_transparent_zero_ink_for_whitespace(
+def test_requested_raster_omits_zero_ink_for_whitespace(
     tmp_path,
 ) -> None:
     run = _real_text_extraction(tmp_path)
@@ -1862,12 +1882,10 @@ def test_requested_raster_delivers_transparent_zero_ink_for_whitespace(
     evidence = delivery["attempts"][-1]["evidence"]
     assert evidence["visible_ink_expected"] is False
     assert evidence["zero_ink_verified"] is True
-    asset = Path(evidence["asset_path"])
-    assert asset.is_file()
-    pixmap = fitz.Pixmap(asset)
-    assert pixmap.alpha
-    alpha = bytes(pixmap.samples)[pixmap.n - 1 :: pixmap.n]
-    assert alpha and not any(alpha)
+    assert evidence["zero_ink_omitted"] is True
+    assert delivery["entity_handles"] == []
+    drawing = ezdxf.readfile(output)
+    assert list(drawing.modelspace().query("IMAGE")) == []
 
 
 def test_unproven_structural_failure_cannot_start_terminal_raster(
@@ -2141,15 +2159,15 @@ def test_requested_raster_preserves_verified_nonpainted_text_as_zero_ink(
     assert delivery["verified"] is True
     assert delivery["final_representation"] == "raster"
     attempt = delivery["attempts"][-1]
-    assert attempt["strategy"] == "verified_source_zero_ink_transparent_item"
+    assert attempt["strategy"] == "verified_source_zero_ink_omission"
     evidence = attempt["evidence"]
     assert evidence["visible_ink_expected"] is False
     assert evidence["zero_ink_verified"] is True
     assert evidence["zero_ink_confirmation_dpi"] > evidence["raster_dpi"]
-    asset = Path(evidence["asset_path"])
-    pixmap = fitz.Pixmap(asset)
-    alpha = bytes(pixmap.samples)[pixmap.n - 1 :: pixmap.n]
-    assert alpha and not any(alpha)
+    assert evidence["zero_ink_omitted"] is True
+    assert delivery["entity_handles"] == []
+    drawing = ezdxf.readfile(output)
+    assert list(drawing.modelspace().query("IMAGE")) == []
 
 
 @pytest.mark.parametrize("mode", ["text", "labels", "3d_text", "glyphs", "geometry"])
