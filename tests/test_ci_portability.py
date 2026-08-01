@@ -260,6 +260,16 @@ def test_ci_does_not_swallow_shared_core_failures_or_cancel_sibling_versions() -
     assert "cd pdfcadcore" not in workflow
 
 
+def test_ci_checks_every_shipped_runtime_and_qa_script() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "lc-pdfimporter-ci.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "conversion_control.py" in workflow
+    assert "page_selection.py" in workflow
+    assert "librecad_pdf_importer scripts" in workflow
+
+
 def test_ci_python_jobs_match_the_declared_supported_floor() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     workflow = (ROOT / ".github" / "workflows" / "lc-pdfimporter-ci.yml").read_text(

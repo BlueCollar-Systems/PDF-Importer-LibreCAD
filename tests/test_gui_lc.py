@@ -52,6 +52,15 @@ class TestLcGuiProfessionalImport(unittest.TestCase):
     def test_explicit_geometry_selection_has_no_confirmation_roadblock(self) -> None:
         self.assertNotIn("messagebox.askokcancel(", self.source)
 
+    def test_long_work_has_determinate_progress_cancel_and_resume(self) -> None:
+        self.assertIn('text="Cancel"', self.source)
+        self.assertIn('mode="determinate"', self.source)
+        self.assertIn("self._cancel_event", self.source)
+        self.assertIn("cancel_requested=self._cancel_event.is_set", self.source)
+        self.assertIn("resumable=True", self.source)
+        self.assertIn("restart_on_resume_mismatch=True", self.source)
+        self.assertIn("Certified pages were kept", self.source)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -9,6 +9,7 @@ converter.  Uses *ttk* widgets for a modern look.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import threading
 import time
@@ -58,8 +59,9 @@ class Pdf2DxfApp(tk.Tk):
         # Try to set a reasonable starting size
         self.geometry("620x580")
 
-        self._build_ui()
         self._converting = False
+        self._cancel_event = threading.Event()
+        self._build_ui()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -170,13 +172,28 @@ class Pdf2DxfApp(tk.Tk):
                         variable=self._var_launch_librecad).pack(side=tk.LEFT, padx=6)
 
         # ---- Convert button ----
+        action_frame = ttk.Frame(frame)
+        action_frame.grid(row=11, column=0, columnspan=3, **pad)
         self._btn_convert = ttk.Button(
-            frame, text="Convert", command=self._start_conversion,
+            action_frame, text="Convert / Resume", command=self._start_conversion,
         )
-        self._btn_convert.grid(row=11, column=0, columnspan=3, **pad)
+        self._btn_convert.pack(side=tk.LEFT, padx=4)
+        self._btn_cancel = ttk.Button(
+            action_frame,
+            text="Cancel",
+            command=self._request_cancel,
+            state=tk.DISABLED,
+        )
+        self._btn_cancel.pack(side=tk.LEFT, padx=4)
 
         # ---- Progress bar ----
-        self._progress = ttk.Progressbar(frame, mode="indeterminate", length=400)
+        self._progress = ttk.Progressbar(
+            frame,
+            mode="determinate",
+            maximum=1,
+            value=0,
+            length=400,
+        )
         self._progress.grid(row=12, column=0, columnspan=3, sticky=tk.EW, **pad)
 
         # ---- Status log ----
@@ -218,11 +235,23 @@ class Pdf2DxfApp(tk.Tk):
     def _log(self, msg: str) -> None:
         """Append a message to the log widget (thread-safe via after())."""
         def _append():
+            progress = re.search(r"Page\s+(\d+)/(\d+)\s+certified", msg)
+            if progress:
+                current, total = int(progress.group(1)), int(progress.group(2))
+                self._progress.configure(maximum=max(1, total), value=current)
             self._log_text.configure(state=tk.NORMAL)
             self._log_text.insert(tk.END, msg + "\n")
             self._log_text.see(tk.END)
             self._log_text.configure(state=tk.DISABLED)
         self.after(0, _append)
+
+    def _request_cancel(self) -> None:
+        """Request a bounded, page-safe stop without discarding certified work."""
+        if not self._converting or self._cancel_event.is_set():
+            return
+        self._cancel_event.set()
+        self._btn_cancel.configure(state=tk.DISABLED)
+        self._log("Cancel requested — finishing the active safe boundary...")
 
     # ------------------------------------------------------------------
     # Conversion
@@ -245,8 +274,10 @@ class Pdf2DxfApp(tk.Tk):
             self._var_output.set(output_path)
 
         self._converting = True
+        self._cancel_event.clear()
         self._btn_convert.configure(state=tk.DISABLED)
-        self._progress.start(10)
+        self._btn_cancel.configure(state=tk.NORMAL)
+        self._progress.configure(maximum=1, value=0)
 
         # Clear log
         self._log_text.configure(state=tk.NORMAL)
@@ -283,21 +314,24 @@ class Pdf2DxfApp(tk.Tk):
             # Parse pages
             raw_pages = self._var_pages.get().strip()
             if raw_pages:
-                pages = []
-                for part in raw_pages.split(","):
-                    part = part.strip()
-                    if "-" in part:
-                        lo, hi = part.split("-", 1)
-                        pages.extend(range(int(lo), int(hi) + 1))
-                    else:
-                        pages.append(int(part))
-                config.pages = [max(0, p - 1) for p in pages]
+                from page_selection import parse_page_selection
+
+                config.pages = parse_page_selection(raw_pages)
 
             dxf_version = self._var_dxf_ver.get()
 
             t0 = time.perf_counter()
             self._log(f"Starting conversion: {os.path.basename(input_path)}")
             self._log("Import mode: Auto (per-page strategy)")
+            selection = (
+                f"{len(config.pages)} selected page(s)"
+                if config.pages is not None
+                else "all pages in the PDF"
+            )
+            self._log(
+                f"Work estimate: {selection}. Each completed page is certified "
+                "and resumable."
+            )
 
             from pdf_open_guard import precheck_pdf
             precheck_pdf(input_path)  # clean reject for encrypted/empty/non-PDF (caught below)
@@ -308,6 +342,9 @@ class Pdf2DxfApp(tk.Tk):
                 config=config,
                 dxf_version=dxf_version,
                 progress_callback=self._log,
+                resumable=True,
+                cancel_requested=self._cancel_event.is_set,
+                restart_on_resume_mismatch=True,
             )
 
             elapsed = time.perf_counter() - t0
@@ -360,9 +397,17 @@ class Pdf2DxfApp(tk.Tk):
             ))
 
         except Exception as exc:  # noqa: BLE001
+            from dxf_import_engine import ConversionCancelled
             from pdfcadcore.fitz_loader import PdfOpenError
 
-            if isinstance(exc, PdfOpenError):
+            if isinstance(exc, ConversionCancelled):
+                self._log(f"\n{exc}")
+                self.after(0, lambda e=exc: messagebox.showinfo(
+                    "Import paused",
+                    f"{e}\n\nCertified pages were kept in:\n{e.output_path}\n\n"
+                    "Press Convert / Resume with the same PDF and settings to continue.",
+                ))
+            elif isinstance(exc, PdfOpenError):
                 self._log(f"\nERROR: {exc}")
                 self.after(0, lambda e=exc: messagebox.showerror("Conversion failed", str(e)))
             else:
@@ -375,8 +420,8 @@ class Pdf2DxfApp(tk.Tk):
             self.after(0, self._finish_conversion)
 
     def _finish_conversion(self) -> None:
-        self._progress.stop()
         self._btn_convert.configure(state=tk.NORMAL)
+        self._btn_cancel.configure(state=tk.DISABLED)
         self._converting = False
 
 

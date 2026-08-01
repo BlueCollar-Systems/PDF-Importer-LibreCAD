@@ -2,7 +2,7 @@
 
 **BlueCollar Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.73](https://img.shields.io/badge/Version-1.0.73-blue.svg)
+![Version: 1.0.74](https://img.shields.io/badge/Version-1.0.74-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
@@ -119,6 +119,18 @@ Convert specific pages with a mode:
 python pdf2dxf.py drawing.pdf --pages 1,3,5 --mode vector --verbose
 ```
 
+Checkpoint every completed page so an interrupted long job continues instead
+of starting over:
+```
+python pdf2dxf.py drawing.pdf output.dxf --resume --verbose
+```
+
+Resume identity includes the exact PDF bytes, every import option, importer
+version, and conversion-engine bytes. A mismatch is rejected rather than mixed
+with prior work. The GUI enables the same page-safe behavior automatically and
+provides a responsive **Cancel** button; the active partial page is discarded,
+while every already-certified page remains available to **Convert / Resume**.
+
 Force raster mode for scanned PDFs:
 ```
 python pdf2dxf.py drawing.pdf --mode raster
@@ -143,6 +155,7 @@ Options:
   --dxf-version VER      R12 | R2000 | R2004 | R2007 | R2010 | R2013 | R2018
   --gui                  Launch GUI instead of CLI
   --verbose              Print progress
+  --resume               Checkpoint and resume exact certified pages
   --version              Show version
 ```
 
@@ -175,9 +188,22 @@ python gui.py
 
 The GUI provides file pickers, **professional single-flow import** (Auto strategy per page),
 all six distinct text representations, page range input, option checkboxes, a
-progress bar, a status log, the complete report path, and optional auto-open in
-LibreCAD. The CLI exposes the same `text`, `labels`, `3d_text`, `glyphs`,
-`geometry`, and `raster` requests.
+determinate page progress bar, page-safe Cancel/Resume, a status log, the
+complete report path, and optional auto-open in LibreCAD. The CLI exposes the
+same `text`, `labels`, `3d_text`, `glyphs`, `geometry`, and `raster` requests.
+
+## Reproducible fidelity fixtures
+
+`scripts/generate_public_synthetic_corpus.py OUTPUT_DIRECTORY` creates a CC0,
+generated-only multi-page PDF stress set (rotation, clipping, text, vectors,
+raster transparency, blank page, and malformed input). It reads no customer
+file and never writes PDFs into the repository unless a caller explicitly
+chooses the repository as the output directory.
+
+`scripts/compare_raster_assets.py REFERENCE.png --dxf OUTPUT.dxf` compares the
+exact PNG referenced by a DXF directly with a reference raster. This avoids the
+loss and antialiasing changes introduced by rendering the DXF through a third
+party before scoring it.
 
 Windows no-console options:
 ```

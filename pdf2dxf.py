@@ -13,7 +13,7 @@ import os
 import sys
 import time
 
-__version__ = "1.0.73"
+__version__ = "1.0.74"
 
 # ---------------------------------------------------------------------------
 # Ensure project root is on sys.path so ``import pdfcadcore`` resolves
@@ -62,6 +62,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--verbose", action="store_true",
                    help="Print progress information")
     p.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Checkpoint each certified page and resume matching work after Cancel "
+            "or interruption"
+        ),
+    )
+    p.add_argument(
         "--preflight",
         action="store_true",
         help="Print pre-import guidance (text modes, scale trust) and exit",
@@ -78,18 +86,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _parse_pages(raw: str | None) -> list[int] | None:
     """Parse ``--pages 1,3,5`` into a zero-indexed list."""
-    if raw is None:
-        return None
-    pages: list[int] = []
-    for part in raw.split(","):
-        part = part.strip()
-        if "-" in part:
-            lo, hi = part.split("-", 1)
-            pages.extend(range(int(lo), int(hi) + 1))
-        else:
-            pages.append(int(part))
-    # User supplies 1-based page numbers; convert to 0-based for PyMuPDF
-    return [max(0, p - 1) for p in pages]
+    from page_selection import parse_page_selection
+
+    return parse_page_selection(raw)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -158,10 +157,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.import_text is not None:
         config.import_text = bool(args.import_text)
     if args.pages:
-        config.pages = _parse_pages(args.pages)
+        try:
+            config.pages = _parse_pages(args.pages)
+        except ValueError as exc:
+            print(f"Invalid --pages value: {exc}", file=sys.stderr)
+            return 2
 
     # Run conversion
-    from dxf_import_engine import convert
+    from dxf_import_engine import ConversionCancelled, convert
     from pdfcadcore.fitz_loader import PdfOpenError
 
     if args.verbose:
@@ -185,7 +188,18 @@ def main(argv: list[str] | None = None) -> int:
             config=config,
             dxf_version=args.dxf_version,
             progress_callback=_progress if args.verbose else None,
+            resumable=bool(args.resume),
         )
+    except KeyboardInterrupt:
+        print(
+            "Conversion interrupted. Re-run the same command with --resume to "
+            "continue any certified pages.",
+            file=sys.stderr,
+        )
+        return 130
+    except ConversionCancelled as exc:
+        print(str(exc), file=sys.stderr)
+        return 130
     except PdfOpenError as exc:
         from pdfcadcore.cli_error_copy import cli_error
 

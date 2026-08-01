@@ -1,6 +1,6 @@
 {
   "schema": "bcs.release_artifacts/1.0",
-  "version": "1.0.73",
+  "version": "1.0.74",
   "build_contract": {
     "architecture": "AMD64",
     "ci_lock": "requirements-ci-win-py312.lock",
@@ -18,33 +18,33 @@
   "artifacts": {
     "lcpdf_batch_exe": {
       "path": "dist/windows-portable/lcpdf-batch.exe",
-      "sha256": "c0b1ee55b02d9f473ba192bc171ead40a3a363373d6bce8df3439e6f0ecea861",
-      "size_bytes": 66552969
+      "sha256": "699802aa8244d0bf136b9147ebf2bb4df79bdcc1cd910554d9d717a2a83a84c0",
+      "size_bytes": 66433916
     },
     "lcpdf_gui_exe": {
       "path": "dist/windows-portable/lcpdf-gui.exe",
-      "sha256": "08dd940f518244b4bbef270bb03024a71207b712172eb67a610586281d55dfb9",
-      "size_bytes": 66545631
+      "sha256": "46dfa27d69c5261c186cdb97e98a9a5953a2859b912299fd8fa4b7e57641ff10",
+      "size_bytes": 66426578
     },
     "lcpdf_import_exe": {
       "path": "dist/windows-portable/lcpdf-import.exe",
-      "sha256": "ad1050d7e056679aacb1a81408a95d561a3e653d28c71c9c814aea24e3f98a96",
-      "size_bytes": 66554427
+      "sha256": "22f56010f9e2bfca48fb79fdc8ba016259ac8a1fd7eaaa63cf37b06b645df391",
+      "size_bytes": 66435374
     },
     "pdf2dxf_exe": {
       "path": "dist/windows-portable/pdf2dxf.exe",
-      "sha256": "a57c08d0a45a0c66e2ff835875d32e22a2bf4bec29861b0816a291540ab8d9fa",
-      "size_bytes": 66548885
+      "sha256": "50ca5222de4a71200f796bafc09b8c563306203528d7f59a9cef7d05b742677c",
+      "size_bytes": 66429832
     },
     "portable_zip": {
-      "path": "dist/LibreCAD-PDF-Importer-Windows-Portable_v1.0.73.zip",
-      "sha256": "8f8e120c376df475b6de0bddde2c60d57e33389b69d5f76973a3c4a2391acdd8",
-      "size_bytes": 263895028
+      "path": "dist/LibreCAD-PDF-Importer-Windows-Portable_v1.0.74.zip",
+      "sha256": "c76a2d71936fd4ace4ec5e5e7a8c278dfe994bb0f4059ed4296f11f6ecf127e2",
+      "size_bytes": 263418523
     },
     "source_zip": {
-      "path": "dist/LibreCAD-PDF-Importer_v1.0.73.zip",
-      "sha256": "e93c501a654d71c3eadca7c874f5032a0a1d266eabef3bac19f83e6486ea4cb1",
-      "size_bytes": 260194
+      "path": "dist/LibreCAD-PDF-Importer_v1.0.74.zip",
+      "sha256": "3e4f09bc7d878027b8c6881758373dbb6b11b87298bbddb2282c8489bb3d77f1",
+      "size_bytes": 270918
     }
   }
 }

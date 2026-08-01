@@ -498,6 +498,8 @@ def run_import(pdf_path: str, mode: str = "auto",
             setattr(cfg, key, value)
     cfg._result_status = "pending_export"  # noqa: B010
     cfg._delivered_image_count = 0  # noqa: B010
+    cfg._cancel_requested = incoming.get("_cancel_requested")  # noqa: B010
+    cfg._progress_callback = incoming.get("_progress_callback")  # noqa: B010
 
     opts = ExtractionOptions(
         pages=cfg.pages,
@@ -512,6 +514,8 @@ def run_import(pdf_path: str, mode: str = "auto",
         detect_arcs=cfg.detect_arcs,
         arc_fit_tol_mm=cfg.arc_fit_tol_mm,
         arc_sampling_pts=cfg.arc_sampling_pts,
+        cancel_requested=cfg._cancel_requested,
+        progress_callback=cfg._progress_callback,
     )
 
     extraction = extract_document(pdf_path, opts)

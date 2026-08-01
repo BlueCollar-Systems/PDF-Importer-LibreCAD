@@ -47,6 +47,7 @@ from dxf_text_builder import (
     build_text,
     reset_text_styles,
 )
+from conversion_control import check_cancel, report_progress
 
 
 TERMINAL_TILE_PIXELS = 1536
@@ -2244,7 +2245,15 @@ def _export_to_dxf_impl(
         if y > max_y:
             max_y = y
 
-    for page in extraction.pages:
+    cancel_requested = getattr(opts.provenance_opts, "_cancel_requested", None)
+    progress_callback = getattr(opts.provenance_opts, "_progress_callback", None)
+    for page_position, page in enumerate(extraction.pages, start=1):
+        check_cancel(cancel_requested, f"before exporting page {page.page_data.page_number}")
+        report_progress(
+            progress_callback,
+            f"Building source page {page.page_data.page_number} "
+            f"({page_position}/{len(extraction.pages)})",
+        )
         # Apply page stacking offset to all coordinates
         dy = _stack_offset_y
         page_w = float(page.page_data.width or 0.0)
@@ -2254,7 +2263,14 @@ def _export_to_dxf_impl(
         _track_xy(0.0, 0.0 + dy)
         _track_xy(page_w, page_h + dy)
 
-        for primitive in page.page_data.primitives:
+        for primitive_index, primitive in enumerate(page.page_data.primitives, start=1):
+            if primitive_index % 64 == 0:
+                check_cancel(cancel_requested, "active page vector build")
+                report_progress(
+                    progress_callback,
+                    f"Building source page {page.page_data.page_number}: "
+                    f"vectors {primitive_index}/{len(page.page_data.primitives)}",
+                )
             stroke_rgb = primitive.stroke_color
             fill_rgb = primitive.fill_color
             layer_rgb = stroke_rgb if stroke_rgb is not None else fill_rgb
@@ -2353,7 +2369,14 @@ def _export_to_dxf_impl(
             text_cfg = ImportConfig.auto()
             text_cfg.text_mode = opts.text_mode
             text_cfg._embedded_font_asset_paths = dict(embedded_font_paths)  # noqa: B010
-            for text in page.page_data.text_items:
+            for text_index, text in enumerate(page.page_data.text_items, start=1):
+                check_cancel(cancel_requested, "active page text build")
+                if text_index == 1 or text_index % 16 == 0:
+                    report_progress(
+                        progress_callback,
+                        f"Building source page {page.page_data.page_number}: "
+                        f"text {text_index}/{len(page.page_data.text_items)}",
+                    )
                 layer = _layer_name(page.page_data.page_number, "TEXT", None, opts)
                 _ensure_layer(doc, layer, None)
                 ti = text
@@ -2507,7 +2530,14 @@ def _export_to_dxf_impl(
         if opts.include_images:
             page_number = int(page.page_data.page_number)
             image_placements = terminal_page_tiles.get(page_number, page.images)
-            for placement in image_placements:
+            for image_index, placement in enumerate(image_placements, start=1):
+                check_cancel(cancel_requested, "active page image build")
+                if image_index == 1 or image_index % 16 == 0:
+                    report_progress(
+                        progress_callback,
+                        f"Building source page {page.page_data.page_number}: "
+                        f"images {image_index}/{len(image_placements)}",
+                    )
                 source_key = _normalized_image_source_path(str(placement.path))
                 if source_key in omitted_image_sources:
                     continue

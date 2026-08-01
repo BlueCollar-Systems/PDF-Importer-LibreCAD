@@ -30,14 +30,14 @@ jobs:
 
       - name: Compile all Python modules
         run: |
-          python -m compileall pdf2dxf.py dxf_builder.py dxf_text_builder.py dxf_import_engine.py gui.py
-          python -m compileall pdfcadcore
+          python -m compileall pdf2dxf.py dxf_builder.py dxf_text_builder.py dxf_import_engine.py conversion_control.py page_selection.py gui.py
+          python -m compileall pdfcadcore librecad_pdf_importer scripts
 
       - name: Install ruff
         run: pip install ruff
 
       - name: Lint (functional + bugbear)
-        run: ruff check --select F,B pdf2dxf.py dxf_builder.py dxf_text_builder.py dxf_import_engine.py gui.py pdfcadcore/
+        run: ruff check --select F,B pdf2dxf.py dxf_builder.py dxf_text_builder.py dxf_import_engine.py conversion_control.py page_selection.py gui.py pdfcadcore/ librecad_pdf_importer scripts
 
       - name: Install dependencies
         run: pip install -e . pytest

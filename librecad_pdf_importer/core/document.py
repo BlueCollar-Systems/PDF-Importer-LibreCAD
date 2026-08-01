@@ -7,7 +7,7 @@ import hashlib
 import math
 from pathlib import Path
 import tempfile
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -26,6 +26,7 @@ from pdfcadcore.primitive_extractor import (
     extract_page,
 )
 from pdfcadcore.primitives import PageData
+from conversion_control import check_cancel, report_progress
 
 MM_PER_PT = 25.4 / 72.0
 
@@ -270,6 +271,8 @@ class ExtractionOptions:
     min_segment_mm: float = 0.0
     max_text_items_per_page: Optional[int] = None
     image_dir: Optional[str] = None
+    cancel_requested: Optional[Callable[[], bool]] = None
+    progress_callback: Optional[Callable[[str], None]] = None
 
 
 def _prepare_vector_page_data(page_data: PageData, options: ExtractionOptions) -> None:
@@ -355,9 +358,26 @@ def parse_pages_spec(spec: Optional[Iterable[int] | str], page_count: int) -> Li
             except ValueError:
                 continue
         uniq = sorted({p for p in pages if 1 <= p <= page_count})
-        return uniq or [1]
-    out = sorted({int(p) for p in spec if 1 <= int(p) <= page_count})
-    return out or [1]
+        if not uniq:
+            raise ValueError(
+                f"The requested page selection is outside this {page_count}-page PDF."
+            )
+        return uniq
+    # ImportConfig.pages is the shared host contract and stores zero-based page
+    # indices.  The extractor loop below intentionally uses human/PDF one-based
+    # page numbers, so translate exactly once at this boundary.
+    out = sorted(
+        {
+            int(index) + 1
+            for index in spec
+            if 0 <= int(index) < page_count
+        }
+    )
+    if not out:
+        raise ValueError(
+            f"The requested page selection is outside this {page_count}-page PDF."
+        )
+    return out
 
 
 def extract_document(
@@ -396,7 +416,12 @@ def _extract_document_impl(
 
     with safe_open(pdf_path) as doc:
         pages = parse_pages_spec(opts.pages, len(doc))
-        for page_number in pages:
+        for page_position, page_number in enumerate(pages, start=1):
+            check_cancel(opts.cancel_requested, f"before extracting page {page_number}")
+            report_progress(
+                opts.progress_callback,
+                f"Extracting source page {page_number} ({page_position}/{len(pages)})",
+            )
             page = doc.load_page(page_number - 1)
             effective_mode = mode
             resolved_reason = ""
@@ -432,6 +457,7 @@ def _extract_document_impl(
                 flip_y=opts.flip_y,
                 arc_min_pts=max(3, int(opts.arc_sampling_pts)),
             )
+            check_cancel(opts.cancel_requested, f"after vectors on page {page_number}")
 
             requested_text_representation = str(
                 opts.requested_text_representation or "text"
@@ -494,6 +520,7 @@ def _extract_document_impl(
             profile = profile_page(page_data)
             images = []
             raster_failure_detail = ""
+            check_cancel(opts.cancel_requested, f"before images on page {page_number}")
             if opts.import_images:
                 if effective_mode in {"raster", "hybrid"}:
                     rendered, raster_failure_detail = _render_page_raster_safely(
@@ -626,6 +653,10 @@ def _extract_document_impl(
                 resolved_reason=resolved_reason,
                 raster_fallback_failed=raster_fallback_failed,
             ))
+            report_progress(
+                opts.progress_callback,
+                f"Extracted source page {page_number} ({page_position}/{len(pages)})",
+            )
 
     return DocumentExtraction(
         pdf_path=pdf_path,
