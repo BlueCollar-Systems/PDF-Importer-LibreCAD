@@ -18,33 +18,33 @@
   "artifacts": {
     "lcpdf_batch_exe": {
       "path": "dist/windows-portable/lcpdf-batch.exe",
-      "sha256": "699802aa8244d0bf136b9147ebf2bb4df79bdcc1cd910554d9d717a2a83a84c0",
-      "size_bytes": 66433916
+      "sha256": "14d2bae8cdf00ce9afccf31b03a48be04737824c630553aeb694bd1a84f30a90",
+      "size_bytes": 66568511
     },
     "lcpdf_gui_exe": {
       "path": "dist/windows-portable/lcpdf-gui.exe",
-      "sha256": "46dfa27d69c5261c186cdb97e98a9a5953a2859b912299fd8fa4b7e57641ff10",
-      "size_bytes": 66426578
+      "sha256": "28fee279695978bf951c776d3388403900cae68ca14a8c9d34ef64505f41cb9c",
+      "size_bytes": 66561173
     },
     "lcpdf_import_exe": {
       "path": "dist/windows-portable/lcpdf-import.exe",
-      "sha256": "22f56010f9e2bfca48fb79fdc8ba016259ac8a1fd7eaaa63cf37b06b645df391",
-      "size_bytes": 66435374
+      "sha256": "b036bcfbe63d3c0c1f52a7c1aac90834fae65d545a0f7f0325eaa7f8ac6ab6e5",
+      "size_bytes": 66569969
     },
     "pdf2dxf_exe": {
       "path": "dist/windows-portable/pdf2dxf.exe",
-      "sha256": "50ca5222de4a71200f796bafc09b8c563306203528d7f59a9cef7d05b742677c",
-      "size_bytes": 66429832
+      "sha256": "7032283c960b4c67c753f9bda3dfeb5b200bfb5a246d1d795057772237f99fb6",
+      "size_bytes": 66564427
     },
     "portable_zip": {
       "path": "dist/LibreCAD-PDF-Importer-Windows-Portable_v1.0.74.zip",
-      "sha256": "c76a2d71936fd4ace4ec5e5e7a8c278dfe994bb0f4059ed4296f11f6ecf127e2",
-      "size_bytes": 263418523
+      "sha256": "aa47bd3e8c88f95d9cfce9cc129a17fc70315e41dec74ad0dcae5c61ee843fc5",
+      "size_bytes": 263957403
     },
     "source_zip": {
       "path": "dist/LibreCAD-PDF-Importer_v1.0.74.zip",
-      "sha256": "3e4f09bc7d878027b8c6881758373dbb6b11b87298bbddb2282c8489bb3d77f1",
-      "size_bytes": 270918
+      "sha256": "666c85a6cf36caf4bd06a302462a47305f08638d8cec971df8b962c682f4f533",
+      "size_bytes": 270766
     }
   }
 }
