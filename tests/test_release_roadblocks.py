@@ -235,13 +235,16 @@ def test_release_artifact_manifest_verifier_rejects_byte_mutation(tmp_path) -> N
         )
 
 
-def test_release_acceptance_command_generates_a_verifiable_manifest(tmp_path) -> None:
+def test_release_acceptance_command_generates_a_verifiable_manifest(
+    monkeypatch, tmp_path
+) -> None:
     from release_build_contract import CI_LOCK_FILENAME, RELEASE_LOCK_FILENAME
-    from scripts.verify_release_artifacts import (
-        REQUIRED_ARTIFACTS,
-        accept_release_artifacts,
-        verify_release_artifacts,
-    )
+    from scripts import verify_release_artifacts as release_artifacts
+
+    # This synthetic artifact test exercises acceptance mechanics, independent
+    # of the machine running pytest. The production interpreter boundary has a
+    # dedicated fail-closed test below.
+    monkeypatch.setattr(release_artifacts, "assert_release_interpreter", lambda: None)
 
     version = "9.9.9"
     (tmp_path / RELEASE_LOCK_FILENAME).write_bytes(b"release lock\n")
@@ -262,13 +265,13 @@ def test_release_acceptance_command_generates_a_verifiable_manifest(tmp_path) ->
         ),
         "lcpdf_gui_exe": tmp_path / "dist" / "windows-portable" / "lcpdf-gui.exe",
     }
-    assert set(artifact_paths) == set(REQUIRED_ARTIFACTS)
+    assert set(artifact_paths) == set(release_artifacts.REQUIRED_ARTIFACTS)
     for index, path in enumerate(artifact_paths.values(), start=1):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(f"candidate-{index}".encode("ascii"))
 
     manifest_path = tmp_path / ".release" / "accepted-artifacts.json"
-    accepted = accept_release_artifacts(
+    accepted = release_artifacts.accept_release_artifacts(
         manifest_path=manifest_path,
         root=tmp_path,
         expected_version=version,
@@ -279,12 +282,12 @@ def test_release_acceptance_command_generates_a_verifiable_manifest(tmp_path) ->
         f"dist/LibreCAD-PDF-Importer-Windows-Portable_v{version}.zip"
     )
     assert json.loads(manifest_path.read_text(encoding="utf-8")) == accepted
-    verified = verify_release_artifacts(
+    verified = release_artifacts.verify_release_artifacts(
         manifest_path=manifest_path,
         root=tmp_path,
         expected_version=version,
     )
-    assert set(verified) == set(REQUIRED_ARTIFACTS)
+    assert set(verified) == set(release_artifacts.REQUIRED_ARTIFACTS)
 
 
 def test_release_acceptance_preserves_prior_manifest_when_candidate_fails(
@@ -292,6 +295,10 @@ def test_release_acceptance_preserves_prior_manifest_when_candidate_fails(
 ) -> None:
     from release_build_contract import CI_LOCK_FILENAME, RELEASE_LOCK_FILENAME
     from scripts import verify_release_artifacts as release_artifacts
+
+    # The test controls candidate verification failure; the release-machine
+    # preflight is orthogonal and is covered independently below.
+    monkeypatch.setattr(release_artifacts, "assert_release_interpreter", lambda: None)
 
     version = "9.9.9"
     (tmp_path / RELEASE_LOCK_FILENAME).write_bytes(b"release lock\n")
@@ -329,6 +336,31 @@ def test_release_acceptance_preserves_prior_manifest_when_candidate_fails(
     assert verified_candidates[0] != manifest_path
     assert manifest_path.read_bytes() == prior_manifest
     assert not list(manifest_path.parent.glob(f".{manifest_path.name}.*.candidate"))
+
+
+def test_release_acceptance_preflights_the_exact_interpreter_before_artifacts(
+    monkeypatch, tmp_path
+) -> None:
+    from scripts import verify_release_artifacts as release_artifacts
+
+    monkeypatch.setattr(
+        release_build_contract,
+        "EXPECTED_PYTHON_VERSION",
+        (0, 0, 0),
+    )
+    manifest_path = tmp_path / ".release" / "accepted-artifacts.json"
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"release build requires exact Python 0\.0\.0",
+    ):
+        release_artifacts.accept_release_artifacts(
+            manifest_path=manifest_path,
+            root=tmp_path,
+            expected_version="9.9.9",
+        )
+
+    assert not manifest_path.exists()
 
 
 def test_powershell_fetcher_delegates_to_transactional_python_preflight() -> None:
