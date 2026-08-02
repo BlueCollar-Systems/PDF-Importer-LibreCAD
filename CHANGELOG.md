@@ -2,6 +2,17 @@
 
 All notable release changes are recorded here.
 
+## 1.0.76 — 2026-08-02
+
+### Fixed
+
+- Keep the report-level text-delivery contract ready when Raster correctly
+  certifies a whitespace-only source item as an exact zero-ink omission. These
+  items intentionally create no DXF entity; acceptance now requires their
+  terminal Raster attempt to prove type, visual result, cleanup, zero ink, and
+  that visible ink was not expected. Visible or otherwise unproven items still
+  require a persisted entity handle and fail closed without one.
+
 ## 1.0.75 — 2026-08-01
 
 ### Fixed
