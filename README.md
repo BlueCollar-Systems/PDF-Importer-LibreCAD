@@ -2,16 +2,16 @@
 
 **BlueCollar Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.76](https://img.shields.io/badge/Version-1.0.76-blue.svg)
+![Version: 1.0.77](https://img.shields.io/badge/Version-1.0.77-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
 
-See [CHANGELOG.md](CHANGELOG.md) for release history. Version 1.0.76 preserves
-verified zero-ink Raster omissions in the report-level delivery contract while
-keeping unproven or visible empty deliveries fail closed. Version 1.0.75 added
-embedded-font recovery, inline-image fidelity, raster budgeting, and degenerate
-PDF fill handling.
+See [CHANGELOG.md](CHANGELOG.md) for release history. Version 1.0.77 removes a
+quadratic serialized-delivery verification pass without weakening proof.
+Version 1.0.76 preserves verified zero-ink Raster omissions in the report-level
+delivery contract while keeping unproven or visible empty deliveries fail
+closed.
 
 ## Features
 

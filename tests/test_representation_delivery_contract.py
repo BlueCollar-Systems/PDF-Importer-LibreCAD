@@ -267,6 +267,59 @@ def test_serialized_fallback_text_keeps_unused_embedded_font_provenance() -> Non
     _verify_serialized_text_deliveries(doc, [delivery])
 
 
+def test_serialized_delivery_indexes_modelspace_once_per_document() -> None:
+    """Verification work must scale with the document, not delivery count squared."""
+
+    doc = ezdxf.new("R2010")
+    deliveries = []
+    for index, content in enumerate(("ABC", "DEF"), start=1):
+        text = doc.modelspace().add_text(
+            content,
+            dxfattribs={"height": 2.0, "rotation": 0.0},
+        )
+        text.dxf.insert = (10.0, 20.0 + index)
+        handle = str(text.dxf.handle)
+        deliveries.append(
+            {
+                "source_id": f"text_span:1:{index}",
+                "final_representation": "text",
+                "verified": True,
+                "entity_handles": [handle],
+                "support_entity_handles": [],
+                "referenced_entity_handles": [],
+                "attempts": [
+                    {
+                        "outcome": "verified",
+                        "entity_handles": [handle],
+                        "support_entity_handles": [],
+                        "evidence": {
+                            "delivered_content": content,
+                            "expected_insert": [10.0, 20.0 + index],
+                            "expected_height": 2.0,
+                            "expected_rotation": 0.0,
+                            "font_exact_match": False,
+                            "font_asset_id": "sha256:" + ("a" * 64),
+                            "font_asset_sha256": "a" * 64,
+                            "resolved_font_filename": None,
+                        },
+                    }
+                ],
+            }
+        )
+
+    with patch.object(doc, "modelspace", wraps=doc.modelspace) as modelspace:
+        _verify_serialized_text_deliveries(doc, deliveries)
+
+    assert modelspace.call_count == 1
+    duplicate = json.loads(json.dumps(deliveries))
+    duplicate[1]["entity_handles"] = list(duplicate[0]["entity_handles"])
+    duplicate[1]["attempts"][0]["entity_handles"] = list(
+        duplicate[0]["entity_handles"]
+    )
+    with pytest.raises(RuntimeError, match="missing or duplicate main handles"):
+        _verify_serialized_text_deliveries(doc, duplicate)
+
+
 def _item(
     *,
     item_id: int = 17,
