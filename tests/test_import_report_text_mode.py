@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import sys
+from copy import deepcopy
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from pdfcadcore.import_report import build_import_report
+from librecad_pdf_importer.importer import _delivery_item_has_persisted_output
 
 
 def test_librecad_report_records_text_mode():
@@ -196,3 +200,47 @@ def test_failed_delivery_report_cannot_claim_contract_ready_or_imported():
     assert data["extra"]["import_contract_ready"]["checks"]["text_delivery"] is False
     assert data["extra"]["human_summary"].startswith("Import failed")
     assert not data["extra"]["human_summary"].startswith("Imported")
+
+
+def _verified_zero_ink_raster_delivery():
+    return {
+        "source_id": "text_span:1:355",
+        "requested_representation": "raster",
+        "final_representation": "raster",
+        "verified": True,
+        "entity_handles": [],
+        "attempts": [
+            {
+                "attempted_representation": "raster",
+                "outcome": "verified",
+                "type_verified": True,
+                "visual_verified": True,
+                "cleanup_verified": True,
+                "evidence": {
+                    "visible_ink_expected": False,
+                    "zero_ink_verified": True,
+                    "zero_ink_omitted": True,
+                },
+            }
+        ],
+    }
+
+
+def test_verified_zero_ink_raster_omission_satisfies_the_delivery_gate():
+    assert _delivery_item_has_persisted_output(
+        _verified_zero_ink_raster_delivery()
+    ) is True
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("zero_ink_verified", False),
+        ("zero_ink_omitted", False),
+        ("visible_ink_expected", True),
+    ],
+)
+def test_unproven_empty_raster_delivery_remains_fail_closed(field, value):
+    delivery = deepcopy(_verified_zero_ink_raster_delivery())
+    delivery["attempts"][-1]["evidence"][field] = value
+    assert _delivery_item_has_persisted_output(delivery) is False

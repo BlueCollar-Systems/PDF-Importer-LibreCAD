@@ -54,6 +54,35 @@ def _normalized_text_mode(text_mode: Any) -> str:
     return "3d_text" if mode == "text3d" else mode
 
 
+def _delivery_item_has_persisted_output(item: Any) -> bool:
+    """Accept an entity or an exact, verified Raster zero-ink omission."""
+
+    if not isinstance(item, dict) or item.get("verified") is not True:
+        return False
+    if any(str(handle) for handle in list(item.get("entity_handles") or [])):
+        return True
+    if _normalized_text_mode(item.get("final_representation")) != "raster":
+        return False
+    attempts = item.get("attempts")
+    if not isinstance(attempts, list) or not attempts:
+        return False
+    terminal = attempts[-1]
+    if not isinstance(terminal, dict):
+        return False
+    evidence = terminal.get("evidence")
+    return bool(
+        terminal.get("attempted_representation") == "raster"
+        and terminal.get("outcome") == "verified"
+        and terminal.get("type_verified") is True
+        and terminal.get("visual_verified") is True
+        and terminal.get("cleanup_verified") is True
+        and isinstance(evidence, dict)
+        and evidence.get("visible_ink_expected") is False
+        and evidence.get("zero_ink_verified") is True
+        and evidence.get("zero_ink_omitted") is True
+    )
+
+
 def _text_mode_fallback_for_report(config: ImportConfig, text_source_spans: int) -> Optional[Dict[str, Any]]:
     """Return the real text substitution record accumulated during export.
 
@@ -284,7 +313,7 @@ def write_import_report(
         and all(
             item.get("verified") is True
             and bool(item.get("final_representation"))
-            and bool(item.get("entity_handles"))
+            and _delivery_item_has_persisted_output(item)
             for item in text_representation_deliveries
         )
     )
