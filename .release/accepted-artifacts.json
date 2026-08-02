@@ -2,33 +2,33 @@
   "artifacts": {
     "lcpdf_batch_exe": {
       "path": "dist/windows-portable/lcpdf-batch.exe",
-      "sha256": "d88b31cfdf276434816bd511b34c7cefb6acae1518a5794f465c09d5d18b8326",
-      "size_bytes": 66575861
+      "sha256": "d0003c1c1dd4a83eeddd17186d248054d43b098ae9c652ee33ae1a8fe16cb165",
+      "size_bytes": 66575862
     },
     "lcpdf_gui_exe": {
       "path": "dist/windows-portable/lcpdf-gui.exe",
-      "sha256": "158e498237f8581acc5675c1724381fed94f8630b43e4e36b7f5dfa06b8bec73",
-      "size_bytes": 66568523
+      "sha256": "71bef98e42976b2a6d60a01ee8f21c1da0b962bab1173b389b0b4501d3521f11",
+      "size_bytes": 66568524
     },
     "lcpdf_import_exe": {
       "path": "dist/windows-portable/lcpdf-import.exe",
-      "sha256": "0cd863b1b2e6a217189667fd043bff9dd823d834351d377e145261668d883395",
-      "size_bytes": 66577319
+      "sha256": "305a0e5a57132b1989d535407bef0e75612ffc840be76f4bfab5dc67f007bd0a",
+      "size_bytes": 66577320
     },
     "pdf2dxf_exe": {
       "path": "dist/windows-portable/pdf2dxf.exe",
-      "sha256": "33a3b877378a73439d3b6e9b7e3c4e79d3083fc8751566911d3708237d9e1b67",
-      "size_bytes": 66571777
+      "sha256": "dbf9231bc199e9c810f1295a1ea319b1874df046335dcc2cf2f0cf1dfaf59038",
+      "size_bytes": 66571778
     },
     "portable_zip": {
-      "path": "dist/LibreCAD-PDF-Importer-Windows-Portable_v1.0.76.zip",
-      "sha256": "1cb5fdc9a6b8b2b0f1edb369f1b47b4b4eab01dd2e583232b23bb9cea8722426",
-      "size_bytes": 263986174
+      "path": "dist/LibreCAD-PDF-Importer-Windows-Portable_v1.0.77.zip",
+      "sha256": "c1e8fd03520c89254ff1f57fe14bd8b27a30ce82faada621933bccd920b5be92",
+      "size_bytes": 263986137
     },
     "source_zip": {
-      "path": "dist/LibreCAD-PDF-Importer_v1.0.76.zip",
-      "sha256": "cc0dc17168edf50f407cbd3b1034e0448e37d98742dc23137cd8fd8a14b745cc",
-      "size_bytes": 275861
+      "path": "dist/LibreCAD-PDF-Importer_v1.0.77.zip",
+      "sha256": "7eb0f09a324c4df8b59019173ef2495ad467e0d8a316b135763339e47edb1621",
+      "size_bytes": 275989
     }
   },
   "build_contract": {
@@ -46,5 +46,5 @@
     "source_date_epoch": "315532800"
   },
   "schema": "bcs.release_artifacts/1.0",
-  "version": "1.0.76"
+  "version": "1.0.77"
 }
