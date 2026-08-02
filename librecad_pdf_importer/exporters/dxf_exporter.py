@@ -224,6 +224,17 @@ def _verify_serialized_text_deliveries(
     }
     source_ids: set[str] = set()
     main_handles: set[str] = set()
+    serialized_modelspace = doc.modelspace()
+    modelspace_handle_counts: Dict[str, int] = {}
+    for modelspace_entity in serialized_modelspace:
+        modelspace_handle = str(modelspace_entity.dxf.handle or "")
+        modelspace_handle_counts[modelspace_handle] = (
+            modelspace_handle_counts.get(modelspace_handle, 0) + 1
+        )
+    modelspace_record = getattr(serialized_modelspace, "block_record", None)
+    expected_modelspace_owner = str(
+        getattr(getattr(modelspace_record, "dxf", None), "handle", "") or ""
+    )
     for delivery in deliveries:
         source_id = str(delivery.get("source_id") or "")
         representation = str(delivery.get("final_representation") or "")
@@ -271,17 +282,6 @@ def _verify_serialized_text_deliveries(
             )
         main_handles.update(entity_handles)
         entities = [_serialized_entity(doc, handle, source_id) for handle in entity_handles]
-        serialized_modelspace = doc.modelspace()
-        modelspace_handle_counts: Dict[str, int] = {}
-        for modelspace_entity in serialized_modelspace:
-            modelspace_handle = str(modelspace_entity.dxf.handle or "")
-            modelspace_handle_counts[modelspace_handle] = (
-                modelspace_handle_counts.get(modelspace_handle, 0) + 1
-            )
-        modelspace_record = getattr(serialized_modelspace, "block_record", None)
-        expected_modelspace_owner = str(
-            getattr(getattr(modelspace_record, "dxf", None), "handle", "") or ""
-        )
         for entity in entities:
             try:
                 actual_owner = str(entity.dxf.get("owner", "") or "")

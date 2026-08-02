@@ -2,6 +2,15 @@
 
 All notable release changes are recorded here.
 
+## 1.0.77 — 2026-08-02
+
+### Performance
+
+- Build the serialized modelspace handle/ownership index once per completed
+  DXF instead of rebuilding the full index for every delivered text item. This
+  removes an accidental quadratic verification pass while preserving the exact
+  duplicate-handle, modelspace-owner, entity-type, and native-reopen checks.
+
 ## 1.0.76 — 2026-08-02
 
 ### Fixed
