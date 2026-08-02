@@ -691,11 +691,11 @@ class EmbeddedFontCatalog:
                 if source_type_hint.lower() == "type3":
                     # A Type3 font never has an extractable font program: its
                     # glyphs are PDF content streams, not a TTF/CFF payload.
-                    # That holds whether or not the row carries an xref, and
-                    # real documents DO carry one -- every Type3 row measured on
-                    # the owner's corpus has an xref with an empty BaseFont
-                    # name. Gating on `record[0] is None` sent them down the
-                    # extraction path and aborted the import as corrupt data.
+                    # Valid Type3 inventories may still carry an object xref
+                    # while BaseFont is empty and only a resource name is
+                    # available. The xref identifies PDF content streams, not
+                    # an extractable font program; sending such records through
+                    # font extraction misclassifies valid input as corrupt.
                     observed_names = []
                     # PyMuPDF reports such a span as "Type3 (<xref> 0 R)"; that
                     # synthetic span name must be observed or the text item

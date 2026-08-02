@@ -2,7 +2,7 @@
 # streaming.py — per-page streaming extraction for heavy PDFs
 # BlueCollar Systems — BUILT. NOT BOUGHT.
 """
-Per-page streaming for Attachment-C-class PDFs (large files, many pages).
+Per-page streaming for large multipage technical-document PDFs.
 
 Hosts iterate pages one at a time instead of extracting the whole document
 up front, keeping memory flat and letting the UI update between pages. A
