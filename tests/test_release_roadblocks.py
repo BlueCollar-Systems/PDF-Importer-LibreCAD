@@ -235,6 +235,102 @@ def test_release_artifact_manifest_verifier_rejects_byte_mutation(tmp_path) -> N
         )
 
 
+def test_release_acceptance_command_generates_a_verifiable_manifest(tmp_path) -> None:
+    from release_build_contract import CI_LOCK_FILENAME, RELEASE_LOCK_FILENAME
+    from scripts.verify_release_artifacts import (
+        REQUIRED_ARTIFACTS,
+        accept_release_artifacts,
+        verify_release_artifacts,
+    )
+
+    version = "9.9.9"
+    (tmp_path / RELEASE_LOCK_FILENAME).write_bytes(b"release lock\n")
+    (tmp_path / CI_LOCK_FILENAME).write_bytes(b"ci lock\n")
+    artifact_paths = {
+        "source_zip": tmp_path / "dist" / f"LibreCAD-PDF-Importer_v{version}.zip",
+        "portable_zip": (
+            tmp_path
+            / "dist"
+            / f"LibreCAD-PDF-Importer-Windows-Portable_v{version}.zip"
+        ),
+        "pdf2dxf_exe": tmp_path / "dist" / "windows-portable" / "pdf2dxf.exe",
+        "lcpdf_import_exe": (
+            tmp_path / "dist" / "windows-portable" / "lcpdf-import.exe"
+        ),
+        "lcpdf_batch_exe": (
+            tmp_path / "dist" / "windows-portable" / "lcpdf-batch.exe"
+        ),
+        "lcpdf_gui_exe": tmp_path / "dist" / "windows-portable" / "lcpdf-gui.exe",
+    }
+    assert set(artifact_paths) == set(REQUIRED_ARTIFACTS)
+    for index, path in enumerate(artifact_paths.values(), start=1):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"candidate-{index}".encode("ascii"))
+
+    manifest_path = tmp_path / ".release" / "accepted-artifacts.json"
+    accepted = accept_release_artifacts(
+        manifest_path=manifest_path,
+        root=tmp_path,
+        expected_version=version,
+    )
+
+    assert accepted["version"] == version
+    assert accepted["artifacts"]["portable_zip"]["path"] == (
+        f"dist/LibreCAD-PDF-Importer-Windows-Portable_v{version}.zip"
+    )
+    assert json.loads(manifest_path.read_text(encoding="utf-8")) == accepted
+    verified = verify_release_artifacts(
+        manifest_path=manifest_path,
+        root=tmp_path,
+        expected_version=version,
+    )
+    assert set(verified) == set(REQUIRED_ARTIFACTS)
+
+
+def test_release_acceptance_preserves_prior_manifest_when_candidate_fails(
+    monkeypatch, tmp_path
+) -> None:
+    from release_build_contract import CI_LOCK_FILENAME, RELEASE_LOCK_FILENAME
+    from scripts import verify_release_artifacts as release_artifacts
+
+    version = "9.9.9"
+    (tmp_path / RELEASE_LOCK_FILENAME).write_bytes(b"release lock\n")
+    (tmp_path / CI_LOCK_FILENAME).write_bytes(b"ci lock\n")
+    artifact_paths = release_artifacts._canonical_artifact_paths(tmp_path, version)
+    for index, path in enumerate(artifact_paths.values(), start=1):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"candidate-{index}".encode("ascii"))
+
+    manifest_path = tmp_path / ".release" / "accepted-artifacts.json"
+    manifest_path.parent.mkdir(parents=True)
+    prior_manifest = b'{"status":"previously-verified"}\n'
+    manifest_path.write_bytes(prior_manifest)
+    verified_candidates = []
+
+    def reject_candidate(**kwargs) -> None:
+        verified_candidates.append(Path(kwargs["manifest_path"]))
+        raise release_artifacts.ArtifactVerificationError(
+            "forced candidate verification failure"
+        )
+
+    monkeypatch.setattr(release_artifacts, "verify_release_artifacts", reject_candidate)
+
+    with pytest.raises(
+        release_artifacts.ArtifactVerificationError,
+        match="forced candidate verification failure",
+    ):
+        release_artifacts.accept_release_artifacts(
+            manifest_path=manifest_path,
+            root=tmp_path,
+            expected_version=version,
+        )
+
+    assert verified_candidates
+    assert verified_candidates[0] != manifest_path
+    assert manifest_path.read_bytes() == prior_manifest
+    assert not list(manifest_path.parent.glob(f".{manifest_path.name}.*.candidate"))
+
+
 def test_powershell_fetcher_delegates_to_transactional_python_preflight() -> None:
     source = (ROOT / "tools" / "fetch_runtime_wheels.ps1").read_text(
         encoding="utf-8"

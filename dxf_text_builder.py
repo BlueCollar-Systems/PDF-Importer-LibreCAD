@@ -379,6 +379,25 @@ def _resolve_item_font(
             ),
             "usable_format": str(getattr(asset, "usable_format", "") or ""),
         }
+        restore = getattr(config, "_restore_embedded_font_asset", None)
+        if path is not None and not path.is_file() and callable(restore):
+            try:
+                restored_filename = str(restore(str(asset.asset_id)) or "")
+                restored_path = Path(restored_filename) if restored_filename else None
+                if (
+                    restored_path is None
+                    or restored_path.expanduser().resolve() != path.expanduser().resolve()
+                ):
+                    raise ValueError(
+                        "embedded font restager returned a different asset path"
+                    )
+                path = restored_path
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                return _ExactFontResolution(
+                    **base,
+                    exact=False,
+                    reason=f"exact embedded font asset could not be restaged: {exc}",
+                )
         if path is None or not path.is_file():
             return _ExactFontResolution(
                 **base,
@@ -397,6 +416,31 @@ def _resolve_item_font(
                 exact=False,
                 reason=f"exact embedded font asset could not be read: {exc}",
             )
+        if not staged_font_matches:
+            if callable(restore):
+                try:
+                    restored_filename = str(restore(str(asset.asset_id)) or "")
+                    restored_path = Path(restored_filename) if restored_filename else None
+                    if (
+                        restored_path is None
+                        or restored_path.expanduser().resolve()
+                        != path.expanduser().resolve()
+                    ):
+                        raise ValueError(
+                            "embedded font restager returned a different asset path"
+                        )
+                    path = restored_path
+                    staged_font_matches = _staged_font_matches_source(
+                        path,
+                        str(asset.usable_sha256),
+                        bytes(asset.usable_bytes),
+                    )
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                    return _ExactFontResolution(
+                        **base,
+                        exact=False,
+                        reason=f"exact embedded font asset could not be restaged: {exc}",
+                    )
         if not staged_font_matches:
             return _ExactFontResolution(
                 **base,

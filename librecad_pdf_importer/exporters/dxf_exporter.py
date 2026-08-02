@@ -8,7 +8,7 @@ import math
 from pathlib import Path
 import re
 import shutil
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 import uuid
 
 import ezdxf
@@ -920,6 +920,53 @@ def _stage_embedded_font_assets(
     return paths
 
 
+def _restore_embedded_font_asset(
+    extraction: DocumentExtraction,
+    asset_id: str,
+    paths: Dict[str, str],
+    transaction: _AssetTransaction,
+) -> str:
+    """Restore one missing or changed exporter-owned font from source truth."""
+
+    from pdfcadcore.atomic_io import atomic_write_bytes
+
+    requested_id = str(asset_id or "")
+    raw_path = str(paths.get(requested_id, "") or "")
+    if not requested_id or not raw_path:
+        raise RuntimeError(f"embedded font asset is not owned by this export: {requested_id}")
+
+    selected = None
+    for page in extraction.pages:
+        for item in page.page_data.text_items:
+            asset = getattr(item, "font_asset", None)
+            if asset is None or str(asset.asset_id) != requested_id:
+                continue
+            if selected is not None and bytes(selected.usable_bytes) != bytes(
+                asset.usable_bytes
+            ):
+                raise RuntimeError(f"embedded font asset identity collision: {requested_id}")
+            selected = asset
+    if selected is None:
+        raise RuntimeError(f"embedded font source asset is unavailable: {requested_id}")
+
+    content = bytes(selected.usable_bytes)
+    digest = hashlib.sha256(content).hexdigest()
+    if digest != str(selected.usable_sha256) or requested_id != f"sha256:{digest}":
+        raise RuntimeError(f"embedded font source digest mismatch: {requested_id}")
+    expected_extension = str(selected.usable_format or "otf").lower().lstrip(".")
+    path = Path(raw_path)
+    if expected_extension not in {"otf", "ttf"} or path.suffix.lower() != (
+        f".{expected_extension}"
+    ):
+        raise RuntimeError(f"unsupported staged font format: {expected_extension}")
+
+    atomic_write_bytes(path, content)
+    transaction.register_file(path)
+    transaction.register_directory(path.parent)
+    transaction.register_directory(path.parent.parent)
+    return str(path)
+
+
 def _normalized_image_source_path(raw_path: str) -> str:
     return str(Path(raw_path).expanduser().resolve())
 
@@ -1426,7 +1473,11 @@ def _render_terminal_page_tiles(
                     size_px=tile_size,
                     source_size_px=tile_size,
                     crop_box_px=(0, 0, tile_size[0], tile_size[1]),
-                    draw_below_editable=True,
+                    # This opaque tile is the complete source page, including
+                    # vector and text paint. Keep retained editables beneath it
+                    # to avoid double-painting; hiding the image layer exposes
+                    # those editable entities.
+                    draw_below_editable=False,
                 )
                 page_width = float(extracted_page.page_data.width)
                 page_height = float(extracted_page.page_data.height)
@@ -1456,6 +1507,88 @@ def _render_terminal_page_tiles(
                     )
                 )
     return placements, staged_assets, effective_dpi
+
+
+def _terminal_job_safe_dpi(
+    extraction: DocumentExtraction,
+    page_numbers: Sequence[int],
+    requested_dpi: float,
+) -> float:
+    """Choose one DPI whose projected page tiles fit cumulative job budgets."""
+
+    requested = max(TERMINAL_MIN_DPI, float(requested_dpi or 200.0))
+    dimensions: List[Tuple[float, float]] = []
+    with safe_open(extraction.pdf_path) as document:
+        for page_number in page_numbers:
+            source_page = document[int(page_number) - 1]
+            width = float(source_page.rect.width)
+            height = float(source_page.rect.height)
+            if width <= 0.0 or height <= 0.0:
+                raise RuntimeError(
+                    f"page {page_number} has invalid physical dimensions"
+                )
+            page_budget_zoom = min(
+                math.sqrt(float(TERMINAL_MAX_PAGE_PIXELS) / (width * height)),
+                float(TERMINAL_MAX_PAGE_DIMENSION) / width,
+                float(TERMINAL_MAX_PAGE_DIMENSION) / height,
+            )
+            if page_budget_zoom * 72.0 + 1e-9 < TERMINAL_MIN_DPI:
+                raise RuntimeError(
+                    f"page {page_number} exceeds the safe fidelity-surface resource "
+                    f"budget even at {TERMINAL_MIN_DPI:g} DPI"
+                )
+            dimensions.append((width, height))
+
+    tile_limit = max(64, int(TERMINAL_TILE_PIXELS))
+
+    def projected_usage(dpi: float) -> Tuple[int, int]:
+        total_pixels = 0
+        total_tiles = 0
+        requested_zoom = float(dpi) / 72.0
+        for width, height in dimensions:
+            pixel_budget_zoom = math.sqrt(
+                float(TERMINAL_MAX_PAGE_PIXELS) / (width * height)
+            )
+            dimension_budget_zoom = min(
+                float(TERMINAL_MAX_PAGE_DIMENSION) / width,
+                float(TERMINAL_MAX_PAGE_DIMENSION) / height,
+            )
+            zoom = min(requested_zoom, pixel_budget_zoom, dimension_budget_zoom)
+            bounds = (
+                fitz.Rect(0.0, 0.0, width, height) * fitz.Matrix(zoom, zoom)
+            ).irect
+            pixel_width = int(bounds.width)
+            pixel_height = int(bounds.height)
+            total_pixels += pixel_width * pixel_height
+            total_tiles += math.ceil(pixel_width / tile_limit) * math.ceil(
+                pixel_height / tile_limit
+            )
+        return total_pixels, total_tiles
+
+    def fits(dpi: float) -> bool:
+        pixels, tiles = projected_usage(dpi)
+        return (
+            pixels <= TERMINAL_MAX_JOB_PIXELS
+            and tiles <= TERMINAL_MAX_JOB_TILES
+        )
+
+    if not fits(TERMINAL_MIN_DPI):
+        raise RuntimeError(
+            "document fidelity-surface resource budget exceeded even at "
+            f"{TERMINAL_MIN_DPI:g} DPI; import fewer pages per job"
+        )
+    if fits(requested):
+        return requested
+
+    low = float(TERMINAL_MIN_DPI)
+    high = requested
+    for _ in range(48):
+        midpoint = (low + high) * 0.5
+        if fits(midpoint):
+            low = midpoint
+        else:
+            high = midpoint
+    return low
 
 
 def _image_geometry(
@@ -1620,7 +1753,17 @@ def _pixmap_contains_ink(pixmap: Any) -> bool:
                 :,
                 channels - 1,
             ]
-            if np.any(alpha > 0):
+            # PyMuPDF exposes premultiplied color channels for alpha pixmaps.
+            # Alpha coverage alone is not visible ink: an opaque white page
+            # background has alpha 255 but is still visually blank. Composite
+            # the premultiplied samples onto white before applying the same
+            # visibility threshold used for opaque renders.
+            composited = np.minimum(
+                block.astype(np.uint16)
+                + (255 - alpha.astype(np.uint16))[:, :, np.newaxis],
+                255,
+            )
+            if np.any(composited < 250):
                 return True
         elif np.any(block < 250):
             return True
@@ -1839,11 +1982,13 @@ def _attempt_terminal_text_raster(
                 colorspace=fitz.csRGB,
                 alpha=False,
             )
-            if not _pixmap_contains_ink(pixmap) and requested_raster:
+            if not _pixmap_contains_ink(pixmap):
                 # A non-empty text record can legitimately paint no page
                 # pixels (render mode 3, clipping paths, optional content,
-                # or an empty glyph program).  Confirm at a second, higher
-                # resolution before preserving it as transparent output.
+                # an empty glyph program, or white paint). Confirm at a second,
+                # higher resolution before preserving it as transparent output,
+                # whether Raster was requested directly or reached as the
+                # terminal fallback for another requested representation.
                 # Bound the confirmation to protect older hardware.
                 max_confirmation_pixels = 8_000_000
                 area_points = max(float(clip.width) * float(clip.height), 1e-12)
@@ -1875,8 +2020,7 @@ def _attempt_terminal_text_raster(
         if whitespace_only and contains_ink:
             raise ValueError("requested whitespace raster contains unrelated visible ink")
         verified_source_zero_ink = bool(
-            requested_raster
-            and not whitespace_only
+            not whitespace_only
             and not contains_ink
             and zero_ink_confirmation_dpi is not None
         )
@@ -2124,12 +2268,18 @@ def _export_to_dxf_impl(
     terminal_job_tiles = 0
     terminal_job_asset_paths: set[Path] = set()
     if compositing_pages:
-        raster_dpi = int(
+        requested_raster_dpi = int(
             getattr(opts.provenance_opts, "raster_dpi", 200)
             if opts.provenance_opts is not None
             else 200
         )
-        for page_number in sorted(compositing_pages):
+        ordered_compositing_pages = sorted(compositing_pages)
+        raster_dpi = _terminal_job_safe_dpi(
+            extraction,
+            ordered_compositing_pages,
+            requested_raster_dpi,
+        )
+        for page_number in ordered_compositing_pages:
             tiles, tile_assets, effective_dpi = _render_terminal_page_tiles(
                 extraction,
                 page_number,
@@ -2166,9 +2316,10 @@ def _export_to_dxf_impl(
                 "compositing-required transparency delivered as a host-safe "
                 "opaque page fidelity surface"
             )
-            if effective_dpi + 1e-9 < float(raster_dpi):
+            if effective_dpi + 1e-9 < float(requested_raster_dpi):
                 fallback_reason += (
-                    f" at resource-bounded {effective_dpi:.1f} DPI (requested {raster_dpi} DPI)"
+                    f" at resource-bounded {effective_dpi:.1f} DPI "
+                    f"(requested {requested_raster_dpi} DPI)"
                 )
             extracted_page.resolved_mode = "hybrid"
             extracted_page.resolved_reason = (
@@ -2192,6 +2343,7 @@ def _export_to_dxf_impl(
     seen_text_entity_handles: set[str] = set()
     serialized_image_expectations: List[_SerializedImageExpectation] = []
     background_image_handles: List[str] = []
+    foreground_image_handles: List[str] = []
     if opts.provenance_opts is not None:
         # This transient export state is consumed by write_import_report after
         # the DXF is built, so stale data from a prior export cannot lie.
@@ -2301,7 +2453,11 @@ def _export_to_dxf_impl(
                 page_width=page_w,
                 page_height=page_h,
             )
-            if fill_rgb is not None and not page_background_fill and len(offset_pts) >= 3:
+            if (
+                fill_rgb is not None
+                and not page_background_fill
+                and _filled_path_has_visible_area(offset_pts)
+            ):
                 fills = _add_filled_path(
                     msp,
                     offset_pts,
@@ -2369,6 +2525,14 @@ def _export_to_dxf_impl(
             text_cfg = ImportConfig.auto()
             text_cfg.text_mode = opts.text_mode
             text_cfg._embedded_font_asset_paths = dict(embedded_font_paths)  # noqa: B010
+            text_cfg._restore_embedded_font_asset = (  # noqa: B010
+                lambda asset_id: _restore_embedded_font_asset(
+                    extraction,
+                    asset_id,
+                    embedded_font_paths,
+                    asset_transaction,
+                )
+            )
             for text_index, text in enumerate(page.page_data.text_items, start=1):
                 check_cancel(cancel_requested, "active page text build")
                 if text_index == 1 or text_index % 16 == 0:
@@ -2575,6 +2739,8 @@ def _export_to_dxf_impl(
                 image.dxf.flags = int(image.dxf.flags or 0) | 8
                 if staged_asset.draw_below_editable:
                     background_image_handles.append(str(image.dxf.handle or ""))
+                elif placement.source_kind == "page_raster_alpha_fidelity_fallback":
+                    foreground_image_handles.append(str(image.dxf.handle or ""))
                 serialized_image_expectations.append(
                     _SerializedImageExpectation(
                         image_handle=str(image.dxf.handle or ""),
@@ -2694,13 +2860,20 @@ def _export_to_dxf_impl(
             vp.dxf.center = center
             vp.dxf.height = height * 1.1
 
-    if background_image_handles:
+    if background_image_handles or foreground_image_handles:
         background_set = set(background_image_handles)
+        foreground_set = set(foreground_image_handles)
+        explicitly_ordered = background_set | foreground_set
         ordered_entities = [
             entity for entity in msp if str(entity.dxf.handle or "") in background_set
         ]
         ordered_entities.extend(
-            entity for entity in msp if str(entity.dxf.handle or "") not in background_set
+            entity
+            for entity in msp
+            if str(entity.dxf.handle or "") not in explicitly_ordered
+        )
+        ordered_entities.extend(
+            entity for entity in msp if str(entity.dxf.handle or "") in foreground_set
         )
         msp.set_redraw_order(
             [
@@ -2853,6 +3026,67 @@ def _nearest_r12_aci(rgb) -> int:
 def _apply_r12_color(attribs: dict, rgb) -> None:
     if rgb is not None:
         attribs["color"] = _nearest_r12_aci(rgb)
+
+
+def _filled_path_has_visible_area(points) -> bool:
+    """Return whether a PDF fill spans any finite two-dimensional area.
+
+    PDF permits fill operators on open, repeated, or collinear paths; closing
+    those paths still paints no pixels.  R12 represents fills as triangulated
+    SOLIDs, so a verified zero-area path legitimately yields no entities.
+    Non-finite coordinates are not certified as empty and retain the strict
+    exporter failure path.
+    """
+
+    coordinates: List[Tuple[float, float]] = []
+    for raw in points:
+        point = (float(raw[0]), float(raw[1]))
+        if not all(math.isfinite(value) for value in point):
+            return True
+        if not coordinates or point != coordinates[-1]:
+            coordinates.append(point)
+    if len(coordinates) >= 2 and coordinates[0] == coordinates[-1]:
+        coordinates.pop()
+    if len(coordinates) < 3:
+        return False
+
+    origin_x, origin_y = coordinates[0]
+    anchor_x, anchor_y = max(
+        coordinates[1:],
+        key=lambda point: max(
+            abs(point[0] - origin_x), abs(point[1] - origin_y)
+        ),
+    )
+    anchor_dx = anchor_x - origin_x
+    anchor_dy = anchor_y - origin_y
+    if anchor_dx == 0.0 and anchor_dy == 0.0:
+        return False
+    spans_area = any(
+        anchor_dx * (point_y - origin_y) - anchor_dy * (point_x - origin_x)
+        != 0.0
+        for point_x, point_y in coordinates[1:]
+    )
+    if not spans_area:
+        return False
+
+    # A path may trace a non-collinear loop and then retrace every edge in the
+    # opposite direction.  Its winding (and even/odd parity) is zero everywhere,
+    # so the PDF fill still paints nothing even though its bounding box has area.
+    directed_edges: Dict[
+        Tuple[Tuple[float, float], Tuple[float, float]], int
+    ] = {}
+    for index, start in enumerate(coordinates):
+        end = coordinates[(index + 1) % len(coordinates)]
+        if start == end:
+            continue
+        edge = (start, end)
+        directed_edges[edge] = directed_edges.get(edge, 0) + 1
+    if directed_edges and all(
+        count == directed_edges.get((end, start), 0)
+        for (start, end), count in directed_edges.items()
+    ):
+        return False
+    return True
 
 
 def _add_filled_path(

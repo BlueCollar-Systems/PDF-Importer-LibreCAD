@@ -27,6 +27,7 @@ from librecad_pdf_importer.core.document import (
 )
 from librecad_pdf_importer.exporters.dxf_exporter import (
     DxfExportOptions,
+    _filled_path_has_visible_area,
     _rectangular_opaque_crop,
     export_to_dxf,
 )
@@ -234,6 +235,97 @@ class TestDxfPipeline(unittest.TestCase):
         self.assertEqual({entity.dxf.color for entity in fills}, {8})
         self.assertEqual(strokes[0].dxf.color, 250)
 
+    def test_r12_zero_area_fill_is_a_verified_noop(self) -> None:
+        source = self.tmp_path / "zero-area-fill.pdf"
+        output = self.tmp_path / "zero-area-fill.dxf"
+        doc = fitz.open()
+        page = doc.new_page(width=100, height=100)
+        page.draw_line((10, 20), (90, 20), color=(0.0, 0.0, 0.0), width=1.0)
+        shape = page.new_shape()
+        shape.draw_polyline(
+            [(30, 40), (50, 40), (30, 40), (50, 40), (30, 40)]
+        )
+        shape.finish(color=None, fill=(0.75, 0.75, 0.75), closePath=False)
+        shape.commit()
+        shape = page.new_shape()
+        shape.draw_polyline(
+            [
+                (60, 40),
+                (60, 60),
+                (80, 60),
+                (60, 40),
+                (80, 60),
+                (60, 60),
+            ]
+        )
+        shape.finish(color=None, fill=(0.5, 0.5, 0.5), closePath=False)
+        shape.commit()
+        doc.save(str(source))
+        doc.close()
+
+        run = run_import(
+            str(source),
+            mode="vector",
+            overrides={"pages": "1", "import_text": False},
+        )
+        fill_primitives = [
+            primitive
+            for primitive in run.extraction.pages[0].page_data.primitives
+            if primitive.fill_color is not None
+        ]
+        self.assertEqual(len(fill_primitives), 2)
+
+        export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(
+                include_text=False,
+                include_images=False,
+                dxf_version="R12",
+            ),
+        )
+
+        drawing = ezdxf.readfile(output)
+        entities = list(drawing.modelspace())
+        self.assertEqual([entity.dxftype() for entity in entities], ["LINE"])
+        auditor = drawing.audit()
+        self.assertFalse(auditor.has_errors)
+
+    def test_nonzero_area_fill_still_fails_when_no_fill_entity_is_built(self) -> None:
+        source = self.tmp_path / "nonzero-area-fill.pdf"
+        output = self.tmp_path / "nonzero-area-fill.dxf"
+        self._build_filled_and_stroked_pdf(source)
+        run = run_import(
+            str(source),
+            mode="vector",
+            overrides={"pages": "1", "import_text": False},
+        )
+
+        with patch(
+            "librecad_pdf_importer.exporters.dxf_exporter._add_filled_path",
+            return_value=[],
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"filled source primitive \d+ produced no fill entities",
+            ):
+                export_to_dxf(
+                    run.extraction,
+                    str(output),
+                    DxfExportOptions(
+                        include_text=False,
+                        include_images=False,
+                        dxf_version="R12",
+                    ),
+                )
+
+    def test_tiny_nonzero_area_fill_is_not_certified_as_zero_paint(self) -> None:
+        self.assertTrue(
+            _filled_path_has_visible_area(
+                [(0.0, 0.0), (1e-7, 0.0), (0.0, 1e-7)]
+            )
+        )
+
     def test_full_page_white_fill_uses_parent_paper_instead_of_black_hatch(self) -> None:
         source = self.tmp_path / "white-page-background.pdf"
         output = self.tmp_path / "white-page-background.dxf"
@@ -351,6 +443,88 @@ class TestDxfPipeline(unittest.TestCase):
             all(image.source_kind == "inline_image" for image in page.images)
         )
         self.assertTrue(all(image.source_instance_count == 1 for image in page.images))
+
+    def test_missing_decoded_inline_block_routes_page_to_fidelity_surface(self) -> None:
+        image_dir = self.tmp_path / "incomplete-inline-images"
+        image_dir.mkdir()
+        image_info = [
+            {
+                "xref": 0,
+                "number": 17,
+                "bbox": (10.0, 10.0, 20.0, 20.0),
+                "transform": (10.0, 0.0, 0.0, 10.0, 10.0, 10.0),
+                "digest": b"a" * 16,
+            },
+            {
+                "xref": 0,
+                "number": 18,
+                "bbox": (30.0, 30.0, 40.0, 40.0),
+                "transform": (10.0, 0.0, 0.0, 10.0, 30.0, 30.0),
+                "digest": b"b" * 16,
+            },
+        ]
+        decoded_blocks = {
+            "blocks": [
+                {
+                    "type": 1,
+                    "number": 17,
+                    "image": b"decoded-image-bytes",
+                    "transform": (10.0, 0.0, 0.0, 10.0, 10.0, 10.0),
+                }
+            ]
+        }
+        page = SimpleNamespace(
+            rect=fitz.Rect(0.0, 0.0, 100.0, 80.0),
+            rotation_matrix=fitz.Matrix(1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+            get_image_info=lambda **_kwargs: image_info,
+            get_text=lambda kind: decoded_blocks if kind == "dict" else [],
+            get_images=lambda **_kwargs: [],
+        )
+
+        placements = _extract_images(
+            object(),
+            page,
+            1,
+            ExtractionOptions(
+                pages="1",
+                import_mode="vector",
+                import_text=False,
+                import_images=True,
+                raster_dpi=72,
+            ),
+            image_dir,
+        )
+
+        self.assertEqual(len(placements), 1)
+        marker = placements[0]
+        self.assertEqual(marker.source_kind, "inline_image_page_fidelity_required")
+        self.assertEqual(marker.source_instance_count, 2)
+        self.assertEqual(marker.path, "")
+        self.assertEqual(marker.alpha_kind, "compositing_required")
+        self.assertEqual(len(marker.source_digest), 64)
+
+        image_info[1]["number"] = 70_001
+        high_number_placements = _extract_images(
+            object(),
+            page,
+            1,
+            ExtractionOptions(
+                pages="1",
+                import_mode="vector",
+                import_text=False,
+                import_images=True,
+                raster_dpi=72,
+            ),
+            image_dir,
+        )
+        self.assertEqual(len(high_number_placements), 1)
+        high_number_marker = high_number_placements[0]
+        self.assertEqual(
+            high_number_marker.source_kind,
+            "inline_image_page_fidelity_required",
+        )
+        self.assertEqual(high_number_marker.source_instance_count, 2)
+        self.assertNotEqual(high_number_marker.source_digest, marker.source_digest)
 
     def test_dense_inline_images_use_exact_transparent_images_only_composite(
         self,

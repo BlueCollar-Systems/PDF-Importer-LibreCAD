@@ -2,10 +2,15 @@
 
 **BlueCollar Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.74](https://img.shields.io/badge/Version-1.0.74-blue.svg)
+![Version: 1.0.75](https://img.shields.io/badge/Version-1.0.75-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
+
+See [CHANGELOG.md](CHANGELOG.md) for release history. Version 1.0.75 improves
+fail-closed embedded-font recovery, zero-ink text handling, incomplete inline
+image fidelity delivery, cumulative raster resource budgeting, and degenerate
+PDF fill handling.
 
 ## Features
 
@@ -46,6 +51,17 @@ wheel closures. The builder removes only pip `RECORD` rows for generated venv
 launchers (which embed the checkout path and are not shipped), then verifies the
 accepted artifact bytes before publication. Release-gate pytest dependencies and
 all token-bearing GitHub Actions are pinned as part of the same provenance chain.
+
+Maintainers regenerate acceptance metadata only after both release archives are
+built and smoked:
+
+```powershell
+python build_release.py
+python build_windows_portable.py
+python scripts/smoke_portable_zip.py "dist/LibreCAD-PDF-Importer-Windows-Portable_v*.zip" --source-zip "dist/LibreCAD-PDF-Importer_v*.zip"
+python scripts/verify_release_artifacts.py --accept
+python scripts/verify_release_artifacts.py
+```
 
 ## Installation
 

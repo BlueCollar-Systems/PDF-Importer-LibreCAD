@@ -26,6 +26,7 @@ from dxf_text_builder import (
     _embedded_ezdxf_cap_height_ratio,
     _exact_font_cache_identity,
     _nested_outline_tolerance,
+    _resolve_item_font,
     _source_outline_bbox_key,
     _staged_font_matches_source,
     _ensure_text_style,
@@ -40,12 +41,13 @@ from librecad_pdf_importer.core.document import DocumentExtraction, ExtractedPag
 from librecad_pdf_importer.exporters import dxf_exporter as dxf_exporter_module
 from librecad_pdf_importer.exporters.dxf_exporter import (
     DxfExportOptions,
+    _pixmap_contains_ink,
     _verify_serialized_text_deliveries,
     export_to_dxf,
 )
 from librecad_pdf_importer.importer import ImportRun, run_import, write_import_report
 from pdfcadcore.import_config import ImportConfig
-from pdfcadcore.embedded_fonts import EmbeddedFontFailure
+from pdfcadcore.embedded_fonts import EmbeddedFontAsset, EmbeddedFontFailure
 from pdfcadcore.fitz_loader import import_fitz
 from pdfcadcore.import_report import build_actual_text_entity_types
 from pdfcadcore.primitive_extractor import (
@@ -143,6 +145,61 @@ def test_staged_embedded_font_bytes_are_read_once_per_document(
         reset_text_styles()
         assert _staged_font_matches_source(font_path, digest, font_bytes) is True
         assert reader.call_count == 2
+
+
+def test_missing_owned_embedded_font_is_restaged_before_item_resolution(
+    tmp_path: Path,
+) -> None:
+    font_bytes = _subset_font_without_lowercase_x()
+    digest = hashlib.sha256(font_bytes).hexdigest()
+    asset = EmbeddedFontAsset(
+        page_number=1,
+        span_font_name="Synthetic-Regular",
+        base_font_name="Synthetic-Regular",
+        source_xref=7,
+        resource_name="F7",
+        source_font_type="TrueType",
+        source_encoding="Identity-H",
+        source_format="ttf",
+        source_origin="embedded_pdf_font",
+        source_bytes=font_bytes,
+        source_sha256=digest,
+        usable_format="ttf",
+        usable_bytes=font_bytes,
+        usable_sha256=digest,
+        asset_id=f"sha256:{digest}",
+        unicode_map_installed=True,
+        units_per_em=1000,
+        ascender=800,
+        descender=-200,
+        glyph_advances=(500, 600),
+    )
+    text_item = NormalizedText(
+        id=2,
+        text="A",
+        normalized="A",
+        font_name="Synthetic-Regular",
+        page_number=1,
+        font_asset=asset,
+    )
+    font_path = tmp_path / "owned-assets" / f"{digest}.ttf"
+    restore_calls: list[str] = []
+
+    def restore_owned_font(asset_id: str) -> str:
+        restore_calls.append(asset_id)
+        font_path.parent.mkdir(parents=True, exist_ok=True)
+        font_path.write_bytes(font_bytes)
+        return str(font_path)
+
+    config = ImportConfig(text_mode="glyphs")
+    config._embedded_font_asset_paths = {asset.asset_id: str(font_path)}
+    config._restore_embedded_font_asset = restore_owned_font
+
+    resolution = _resolve_item_font(text_item, config)
+
+    assert resolution.exact is True
+    assert restore_calls == [asset.asset_id]
+    assert font_path.read_bytes() == font_bytes
 
 
 def test_glyph_caches_isolate_same_name_fonts_by_exact_asset_digest() -> None:
@@ -2753,6 +2810,79 @@ def test_requested_raster_preserves_verified_nonpainted_text_as_zero_ink(
     assert delivery["entity_handles"] == []
     drawing = ezdxf.readfile(output)
     assert list(drawing.modelspace().query("IMAGE")) == []
+
+
+def test_alpha_ink_detection_ignores_opaque_white_paint() -> None:
+    white = SimpleNamespace(
+        n=4,
+        width=2,
+        height=1,
+        stride=8,
+        samples=bytes([255, 255, 255, 255] * 2),
+        samples_mv=None,
+        alpha=True,
+    )
+    visible_black = SimpleNamespace(
+        n=4,
+        width=2,
+        height=1,
+        stride=8,
+        samples=bytes([0, 0, 0, 128, 255, 255, 255, 0]),
+        samples_mv=None,
+        alpha=True,
+    )
+
+    assert _pixmap_contains_ink(white) is False
+    assert _pixmap_contains_ink(visible_black) is True
+
+
+@pytest.mark.parametrize("mode", ["text", "3d_text", "glyphs"])
+def test_terminal_raster_fallback_omits_confirmed_nonpainted_source(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    pdf_path = tmp_path / "nonpainted-fallback.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=200, height=100)
+    page.insert_text((30, 50), "INVISIBLE", fontsize=12, render_mode=3)
+    pdf.save(str(pdf_path))
+    pdf.close()
+
+    run = run_import(str(pdf_path), mode="vector", overrides={"pages": "1"})
+    source = run.extraction.pages[0].page_data.text_items[0]
+    failure = TextDeliveryResult(
+        source_id=f"text_span:1:{source.id}",
+        requested_representation=mode,
+        final_representation=None,
+        verified=False,
+        terminal_fallback_authorized=True,
+        failure_reason="all structural representations proven impossible",
+    )
+    output = tmp_path / "nonpainted-fallback.dxf"
+
+    with patch(
+        "librecad_pdf_importer.exporters.dxf_exporter.build_text",
+        return_value=failure,
+    ):
+        result = export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(include_images=False, text_mode=mode),
+        )
+
+    delivery = result.text_deliveries[0]
+    attempt = delivery["attempts"][-1]
+    assert delivery["requested_representation"] == mode
+    assert delivery["final_representation"] == "raster"
+    assert delivery["fallback_used"] is True
+    assert delivery["verified"] is True
+    assert delivery["entity_handles"] == []
+    assert attempt["strategy"] == "verified_source_zero_ink_omission"
+    assert attempt["evidence"]["zero_ink_confirmation_dpi"] > (
+        attempt["evidence"]["raster_dpi"]
+    )
+    assert attempt["evidence"]["zero_ink_verified"] is True
+    assert output.is_file()
 
 
 @pytest.mark.parametrize("mode", ["text", "labels", "3d_text", "glyphs", "geometry"])

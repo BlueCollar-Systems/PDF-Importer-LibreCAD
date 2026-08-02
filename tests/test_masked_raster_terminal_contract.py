@@ -162,6 +162,62 @@ def test_masked_page_raster_uses_matted_asset_below_editable_entities(
     )
 
 
+def test_terminal_full_page_surface_draws_above_retained_editable_entities(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "terminal-page-source.pdf"
+    document = fitz.open()
+    page = document.new_page(width=100, height=100)
+    page.draw_line((10, 10), (90, 90), color=(0.0, 0.0, 0.0), width=2.0)
+    document.save(source)
+    document.close()
+
+    marker = _placement(
+        "",
+        source_kind="inline_image_page_fidelity_required",
+        alpha_kind="compositing_required",
+        alpha_present=True,
+    )
+    editable_line = Primitive(
+        id=1,
+        type="line",
+        points=[(2.0, 2.0), (18.0, 18.0)],
+        stroke_color=(0.0, 0.0, 0.0),
+        page_number=1,
+    )
+    extraction = DocumentExtraction(
+        pdf_path=str(source),
+        pages=[_page(1, images=[marker], primitives=[editable_line])],
+    )
+    output = tmp_path / "terminal-page.dxf"
+
+    exporter.export_to_dxf(
+        extraction,
+        str(output),
+        exporter.DxfExportOptions(
+            include_text=False,
+            include_images=True,
+            attach_metadata=False,
+            provenance_opts=SimpleNamespace(raster_dpi=72),
+        ),
+    )
+
+    drawing = ezdxf.readfile(output)
+    modelspace = drawing.modelspace()
+    images = list(modelspace.query("IMAGE"))
+    editables = list(modelspace.query("LINE"))
+    assert images and editables
+    ordered_handles = [
+        str(entity.dxf.handle) for entity in modelspace.entities_in_redraw_order()
+    ]
+    redraw_rank = {handle: index for index, handle in enumerate(ordered_handles)}
+    assert all(
+        redraw_rank[str(editable.dxf.handle)] < redraw_rank[str(image.dxf.handle)]
+        for editable in editables
+        for image in images
+    )
+
+
 def test_hybrid_editable_text_preserves_colored_backing_in_exported_raster(
     tmp_path: Path,
 ) -> None:
@@ -274,6 +330,12 @@ def test_cumulative_terminal_resource_cap_rolls_back_output_and_assets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    source = tmp_path / "resource-cap-source.pdf"
+    document = fitz.open()
+    document.new_page(width=100, height=100)
+    document.new_page(width=100, height=100)
+    document.save(source)
+    document.close()
     marker_kind = "inline_image_page_fidelity_required"
     pages = [
         _page(
@@ -291,7 +353,7 @@ def test_cumulative_terminal_resource_cap_rolls_back_output_and_assets(
         for page_number in (1, 2)
     ]
     extraction = DocumentExtraction(
-        pdf_path=str(tmp_path / "unused.pdf"),
+        pdf_path=str(source),
         pages=pages,
     )
     output = tmp_path / "resource-capped.dxf"
@@ -349,6 +411,116 @@ def test_cumulative_terminal_resource_cap_rolls_back_output_and_assets(
             ),
         )
 
-    assert rendered_pages == [1, 2]
+    assert rendered_pages == []
     assert output.read_bytes() == prior_output
     assert not asset_parent.exists()
+
+
+def test_cumulative_terminal_pixel_budget_reduces_shared_dpi_before_rendering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "multi-page-fidelity-source.pdf"
+    document = fitz.open()
+    for page_number in (1, 2):
+        page = document.new_page(width=100, height=100)
+        page.draw_rect(
+            fitz.Rect(10, 10, 90, 90),
+            color=(0.0, 0.0, 0.0),
+            fill=(page_number / 3.0, 0.25, 0.5),
+        )
+    document.save(source)
+    document.close()
+
+    marker_kind = "inline_image_page_fidelity_required"
+    pages = [
+        _page(
+            page_number,
+            images=[
+                _placement(
+                    "",
+                    page_number=page_number,
+                    source_kind=marker_kind,
+                    alpha_kind="compositing_required",
+                    alpha_present=True,
+                )
+            ],
+        )
+        for page_number in (1, 2)
+    ]
+    extraction = DocumentExtraction(pdf_path=str(source), pages=pages)
+    output = tmp_path / "multi-page-fidelity.dxf"
+    config = SimpleNamespace(raster_dpi=144)
+    monkeypatch.setattr(exporter, "TERMINAL_MAX_JOB_PIXELS", 50_000)
+
+    result = exporter.export_to_dxf(
+        extraction,
+        str(output),
+        exporter.DxfExportOptions(
+            include_text=False,
+            include_images=True,
+            attach_metadata=False,
+            provenance_opts=config,
+        ),
+    )
+
+    drawing = ezdxf.readfile(output)
+    delivered_pixels = sum(
+        round(float(image.dxf.image_size.x)) * round(float(image.dxf.image_size.y))
+        for image in drawing.modelspace().query("IMAGE")
+    )
+    assert result.image_count == 2
+    assert delivered_pixels <= 50_000
+    assert delivered_pixels > 40_000
+    assert all(
+        "resource-bounded" in page.resolved_reason for page in extraction.pages
+    )
+
+
+def test_cumulative_terminal_tile_budget_reduces_shared_dpi_before_rendering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "multi-page-tile-source.pdf"
+    document = fitz.open()
+    document.new_page(width=100, height=100)
+    document.new_page(width=100, height=100)
+    document.save(source)
+    document.close()
+
+    pages = [
+        _page(
+            page_number,
+            images=[
+                _placement(
+                    "",
+                    page_number=page_number,
+                    source_kind="inline_image_page_fidelity_required",
+                    alpha_kind="compositing_required",
+                    alpha_present=True,
+                )
+            ],
+        )
+        for page_number in (1, 2)
+    ]
+    extraction = DocumentExtraction(pdf_path=str(source), pages=pages)
+    output = tmp_path / "multi-page-tile-fidelity.dxf"
+    monkeypatch.setattr(exporter, "TERMINAL_TILE_PIXELS", 64)
+    monkeypatch.setattr(exporter, "TERMINAL_MAX_JOB_TILES", 18)
+
+    result = exporter.export_to_dxf(
+        extraction,
+        str(output),
+        exporter.DxfExportOptions(
+            include_text=False,
+            include_images=True,
+            attach_metadata=False,
+            provenance_opts=SimpleNamespace(raster_dpi=144),
+        ),
+    )
+
+    assert result.image_count <= 18
+    assert result.image_count > 8
+    assert all(
+        "resource-bounded" in page.resolved_reason for page in extraction.pages
+    )

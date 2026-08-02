@@ -903,6 +903,14 @@ def _svg_number(value: object) -> str:
     return format(number, ".17g")
 
 
+class _InlineImageDecodeIncomplete(RuntimeError):
+    """One or more inventoried inline images lack individual decoded bytes."""
+
+    def __init__(self, message: str, image_info: Sequence[dict]) -> None:
+        super().__init__(message)
+        self.image_info = tuple(dict(info) for info in image_info)
+
+
 def _inline_image_blocks(page: fitz.Page) -> list[tuple[dict, dict]]:
     """Return every displayed inline-image instance paired with decoded bytes."""
 
@@ -922,7 +930,9 @@ def _inline_image_blocks(page: fitz.Page) -> list[tuple[dict, dict]]:
     try:
         text_dictionary = page.get_text("dict") or {}
     except (RuntimeError, TypeError, ValueError) as exc:
-        raise RuntimeError(f"inline image byte extraction failed: {exc}") from exc
+        raise _InlineImageDecodeIncomplete(
+            f"inline image byte extraction failed: {exc}", inline_info
+        ) from exc
     blocks_by_number = {
         int(block.get("number")): block
         for block in (text_dictionary.get("blocks") or [])
@@ -933,15 +943,20 @@ def _inline_image_blocks(page: fitz.Page) -> list[tuple[dict, dict]]:
         number = int(info.get("number", -1))
         block = blocks_by_number.get(number)
         if block is None:
-            raise RuntimeError(
-                f"inline image instance {number} has no decoded image block"
+            raise _InlineImageDecodeIncomplete(
+                f"inline image instance {number} has no decoded image block",
+                inline_info,
             )
         image_bytes = block.get("image")
         transform = block.get("transform")
         if not isinstance(image_bytes, (bytes, bytearray)) or not image_bytes:
-            raise RuntimeError(f"inline image instance {number} has no image bytes")
+            raise _InlineImageDecodeIncomplete(
+                f"inline image instance {number} has no image bytes", inline_info
+            )
         if not isinstance(transform, (list, tuple)) or len(transform) != 6:
-            raise RuntimeError(f"inline image instance {number} has no affine transform")
+            raise _InlineImageDecodeIncomplete(
+                f"inline image instance {number} has no affine transform", inline_info
+            )
         paired.append((info, block))
     return paired
 
@@ -1176,15 +1191,33 @@ def _inline_composite_source_digest(
     return digest.hexdigest()
 
 
-def _inline_image_page_fidelity_marker(
-    inline_blocks: list[tuple[dict, dict]],
+def _inline_inventory_source_digest(image_info: Sequence[dict]) -> str:
+    """Hash source identity for an inventory that cannot be decoded item-wise."""
+
+    digest = hashlib.sha256()
+    for info in image_info:
+        digest.update(str(int(info.get("number", -1))).encode("ascii"))
+        for key in ("bbox", "transform"):
+            values = info.get(key) or ()
+            digest.update(
+                " ".join(_svg_number(value) for value in values).encode("ascii")
+            )
+        source_digest = info.get("digest")
+        if isinstance(source_digest, (bytes, bytearray)):
+            digest.update(bytes(source_digest))
+        else:
+            digest.update(str(source_digest or "").encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _inline_page_fidelity_marker(
     *,
+    source_instance_count: int,
+    source_digest: str,
     page: fitz.Page,
     page_number: int,
     options: ExtractionOptions,
 ) -> ImagePlacement:
-    """Record compositing need without allocating a large transparent page raster."""
-
     page_rect = page.rect
     width = float(page_rect.width)
     height = float(page_rect.height)
@@ -1202,18 +1235,36 @@ def _inline_image_page_fidelity_marker(
         path="",
         xref=0,
         source_kind="inline_image_page_fidelity_required",
-        source_instance_count=len(inline_blocks),
+        source_instance_count=int(source_instance_count),
         source_bbox_pdf=(
             float(page_rect.x0),
             float(page_rect.y0),
             float(page_rect.x1),
             float(page_rect.y1),
         ),
-        source_digest=_inline_composite_source_digest(inline_blocks),
+        source_digest=str(source_digest),
         pixel_size=pixel_size,
         alpha_kind="compositing_required",
         alpha_bbox_px=(0, 0, pixel_size[0], pixel_size[1]),
         alpha_present=True,
+    )
+
+
+def _inline_image_page_fidelity_marker(
+    inline_blocks: list[tuple[dict, dict]],
+    *,
+    page: fitz.Page,
+    page_number: int,
+    options: ExtractionOptions,
+) -> ImagePlacement:
+    """Record compositing need without allocating a large transparent page raster."""
+
+    return _inline_page_fidelity_marker(
+        source_instance_count=len(inline_blocks),
+        source_digest=_inline_composite_source_digest(inline_blocks),
+        page=page,
+        page_number=page_number,
+        options=options,
     )
 
 
@@ -1223,7 +1274,18 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
     if image_dir is None:
         return placements
 
-    inline_blocks = _inline_image_blocks(page)
+    unresolved_inline_marker = None
+    try:
+        inline_blocks = _inline_image_blocks(page)
+    except _InlineImageDecodeIncomplete as exc:
+        inline_blocks = []
+        unresolved_inline_marker = _inline_page_fidelity_marker(
+            source_instance_count=len(exc.image_info),
+            source_digest=_inline_inventory_source_digest(exc.image_info),
+            page=page,
+            page_number=page_number,
+            options=options,
+        )
     page_rect = page.rect
     page_height = float(page_rect.height)
     rotation_matrix = _page_rotation_transform(
@@ -1413,6 +1475,9 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
                 alpha_present=True,
             )
         )
+
+    if unresolved_inline_marker is not None:
+        placements.append(unresolved_inline_marker)
 
     if inline_blocks:
         use_composite = (
