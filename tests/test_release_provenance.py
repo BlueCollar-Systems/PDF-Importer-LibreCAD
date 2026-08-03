@@ -11,6 +11,12 @@ import pytest
 from scripts import verify_release_artifacts as release_artifacts
 
 
+@pytest.fixture(autouse=True)
+def _isolate_release_interpreter_contract(monkeypatch) -> None:
+    """Exercise provenance logic independently of the CI patch version."""
+    monkeypatch.setattr(release_artifacts, "assert_release_interpreter", lambda: None)
+
+
 def _git(root: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", *args],
