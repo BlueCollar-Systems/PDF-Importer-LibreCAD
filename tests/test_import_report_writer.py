@@ -121,13 +121,13 @@ class TestImportReportWriter(unittest.TestCase):
             self._write_blank_pdf(pdf_path)
             report_path = tmp_path / "import_report.json"
             texts = [
-                NormalizedText(1, "1017FR1", "1017FR1", insertion=(10, 100), page_number=1),
-                NormalizedText(2, "1", "1", insertion=(20, 100), page_number=1),
-                NormalizedText(3, "W12X30", "W12X30", insertion=(30, 100), page_number=1),
-                NormalizedText(4, "13'-11 1/4\"", "13'-11 1/4\"", insertion=(40, 100), page_number=1),
-                NormalizedText(5, "417", "417", insertion=(50, 100), page_number=1),
-                NormalizedText(6, "GALV.", "GALV.", insertion=(60, 100), page_number=1),
-                NormalizedText(7, "A992", "A992", insertion=(70, 100), page_number=1),
+                NormalizedText(1, "ZX490Q2", "ZX490Q2", insertion=(10, 100), page_number=1),
+                NormalizedText(2, "3", "3", insertion=(20, 100), page_number=1),
+                NormalizedText(3, "W19X47", "W19X47", insertion=(30, 100), page_number=1),
+                NormalizedText(4, "8'-4 3/8\"", "8'-4 3/8\"", insertion=(40, 100), page_number=1),
+                NormalizedText(5, "263.5", "263.5", insertion=(50, 100), page_number=1),
+                NormalizedText(6, "SHOP PRIME", "SHOP PRIME", insertion=(60, 100), page_number=1),
+                NormalizedText(7, "SYN-GR50", "SYN-GR50", insertion=(70, 100), page_number=1),
             ]
             page = ExtractedPage(
                 page_data=PageData(page_number=1, width=200, height=120, text_items=texts),
@@ -154,8 +154,8 @@ class TestImportReportWriter(unittest.TestCase):
             )
             self.assertEqual(sidecar["schema"], "bcs.parts_bootstrap/1.0")
             self.assertEqual(sidecar["part_count"], 1)
-            self.assertEqual(sidecar["rows"][0]["piece_mark"], "1017FR1")
-            self.assertEqual(sidecar["rows"][0]["profile_hint"], "W12X30")
+            self.assertEqual(sidecar["rows"][0]["piece_mark"], "ZX490Q2")
+            self.assertEqual(sidecar["rows"][0]["profile_hint"], "W19X47")
             self.assertIn("report_sha256", sidecar["import_build_stamp"])
 
 

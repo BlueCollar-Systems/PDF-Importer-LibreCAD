@@ -7,11 +7,11 @@ the option to generate a 3D model of the PDF if it makes sense to do so."
 guessed: a 2D drawing only supports 3D generation when its text carries
 explicit third-dimension data. Two evidence classes ship in slice 1:
 
-  plates   -- plate callouts encode thickness: ``PL3/8"X6 7/8"`` means a
-              3/8 in thick plate. The profile outline is on the sheet; the
+  plates   -- plate callouts encode thickness: ``PL1/2"X5 1/2"`` means a
+              1/2 in thick plate. The profile outline is on the sheet; the
               callout supplies the missing (extrusion) dimension.
-  members  -- rolled-shape designations (``W12X30``, ``L3X3X3/8``,
-              ``HSS6X6X1/4``, ``C8X11.5``…) name a full cross-section in
+  members  -- rolled-shape designations (``W10X22``, ``L2X2X1/4``,
+              ``HSS4X4X1/4``, ``C6X8.2``…) name a full cross-section in
               the AISC database; a nearby length (BOM row or dimension)
               completes the solid.
 
@@ -71,7 +71,7 @@ class PlateCandidate:
     width_in: Optional[float] = None
     length_in: Optional[float] = None
     count: int = 1
-    mark: Optional[str] = None  # piece mark from a BOM row (p1016 ...)
+    mark: Optional[str] = None  # piece mark from a BOM row (p9001 ...)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -110,13 +110,13 @@ class Model3DIntent:
 # ---------------------------------------------------------------------------
 # detection
 
-# PL3/8"X6 7/8"  |  PL 3/8 X 7  |  PL3/4"X7"X1'-2"
+# PL1/2"X5 1/2"  |  PL 5/8 X 8 1/4  |  PL1"X9"X1'-3"
 _PLATE_RE = re.compile(
     r"\bPL\s*(" + _FRACTION + r")\s*\"?\s*[xX]\s*(" + _FRACTION + r")\s*\"?"
     r"(?:\s*[xX]\s*([0-9'\-\s/\.\"]+))?",
 )
 
-# W12X30, W8X15, L3X3X3/8, C8X11.5, HSS6X6X1/4, PIPE3STD, WT5X22.5, HP12X53
+# W10X22, W6X9, L2X2X1/4, C6X8.2, HSS4X4X1/4, PIPE2STD, WT4X13, HP10X42
 _MEMBER_RE = re.compile(
     r"\b(W|S|M|HP|WT|MT|ST|C|MC)\s?(\d{1,3})\s?[xX]\s?(\d{1,3}(?:\.\d+)?)\b"
     r"|\b(L)\s?(\d{1,2})\s?[xX]\s?(\d{1,2})\s?[xX]\s?(" + _FRACTION + r")\b"
@@ -124,7 +124,7 @@ _MEMBER_RE = re.compile(
     r"|\b(PIPE)\s?(\d{1,2})\s?(STD|XS|XXS)\b",
 )
 
-# 13'-11 1/4" style lengths (BOM LENGTH column)
+# 11'-6 1/2" style lengths (BOM LENGTH column)
 _FEET_INCH_RE = re.compile(
     r"(\d+)'\s*-?\s*(\d+(?:\s+\d+/\d+|/\d+)?(?:\.\d+)?)?\s*\"?")
 
