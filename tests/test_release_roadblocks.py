@@ -344,7 +344,7 @@ def test_portable_smoke_runs_all_entrypoints_and_real_glyph_conversion(
             output = Path(command[2])
             output.write_text("DXF", encoding="utf-8")
             report = output.with_name(f"{output.stem}_import_report.json")
-            final = "text" if mode in {"text", "labels"} else "glyphs"
+            final = "glyphs"
             report.write_text(
                 json.dumps(
                     {
@@ -357,7 +357,7 @@ def test_portable_smoke_runs_all_entrypoints_and_real_glyph_conversion(
                                         "requested_representation": mode,
                                         "final_representation": final,
                                         "verified": True,
-                                        "fallback_used": mode == "labels",
+                                        "fallback_used": mode != "glyphs",
                                     }
                                 ],
                             }

@@ -370,8 +370,8 @@ def _smoke_extracted_portable(root: Path) -> None:
 
     smoke_modes = (
         ("glyphs", "glyphs", False, None),
-        ("text", "text", False, native_environment),
-        ("labels", "text", True, native_environment),
+        ("text", "glyphs", True, native_environment),
+        ("labels", "glyphs", True, native_environment),
     )
     for requested, final, fallback_used, environment in smoke_modes:
         dxf_path = root / f"portable_smoke_{requested}.dxf"

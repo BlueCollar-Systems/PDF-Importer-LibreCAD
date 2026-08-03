@@ -92,7 +92,7 @@ def _write_native_delivery(
     )
 
 
-def test_portable_smoke_exercises_glyphs_default_text_and_labels(
+def test_portable_smoke_exercises_glyphs_and_visible_text_fallbacks(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -106,40 +106,31 @@ def test_portable_smoke_exercises_glyphs_default_text_and_labels(
             return SimpleNamespace(returncode=0, stdout="Self-test OK", stderr="")
         mode = command[command.index("--text-mode") + 1]
         output = Path(command[2])
-        if mode in {"text", "labels"}:
-            environment = kwargs["env"]
-            _write_native_delivery(
-                output,
-                requested=mode,
-                executable=Path(environment["BCS_LIBRECAD_EXECUTABLE"]),
-                lff=Path(environment["BCS_LIBRECAD_UNICODE_LFF"]),
-            )
-        else:
-            drawing = ezdxf.new("R2010")
-            drawing.modelspace().add_line((0, 0), (1, 1))
-            drawing.saveas(output)
-            report = output.with_name(f"{output.stem}_import_report.json")
-            report.write_text(
-                json.dumps(
-                    {
-                        "extra": {
-                            "text_representation_delivery": {
-                                "requested_representation": "glyphs",
-                                "verified": True,
-                                "items": [
-                                    {
-                                        "requested_representation": "glyphs",
-                                        "final_representation": "glyphs",
-                                        "verified": True,
-                                        "fallback_used": False,
-                                    }
-                                ],
-                            }
+        drawing = ezdxf.new("R2010")
+        drawing.modelspace().add_line((0, 0), (1, 1))
+        drawing.saveas(output)
+        report = output.with_name(f"{output.stem}_import_report.json")
+        report.write_text(
+            json.dumps(
+                {
+                    "extra": {
+                        "text_representation_delivery": {
+                            "requested_representation": mode,
+                            "verified": True,
+                            "items": [
+                                {
+                                    "requested_representation": mode,
+                                    "final_representation": "glyphs",
+                                    "verified": True,
+                                    "fallback_used": mode != "glyphs",
+                                }
+                            ],
                         }
                     }
-                ),
-                encoding="utf-8",
-            )
+                }
+            ),
+            encoding="utf-8",
+        )
         return SimpleNamespace(returncode=0, stdout="Conversion complete", stderr="")
 
     monkeypatch.setattr(smoke_portable_zip.subprocess, "run", fake_run)
