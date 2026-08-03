@@ -1517,9 +1517,9 @@ def verify_release_artifacts(
             reconstructed_sidecar = (
                 Path(temp_name) / "release-candidate-provenance.json"
             )
-            reconstructed_sidecar.write_text(
+            atomic_write_text(
+                reconstructed_sidecar,
                 _canonical_candidate_provenance_text(provenance),
-                encoding="utf-8",
             )
             _authenticate_candidate_provenance(
                 provenance=provenance,

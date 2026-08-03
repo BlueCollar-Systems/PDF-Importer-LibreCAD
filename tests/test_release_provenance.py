@@ -173,9 +173,8 @@ def _offline_attestation_verifier(
 
 
 def _write_candidate_provenance(path: Path, provenance: dict[str, object]) -> None:
-    path.write_text(
-        json.dumps(provenance, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    path.write_bytes(
+        (json.dumps(provenance, indent=2, sort_keys=True) + "\n").encode("utf-8")
     )
 
 
@@ -297,6 +296,47 @@ def test_release_acceptance_smokes_and_atomically_replaces_extracted_exes(
     assert set(verified) == set(release_artifacts.REQUIRED_ARTIFACTS)
     assert Path(verified["portable_zip"]["path"]) == portable.resolve()
     assert Path(verified["source_zip"]["path"]) == source.resolve()
+
+
+def test_acceptance_preserves_lf_exact_attested_sidecar_sha_through_final_verification(
+    tmp_path,
+) -> None:
+    root, head = _release_checkout(tmp_path)
+    source, portable, _payloads = _write_structured_candidate_zips(root)
+    provenance = release_artifacts.build_candidate_provenance(
+        root=root,
+        metadata=_metadata(head),
+    )
+    provenance_path = root / "dist" / "release-candidate-provenance.json"
+    canonical_sidecar = (
+        json.dumps(provenance, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    provenance_path.write_bytes(canonical_sidecar)
+    attested_subjects = {
+        source.name: hashlib.sha256(source.read_bytes()).hexdigest(),
+        portable.name: hashlib.sha256(portable.read_bytes()).hexdigest(),
+        provenance_path.name: hashlib.sha256(canonical_sidecar).hexdigest(),
+    }
+
+    def verify_exact_sha(artifact, *, source, expected_subjects):
+        artifact = Path(artifact)
+        assert expected_subjects == attested_subjects
+        assert hashlib.sha256(artifact.read_bytes()).hexdigest() == attested_subjects[
+            artifact.name
+        ]
+        return frozenset({"exact-sha-bound-bundle"})
+
+    accepted = release_artifacts.accept_release_artifacts(
+        manifest_path=root / ".release" / "accepted-artifacts.json",
+        root=root,
+        expected_version="1.0.78",
+        provenance_path=provenance_path,
+        smoke_runner=lambda portable_zip, source_zip: None,
+        attestation_verifier=verify_exact_sha,
+        hosted_run_verifier=lambda **kwargs: None,
+    )
+
+    assert accepted["provenance"] == provenance
 
 
 def test_candidate_provenance_writer_maps_github_environment(tmp_path) -> None:
