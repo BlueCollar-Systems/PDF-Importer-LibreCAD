@@ -23,8 +23,11 @@ defaults:
     shell: bash
 
 permissions:
-  contents: write
-  pull-requests: write
+  actions: read
+  contents: read
+  id-token: write
+  attestations: write
+  artifact-metadata: write
 
 concurrency:
   group: auto-release
@@ -33,6 +36,9 @@ concurrency:
 jobs:
   release:
     if: "!startsWith(github.event.head_commit.message, 'chore: bump version to') && !contains(github.event.head_commit.message, 'automation/version-bump') && !contains(github.event.head_commit.message, '[skip release]')"
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release_target: ${{ steps.target.outputs.sha }}
     # The image label is explicit; the accepted-artifact SHA gate below remains
     # authoritative because GitHub-hosted image contents can still evolve.
     runs-on: windows-2025
@@ -93,8 +99,9 @@ jobs:
           PY
 
       - name: Set release target
+        id: target
         run: |
-          echo "RELEASE_TARGET=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build source zip
         run: python build_release.py
@@ -105,8 +112,21 @@ jobs:
       - name: Smoke Windows portable zip
         run: python scripts/smoke_portable_zip.py "dist/LibreCAD-PDF-Importer-Windows-Portable_v*.zip" --source-zip "dist/LibreCAD-PDF-Importer_v*.zip"
 
+      - name: Write candidate provenance
+        run: python scripts/verify_release_artifacts.py --write-candidate-provenance dist/release-candidate-provenance.json
+
+      - name: Attest release candidate files
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
+        with:
+          subject-path: |
+            dist/LibreCAD-PDF-Importer_v${{ steps.version.outputs.version }}.zip
+            dist/LibreCAD-PDF-Importer-Windows-Portable_v${{ steps.version.outputs.version }}.zip
+            dist/release-candidate-provenance.json
+
       - name: Verify exact accepted release bytes
         id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python scripts/verify_release_artifacts.py
 
       # A mismatched hosted-runner build must never publish, but retaining the
@@ -116,49 +136,184 @@ jobs:
         if: failure() && steps.verify.outcome == 'failure'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: failed-release-candidate-${{ github.run_id }}
+          name: failed-release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             dist/LibreCAD-PDF-Importer-Windows-Portable_v*.zip
             dist/LibreCAD-PDF-Importer_v*.zip
+            dist/release-candidate-provenance.json
             .release/accepted-artifacts.json
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
 
+      - name: Transfer verified release archives to publisher
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verified-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/LibreCAD-PDF-Importer-Windows-Portable_v*.zip
+            dist/LibreCAD-PDF-Importer_v*.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  publish:
+    needs: release
+    if: needs.release.result == 'success'
+    permissions:
+      actions: read
+      contents: write
+    runs-on: windows-2025
+    steps:
+      - name: Checkout verified release source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Download verified release archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "${GITHUB_RUN_ID}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --name "verified-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --dir dist
+
+      - name: Reverify transferred release bytes
+        env:
+          EXPECTED_VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+
+          def reject_constant(value):
+              raise ValueError(f"non-finite JSON number: {value}")
+
+          def strict_object(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise ValueError(f"duplicate JSON key: {key}")
+                  result[key] = value
+              return result
+
+          root = Path.cwd().resolve()
+          manifest_path = root / ".release" / "accepted-artifacts.json"
+          manifest = json.loads(
+              manifest_path.read_text(encoding="utf-8"),
+              object_pairs_hook=strict_object,
+              parse_constant=reject_constant,
+          )
+          schema = manifest.get("schema")
+          expected_top = {"schema", "version", "build_contract", "artifacts"}
+          if schema == "bcs.release_artifacts/1.1":
+              expected_top.add("provenance")
+          elif schema != "bcs.release_artifacts/1.0":
+              raise SystemExit(f"Unsupported accepted manifest schema: {schema!r}")
+          if set(manifest) != expected_top:
+              raise SystemExit("Accepted manifest has an unexpected top-level shape")
+
+          version = os.environ["EXPECTED_VERSION"]
+          if manifest["version"] != version:
+              raise SystemExit("Accepted manifest version does not match release version")
+          artifacts = manifest["artifacts"]
+          if not isinstance(artifacts, dict):
+              raise SystemExit("Accepted manifest artifacts must be an object")
+          zip_records = {
+              key: value for key, value in artifacts.items() if key.endswith("_zip")
+          }
+          expected_paths = {
+              "source_zip": f"dist/LibreCAD-PDF-Importer_v{version}.zip",
+              "portable_zip": (
+                  f"dist/LibreCAD-PDF-Importer-Windows-Portable_v{version}.zip"
+              ),
+          }
+          if set(zip_records) != set(expected_paths):
+              raise SystemExit("Accepted manifest must contain exactly two ZIP records")
+
+          for name, expected_relative in expected_paths.items():
+              record = zip_records[name]
+              if not isinstance(record, dict) or set(record) != {
+                  "path",
+                  "sha256",
+                  "size_bytes",
+              }:
+                  raise SystemExit(f"Accepted {name} record has an invalid shape")
+              digest = record["sha256"]
+              size = record["size_bytes"]
+              if (
+                  record["path"] != expected_relative
+                  or not isinstance(digest, str)
+                  or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                  or not isinstance(size, int)
+                  or isinstance(size, bool)
+                  or size < 0
+              ):
+                  raise SystemExit(f"Accepted {name} record is invalid")
+              path = root / expected_relative
+              if not path.is_file() or path.is_symlink() or path.stat().st_size != size:
+                  raise SystemExit(f"Transferred {name} path/size is invalid")
+              sha256 = hashlib.sha256()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      sha256.update(chunk)
+              if sha256.hexdigest() != digest:
+                  raise SystemExit(f"Transferred {name} SHA-256 mismatch")
+          PY
+
+      - name: Check whether release already exists
+        id: release_state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          TAG="v${{ needs.release.outputs.version }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists — immutable; skipping asset upload."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # This repository-controlled script deliberately has no write token in its
+      # environment, and checkout did not persist credentials.
+      - name: Audit existing release tag
+        if: steps.release_state.outputs.exists == 'true'
+        run: |
+          python scripts/release_safety.py audit-existing-tag \
+            --repo "${GITHUB_REPOSITORY}" \
+            --tag "v${{ needs.release.outputs.version }}" \
+            --before "${{ github.event.before }}" \
+            --head "$GITHUB_SHA" \
+            --session-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --mode release \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --warnings-file .release-safety/warnings.json
+
       - name: Create release
+        if: steps.release_state.outputs.exists != 'true'
         id: mint
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          TAG="v${{ steps.version.outputs.version }}"
-          TITLE="v${{ steps.version.outputs.version }} — PDF to DXF Converter for LibreCAD"
-          VERSION="${{ steps.version.outputs.version }}"
+          TAG="v${{ needs.release.outputs.version }}"
+          TITLE="v${{ needs.release.outputs.version }} — PDF to DXF Converter for LibreCAD"
+          VERSION="${{ needs.release.outputs.version }}"
+          RELEASE_TARGET="${{ needs.release.outputs.release_target }}"
           PORTABLE="dist/LibreCAD-PDF-Importer-Windows-Portable_v${VERSION}.zip"
           SOURCE="dist/LibreCAD-PDF-Importer_v${VERSION}.zip"
 
-          # Create the tag via gh (GITHUB_TOKEN), NOT `git push origin <tag>`: the
-          # checkout PAT lacks `workflow` scope, so pushing a tag whose commit
-          # touches .github/workflows/ is rejected. gh creates the tag through the
-          # releases API, which is not subject to that restriction.
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release ${TAG} already exists — immutable; skipping asset upload."
-            echo "minted=false" >> "$GITHUB_OUTPUT"
-            # Round 21 Task 5: stateful, bounded stranded-release audit.
-            python scripts/release_safety.py audit-existing-tag \
-              --repo "${GITHUB_REPOSITORY}" \
-              --tag "$TAG" \
-              --before "${{ github.event.before }}" \
-              --head "$GITHUB_SHA" \
-              --session-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-              --mode release \
-              --summary "$GITHUB_STEP_SUMMARY" \
-              --warnings-file .release-safety/warnings.json
-            exit 0
-          else
-            gh release create "$TAG" --target "${RELEASE_TARGET:-$GITHUB_SHA}" --title "$TITLE" --generate-notes --latest "$PORTABLE" "$SOURCE"
-            echo "minted=true" >> "$GITHUB_OUTPUT"
-          fi
+          # Create the tag through the releases API. No repository-controlled
+          # executable is invoked while the contents:write token is exported.
+          gh release create "$TAG" --target "${RELEASE_TARGET:-$GITHUB_SHA}" --title "$TITLE" --generate-notes --latest "$PORTABLE" "$SOURCE"
+          echo "minted=true" >> "$GITHUB_OUTPUT"
 
       - name: Check website dispatch token secret
         if: steps.mint.outputs.minted == 'true'
@@ -178,7 +333,7 @@ jobs:
         with:
           github-token: ${{ secrets.WEBSITE_DISPATCH_TOKEN || secrets.BLUECOLLAR_WEBSITE_DISPATCH_TOKEN || secrets.REPO_DISPATCH_TOKEN }}
           script: |
-            const tag = 'v${{ steps.version.outputs.version }}';
+            const tag = 'v${{ needs.release.outputs.version }}';
             const payload = {
               source_repo: context.repo.owner + '/' + context.repo.repo,
               source_event: 'auto-release',

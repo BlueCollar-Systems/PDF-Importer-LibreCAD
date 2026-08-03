@@ -1398,17 +1398,17 @@ class TestDxfPipeline(unittest.TestCase):
             ),
         )
         dxf = ezdxf.readfile(export.output_path)
-        self.assertIn("INSERT", {entity.dxftype() for entity in dxf.modelspace()})
+        self.assertIn("TEXT", {entity.dxftype() for entity in dxf.modelspace()})
 
         report_path = self.tmp_path / "raster_none_import_report.json"
         write_import_report(run, str(report_path), elapsed_ms=1.0)
         report = json.loads(report_path.read_text(encoding="utf-8"))
         self.assertTrue(report["fallback"]["used"])
         self.assertEqual(report["fallback"]["text"]["requested"], "labels")
-        self.assertEqual(report["fallback"]["text"]["delivered"], "glyphs")
+        self.assertEqual(report["fallback"]["text"]["delivered"], "text")
         self.assertEqual(report["extra"]["text_mode"], "labels")
         self.assertGreaterEqual(
-            report["extra"]["actual_text_entity_types"]["outline_curve_or_mesh"],
+            report["extra"]["actual_text_entity_types"]["dxf_text"],
             1,
         )
 
@@ -1528,7 +1528,7 @@ class TestDxfPipeline(unittest.TestCase):
         self.assertNotIn("MTEXT", text_layer_types)
         self.assertTrue({"LWPOLYLINE", "POLYLINE"}.intersection(text_layer_types))
 
-    def test_labels_fall_back_to_exact_visual_glyphs_when_lff_is_not_equivalent(self) -> None:
+    def test_labels_fall_back_to_editable_unicode_lff_text(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
         export = export_to_dxf(
             run.extraction,
@@ -1543,10 +1543,10 @@ class TestDxfPipeline(unittest.TestCase):
             for entity in dxf.modelspace()
             if str(entity.dxf.layer or "") == "P001_TEXT"
         }
-        self.assertEqual(text_layer_types, {"INSERT"})
+        self.assertEqual(text_layer_types, {"TEXT"})
         self.assertTrue(all(item["fallback_used"] for item in export.text_deliveries))
         self.assertTrue(
-            all(item["final_representation"] == "glyphs" for item in export.text_deliveries)
+            all(item["final_representation"] == "text" for item in export.text_deliveries)
         )
         self.assertTrue(
             all(
@@ -1564,7 +1564,7 @@ class TestDxfPipeline(unittest.TestCase):
                     for attempt in item["attempts"]
                     if attempt["attempted_representation"] == "text"
                 )["outcome"]
-                == "impossible"
+                == "verified"
                 for item in export.text_deliveries
             )
         )
@@ -1601,8 +1601,8 @@ class TestDxfPipeline(unittest.TestCase):
         self.assertGreater(export.entity_count, 0)
         dxf = ezdxf.readfile(export.output_path)
         types = {entity.dxftype() for entity in dxf.modelspace()}
-        self.assertIn("INSERT", types)
-        self.assertNotIn("TEXT", types)
+        self.assertIn("TEXT", types)
+        self.assertNotIn("INSERT", types)
         self.assertNotIn("IMAGE", types)
 
     def test_3d_text_uses_exact_visual_glyph_fallback_in_librecad(self) -> None:

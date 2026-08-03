@@ -21,6 +21,7 @@ from dataclasses import asdict, dataclass, field, replace
 import hashlib
 from io import BytesIO
 import math
+import os
 from pathlib import Path
 import re
 import unicodedata
@@ -39,6 +40,7 @@ from ezdxf.tools.text_size import text_size
 
 from pdfcadcore.import_config import ImportConfig
 from pdfcadcore.primitives import NormalizedText
+from librecad_runtime import redacted_local_path, resolve_librecad_installation
 
 
 _MTEXT_THRESHOLD = 120
@@ -65,6 +67,11 @@ _glyph_definition_fingerprint_cache: weakref.WeakKeyDictionary[
     Any,
     Dict[str, str],
 ] = weakref.WeakKeyDictionary()
+_librecad_lff_cache: Dict[
+    Tuple[str, int, int, str],
+    "_LibreCadLffResolution",
+] = {}
+_MAX_LIBRECAD_LFF_BYTES = 16 * 1024 * 1024
 _style_counter = 0
 
 
@@ -83,6 +90,7 @@ class TextDeliveryAttempt:
     outcome: str = "failed"
     reason: str = ""
     type_verified: bool = False
+    delivery_verified: bool = False
     visual_verified: bool = False
     created_entity_handles: List[str] = field(default_factory=list)
     removed_entity_handles: List[str] = field(default_factory=list)
@@ -223,6 +231,334 @@ class _ExactFontResolution:
             ),
             "font_failure_proof_category": self.proof_category or None,
         }
+
+
+@dataclass(frozen=True)
+class _LibreCadLffResolution:
+    path: str = ""
+    size_bytes: int = 0
+    sha256: str = ""
+    glyph_codepoints: frozenset[int] = frozenset()
+    drawable_codepoints: frozenset[int] = frozenset()
+    resolution_source: str = ""
+    executable_path: str = ""
+    executable_resolution_source: str = ""
+    installation_root: str = ""
+    executable_binding_verified: bool = False
+    parent_installation_verified: bool = False
+    verified: bool = False
+    reason: str = ""
+
+    def evidence(self, content: str) -> Dict[str, Any]:
+        required = sorted(
+            {ord(character) for character in str(content) if not character.isspace()}
+        )
+        missing = [value for value in required if value not in self.glyph_codepoints]
+        invalid = [
+            value
+            for value in required
+            if value in self.glyph_codepoints
+            and value not in self.drawable_codepoints
+        ]
+        drawable_verified = bool(self.verified and not missing and not invalid)
+        local_diagnostics = {
+            "classification": "local_sensitive_paths",
+            "shareable": False,
+            "librecad_executable_path": self.executable_path or None,
+            "librecad_installation_root": self.installation_root or None,
+            "librecad_lff_path": self.path or None,
+        }
+        return {
+            "librecad_evidence_sensitivity": (
+                "shareable_with_classified_local_diagnostics"
+            ),
+            "local_only_diagnostics": local_diagnostics,
+            "librecad_executable_path": redacted_local_path(self.executable_path),
+            "librecad_executable_resolution_source": (
+                self.executable_resolution_source or None
+            ),
+            "librecad_installation_root": redacted_local_path(
+                self.installation_root
+            ),
+            "librecad_parent_installation_verified": bool(
+                self.parent_installation_verified
+            ),
+            "librecad_lff_executable_binding_verified": bool(
+                self.executable_binding_verified
+            ),
+            "librecad_lff_path": redacted_local_path(self.path),
+            "librecad_lff_size_bytes": int(self.size_bytes),
+            "librecad_lff_sha256": self.sha256 or None,
+            "librecad_lff_glyph_count": len(self.glyph_codepoints),
+            "librecad_lff_drawable_glyph_count": len(self.drawable_codepoints),
+            "librecad_lff_resolution_source": self.resolution_source or None,
+            "librecad_lff_asset_verified": bool(self.verified),
+            "librecad_lff_required_codepoints": [
+                f"U+{value:04X}" for value in required
+            ],
+            "librecad_lff_missing_codepoints": [
+                f"U+{value:04X}" for value in missing
+            ],
+            "librecad_lff_invalid_codepoints": [
+                f"U+{value:04X}" for value in invalid
+            ],
+            "librecad_lff_required_glyphs_drawable_verified": drawable_verified,
+            "librecad_lff_coverage_verified": drawable_verified,
+            "librecad_lff_resolution_reason": self.reason,
+        }
+
+
+def _parse_librecad_lff(
+    path: Path,
+    resolution_source: str,
+    *,
+    executable_path: str,
+    executable_resolution_source: str,
+    installation_root: str,
+    fresh: bool = False,
+) -> _LibreCadLffResolution:
+    resolved = path.expanduser().resolve()
+    base = {
+        "path": str(resolved),
+        "resolution_source": resolution_source,
+        "executable_path": executable_path,
+        "executable_resolution_source": executable_resolution_source,
+        "installation_root": installation_root,
+        "executable_binding_verified": True,
+        "parent_installation_verified": True,
+    }
+    if not resolved.is_file():
+        return _LibreCadLffResolution(
+            **base,
+            reason="LibreCAD unicode.lff asset is absent",
+        )
+    try:
+        with resolved.open("rb") as stream:
+            stat_before = os.fstat(stream.fileno())
+            if int(stat_before.st_size) > _MAX_LIBRECAD_LFF_BYTES:
+                return _LibreCadLffResolution(
+                    **base,
+                    size_bytes=int(stat_before.st_size),
+                    reason=(
+                        "LibreCAD unicode.lff exceeds the "
+                        f"{_MAX_LIBRECAD_LFF_BYTES}-byte safety limit"
+                    ),
+                )
+            cache_key = (
+                str(resolved),
+                int(stat_before.st_size),
+                int(stat_before.st_mtime_ns),
+                executable_path,
+            )
+            if not fresh:
+                cached = _librecad_lff_cache.get(cache_key)
+                if cached is not None:
+                    return cached
+            payload = stream.read(_MAX_LIBRECAD_LFF_BYTES + 1)
+            stat_after = os.fstat(stream.fileno())
+        path_stat_after = resolved.stat()
+        before_signature = (
+            int(stat_before.st_dev),
+            int(stat_before.st_ino),
+            int(stat_before.st_size),
+            int(stat_before.st_mtime_ns),
+        )
+        after_signature = (
+            int(stat_after.st_dev),
+            int(stat_after.st_ino),
+            int(stat_after.st_size),
+            int(stat_after.st_mtime_ns),
+        )
+        path_signature = (
+            int(path_stat_after.st_dev),
+            int(path_stat_after.st_ino),
+            int(path_stat_after.st_size),
+            int(path_stat_after.st_mtime_ns),
+        )
+        if (
+            before_signature != after_signature
+            or after_signature != path_signature
+            or len(payload) != int(stat_after.st_size)
+        ):
+            return _LibreCadLffResolution(
+                **base,
+                reason="LibreCAD unicode.lff changed while it was being read",
+            )
+        cache_key = (
+            str(resolved),
+            int(stat_after.st_size),
+            int(stat_after.st_mtime_ns),
+            executable_path,
+        )
+        content = payload.decode("utf-8-sig")
+    except (OSError, UnicodeError) as exc:
+        return _LibreCadLffResolution(
+            **base,
+            reason=(
+                "LibreCAD unicode.lff asset is unreadable "
+                f"({type(exc).__name__})"
+            ),
+        )
+    format_ok = bool(
+        re.search(r"(?im)^#\s*Format:\s*LibreCAD\s+Font\s+1\s*$", content)
+    )
+    glyph_bodies: Dict[int, List[str]] = {}
+    current_codepoint: Optional[int] = None
+    for raw_line in content.splitlines():
+        header = re.match(r"^\[([0-9A-Fa-f]{4,6})\](?:\s.*)?$", raw_line)
+        if header:
+            current_codepoint = int(header.group(1), 16)
+            glyph_bodies.setdefault(current_codepoint, [])
+            continue
+        if current_codepoint is None:
+            continue
+        line = raw_line.strip()
+        if line and not line.startswith("#"):
+            glyph_bodies[current_codepoint].append(line)
+
+    number = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)"
+    vertex = rf"{number}\s*,\s*{number}(?:\s*,\s*A{number})?"
+    geometry_pattern = re.compile(
+        rf"^{vertex}(?:\s*;\s*{vertex})+$",
+        re.IGNORECASE,
+    )
+    reference_pattern = re.compile(r"^C([0-9A-Fa-f]{4,6})\s*$")
+    references: Dict[int, Tuple[int, ...]] = {}
+    direct_geometry: set[int] = set()
+    invalid_bodies: set[int] = set()
+    for codepoint, body in glyph_bodies.items():
+        glyph_references = []
+        for line in body:
+            reference = reference_pattern.match(line)
+            if reference:
+                glyph_references.append(int(reference.group(1), 16))
+            elif geometry_pattern.match(line):
+                direct_geometry.add(codepoint)
+            else:
+                invalid_bodies.add(codepoint)
+        references[codepoint] = tuple(glyph_references)
+
+    drawable_cache: Dict[int, bool] = {}
+
+    def glyph_is_drawable(codepoint: int, active: frozenset[int]) -> bool:
+        cached = drawable_cache.get(codepoint)
+        if cached is not None:
+            return cached
+        if codepoint in active or codepoint not in glyph_bodies:
+            return False
+        if codepoint in invalid_bodies:
+            drawable_cache[codepoint] = False
+            return False
+        glyph_references = references.get(codepoint, ())
+        has_drawing = codepoint in direct_geometry or bool(glyph_references)
+        valid = bool(
+            has_drawing
+            and all(
+                glyph_is_drawable(reference, active | {codepoint})
+                for reference in glyph_references
+            )
+        )
+        drawable_cache[codepoint] = valid
+        return valid
+
+    codepoints = frozenset(glyph_bodies)
+    drawable_codepoints = frozenset(
+        codepoint
+        for codepoint in codepoints
+        if glyph_is_drawable(codepoint, frozenset())
+    )
+    verified = bool(format_ok and codepoints and drawable_codepoints and payload)
+    result = _LibreCadLffResolution(
+        **base,
+        size_bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        glyph_codepoints=codepoints,
+        drawable_codepoints=drawable_codepoints,
+        verified=verified,
+        reason=(
+            "verified LibreCAD Font 1 unicode.lff asset"
+            if verified
+            else "file is not a parseable LibreCAD Font 1 asset"
+        ),
+    )
+    _librecad_lff_cache[cache_key] = result
+    return result
+
+
+def _resolve_librecad_unicode_lff(
+    executable: Optional[str] = None,
+    *,
+    fresh: bool = False,
+) -> _LibreCadLffResolution:
+    installation = resolve_librecad_installation(executable)
+    if installation is None:
+        return _LibreCadLffResolution(
+            reason=(
+                "no resolved LibreCAD executable is available to bind the "
+                "unicode.lff asset"
+            )
+        )
+    candidates = [
+        (Path(path), source) for path, source in installation.unicode_lff_candidates
+    ]
+    configured = str(os.environ.get("BCS_LIBRECAD_UNICODE_LFF", "") or "").strip()
+    if configured:
+        configured_path = Path(configured).expanduser().resolve()
+        bound_sources = {
+            os.path.normcase(str(path.resolve())): source for path, source in candidates
+        }
+        configured_key = os.path.normcase(str(configured_path))
+        if configured_key not in bound_sources:
+            return _LibreCadLffResolution(
+                path=str(configured_path),
+                executable_path=installation.executable_path,
+                executable_resolution_source=(
+                    installation.executable_resolution_source
+                ),
+                installation_root=installation.installation_root,
+                parent_installation_verified=True,
+                reason=(
+                    "configured LibreCAD unicode.lff is not bound to the "
+                    "resolved LibreCAD executable installation"
+                ),
+            )
+        candidates = [(configured_path, "bound_environment_override")]
+    failures: List[str] = []
+    for path, source in candidates:
+        resolution = _parse_librecad_lff(
+            path,
+            source,
+            executable_path=installation.executable_path,
+            executable_resolution_source=(
+                installation.executable_resolution_source
+            ),
+            installation_root=installation.installation_root,
+            fresh=fresh,
+        )
+        if resolution.verified:
+            return resolution
+        failures.append(
+            f"{redacted_local_path(resolution.path)}: {resolution.reason}"
+        )
+    return _LibreCadLffResolution(
+        path=str(candidates[0][0].expanduser().resolve()),
+        resolution_source=candidates[0][1],
+        executable_path=installation.executable_path,
+        executable_resolution_source=installation.executable_resolution_source,
+        installation_root=installation.installation_root,
+        executable_binding_verified=True,
+        parent_installation_verified=True,
+        reason="; ".join(failures),
+    )
+
+
+def _librecad_lff_evidence(
+    content: str,
+    executable: Optional[str] = None,
+    *,
+    fresh: bool = False,
+) -> Dict[str, Any]:
+    return _resolve_librecad_unicode_lff(executable, fresh=fresh).evidence(content)
 
 
 def _font_token(value: str) -> str:
@@ -1013,6 +1349,9 @@ def _verify_parent_native_text_delivery(
     style_handle: str,
     is_3d_text: bool,
     source_content_whitespace_only: bool,
+    accept_librecad_font_substitution: bool,
+    librecad_lff_asset_verified: bool,
+    librecad_lff_coverage_verified: bool,
 ) -> Tuple[bool, Dict[str, Any], str]:
     """Verify native editable delivery without inventing source-font equivalence.
 
@@ -1055,7 +1394,25 @@ def _verify_parent_native_text_delivery(
         )
         return True, evidence, ""
 
-    font_ok = candidate_format == "lff" and bool(str(style_font or "").strip())
+    try:
+        actual_style = entity.doc.styles.get(style_name)
+        actual_style_font = str(actual_style.dxf.font or "").strip()
+    except Exception:
+        actual_style_font = ""
+    entity_style_ok = str(entity.dxf.style or "").strip() == style_name
+    style_binding_ok = bool(
+        entity_style_ok
+        and actual_style_font.lower() == str(style_font or "").strip().lower()
+    )
+    builtin_unicode_lff_ok = bool(
+        candidate_format == "lff"
+        and str(style_font or "").strip().lower() == "unicode"
+        and style_name.strip().lower() == "unicode"
+        and style_binding_ok
+        and librecad_lff_asset_verified
+        and librecad_lff_coverage_verified
+    )
+    font_ok = builtin_unicode_lff_ok
     # A whitespace-only PDF span has no font pixels to reproduce.  A native
     # TEXT entity still preserves its exact semantic content and placement, so
     # requiring an LFF renderer for pixels that do not exist would manufacture
@@ -1071,18 +1428,32 @@ def _verify_parent_native_text_delivery(
             or (font_ok and not bool(parent_font_substituted))
         )
     )
+    substitution_accepted = bool(
+        accept_librecad_font_substitution
+        and parent_font_substituted
+        and font_ok
+        and native_3d_ok
+    )
     evidence.update(
         {
             "parent_native_font_required_format": "lff",
             "parent_native_font_format_verified": font_ok,
-            "parent_native_font_renderability_verified": font_ok,
+            "parent_native_font_renderability_verified": False,
+            "parent_native_font_asset_coverage_verified": font_ok,
+            "parent_native_font_style_binding_verified": style_binding_ok,
+            "parent_native_font_builtin_lff_verified": builtin_unicode_lff_ok,
+            "parent_render_verification_required": True,
             "parent_native_font_rendering_required": font_rendering_required,
             "source_content_whitespace_only": source_content_whitespace_only,
             "parent_native_3d_display_verified": native_3d_ok,
             "parent_native_text_delivery_verified": parent_delivery_ok,
             "parent_visual_fidelity_verified": source_visual_ok,
+            "parent_visual_fidelity_limited_by_font_substitution": bool(
+                parent_font_substituted and not source_visual_ok
+            ),
+            "parent_native_font_substitution_accepted": substitution_accepted,
             "fallback_authorized_for_this_item": not (
-                parent_delivery_ok and source_visual_ok
+                parent_delivery_ok and (source_visual_ok or substitution_accepted)
             ),
         }
     )
@@ -1109,6 +1480,7 @@ def _attempt_labels(
     source_id: str,
     is_r12: bool,
     target_app: str,
+    librecad_executable: Optional[str],
     dxf_version: str,
     config: ImportConfig,
     extrusion_depth: Optional[float] = None,
@@ -1172,9 +1544,39 @@ def _attempt_labels(
                 "source nominal text height is missing or invalid for structural delivery"
             )
         insert = tuple(float(value) for value in text_item.insertion[:2])
+        delivered_text = (
+            unicodedata.normalize("NFKC", str(text_item.text))
+            if parent == "librecad"
+            else str(text_item.text)
+        )
         font_resolution = _resolve_item_font(text_item, config)
         attempt.evidence.update(font_resolution.evidence())
+        accept_librecad_font_substitution = bool(
+            parent == "librecad"
+            and requested in {"text", "labels"}
+            and not is_3d_text
+        )
         if parent == "librecad":
+            lff_evidence = _librecad_lff_evidence(
+                delivered_text,
+                librecad_executable,
+            )
+            attempt.evidence.update(lff_evidence)
+            if lff_evidence["librecad_lff_asset_verified"] is not True:
+                raise _RepresentationImpossible(
+                    str(lff_evidence["librecad_lff_resolution_reason"])
+                )
+            if lff_evidence["librecad_lff_coverage_verified"] is not True:
+                unavailable = ", ".join(
+                    [
+                        *lff_evidence["librecad_lff_missing_codepoints"],
+                        *lff_evidence["librecad_lff_invalid_codepoints"],
+                    ]
+                )
+                raise _RepresentationImpossible(
+                    "LibreCAD unicode.lff does not provide a drawable glyph "
+                    f"body for {unavailable}"
+                )
             # LibreCAD's editable native text renderer consumes its bundled LFF
             # fonts. Preserve the requested Text/Labels representation and use
             # the broad Unicode LFF face; a font substitution is not a change
@@ -1182,7 +1584,12 @@ def _attempt_labels(
             # drive the exact item transform, while DXF FIT alignment delegates
             # the final horizontal fit to the parent renderer.
             style_font = "unicode"
-            parent_font_format = "lff"
+            parent_font_format = (
+                Path(str(lff_evidence["librecad_lff_path"] or ""))
+                .suffix.lower()
+                .lstrip(".")
+                or "unknown"
+            )
             parent_font_substituted = True
             preferred_style_name = "unicode"
         else:
@@ -1204,6 +1611,7 @@ def _attempt_labels(
         height, cap_height_ratio = _delivery_cap_height(
             source_em_height, font_resolution
         )
+        height_basis = "source_font_cap_height"
         style_name, style_handle, style_created = _ensure_text_style(
             doc,
             font_resolution,
@@ -1230,11 +1638,6 @@ def _attempt_labels(
             is_r12
             or str(target_app or "").lower() == "librecad"
             or str(dxf_version or "R2010") <= "R2000"
-        )
-        delivered_text = (
-            unicodedata.normalize("NFKC", str(text_item.text))
-            if parent == "librecad"
-            else str(text_item.text)
         )
         if force_text and plain_text(delivered_text) != delivered_text:
             # DXF TEXT treats a trailing caret as a control and ezdxf removes
@@ -1332,25 +1735,55 @@ def _attempt_labels(
                 source_content_whitespace_only=not bool(
                     str(getattr(text_item, "text", "") or "").strip()
                 ),
+                accept_librecad_font_substitution=(
+                    accept_librecad_font_substitution
+                ),
+                librecad_lff_asset_verified=bool(
+                    attempt.evidence.get("librecad_lff_asset_verified")
+                ),
+                librecad_lff_coverage_verified=bool(
+                    attempt.evidence.get("librecad_lff_coverage_verified")
+                ),
             )
         )
         attempt.evidence.update(parent_evidence)
-        parent_requires_source_visual_proof = (
-            str(target_app or "generic").strip().lower() == "librecad"
-        )
-        visual_ok = bool(
+        if accept_librecad_font_substitution:
+            parent_contract_ok = bool(
+                parent_delivery_ok
+                and parent_evidence.get("parent_native_font_substitution_accepted")
+                is True
+            )
+        else:
+            parent_contract_ok = bool(
+                parent_delivery_ok
+                and parent_evidence.get("parent_visual_fidelity_verified") is True
+            )
+        delivery_ok = bool(
             visual_ok
-            and parent_delivery_ok
-            and (
-                not parent_requires_source_visual_proof
-                or parent_evidence.get("parent_visual_fidelity_verified") is True
+            and (parent_contract_ok if parent == "librecad" else parent_delivery_ok)
+        )
+        attempt.delivery_verified = delivery_ok
+        attempt.visual_verified = bool(
+            delivery_ok
+            if parent != "librecad"
+            else (
+                delivery_ok
+                and parent_evidence.get("parent_visual_fidelity_verified") is True
             )
         )
-        attempt.visual_verified = visual_ok
+        cap_height_invariant_ok = math.isclose(
+            height,
+            source_em_height * cap_height_ratio,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        )
         attempt.evidence.update(
             {
                 "source_font_em_height": source_em_height,
                 "source_cap_height_ratio": cap_height_ratio,
+                "native_text_height_basis": height_basis,
+                "native_text_structure_verified": delivery_ok,
+                "cap_height_invariant_verified": cap_height_invariant_ok,
             }
         )
         if not parent_delivery_ok:
@@ -1360,7 +1793,7 @@ def _attempt_labels(
             # Wrong entity kind is our defect, not a property of the source
             # item. Keep aborting so it cannot hide behind a silent descent.
             raise ValueError(f"{label} failed type verification")
-        if not visual_ok:
+        if not delivery_ok:
             # The entity was built correctly and still does not reproduce the
             # source. That is affirmative, item-specific proof that this rung
             # cannot carry this item, so the ladder descends rather than
@@ -1379,6 +1812,8 @@ def _attempt_labels(
             raise ValueError("native DXF text ownership verification failed")
         return attempt
     except Exception as exc:
+        attempt.delivery_verified = False
+        attempt.visual_verified = False
         attempt.reason = f"{type(exc).__name__}: {exc}"
         if entity is not None:
             handle = _handle(entity)
@@ -2735,12 +3170,14 @@ def _attempt_outline_entity(
                 "outline delivery does not reproduce the source appearance "
                 "of this item"
             )
+        attempt.delivery_verified = True
         attempt.outcome = "verified"
         attempt.cleanup_verified = _verify_owned_state(doc, attempt)
         if not attempt.cleanup_verified:
             raise ValueError("outline ownership verification failed")
         return attempt
     except Exception as exc:
+        attempt.delivery_verified = False
         attempt.reason = f"{type(exc).__name__}: {exc}"
         if source is not None:
             handle = _handle(source)
@@ -2858,12 +3295,14 @@ def _attempt_outline_string(
                 "outline delivery does not reproduce the source appearance "
                 "of this item"
             )
+        attempt.delivery_verified = True
         attempt.outcome = "verified"
         attempt.cleanup_verified = _verify_owned_state(doc, attempt)
         if not attempt.cleanup_verified:
             raise ValueError("outline ownership verification failed")
         return attempt
     except Exception as exc:
+        attempt.delivery_verified = False
         attempt.reason = f"{type(exc).__name__}: {exc}"
         _rollback_outline_attempt(attempt, msp)
         attempt.outcome = (
@@ -2898,6 +3337,7 @@ def _build_delivery(
     *,
     is_r12: bool,
     target_app: str,
+    librecad_executable: Optional[str],
     dxf_version: str,
 ) -> TextDeliveryResult:
     requested = _normalized_mode(getattr(config, "text_mode", "text"))
@@ -2976,6 +3416,7 @@ def _build_delivery(
                 source_id=source_id,
                 is_r12=is_r12,
                 target_app=target_app,
+                librecad_executable=librecad_executable,
                 dxf_version=dxf_version,
                 config=config,
                 extrusion_depth=getattr(config, "model3d_depth_mm", None),
@@ -2999,6 +3440,7 @@ def _build_delivery(
                 source_id=source_id,
                 is_r12=is_r12,
                 target_app=target_app,
+                librecad_executable=librecad_executable,
                 dxf_version=dxf_version,
                 config=config,
                 semantic_representation="labels",
@@ -3021,6 +3463,7 @@ def _build_delivery(
                 source_id=source_id,
                 is_r12=is_r12,
                 target_app=target_app,
+                librecad_executable=librecad_executable,
                 dxf_version=dxf_version,
                 config=config,
                 semantic_representation="text",
@@ -3087,6 +3530,7 @@ def build_text(
     dxf_version: str = "R2010",
     return_delivered_kind: bool = False,
     return_delivery_result: bool = False,
+    librecad_executable: Optional[str] = None,
 ) -> Union[int, Tuple[str, int], TextDeliveryResult]:
     """Build and verify one requested representation.
 
@@ -3101,6 +3545,7 @@ def build_text(
         config,
         is_r12=is_r12,
         target_app=target_app,
+        librecad_executable=librecad_executable,
         dxf_version=dxf_version,
     )
     if return_delivery_result:
@@ -3121,6 +3566,7 @@ def reset_text_styles() -> None:
     _scaled_glyph_geometry_cache.clear()
     _source_outline_bbox_cache.clear()
     _glyph_definition_fingerprint_cache.clear()
+    _librecad_lff_cache.clear()
     _style_counter = 0
 
 

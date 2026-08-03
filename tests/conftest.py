@@ -31,8 +31,11 @@ def _draw_box(*, top: int, right: int = 550, notch: int = 0) -> object:
 def _build_deterministic_test_font(path: Path) -> None:
     glyph_order = [".notdef", "space"]
     cmap = {32: "space"}
-    for codepoint in range(33, 127):
-        glyph_name = f"uni{codepoint:04X}"
+    codepoints = [*range(33, 127), 0x1F642]
+    for codepoint in codepoints:
+        glyph_name = (
+            f"uni{codepoint:04X}" if codepoint <= 0xFFFF else f"u{codepoint:05X}"
+        )
         glyph_order.append(glyph_name)
         cmap[codepoint] = glyph_name
 
@@ -77,12 +80,34 @@ def _build_deterministic_test_font(path: Path) -> None:
     builder.save(str(path))
 
 
+def _build_minimal_librecad_unicode_lff(path: Path) -> None:
+    """Create a valid CI-only LFF with printable ASCII and no emoji glyphs."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# Format:            LibreCAD Font 1",
+        "# Name:              Unicode CI Fixture",
+        "# Encoding:          UTF-8",
+        "",
+    ]
+    for codepoint in range(33, 127):
+        lines.extend((f"[{codepoint:04X}]", "0,0;1,1", ""))
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
 @pytest.fixture(scope="session", autouse=True)
 def deterministic_exact_font(tmp_path_factory):
     """Resolve synthetic delivery items without relying on host fonts."""
 
-    font_path = tmp_path_factory.mktemp("bcs_test_font") / "bcs-test-regular.ttf"
+    asset_root = tmp_path_factory.mktemp("bcs_test_font")
+    font_path = asset_root / "bcs-test-regular.ttf"
     _build_deterministic_test_font(font_path)
+    librecad_root = asset_root / "portable-librecad"
+    executable_path = librecad_root / "LibreCAD.exe"
+    executable_path.parent.mkdir(parents=True, exist_ok=True)
+    executable_path.write_bytes(b"deterministic LibreCAD test executable\n")
+    lff_path = librecad_root / "resources" / "fonts" / "unicode.lff"
+    _build_minimal_librecad_unicode_lff(lff_path)
 
     from dxf_text_builder import _ExactFontResolution, _resolve_exact_font
 
@@ -101,7 +126,16 @@ def deterministic_exact_font(tmp_path_factory):
             )
         return original_resolver(font_name)
 
-    with patch("dxf_text_builder._resolve_exact_font", side_effect=resolve):
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "BCS_LIBRECAD_EXECUTABLE": str(executable_path),
+                "BCS_LIBRECAD_UNICODE_LFF": str(lff_path),
+            },
+        ),
+        patch("dxf_text_builder._resolve_exact_font", side_effect=resolve),
+    ):
         yield font_path
 
 

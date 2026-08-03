@@ -71,7 +71,7 @@ Imported Evidence/
 **/Imported Evidence/
 .pytest_tmp*/
 /.worktrees/
+/.superpowers/
 
 TMPpytest*/
 .pytest_tmp*/
-

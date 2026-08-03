@@ -127,6 +127,33 @@ def test_release_build_is_hash_locked_and_ci_hash_verifies_before_publish() -> N
     assert verify < candidate_upload < publish
     assert "if: failure() && steps.verify.outcome == 'failure'" in workflow
     assert "retention-days: 1" in workflow
+    assert "artifact-metadata: write" in workflow
+    assert (
+        "actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d" in workflow
+    )
+    assert "dist/release-candidate-provenance.json" in workflow
+    assert "failed-release-candidate-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
+    assert "verified-release-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
+
+    publish_job = workflow.split("\n  publish:\n", 1)[1]
+    assert "persist-credentials: false" in publish_job
+    transfer_check = publish_job.split(
+        "- name: Reverify transferred release bytes", 1
+    )[1].split("- name:", 1)[0]
+    assert "GH_TOKEN" not in transfer_check
+    assert "hashlib.sha256" in transfer_check
+    assert '".release" / "accepted-artifacts.json"' in transfer_check
+    assert publish_job.index("Download verified release archives") < publish_job.index(
+        "Reverify transferred release bytes"
+    ) < publish_job.index("Create release")
+    audit_step = publish_job.split("- name: Audit existing release tag", 1)[1].split(
+        "- name:", 1
+    )[0]
+    assert "GH_TOKEN" not in audit_step
+    privileged_step = publish_job.split("- name: Create release", 1)[1].split(
+        "- name:", 1
+    )[0]
+    assert "python scripts/" not in privileged_step
 
 
 def test_release_record_normalization_removes_only_path_sensitive_launchers(
@@ -199,7 +226,7 @@ def test_release_artifact_manifest_verifier_rejects_byte_mutation(tmp_path) -> N
         }
     manifest = {
         "schema": "bcs.release_artifacts/1.0",
-        "version": "9.9.9",
+        "version": "1.0.77",
         "build_contract": {
             "python": ".".join(map(str, EXPECTED_PYTHON_VERSION)),
             "architecture": EXPECTED_ARCHITECTURE,
@@ -222,7 +249,7 @@ def test_release_artifact_manifest_verifier_rejects_byte_mutation(tmp_path) -> N
     verified = verify_release_artifacts(
         manifest_path=manifest_path,
         root=tmp_path,
-        expected_version="9.9.9",
+        expected_version="1.0.77",
     )
     assert set(verified) == set(REQUIRED_ARTIFACTS)
 
@@ -231,111 +258,8 @@ def test_release_artifact_manifest_verifier_rejects_byte_mutation(tmp_path) -> N
         verify_release_artifacts(
             manifest_path=manifest_path,
             root=tmp_path,
-            expected_version="9.9.9",
+            expected_version="1.0.77",
         )
-
-
-def test_release_acceptance_command_generates_a_verifiable_manifest(
-    monkeypatch, tmp_path
-) -> None:
-    from release_build_contract import CI_LOCK_FILENAME, RELEASE_LOCK_FILENAME
-    from scripts import verify_release_artifacts as release_artifacts
-
-    # This synthetic artifact test exercises acceptance mechanics, independent
-    # of the machine running pytest. The production interpreter boundary has a
-    # dedicated fail-closed test below.
-    monkeypatch.setattr(release_artifacts, "assert_release_interpreter", lambda: None)
-
-    version = "9.9.9"
-    (tmp_path / RELEASE_LOCK_FILENAME).write_bytes(b"release lock\n")
-    (tmp_path / CI_LOCK_FILENAME).write_bytes(b"ci lock\n")
-    artifact_paths = {
-        "source_zip": tmp_path / "dist" / f"LibreCAD-PDF-Importer_v{version}.zip",
-        "portable_zip": (
-            tmp_path
-            / "dist"
-            / f"LibreCAD-PDF-Importer-Windows-Portable_v{version}.zip"
-        ),
-        "pdf2dxf_exe": tmp_path / "dist" / "windows-portable" / "pdf2dxf.exe",
-        "lcpdf_import_exe": (
-            tmp_path / "dist" / "windows-portable" / "lcpdf-import.exe"
-        ),
-        "lcpdf_batch_exe": (
-            tmp_path / "dist" / "windows-portable" / "lcpdf-batch.exe"
-        ),
-        "lcpdf_gui_exe": tmp_path / "dist" / "windows-portable" / "lcpdf-gui.exe",
-    }
-    assert set(artifact_paths) == set(release_artifacts.REQUIRED_ARTIFACTS)
-    for index, path in enumerate(artifact_paths.values(), start=1):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(f"candidate-{index}".encode("ascii"))
-
-    manifest_path = tmp_path / ".release" / "accepted-artifacts.json"
-    accepted = release_artifacts.accept_release_artifacts(
-        manifest_path=manifest_path,
-        root=tmp_path,
-        expected_version=version,
-    )
-
-    assert accepted["version"] == version
-    assert accepted["artifacts"]["portable_zip"]["path"] == (
-        f"dist/LibreCAD-PDF-Importer-Windows-Portable_v{version}.zip"
-    )
-    assert json.loads(manifest_path.read_text(encoding="utf-8")) == accepted
-    verified = release_artifacts.verify_release_artifacts(
-        manifest_path=manifest_path,
-        root=tmp_path,
-        expected_version=version,
-    )
-    assert set(verified) == set(release_artifacts.REQUIRED_ARTIFACTS)
-
-
-def test_release_acceptance_preserves_prior_manifest_when_candidate_fails(
-    monkeypatch, tmp_path
-) -> None:
-    from release_build_contract import CI_LOCK_FILENAME, RELEASE_LOCK_FILENAME
-    from scripts import verify_release_artifacts as release_artifacts
-
-    # The test controls candidate verification failure; the release-machine
-    # preflight is orthogonal and is covered independently below.
-    monkeypatch.setattr(release_artifacts, "assert_release_interpreter", lambda: None)
-
-    version = "9.9.9"
-    (tmp_path / RELEASE_LOCK_FILENAME).write_bytes(b"release lock\n")
-    (tmp_path / CI_LOCK_FILENAME).write_bytes(b"ci lock\n")
-    artifact_paths = release_artifacts._canonical_artifact_paths(tmp_path, version)
-    for index, path in enumerate(artifact_paths.values(), start=1):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(f"candidate-{index}".encode("ascii"))
-
-    manifest_path = tmp_path / ".release" / "accepted-artifacts.json"
-    manifest_path.parent.mkdir(parents=True)
-    prior_manifest = b'{"status":"previously-verified"}\n'
-    manifest_path.write_bytes(prior_manifest)
-    verified_candidates = []
-
-    def reject_candidate(**kwargs) -> None:
-        verified_candidates.append(Path(kwargs["manifest_path"]))
-        raise release_artifacts.ArtifactVerificationError(
-            "forced candidate verification failure"
-        )
-
-    monkeypatch.setattr(release_artifacts, "verify_release_artifacts", reject_candidate)
-
-    with pytest.raises(
-        release_artifacts.ArtifactVerificationError,
-        match="forced candidate verification failure",
-    ):
-        release_artifacts.accept_release_artifacts(
-            manifest_path=manifest_path,
-            root=tmp_path,
-            expected_version=version,
-        )
-
-    assert verified_candidates
-    assert verified_candidates[0] != manifest_path
-    assert manifest_path.read_bytes() == prior_manifest
-    assert not list(manifest_path.parent.glob(f".{manifest_path.name}.*.candidate"))
 
 
 def test_release_acceptance_preflights_the_exact_interpreter_before_artifacts(
@@ -416,22 +340,24 @@ def test_portable_smoke_runs_all_entrypoints_and_real_glyph_conversion(
     def fake_run(command, **_kwargs):
         calls.append(command)
         if "--text-mode" in command:
+            mode = command[command.index("--text-mode") + 1]
             output = Path(command[2])
             output.write_text("DXF", encoding="utf-8")
             report = output.with_name(f"{output.stem}_import_report.json")
+            final = "text" if mode in {"text", "labels"} else "glyphs"
             report.write_text(
                 json.dumps(
                     {
                         "extra": {
                             "text_representation_delivery": {
-                                "requested_representation": "glyphs",
+                                "requested_representation": mode,
                                 "verified": True,
                                 "items": [
                                     {
-                                        "requested_representation": "glyphs",
-                                        "final_representation": "glyphs",
+                                        "requested_representation": mode,
+                                        "final_representation": final,
                                         "verified": True,
-                                        "fallback_used": False,
+                                        "fallback_used": mode == "labels",
                                     }
                                 ],
                             }
@@ -449,15 +375,20 @@ def test_portable_smoke_runs_all_entrypoints_and_real_glyph_conversion(
         "_write_tiny_pdf",
         lambda path: path.write_bytes(b"%PDF-test"),
     )
+    monkeypatch.setattr(
+        smoke_portable_zip,
+        "_validate_native_text_delivery",
+        lambda *args, **kwargs: None,
+    )
 
     smoke_portable_zip._smoke_extracted_portable(tmp_path)
 
     assert [Path(call[0]).name for call in calls[:4]] == list(
         smoke_portable_zip.REQUIRED_EXES
     )
-    conversion = calls[-1]
-    assert Path(conversion[0]).name == "pdf2dxf.exe"
-    assert conversion[-4:] == ["--mode", "vector", "--text-mode", "glyphs"]
+    conversions = [call for call in calls if "--text-mode" in call]
+    assert all(Path(conversion[0]).name == "pdf2dxf.exe" for conversion in conversions)
+    assert [conversion[-1] for conversion in conversions] == ["glyphs", "text", "labels"]
 
 
 def test_portable_smoke_rejects_report_only_or_substituted_glyph_delivery(

@@ -2,6 +2,29 @@
 
 All notable release changes are recorded here.
 
+## 1.0.78 — 2026-08-02
+
+### Fixed
+
+- Preserve selectable native LibreCAD `TEXT` for requested Text and the finite
+  Labels-to-Text fallback when the bundled Unicode LFF face is required.
+- Verify content, insertion, source-font cap height, rotation, FIT endpoint,
+  drawable LFF glyph bodies/references, serialized reopen, and evidence
+  integrity before accepting the native entity.
+- Bind `unicode.lff` evidence to the exact resolved LibreCAD executable used by
+  the CLI/GUI launch path, reject unrelated overrides and assets over 16 MiB,
+  and fresh-read/hash the asset during serialized reopen verification.
+- Preserve running LibreCAD sessions when opening a generated drawing; the
+  launcher no longer force-terminates existing processes and unsaved work.
+- Disclose the LFF font substitution and keep source-font pixel equivalence
+  explicitly false; Glyphs and Geometry remain the exact-outline choices.
+
+### Performance
+
+- Avoid replacing each accepted native Text/Labels span with glyph-block
+  outlines, materially reducing entity creation and file weight on text-heavy
+  drawings while retaining editable text.
+
 ## 1.0.77 — 2026-08-02
 
 ### Performance

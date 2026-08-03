@@ -33,10 +33,6 @@ QStringList candidateScripts() {
         << QDir::cleanPath(appDir + "/../LibreCAD-PDF-Importer/gui.py");
 
     candidates
-        << QStringLiteral("C:/1PDF-Importer-LibreCAD/launch_lcpdf_gui.pyw")
-        << QStringLiteral("C:/1PDF-Importer-LibreCAD/gui.py");
-
-    candidates
         << QDir::cleanPath(appDir + "/../1PDF-Importer-LibreCAD/launch_lcpdf_gui.pyw")
         << QDir::cleanPath(appDir + "/../1PDF-Importer-LibreCAD/gui.py");
 
@@ -117,10 +113,6 @@ QStringList candidatePortableExes() {
             << QDir::cleanPath(roamingPrograms + "/lcpdf-gui.exe");
     }
 
-    candidates
-        << QStringLiteral("C:/1PDF-Importer-LibreCAD/dist/LibreCAD-PDF-Importer/LibreCAD-PDF-Importer.exe")
-        << QStringLiteral("C:/1PDF-Importer-LibreCAD/dist/windows-portable/lcpdf-gui.exe");
-
     return candidates;
 }
 
@@ -147,9 +139,13 @@ QString resolveScriptPath(const QSettings &settings) {
 }
 
 QString chooseScript(QWidget *parent, const QString &currentPath) {
-    const QString startPath = currentPath.isEmpty()
-                                  ? QStringLiteral("C:/1PDF-Importer-LibreCAD")
-                                  : currentPath;
+    QString startPath = currentPath;
+    if (startPath.isEmpty()) {
+        startPath = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    }
+    if (startPath.isEmpty()) {
+        startPath = QDir::homePath();
+    }
     return QFileDialog::getOpenFileName(
         parent,
         QObject::tr("Locate LC Importer Launcher"),
@@ -305,7 +301,7 @@ void LC_BcLCPdfMenuPlugin::execComm(Document_Interface *doc, QWidget *parent, QS
                "Alternatively locate `LibreCAD-PDF-Importer.exe`, `lcpdf-gui.exe`, "
                "`launch_lcpdf_gui.pyw`, or `gui.py`.")
         );
-        scriptPath = chooseScript(parent, QStringLiteral("C:/1PDF-Importer-LibreCAD"));
+        scriptPath = chooseScript(parent, QString());
         if (scriptPath.isEmpty()) {
             return;
         }

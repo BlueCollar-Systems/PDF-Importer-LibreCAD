@@ -33,6 +33,7 @@ if _PROJECT_ROOT not in sys.path:
 
 from pdfcadcore.import_config import ImportConfig
 from conversion_control import ActivePageCancelled, check_cancel
+from librecad_runtime import resolve_librecad_runtime_binding
 
 
 class ResumeMismatchError(RuntimeError):
@@ -122,13 +123,19 @@ def _asset_inventory_matches(records: object, containment_root: Path) -> bool:
     return True
 
 
-def _resume_options_identity(config: ImportConfig, dxf_version: str) -> tuple[str, dict]:
+def _resume_options_identity(
+    config: ImportConfig,
+    dxf_version: str,
+    librecad_executable: Optional[str] = None,
+) -> tuple[str, dict]:
     from pdf2dxf import __version__
 
+    librecad_binding = resolve_librecad_runtime_binding(librecad_executable)
     payload = {
         "importer_version": str(__version__),
         "engine_sha256": _engine_sha256(),
         "dxf_version": str(dxf_version),
+        "librecad_runtime_binding": librecad_binding.identity_payload(),
         "config": asdict(config),
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -281,13 +288,18 @@ def _convert_resumable(
     progress_callback: Optional[Callable[[str], None]],
     cancel_requested: Optional[Callable[[], bool]],
     restart_on_resume_mismatch: bool,
+    librecad_executable: Optional[str],
 ) -> Dict[str, Any]:
     source = Path(input_path).expanduser().resolve()
     output = Path(output_path).expanduser().resolve()
     session_dir = output.with_name(f"{output.stem}_resume")
     manifest_path = session_dir / "session.json"
     source_sha256 = _sha256(source)
-    options_sha256, options = _resume_options_identity(config, dxf_version)
+    options_sha256, options = _resume_options_identity(
+        config,
+        dxf_version,
+        librecad_executable,
+    )
     selected_pages = _selected_page_indices(str(source), config)
     manifest: Dict[str, Any] = {
         "schema": "bcs.librecad_resume/1.0",
@@ -353,6 +365,7 @@ def _convert_resumable(
                 dxf_version,
                 progress_callback,
                 cancel_requested=cancel_requested,
+                librecad_executable=librecad_executable,
             )
         except ActivePageCancelled as exc:
             checkpoint.unlink(missing_ok=True)
@@ -415,6 +428,7 @@ def _convert_via_package(
     dxf_version: str,
     progress_callback: Optional[Callable[[str], None]] = None,
     cancel_requested: Optional[Callable[[], bool]] = None,
+    librecad_executable: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Full BCS-ARCH-001 pipeline (auto/raster/hybrid + raster pages)."""
     from librecad_pdf_importer.exporters.dxf_exporter import (
@@ -471,6 +485,7 @@ def _convert_via_package(
                     attach_metadata=True,
                     dxf_version=dxf_version,
                     map_dashes=bool(config.map_dashes),
+                    librecad_executable=librecad_executable,
                     provenance_opts=run.config,
                 ),
             )
@@ -541,6 +556,7 @@ def convert(
     resumable: bool = False,
     cancel_requested: Optional[Callable[[], bool]] = None,
     restart_on_resume_mismatch: bool = False,
+    librecad_executable: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Convert a PDF file to DXF.
 
@@ -580,6 +596,7 @@ def convert(
             progress_callback,
             cancel_requested,
             restart_on_resume_mismatch,
+            librecad_executable,
         )
     return _convert_via_package(
         input_path,
@@ -588,4 +605,5 @@ def convert(
         dxf_version,
         progress_callback,
         cancel_requested=cancel_requested,
+        librecad_executable=librecad_executable,
     )

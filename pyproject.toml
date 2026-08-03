@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pdf2dxf"
-version = "1.0.77"
+version = "1.0.78"
 description = "PDF to DXF converter for LibreCAD, AutoCAD, DraftSight, and QCAD"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -30,7 +30,7 @@ lcpdf-batch = "librecad_pdf_importer.batch_cli:main"
 lcpdf-guiw = "gui:launch_gui"
 
 [tool.setuptools]
-py-modules = ["pdf2dxf", "dxf_builder", "dxf_text_builder", "dxf_import_engine", "conversion_control", "page_selection", "gui"]
+py-modules = ["pdf2dxf", "dxf_builder", "dxf_text_builder", "dxf_import_engine", "conversion_control", "librecad_runtime", "page_selection", "gui"]
 
 [tool.setuptools.packages.find]
 where = ["."]

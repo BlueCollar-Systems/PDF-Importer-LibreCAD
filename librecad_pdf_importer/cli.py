@@ -19,7 +19,7 @@ from .importer import (
     run_import,
     write_import_report,
 )
-from .launchers.librecad_launcher import launch_librecad
+from .launchers.librecad_launcher import find_librecad_executable, launch_librecad
 
 
 def _default_import_report_path(output_path: Path) -> Path:
@@ -144,6 +144,10 @@ def main() -> int:
         scale_factor = args.reference_real_mm / args.reference_detected_mm
         apply_uniform_scale(run.extraction, scale_factor)
 
+    resolved_librecad_executable = find_librecad_executable(args.librecad_exe)
+    librecad_contract_executable = resolved_librecad_executable or (
+        args.librecad_exe if args.librecad_exe is not None else ""
+    )
     t_export = time.perf_counter()
     try:
         export = export_to_dxf(
@@ -161,6 +165,7 @@ def main() -> int:
                 attach_metadata=True,
                 dxf_version=args.dxf_version,
                 map_dashes=bool(run.config.map_dashes),
+                librecad_executable=librecad_contract_executable,
                 page_arrangement=args.page_arrangement,
                 page_gap_ratio=max(0.0, float(args.page_gap_ratio or 0.0)),
                 provenance_opts=run.config,
@@ -228,7 +233,10 @@ def main() -> int:
         print(f"Wrote report: {report}")
 
     if args.launch:
-        ok, message = launch_librecad(export.output_path, executable=args.librecad_exe)
+        ok, message = launch_librecad(
+            export.output_path,
+            executable=librecad_contract_executable,
+        )
         print(message)
 
     run.close()

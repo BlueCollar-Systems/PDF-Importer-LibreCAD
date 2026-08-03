@@ -22,7 +22,7 @@ from librecad_pdf_importer.importer import run_import, write_import_report
 
 
 class TestLibreCADTextModeFidelity(unittest.TestCase):
-    """Requested types succeed exactly or fail closed without substitution."""
+    """Requested types succeed with disclosed substitutions or fail closed."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="lc_text_mode_fidelity_")
@@ -60,8 +60,8 @@ class TestLibreCADTextModeFidelity(unittest.TestCase):
 
     def test_every_requested_representation_is_exact_or_loudly_falls_back(self) -> None:
         expected = {
-            "text": ("glyphs", "INSERT", "outline_curve_or_mesh", True),
-            "labels": ("glyphs", "INSERT", "outline_curve_or_mesh", True),
+            "text": ("text", "TEXT", "dxf_text", False),
+            "labels": ("text", "TEXT", "dxf_text", True),
             "3d_text": ("glyphs", "INSERT", "outline_curve_or_mesh", True),
             "glyphs": ("glyphs", "INSERT", "outline_curve_or_mesh", False),
             "geometry": ("geometry", "LWPOLYLINE", "raw_geometry_edges", False),

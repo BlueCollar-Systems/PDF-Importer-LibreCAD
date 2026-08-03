@@ -89,6 +89,82 @@ class TestModeCli(unittest.TestCase):
             self.assertEqual(delivery["entity_count"], 1)
             self.assertEqual(delivery["report_path"], str(report_path))
 
+    def test_cli_binds_native_text_to_explicit_librecad_executable(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="lc_mode_cli_explicit_") as tmp:
+            tmp_path = Path(tmp)
+            pdf_path = tmp_path / "sample.pdf"
+            out_path = tmp_path / "summary.json"
+            out_dxf = tmp_path / "out.dxf"
+            install_root = tmp_path / "portable-librecad"
+            executable = install_root / "LibreCAD.exe"
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"explicit LibreCAD test executable\n")
+            lff_path = install_root / "resources" / "fonts" / "unicode.lff"
+            lff_path.parent.mkdir(parents=True)
+            lff_path.write_bytes(
+                Path(os.environ["BCS_LIBRECAD_UNICODE_LFF"]).read_bytes()
+            )
+            _write_sample_pdf(pdf_path)
+            environment = dict(os.environ)
+            environment.update(
+                {
+                    "BCS_LIBRECAD_EXECUTABLE": str(executable),
+                    "BCS_LIBRECAD_UNICODE_LFF": str(lff_path),
+                }
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "librecad_pdf_importer.cli",
+                    str(pdf_path),
+                    "--mode",
+                    "vector",
+                    "--text-mode",
+                    "text",
+                    "--librecad-exe",
+                    str(executable),
+                    "--out",
+                    str(out_dxf),
+                    "--json",
+                    str(out_path),
+                ],
+                cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(
+                result.returncode,
+                0,
+                msg=f"CLI failed: stdout={result.stdout!r} stderr={result.stderr!r}",
+            )
+            report_path = Path(
+                json.loads(out_path.read_text(encoding="utf-8"))["export"][
+                    "import_report_path"
+                ]
+            )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            attempt = report["extra"]["text_representation_delivery"]["items"][0][
+                "attempts"
+            ][0]
+            evidence = attempt["evidence"]
+            self.assertEqual(attempt["attempted_representation"], "text")
+            self.assertEqual(attempt["outcome"], "verified")
+            username = str(os.environ.get("USERNAME", "") or "")
+            if username:
+                self.assertNotIn(username, evidence["librecad_executable_path"])
+                self.assertNotIn(username, evidence["librecad_lff_path"])
+            local = evidence["local_only_diagnostics"]
+            self.assertEqual(
+                Path(local["librecad_executable_path"]), executable.resolve()
+            )
+            self.assertEqual(Path(local["librecad_lff_path"]), lff_path.resolve())
+            self.assertTrue(evidence["librecad_lff_executable_binding_verified"])
+
     def test_auto_mode_produces_auto_mode_block(self) -> None:
         with tempfile.TemporaryDirectory(prefix="lc_mode_cli_") as tmp:
             pdf_path = Path(tmp) / "sample.pdf"

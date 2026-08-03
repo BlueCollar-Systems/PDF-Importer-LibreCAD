@@ -336,6 +336,11 @@ class Pdf2DxfApp(tk.Tk):
             from pdf_open_guard import precheck_pdf
             precheck_pdf(input_path)  # clean reject for encrypted/empty/non-PDF (caught below)
 
+            from librecad_pdf_importer.launchers.librecad_launcher import (
+                find_librecad_executable,
+            )
+
+            resolved_librecad_executable = find_librecad_executable() or ""
             stats = convert(
                 input_path=input_path,
                 output_path=output_path,
@@ -345,6 +350,7 @@ class Pdf2DxfApp(tk.Tk):
                 resumable=True,
                 cancel_requested=self._cancel_event.is_set,
                 restart_on_resume_mismatch=True,
+                librecad_executable=resolved_librecad_executable,
             )
 
             elapsed = time.perf_counter() - t0
@@ -373,7 +379,10 @@ class Pdf2DxfApp(tk.Tk):
             launch_message = ""
             if self._var_launch_librecad.get():
                 from librecad_pdf_importer.launchers.librecad_launcher import launch_librecad
-                launch_ok, launch_status = launch_librecad(output_path)
+                launch_ok, launch_status = launch_librecad(
+                    output_path,
+                    executable=resolved_librecad_executable,
+                )
                 launch_message = launch_status
                 self._log(launch_status)
                 if not launch_ok:

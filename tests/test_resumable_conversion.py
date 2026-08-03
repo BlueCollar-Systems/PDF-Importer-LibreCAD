@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 from pathlib import Path
 
 import ezdxf
@@ -30,6 +33,88 @@ def test_resume_identity_does_not_require_a_loose_engine_source_file(
 
     assert len(identity) == 64
     assert len(payload["engine_sha256"]) == 64
+
+
+def test_resume_identity_uses_one_immutable_resolved_librecad_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sensitive_root = tmp_path / "Users" / "Resume User" / "PortableLibreCAD"
+    executable = sensitive_root / "LibreCAD.exe"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"exe-one")
+    lff_path = sensitive_root / "resources" / "fonts" / "unicode.lff"
+    lff_path.parent.mkdir(parents=True)
+    lff_path.write_bytes(
+        b"# Format: LibreCAD Font 1\n[0057]\n0,0;1,1\n"
+    )
+    monkeypatch.setenv("BCS_LIBRECAD_EXECUTABLE", str(executable))
+    monkeypatch.setenv("BCS_LIBRECAD_UNICODE_LFF", str(lff_path))
+
+    identity, payload = dxf_import_engine._resume_options_identity(
+        ImportConfig.auto(),
+        "R2010",
+    )
+
+    binding = payload["librecad_runtime_binding"]
+    assert len(identity) == 64
+    assert "librecad_executable" not in payload
+    assert binding["contract_version"] == "bcs.librecad-runtime-binding/1"
+    assert binding["executable_resolution_source"] == "environment_executable"
+    assert binding["binding_verified"] is True
+    assert binding["executable"]["size_bytes"] == executable.stat().st_size
+    assert binding["executable"]["sha256"] == hashlib.sha256(
+        executable.read_bytes()
+    ).hexdigest()
+    assert binding["unicode_lff"]["size_bytes"] == lff_path.stat().st_size
+    assert binding["unicode_lff"]["sha256"] == hashlib.sha256(
+        lff_path.read_bytes()
+    ).hexdigest()
+    assert "Resume User" not in binding["executable"]["path"]
+    assert "Resume User" not in binding["unicode_lff"]["path"]
+    shareable = dict(binding)
+    shareable.pop("local_only_diagnostics")
+    assert "Resume User" not in json.dumps(shareable)
+    local = binding["local_only_diagnostics"]
+    assert local["classification"] == "local_sensitive_paths"
+    assert Path(local["librecad_executable_path"]) == executable.resolve()
+    assert Path(local["librecad_lff_path"]) == lff_path.resolve()
+
+
+def test_resume_identity_detects_same_stat_executable_and_lff_replacements(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    install_root = tmp_path / "portable-librecad"
+    executable = install_root / "LibreCAD.exe"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"exe-one")
+    lff_path = install_root / "resources" / "fonts" / "unicode.lff"
+    lff_path.parent.mkdir(parents=True)
+    lff_path.write_bytes(
+        b"# Format: LibreCAD Font 1\n[0057]\n0,0;1,1\n"
+    )
+    monkeypatch.setenv("BCS_LIBRECAD_EXECUTABLE", str(executable))
+    monkeypatch.setenv("BCS_LIBRECAD_UNICODE_LFF", str(lff_path))
+    config = ImportConfig.auto()
+
+    first, _ = dxf_import_engine._resume_options_identity(config, "R2010")
+    executable_stat = executable.stat()
+    executable.write_bytes(b"exe-two")
+    os.utime(
+        executable,
+        ns=(executable_stat.st_atime_ns, executable_stat.st_mtime_ns),
+    )
+    second, _ = dxf_import_engine._resume_options_identity(config, "R2010")
+    lff_stat = lff_path.stat()
+    replacement = lff_path.read_bytes().replace(b"0,0;1,1", b"#      ")
+    assert len(replacement) == lff_stat.st_size
+    lff_path.write_bytes(replacement)
+    os.utime(lff_path, ns=(lff_stat.st_atime_ns, lff_stat.st_mtime_ns))
+    third, _ = dxf_import_engine._resume_options_identity(config, "R2010")
+
+    assert first != second
+    assert second != third
 
 
 def _write_checkpoint(path: str, page_index: int) -> None:

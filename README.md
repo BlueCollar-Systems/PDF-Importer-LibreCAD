@@ -2,16 +2,14 @@
 
 **BlueCollar Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.77](https://img.shields.io/badge/Version-1.0.77-blue.svg)
+![Version: 1.0.78](https://img.shields.io/badge/Version-1.0.78-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
 
-See [CHANGELOG.md](CHANGELOG.md) for release history. Version 1.0.77 removes a
-quadratic serialized-delivery verification pass without weakening proof.
-Version 1.0.76 preserves verified zero-ink Raster omissions in the report-level
-delivery contract while keeping unproven or visible empty deliveries fail
-closed.
+See [CHANGELOG.md](CHANGELOG.md) for release history. Version 1.0.78 preserves
+selectable native LibreCAD `TEXT` for Text and the documented Labels fallback,
+with serialized content, placement, rotation, height, FIT, and LFF evidence.
 
 ## Features
 
@@ -60,9 +58,15 @@ built and smoked:
 python build_release.py
 python build_windows_portable.py
 python scripts/smoke_portable_zip.py "dist/LibreCAD-PDF-Importer-Windows-Portable_v*.zip" --source-zip "dist/LibreCAD-PDF-Importer_v*.zip"
-python scripts/verify_release_artifacts.py --accept
+python scripts/verify_release_artifacts.py --accept --provenance dist/release-candidate-provenance.json
 python scripts/verify_release_artifacts.py
 ```
+
+Acceptance must run from the clean candidate commit with the exact retained
+GitHub Actions ZIPs and canonical provenance sidecar. It requires an
+authenticated GitHub CLI so the original run attempt, three-subject artifact
+attestation, and retained bytes can be verified; normal schema-1.1 publication
+verification repeats that authentication before release creation.
 
 ## Installation
 
@@ -79,7 +83,10 @@ CLI launchers. No system Python, pip, or administrator rights are required.
 
 ## Upgrading / skipping versions
 
-Extract a newer portable ZIP over your folder (or run the latest installer). Skipping versions (e.g. 1.0.40 → 1.0.44) is supported — run `preflight_check.py` and convert one of your own representative PDFs before shop use.
+Extract a newer portable ZIP over your folder (or run the latest installer).
+Skipping versions (for example, 1.0.40 → 1.0.78) is supported. Before shop
+use, run the bundled `pdf2dxf.exe` on one of your own representative PDFs,
+open the resulting DXF in LibreCAD, and review its adjacent import report.
 
 Bundled command-line entrypoints:
 
@@ -143,8 +150,9 @@ python pdf2dxf.py drawing.pdf output.dxf --resume --verbose
 ```
 
 Resume identity includes the exact PDF bytes, every import option, importer
-version, and conversion-engine bytes. A mismatch is rejected rather than mixed
-with prior work. The GUI enables the same page-safe behavior automatically and
+version, conversion-engine bytes, and the resolved LibreCAD executable and LFF
+font binding (canonical path, size, and fresh SHA-256). A mismatch is rejected
+rather than mixed with prior work. The GUI enables the same page-safe behavior automatically and
 provides a responsive **Cancel** button; the active partial page is discarded,
 while every already-certified page remains available to **Convert / Resume**.
 

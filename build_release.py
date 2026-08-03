@@ -5,8 +5,8 @@
 """
 Packages the PDF-to-DXF converter into a source-only distributable zip file.
 Output: LibreCAD-PDF-Importer_vX.Y.Z.zip.
-Includes all Python source files and the pdfcadcore library.
-Excludes ``__pycache__``, ``.pyc``, and ``tests/``.
+Includes product Python source files and the pdfcadcore library.
+Excludes ``__pycache__``, ``.pyc``, tests, and cross-repository workspace tools.
 """
 from __future__ import annotations
 
@@ -27,6 +27,10 @@ _PACKAGE_DIRECTORIES = {
     "third_party",
     "installer",
     "scripts",
+}
+_DEV_ONLY_SOURCE_FILES = {
+    "pdfcadcore_sync_check.py",
+    "pdfcadcore_sync_manifest.json",
 }
 
 
@@ -123,7 +127,7 @@ def _should_include(rel_path: str) -> bool:
         return False
 
     # Exclude dev-only files
-    if basename in ("requirements-dev.txt",):
+    if basename in {"requirements-dev.txt", *_DEV_ONLY_SOURCE_FILES}:
         return False
     if basename.startswith("Makefile"):
         return False

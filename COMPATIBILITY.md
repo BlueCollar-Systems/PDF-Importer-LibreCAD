@@ -1,20 +1,20 @@
 # Compatibility — PDF to DXF (LibreCAD)
 
-**Canonical path:** `C:\1PDF-Importer-LibreCAD`  
 Modes are extraction **strategy** (Auto / Vector / Raster / Hybrid), not quality tiers.
 
 ---
 
 ## Minimum host version
 
-**LibreCAD 2.0.x** (portable ZIP canonical install). **Recommended: LibreCAD 2.1+**.
+**LibreCAD 2.2+**. The standalone portable importer bundles its Python runtime;
+LibreCAD remains the supported editor/viewer for the generated DXF.
 
 ## Oldest tested
 
 | Host | Status |
 |------|--------|
-| LibreCAD 2.2.x+ | ⚠️ Expected |
-| LibreCAD 2.1.x / 2.0.x | ⚠️ Expected |
+| LibreCAD 2.2.x+ | ✅ Supported |
+| LibreCAD 2.1.x / 2.0.x | ⚠️ Unverified; upgrade recommended |
 | LibreCAD &lt; 2.0 | ❌ Not supported |
 
 Portable Windows ZIP smoke-tested at release; full GUI verification is manual.
@@ -60,7 +60,7 @@ Install portable ZIP per user profile with write access. Roaming `%APPDATA%` is 
 ## Preflight command
 
 ```powershell
-cd C:\1PDF-Importer-LibreCAD
+cd <extracted-source-folder>
 python preflight_check.py
 python preflight_check.py --install
 python pdf2dxf.py --preflight
@@ -75,9 +75,9 @@ Portable users: run `lcpdf-gui.exe` from extracted ZIP — no terminal required.
 
 | LibreCAD | Python (standalone) | ezdxf | PyMuPDF | FontTools | Status |
 |----------|---------------------|-------|---------|-----------|--------|
-| 2.2.x+ | 3.12+ | 1.4.4 | 1.28.0 | 4.63.0 | ⚠️ Expected |
-| 2.1.x | 3.12+ | 1.4.4 | 1.28.0 | 4.63.0 | ⚠️ Expected |
-| 2.0.x | 3.12+ | 1.4.4 | 1.28.0 | 4.63.0 | ⚠️ Expected |
+| 2.2.x+ | 3.12+ | 1.4.4 | 1.28.0 | 4.63.0 | ✅ Supported |
+| 2.1.x | 3.12+ | 1.4.4 | 1.28.0 | 4.63.0 | ⚠️ Unverified |
+| 2.0.x | 3.12+ | 1.4.4 | 1.28.0 | 4.63.0 | ⚠️ Unverified |
 | < 2.0 | | | | | ❌ Not supported |
 
 ### LibreCAD-specific behavior

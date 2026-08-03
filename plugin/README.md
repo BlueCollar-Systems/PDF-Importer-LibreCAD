@@ -39,7 +39,6 @@ LibreCAD loads plugins from this user folder, so admin rights are not required.
   - Beside `librecad.exe` (`LibreCAD-PDF-Importer.exe`, `lcpdf-gui.exe`, `launch_lcpdf_gui.pyw`, `gui.py`)
   - Installed app folders (`%ProgramFiles%\BlueCollar Systems\LibreCAD PDF Importer`, `%LOCALAPPDATA%\Programs\...`)
   - Portable folders (`LibreCAD-PDF-Importer`, Desktop, `%LOCALAPPDATA%\BlueCollar\...`)
-  - Dev clone default `C:/1PDF-Importer-LibreCAD/launch_lcpdf_gui.pyw`
 - Python executable auto-detection checks:
   - `BC_LC_IMPORTER_PYTHON` env var
   - `pythonw`, `python`, `py -3`

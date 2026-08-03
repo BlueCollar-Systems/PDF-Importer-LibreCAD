@@ -43,11 +43,13 @@ from dxf_text_builder import (
     _glyph_definition_geometry_fingerprint,
     _glyph_instance_transform_fingerprint,
     _glyph_outer_block_structure_fingerprint,
+    _resolve_librecad_unicode_lff,
     _nested_outline_tolerance,
     build_text,
     reset_text_styles,
 )
 from conversion_control import check_cancel, report_progress
+from librecad_runtime import resolve_librecad_installation
 
 
 TERMINAL_TILE_PIXELS = 1536
@@ -81,6 +83,7 @@ class DxfExportOptions:
     page_arrangement: str = "spread"
     page_gap_ratio: float = 0.02
     provenance_opts: Optional[Any] = None
+    librecad_executable: Optional[str] = None
 
 
 class TextRepresentationDeliveryError(RuntimeError):
@@ -222,6 +225,7 @@ def _verify_serialized_text_deliveries(
         "raster": {"IMAGE"},
         "3d_text": {"TEXT"},
     }
+    reopened_lff_resolutions: Dict[str, Any] = {}
     source_ids: set[str] = set()
     main_handles: set[str] = set()
     serialized_modelspace = doc.modelspace()
@@ -444,6 +448,156 @@ def _verify_serialized_text_deliveries(
                     )
                 ):
                     raise RuntimeError(f"serialized text delivery {source_id}: FIT width changed")
+
+            if (
+                evidence.get("target_app") == "librecad"
+                and evidence.get("parent_native_font_substitution_accepted") is True
+            ):
+                required_evidence = (
+                    "content_verified",
+                    "anchor_verified",
+                    "cap_height_invariant_verified",
+                    "rotation_verified",
+                    "fit_alignment_verified",
+                    "librecad_lff_asset_verified",
+                    "librecad_lff_coverage_verified",
+                    "librecad_parent_installation_verified",
+                    "librecad_lff_executable_binding_verified",
+                    "librecad_lff_required_glyphs_drawable_verified",
+                    "parent_native_font_format_verified",
+                    "parent_native_font_asset_coverage_verified",
+                    "parent_native_font_style_binding_verified",
+                    "parent_native_font_builtin_lff_verified",
+                    "parent_native_text_delivery_verified",
+                    "native_text_structure_verified",
+                )
+                missing_evidence = [
+                    key for key in required_evidence if evidence.get(key) is not True
+                ]
+                disclosure_ok = bool(
+                    evidence.get("parent_native_font_substituted") is True
+                    and evidence.get("parent_source_font_equivalence_verified") is False
+                    and evidence.get("parent_visual_fidelity_verified") is False
+                    and evidence.get("parent_native_font_renderability_verified")
+                    is False
+                    and evidence.get("parent_render_verification_required") is True
+                    and evidence.get(
+                        "parent_visual_fidelity_limited_by_font_substitution"
+                    )
+                    is True
+                )
+                source_em_height = float(
+                    evidence.get("source_font_em_height") or 0.0
+                )
+                source_cap_height_ratio = float(
+                    evidence.get("source_cap_height_ratio") or 0.0
+                )
+                cap_height_reopen_ok = bool(
+                    source_em_height > 0.0
+                    and source_cap_height_ratio > 0.0
+                    and math.isclose(
+                        expected_height,
+                        source_em_height * source_cap_height_ratio,
+                        rel_tol=1e-9,
+                        abs_tol=1e-12,
+                    )
+                )
+                local_diagnostics = dict(
+                    evidence.get("local_only_diagnostics") or {}
+                )
+                bound_executable = str(
+                    local_diagnostics.get("librecad_executable_path")
+                    or evidence.get("librecad_executable_path")
+                    or ""
+                )
+                bound_lff = str(
+                    local_diagnostics.get("librecad_lff_path")
+                    or evidence.get("librecad_lff_path")
+                    or ""
+                )
+                lff_binding_key = bound_lff or f"<unresolved>:{bound_executable}"
+                reopened_lff_resolution = reopened_lff_resolutions.get(
+                    lff_binding_key
+                )
+                if reopened_lff_resolution is None:
+                    reopened_lff_resolution = _resolve_librecad_unicode_lff(
+                        bound_executable,
+                        fresh=True,
+                    )
+                    reopened_lff_resolutions[lff_binding_key] = (
+                        reopened_lff_resolution
+                    )
+                reopened_lff_evidence = reopened_lff_resolution.evidence(
+                    actual_content
+                )
+                lff_asset_evidence_ok = all(
+                    evidence.get(key) == reopened_lff_evidence.get(key)
+                    for key in (
+                        "librecad_lff_path",
+                        "librecad_lff_size_bytes",
+                        "librecad_lff_sha256",
+                        "librecad_lff_glyph_count",
+                        "librecad_lff_drawable_glyph_count",
+                        "librecad_lff_coverage_verified",
+                        "librecad_lff_missing_codepoints",
+                        "librecad_lff_invalid_codepoints",
+                        "librecad_lff_required_glyphs_drawable_verified",
+                        "librecad_executable_path",
+                        "librecad_installation_root",
+                        "librecad_parent_installation_verified",
+                        "librecad_lff_executable_binding_verified",
+                    )
+                )
+                reopened_local_diagnostics = dict(
+                    reopened_lff_evidence.get("local_only_diagnostics") or {}
+                )
+                local_path_binding_ok = all(
+                    local_diagnostics.get(key)
+                    == reopened_local_diagnostics.get(key)
+                    for key in (
+                        "librecad_executable_path",
+                        "librecad_installation_root",
+                        "librecad_lff_path",
+                    )
+                )
+                attempt_flags_ok = bool(
+                    final_attempt.get("delivery_verified") is True
+                    and final_attempt.get("visual_verified") is False
+                )
+                lff_reopen_ok = bool(
+                    native.dxftype() == "TEXT"
+                    and str(native.dxf.style or "").strip().lower() == "unicode"
+                    and str(parent_font).strip().lower() == "unicode"
+                    and str(
+                        doc.styles.get(str(native.dxf.style or "")).dxf.font or ""
+                    ).strip().lower()
+                    == "unicode"
+                    and evidence.get("parent_native_font_candidate_format") == "lff"
+                    and evidence.get("parent_native_font_required_format") == "lff"
+                )
+                if (
+                    missing_evidence
+                    or not disclosure_ok
+                    or not cap_height_reopen_ok
+                    or not lff_asset_evidence_ok
+                    or not local_path_binding_ok
+                    or not attempt_flags_ok
+                    or not lff_reopen_ok
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: LibreCAD native "
+                        "text evidence or LFF renderability changed"
+                    )
+                evidence.update(
+                    {
+                        "parent_native_text_reopen_verified": True,
+                        "parent_native_text_reopen_renderability_verified": False,
+                        "parent_native_text_reopen_asset_coverage_verified": True,
+                        "serialized_cap_height_invariant_verified": True,
+                        "delivery_evidence_verified": True,
+                    }
+                )
+                final_attempt["evidence"] = evidence
 
         if representation == "glyphs":
             support_set = set(support_handles)
@@ -2062,6 +2216,7 @@ def _attempt_terminal_text_raster(
                 "anchor_verified": True,
                 "size_verified": True,
             }
+            attempt.delivery_verified = True
             attempt.outcome = "verified"
             return (
                 TextDeliveryResult(
@@ -2157,6 +2312,7 @@ def _attempt_terminal_text_raster(
         }
         if not (attempt.type_verified and attempt.visual_verified and attempt.cleanup_verified):
             raise ValueError("terminal raster failed type, visual, or ownership verification")
+        attempt.delivery_verified = True
         attempt.outcome = "verified"
         return (
             TextDeliveryResult(
@@ -2245,6 +2401,12 @@ def _export_to_dxf_impl(
     raster_session: _RasterRenderSession,
 ) -> DxfExportResult:
     opts = options or DxfExportOptions()
+    installation = resolve_librecad_installation(opts.librecad_executable)
+    librecad_contract_executable = (
+        installation.executable_path
+        if installation is not None
+        else str(opts.librecad_executable or "")
+    )
     output = Path(output_path).expanduser().resolve()
     source_pdf = Path(extraction.pdf_path).expanduser().resolve()
     source_pdf_sha256: Optional[str] = None
@@ -2571,6 +2733,7 @@ def _export_to_dxf_impl(
                     text_cfg,
                     is_r12=is_r12,
                     target_app="librecad",
+                    librecad_executable=librecad_contract_executable,
                     dxf_version=dxf_ver,
                     return_delivery_result=True,
                 )
