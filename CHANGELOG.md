@@ -2,6 +2,15 @@
 
 All notable release changes are recorded here.
 
+## 1.0.80 — 2026-08-03
+
+### Fixed
+
+- Preserve valid native whitespace `TEXT` spans through the serialized
+  LibreCAD reopen gate. Whitespace has no font pixels to substitute, so its
+  exact visual result is zero ink; visible substituted glyphs remain explicitly
+  unverified for source-font pixel equivalence.
+
 ## 1.0.79 — 2026-08-03
 
 ### Fixed

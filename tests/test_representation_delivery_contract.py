@@ -548,6 +548,58 @@ def test_librecad_unicode_lff_native_text_survives_verified_parent_reopen(
     assert evidence["librecad_lff_missing_codepoints"] == []
 
 
+def test_librecad_whitespace_native_text_survives_serialized_parent_reopen(
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "native-whitespace.pdf"
+    pdf = fitz.open()
+    pdf.new_page(width=120, height=80)
+    pdf.save(str(pdf_path))
+    pdf.close()
+    item = __import__("dataclasses").replace(
+        _item(height=2.75, width=1.25, rotation=0.0),
+        text=" ",
+        normalized="",
+    )
+    extraction = DocumentExtraction(
+        str(pdf_path),
+        pages=[
+            ExtractedPage(
+                page_data=PageData(
+                    page_number=3,
+                    width=120.0,
+                    height=80.0,
+                    text_items=[item],
+                ),
+                profile=SimpleNamespace(titleblock_likely=False),
+                resolved_mode="vector",
+            )
+        ],
+        requested_mode="vector",
+    )
+    output = tmp_path / "native-whitespace.dxf"
+
+    result = export_to_dxf(
+        extraction,
+        str(output),
+        DxfExportOptions(include_images=False, text_mode="text"),
+    )
+
+    delivery = result.text_deliveries[0]
+    attempt = delivery["attempts"][-1]
+    assert output.is_file()
+    assert delivery["final_representation"] == "text"
+    assert attempt["delivery_verified"] is True
+    assert attempt["visual_verified"] is True
+    assert attempt["evidence"]["source_content_whitespace_only"] is True
+    assert attempt["evidence"]["parent_native_text_reopen_verified"] is True
+    assert attempt["evidence"]["delivery_evidence_verified"] is True
+    drawing = ezdxf.readfile(output)
+    native = next(iter(drawing.modelspace()))
+    assert native.dxftype() == "TEXT"
+    assert native.dxf.text == " "
+
+
 def test_librecad_unicode_lff_missing_emoji_descends_to_exact_glyphs() -> None:
     item = __import__("dataclasses").replace(
         _item(width=1.25, rotation=0.0),

@@ -474,17 +474,32 @@ def _verify_serialized_text_deliveries(
                 missing_evidence = [
                     key for key in required_evidence if evidence.get(key) is not True
                 ]
-                disclosure_ok = bool(
-                    evidence.get("parent_native_font_substituted") is True
-                    and evidence.get("parent_source_font_equivalence_verified") is False
-                    and evidence.get("parent_visual_fidelity_verified") is False
-                    and evidence.get("parent_native_font_renderability_verified")
-                    is False
-                    and evidence.get("parent_render_verification_required") is True
+                whitespace_contract = bool(
+                    actual_content
+                    and not actual_content.strip()
+                    and evidence.get("source_content_whitespace_only") is True
+                    and evidence.get("parent_native_font_rendering_required") is False
+                    and evidence.get("parent_visual_fidelity_verified") is True
                     and evidence.get(
                         "parent_visual_fidelity_limited_by_font_substitution"
                     )
-                    is True
+                    is False
+                )
+                disclosure_ok = bool(
+                    evidence.get("parent_native_font_substituted") is True
+                    and evidence.get("parent_source_font_equivalence_verified") is False
+                    and evidence.get("parent_native_font_renderability_verified") is False
+                    and evidence.get("parent_render_verification_required") is True
+                    and (
+                        whitespace_contract
+                        or (
+                            evidence.get("parent_visual_fidelity_verified") is False
+                            and evidence.get(
+                                "parent_visual_fidelity_limited_by_font_substitution"
+                            )
+                            is True
+                        )
+                    )
                 )
                 source_em_height = float(
                     evidence.get("source_font_em_height") or 0.0
@@ -562,7 +577,7 @@ def _verify_serialized_text_deliveries(
                 )
                 attempt_flags_ok = bool(
                     final_attempt.get("delivery_verified") is True
-                    and final_attempt.get("visual_verified") is False
+                    and final_attempt.get("visual_verified") is whitespace_contract
                 )
                 lff_reopen_ok = bool(
                     native.dxftype() == "TEXT"
