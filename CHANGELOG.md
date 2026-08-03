@@ -2,6 +2,15 @@
 
 All notable release changes are recorded here.
 
+## 1.0.81 — 2026-08-03
+
+### Fixed
+
+- Prevent visible LibreCAD LFF font substitution from terminating as verified
+  Text or Labels without source-equivalent visual proof. Those items now
+  descend automatically to exact glyph outlines; zero-ink whitespace remains
+  native editable `TEXT`.
+
 ## 1.0.80 — 2026-08-03
 
 ### Fixed

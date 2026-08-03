@@ -148,12 +148,17 @@ class TestModeCli(unittest.TestCase):
                 ]
             )
             report = json.loads(report_path.read_text(encoding="utf-8"))
-            attempt = report["extra"]["text_representation_delivery"]["items"][0][
-                "attempts"
-            ][0]
+            item = report["extra"]["text_representation_delivery"]["items"][0]
+            attempt = item["attempts"][0]
             evidence = attempt["evidence"]
             self.assertEqual(attempt["attempted_representation"], "text")
-            self.assertEqual(attempt["outcome"], "verified")
+            self.assertEqual(attempt["outcome"], "impossible")
+            self.assertFalse(attempt["delivery_verified"])
+            self.assertFalse(attempt["visual_verified"])
+            self.assertTrue(attempt["cleanup_verified"])
+            self.assertEqual(item["final_representation"], "glyphs")
+            self.assertEqual(item["attempts"][-1]["attempted_representation"], "glyphs")
+            self.assertEqual(item["attempts"][-1]["outcome"], "verified")
             username = str(os.environ.get("USERNAME", "") or "")
             if username:
                 self.assertNotIn(username, evidence["librecad_executable_path"])

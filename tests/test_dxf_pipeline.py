@@ -1398,19 +1398,18 @@ class TestDxfPipeline(unittest.TestCase):
             ),
         )
         dxf = ezdxf.readfile(export.output_path)
-        self.assertIn("TEXT", {entity.dxftype() for entity in dxf.modelspace()})
+        self.assertIn("INSERT", {entity.dxftype() for entity in dxf.modelspace()})
 
         report_path = self.tmp_path / "raster_none_import_report.json"
         write_import_report(run, str(report_path), elapsed_ms=1.0)
         report = json.loads(report_path.read_text(encoding="utf-8"))
         self.assertTrue(report["fallback"]["used"])
         self.assertEqual(report["fallback"]["text"]["requested"], "labels")
-        self.assertEqual(report["fallback"]["text"]["delivered"], "text")
+        self.assertEqual(report["fallback"]["text"]["delivered"], "glyphs")
         self.assertEqual(report["extra"]["text_mode"], "labels")
-        self.assertGreaterEqual(
-            report["extra"]["actual_text_entity_types"]["dxf_text"],
-            1,
-        )
+        actual = report["extra"]["actual_text_entity_types"]
+        self.assertEqual(actual["entity_type"], "glyphs")
+        self.assertGreaterEqual(actual["outline_curve_or_mesh"], 1)
 
     def test_text_cloud_auto_never_calls_raster_for_requested_geometry(self) -> None:
         """A requested non-raster text type blocks auto-raster preemption."""
@@ -1528,7 +1527,7 @@ class TestDxfPipeline(unittest.TestCase):
         self.assertNotIn("MTEXT", text_layer_types)
         self.assertTrue({"LWPOLYLINE", "POLYLINE"}.intersection(text_layer_types))
 
-    def test_labels_fall_back_to_editable_unicode_lff_text(self) -> None:
+    def test_visible_labels_reject_unicode_lff_substitution_and_use_exact_glyphs(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})
         export = export_to_dxf(
             run.extraction,
@@ -1543,10 +1542,10 @@ class TestDxfPipeline(unittest.TestCase):
             for entity in dxf.modelspace()
             if str(entity.dxf.layer or "") == "P001_TEXT"
         }
-        self.assertEqual(text_layer_types, {"TEXT"})
+        self.assertEqual(text_layer_types, {"INSERT"})
         self.assertTrue(all(item["fallback_used"] for item in export.text_deliveries))
         self.assertTrue(
-            all(item["final_representation"] == "text" for item in export.text_deliveries)
+            all(item["final_representation"] == "glyphs" for item in export.text_deliveries)
         )
         self.assertTrue(
             all(
@@ -1564,7 +1563,13 @@ class TestDxfPipeline(unittest.TestCase):
                     for attempt in item["attempts"]
                     if attempt["attempted_representation"] == "text"
                 )["outcome"]
-                == "verified"
+                == "impossible"
+                for item in export.text_deliveries
+            )
+        )
+        self.assertTrue(
+            all(
+                item["attempts"][-1]["attempted_representation"] == "glyphs"
                 for item in export.text_deliveries
             )
         )
@@ -1601,9 +1606,27 @@ class TestDxfPipeline(unittest.TestCase):
         self.assertGreater(export.entity_count, 0)
         dxf = ezdxf.readfile(export.output_path)
         types = {entity.dxftype() for entity in dxf.modelspace()}
-        self.assertIn("TEXT", types)
-        self.assertNotIn("INSERT", types)
+        self.assertIn("INSERT", types)
+        self.assertNotIn("TEXT", types)
         self.assertNotIn("IMAGE", types)
+        source_texts = sorted(
+            item.text
+            for page in extraction.pages
+            for item in page.page_data.text_items
+            if item.text.strip()
+        )
+        attempted_texts = sorted(
+            next(
+                attempt["evidence"]["delivered_content"]
+                for attempt in delivery["attempts"]
+                if attempt["attempted_representation"] == "text"
+            )
+            for delivery in export.text_deliveries
+        )
+        self.assertEqual(attempted_texts, source_texts)
+        self.assertTrue(
+            all(item["final_representation"] == "glyphs" for item in export.text_deliveries)
+        )
 
     def test_3d_text_uses_exact_visual_glyph_fallback_in_librecad(self) -> None:
         run = run_import(str(self.pdf_path), mode="vector", overrides={"pages": "1"})

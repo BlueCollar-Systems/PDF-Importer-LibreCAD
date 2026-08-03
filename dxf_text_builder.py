@@ -144,6 +144,19 @@ class TextDeliveryResult:
         return len(self.entity_handles)
 
     def to_dict(self) -> Dict[str, Any]:
+        for attempt in self.attempts:
+            if attempt.outcome == "verified" and not all(
+                (
+                    attempt.type_verified,
+                    attempt.delivery_verified,
+                    attempt.visual_verified,
+                    attempt.cleanup_verified,
+                )
+            ):
+                raise RuntimeError(
+                    "verified attempt is missing terminal proof: "
+                    f"{attempt.source_id}/{attempt.attempted_representation}"
+                )
         return {
             "source_id": self.source_id,
             "requested_representation": self.requested_representation,
@@ -1551,10 +1564,18 @@ def _attempt_labels(
         )
         font_resolution = _resolve_item_font(text_item, config)
         attempt.evidence.update(font_resolution.evidence())
+        source_content_whitespace_only = not bool(
+            str(getattr(text_item, "text", "") or "").strip()
+        )
+        # A substituted LFF can preserve editable structure, but it cannot
+        # prove the source glyph appearance for visible text.  Only a zero-ink
+        # whitespace span can terminate on this native rung; visible content
+        # must descend to exact outlines (or the next finite fallback).
         accept_librecad_font_substitution = bool(
             parent == "librecad"
             and requested in {"text", "labels"}
             and not is_3d_text
+            and source_content_whitespace_only
         )
         if parent == "librecad":
             lff_evidence = _librecad_lff_evidence(
@@ -1578,11 +1599,10 @@ def _attempt_labels(
                     f"body for {unavailable}"
                 )
             # LibreCAD's editable native text renderer consumes its bundled LFF
-            # fonts. Preserve the requested Text/Labels representation and use
-            # the broad Unicode LFF face; a font substitution is not a change
-            # of representation. The source advance and height below still
-            # drive the exact item transform, while DXF FIT alignment delegates
-            # the final horizontal fit to the parent renderer.
+            # fonts. Build this item-scoped candidate with the broad Unicode LFF
+            # face, then require source-equivalent visual proof below. Visible
+            # substituted glyphs descend to exact outlines; only zero-ink
+            # whitespace may terminate on this native rung.
             style_font = "unicode"
             parent_font_format = (
                 Path(str(lff_evidence["librecad_lff_path"] or ""))
@@ -1732,9 +1752,7 @@ def _attempt_labels(
                 style_name=style_name,
                 style_handle=style_handle,
                 is_3d_text=is_3d_text,
-                source_content_whitespace_only=not bool(
-                    str(getattr(text_item, "text", "") or "").strip()
-                ),
+                source_content_whitespace_only=source_content_whitespace_only,
                 accept_librecad_font_substitution=(
                     accept_librecad_font_substitution
                 ),
