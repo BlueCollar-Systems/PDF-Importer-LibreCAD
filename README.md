@@ -2,14 +2,14 @@
 
 **BlueCollar Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.78](https://img.shields.io/badge/Version-1.0.78-blue.svg)
+![Version: 1.0.79](https://img.shields.io/badge/Version-1.0.79-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
 
-See [CHANGELOG.md](CHANGELOG.md) for release history. Version 1.0.78 preserves
-selectable native LibreCAD `TEXT` for Text and the documented Labels fallback,
-with serialized content, placement, rotation, height, FIT, and LFF evidence.
+See [CHANGELOG.md](CHANGELOG.md) for release history. Version 1.0.79 preserves
+bounded higher-resolution text ink as an exact mapped Raster fallback and emits
+an explicit scale-evaluation contract for clean and warning outcomes.
 
 ## Features
 
@@ -84,7 +84,7 @@ CLI launchers. No system Python, pip, or administrator rights are required.
 ## Upgrading / skipping versions
 
 Extract a newer portable ZIP over your folder (or run the latest installer).
-Skipping versions (for example, 1.0.40 → 1.0.78) is supported. Before shop
+Skipping versions (for example, 1.0.40 → 1.0.79) is supported. Before shop
 use, run the bundled `pdf2dxf.exe` on one of your own representative PDFs,
 open the resulting DXF in LibreCAD, and review its adjacent import report.
 

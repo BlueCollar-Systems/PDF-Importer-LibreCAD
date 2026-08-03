@@ -3425,6 +3425,80 @@ def test_requested_raster_preserves_verified_nonpainted_text_as_zero_ink(
     assert list(drawing.modelspace().query("IMAGE")) == []
 
 
+@pytest.mark.parametrize(
+    "mode",
+    ["text", "labels", "3d_text", "glyphs", "geometry", "raster"],
+)
+def test_terminal_raster_promotes_ink_found_only_at_confirmation_dpi(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    run = _real_text_extraction(tmp_path)
+    source = run.extraction.pages[0].page_data.text_items[0]
+    failure = TextDeliveryResult(
+        source_id=f"text_span:1:{source.id}",
+        requested_representation=mode,
+        final_representation=None,
+        verified=False,
+        terminal_fallback_authorized=True,
+        failure_reason="all structural representations proven impossible",
+    )
+
+    class ResolutionSensitiveDisplayList:
+        def get_pixmap(self, *, matrix, clip, colorspace=fitz.csRGB, alpha=False):
+            width = max(1, int(math.ceil(float(clip.width) * float(matrix.a))))
+            height = max(1, int(math.ceil(float(clip.height) * float(matrix.d))))
+            pixmap = fitz.Pixmap(
+                colorspace,
+                fitz.IRect(0, 0, width, height),
+                bool(alpha),
+            )
+            pixmap.clear_with(255)
+            if float(matrix.a) > (300.0 / 72.0):
+                ink = (0, 0, 0, 255) if bool(alpha) else (0, 0, 0)
+                pixmap.set_pixel(width // 2, height // 2, ink)
+            return pixmap
+
+    source_page = SimpleNamespace(
+        rect=fitz.Rect(0.0, 0.0, 240.0, 160.0),
+        rotation_matrix=fitz.Matrix(1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+    )
+    output = tmp_path / f"confirmation-ink-{mode}.dxf"
+    with (
+        patch(
+            "librecad_pdf_importer.exporters.dxf_exporter.build_text",
+            return_value=failure,
+        ),
+        patch.object(
+            dxf_exporter_module._RasterRenderSession,
+            "page",
+            return_value=(source_page, ResolutionSensitiveDisplayList()),
+        ),
+    ):
+        result = export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(include_images=False, text_mode=mode),
+        )
+
+    delivery = result.text_deliveries[0]
+    assert delivery["requested_representation"] == mode
+    assert delivery["final_representation"] == "raster"
+    assert delivery["verified"] is True
+    assert len(delivery["entity_handles"]) == 1
+    evidence = delivery["attempts"][-1]["evidence"]
+    assert evidence["raster_dpi"] == 600
+    assert evidence["zero_ink_confirmation_dpi"] == 600
+    assert evidence["visible_ink_expected"] is True
+    assert evidence["visible_ink_verified"] is True
+    assert evidence["zero_ink_verified"] is False
+    assert evidence["zero_ink_omitted"] is False
+    assert evidence["host_safe_opaque_image_verified"] is True
+    asset = fitz.Pixmap(evidence["asset_path"])
+    assert bool(asset.alpha) is False
+    assert _pixmap_contains_ink(asset) is True
+
+
 def test_alpha_ink_detection_ignores_opaque_white_paint() -> None:
     white = SimpleNamespace(
         n=4,

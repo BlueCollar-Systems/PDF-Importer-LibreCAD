@@ -11,7 +11,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from pdfcadcore.import_report import build_import_report
+from pdfcadcore.import_report import build_import_contract_ready, build_import_report
 from librecad_pdf_importer.importer import _delivery_item_has_persisted_output
 
 
@@ -60,6 +60,61 @@ def test_import_contract_ready_ignores_source_spans_when_text_is_disabled():
     assert isinstance(ready, dict)
     assert ready["ready"] is True
     assert ready["checks"]["text_delivery"] is True
+
+
+def test_clean_scale_evaluation_is_explicit_and_contract_ready():
+    report = build_import_report(
+        host_app="librecad",
+        importer_version="1.0.79",
+        pdf_path="drawing.pdf",
+        mode="vector",
+        pages=1,
+        primitive_count=40,
+        import_text=False,
+        text_mode="none",
+        extra={
+            "resolved_scale": {
+                "factor": 24.0,
+                "notation": '1/2" = 1\'-0"',
+                "source": "titleblock",
+                "confidence": 0.98,
+                "fallback_reason": "",
+            },
+            "scale_hints": {
+                "title_block_detected": True,
+                "dimension_count": 4,
+                "alternate_scale_factors": [24.0],
+            },
+        },
+    )
+
+    extra = report.to_dict()["extra"]
+    assert extra["scale_crosscheck"] == {
+        "level": "ok",
+        "reasons": [],
+        "messages": [],
+    }
+    ready = extra["import_contract_ready"]
+    assert ready["ready"] is True
+    assert ready["checks"]["scale_crosscheck"] is True
+
+
+def test_malformed_scale_evaluation_remains_fail_closed():
+    report = build_import_report(
+        host_app="librecad",
+        importer_version="1.0.79",
+        pdf_path="drawing.pdf",
+        mode="vector",
+        primitive_count=40,
+        import_text=False,
+        text_mode="none",
+    )
+    report.extra["scale_crosscheck"] = None
+
+    ready = build_import_contract_ready(report)
+
+    assert ready["ready"] is False
+    assert ready["checks"]["scale_crosscheck"] is False
 
 
 def test_performance_phases_optional():

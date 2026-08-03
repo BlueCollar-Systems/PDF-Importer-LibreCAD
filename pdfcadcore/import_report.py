@@ -204,7 +204,7 @@ def _basename(path: str) -> str:
     return name or "the PDF"
 
 
-def build_scale_crosscheck(extra: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def build_scale_crosscheck(extra: Dict[str, Any]) -> Dict[str, Any]:
     """Non-blocking scale warning when detection is weak or sources disagree."""
 
     scale = extra.get("resolved_scale") or {}
@@ -286,7 +286,11 @@ def build_scale_crosscheck(extra: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 break
 
     if not warnings:
-        return None
+        return {
+            "level": "ok",
+            "reasons": [],
+            "messages": [],
+        }
 
     return {
         "level": "warn",
@@ -505,7 +509,13 @@ def build_import_contract_ready(report: "ImportReport") -> Dict[str, Any]:
 
     open_failure = extra.get("open_failure")
     has_stamp = bool(str(meta.get("build_stamp") or "").strip())
-    has_crosscheck = "scale_crosscheck" in extra
+    crosscheck = extra.get("scale_crosscheck")
+    has_crosscheck = bool(
+        isinstance(crosscheck, dict)
+        and crosscheck.get("level") in {"ok", "warn"}
+        and isinstance(crosscheck.get("reasons"), list)
+        and isinstance(crosscheck.get("messages"), list)
+    )
     text_count = int(result.get("text_entities") or 0)
     has_entity_types = "actual_text_entity_types" in extra
     text_ok = text_count <= 0 or has_entity_types
@@ -567,8 +577,7 @@ def enrich_import_report_extras(report: "ImportReport") -> None:
     """Attach shared derived fields and refresh human_summary."""
 
     crosscheck = build_scale_crosscheck(report.extra)
-    if crosscheck:
-        report.extra["scale_crosscheck"] = crosscheck
+    report.extra["scale_crosscheck"] = crosscheck
     perf = report.performance if isinstance(report.performance, dict) else {}
     result = report.result if isinstance(report.result, dict) else {}
     hint = build_performance_hint(

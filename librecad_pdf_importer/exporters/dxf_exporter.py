@@ -2161,10 +2161,23 @@ def _attempt_terminal_text_raster(
                     alpha=True,
                 )
                 if _pixmap_contains_ink(confirmation):
-                    raise ValueError(
-                        "terminal raster zero-ink result was not confirmed at higher resolution"
+                    pixmap = page_display_list.get_pixmap(
+                        matrix=fitz.Matrix(
+                            zero_ink_confirmation_dpi / 72.0,
+                            zero_ink_confirmation_dpi / 72.0,
+                        ),
+                        clip=clip,
+                        colorspace=fitz.csRGB,
+                        alpha=False,
                     )
-                attempt.strategy = "verified_source_zero_ink_transparent_item"
+                    if not _pixmap_contains_ink(pixmap):
+                        raise ValueError(
+                            "terminal raster higher-resolution opaque render contains no visible source ink"
+                        )
+                    dpi = zero_ink_confirmation_dpi
+                    attempt.strategy = "pymupdf_opaque_source_item_clip_confirmed_at_higher_resolution"
+                else:
+                    attempt.strategy = "verified_source_zero_ink_transparent_item"
         if pixmap.width <= 0 or pixmap.height <= 0:
             raise ValueError("terminal raster rendered zero pixels")
         png = bytes(pixmap.tobytes("png"))

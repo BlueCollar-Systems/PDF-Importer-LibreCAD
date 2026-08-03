@@ -2,6 +2,15 @@
 
 All notable release changes are recorded here.
 
+## 1.0.79 — 2026-08-03
+
+### Fixed
+
+- Promote bounded higher-resolution text confirmation ink to the exact mapped,
+  host-safe opaque Raster delivery instead of rejecting visible source content.
+- Publish an explicit valid scale crosscheck for both clean and warning outcomes,
+  while malformed or missing evaluations remain fail closed in contract readiness.
+
 ## 1.0.78 — 2026-08-02
 
 ### Fixed
