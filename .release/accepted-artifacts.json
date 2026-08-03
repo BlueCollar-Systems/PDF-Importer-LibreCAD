@@ -2,33 +2,33 @@
   "artifacts": {
     "lcpdf_batch_exe": {
       "path": "dist/windows-portable/lcpdf-batch.exe",
-      "sha256": "d0003c1c1dd4a83eeddd17186d248054d43b098ae9c652ee33ae1a8fe16cb165",
-      "size_bytes": 66575862
+      "sha256": "56ecf00571097cb09ce1a9831b28e8cb04ade924057f7b1ade41e4197d45005d",
+      "size_bytes": 66592643
     },
     "lcpdf_gui_exe": {
       "path": "dist/windows-portable/lcpdf-gui.exe",
-      "sha256": "71bef98e42976b2a6d60a01ee8f21c1da0b962bab1173b389b0b4501d3521f11",
-      "size_bytes": 66568524
+      "sha256": "0691f4a648f4cceaa9b2c3cb039e265f476e6be72fdde85779c14c3e6730d302",
+      "size_bytes": 66585305
     },
     "lcpdf_import_exe": {
       "path": "dist/windows-portable/lcpdf-import.exe",
-      "sha256": "305a0e5a57132b1989d535407bef0e75612ffc840be76f4bfab5dc67f007bd0a",
-      "size_bytes": 66577320
+      "sha256": "8eb795058f02886f45ec2c1fa0cf61eb4aa9bfb114aaf2143278063769905a7f",
+      "size_bytes": 66594220
     },
     "pdf2dxf_exe": {
       "path": "dist/windows-portable/pdf2dxf.exe",
-      "sha256": "dbf9231bc199e9c810f1295a1ea319b1874df046335dcc2cf2f0cf1dfaf59038",
-      "size_bytes": 66571778
+      "sha256": "c46f0facfdbb6efe0bfba7334af0506e59ffb6685a5da19615d64e2157499c89",
+      "size_bytes": 66588559
     },
     "portable_zip": {
-      "path": "dist/LibreCAD-PDF-Importer-Windows-Portable_v1.0.77.zip",
-      "sha256": "c1e8fd03520c89254ff1f57fe14bd8b27a30ce82faada621933bccd920b5be92",
-      "size_bytes": 263986137
+      "path": "dist/LibreCAD-PDF-Importer-Windows-Portable_v1.0.78.zip",
+      "sha256": "e84323f7c0e7a5f2f9f6f617a9958643a09aeb22e3401ab6622be2ac373f93e6",
+      "size_bytes": 264053376
     },
     "source_zip": {
-      "path": "dist/LibreCAD-PDF-Importer_v1.0.77.zip",
-      "sha256": "7eb0f09a324c4df8b59019173ef2495ad467e0d8a316b135763339e47edb1621",
-      "size_bytes": 275989
+      "path": "dist/LibreCAD-PDF-Importer_v1.0.78.zip",
+      "sha256": "2c412dfa8a17bdba2ad4ca1433915b4d2c5d925c45a786af337468cc91c21c9f",
+      "size_bytes": 290463
     }
   },
   "build_contract": {
@@ -45,6 +45,57 @@
     "runner": "windows-2025",
     "source_date_epoch": "315532800"
   },
-  "schema": "bcs.release_artifacts/1.0",
-  "version": "1.0.77"
+  "provenance": {
+    "artifacts": {
+      "portable_zip": {
+        "path": "dist/LibreCAD-PDF-Importer-Windows-Portable_v1.0.78.zip",
+        "sha256": "e84323f7c0e7a5f2f9f6f617a9958643a09aeb22e3401ab6622be2ac373f93e6",
+        "size_bytes": 264053376
+      },
+      "source_zip": {
+        "path": "dist/LibreCAD-PDF-Importer_v1.0.78.zip",
+        "sha256": "2c412dfa8a17bdba2ad4ca1433915b4d2c5d925c45a786af337468cc91c21c9f",
+        "size_bytes": 290463
+      }
+    },
+    "build_contract": {
+      "architecture": "AMD64",
+      "checkout_action": "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
+      "ci_lock": "requirements-ci-win-py312.lock",
+      "ci_lock_sha256": "469e85b71e2ffc7d57043260e37957af4e623001cd782c58d703275aefc6bee8",
+      "github_script_action": "actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553",
+      "python": "3.12.10",
+      "python_setup_action": "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405",
+      "pythonhashseed": "0",
+      "requirements_lock": "requirements-release-win-py312.lock",
+      "requirements_lock_sha256": "070d1887ed6e3f1c7bddf70067a8d29ebc5e2e7ef95ab7bc6c48146d4ea03594",
+      "runner": "windows-2025",
+      "source_date_epoch": "315532800"
+    },
+    "release_payload": {
+      "file_count": 107,
+      "sha256": "d051a802a3106839a8a9ec932aca9bb658506c02fc2a32f8a0cc1613e01725de"
+    },
+    "runner": {
+      "architecture": "X64",
+      "image_os": "win25-vs2026",
+      "image_version": "20260714.173.1",
+      "label": "windows-2025",
+      "os": "Windows"
+    },
+    "schema": "bcs.release_candidate_provenance/1.0",
+    "source": {
+      "event_name": "push",
+      "head_sha": "a09970a65a1d8a45f22eee3ce474c9fc2591de82",
+      "repository": "BlueCollar-Systems/PDF-Importer-LibreCAD",
+      "run_attempt": 1,
+      "run_id": 30789230714,
+      "workflow": "auto-release",
+      "workflow_ref": "BlueCollar-Systems/PDF-Importer-LibreCAD/.github/workflows/auto-release.yml@refs/heads/main",
+      "workflow_sha": "a09970a65a1d8a45f22eee3ce474c9fc2591de82"
+    },
+    "version": "1.0.78"
+  },
+  "schema": "bcs.release_artifacts/1.1",
+  "version": "1.0.78"
 }
