@@ -532,7 +532,12 @@ def test_librecad_visible_text_descends_to_glyphs_and_survives_parent_reopen(
     assert evidence["parent_native_font_substitution_accepted"] is False
     assert evidence["fallback_authorized_for_this_item"] is True
     lff_path = Path(os.environ["BCS_LIBRECAD_UNICODE_LFF"]).resolve()
-    assert Path(evidence["librecad_lff_path"]) == lff_path
+    # The top-level evidence paths are redacted for sharing (the account name
+    # becomes "<user>"); the real ones live under local_only_diagnostics, which
+    # is flagged shareable=False. Compare real paths against the real field.
+    local = evidence["local_only_diagnostics"]
+    assert Path(local["librecad_lff_path"]) == lff_path
+    assert "<user>" not in str(local["librecad_lff_path"])
     assert evidence["librecad_lff_size_bytes"] == lff_path.stat().st_size
     assert evidence["librecad_lff_sha256"] == hashlib.sha256(
         lff_path.read_bytes()
@@ -540,7 +545,7 @@ def test_librecad_visible_text_descends_to_glyphs_and_survives_parent_reopen(
     assert evidence["librecad_lff_glyph_count"] == 94
     assert evidence["librecad_lff_drawable_glyph_count"] == 94
     assert evidence["librecad_lff_required_glyphs_drawable_verified"] is True
-    assert Path(evidence["librecad_executable_path"]) == Path(
+    assert Path(local["librecad_executable_path"]) == Path(
         os.environ["BCS_LIBRECAD_EXECUTABLE"]
     ).resolve()
     assert evidence["librecad_parent_installation_verified"] is True
@@ -840,8 +845,11 @@ def test_librecad_explicit_executable_selects_its_portable_lff_among_installs(
     assert result.final_representation == "glyphs"
     assert native.attempted_representation == "text"
     assert native.outcome == "impossible"
-    assert Path(evidence["librecad_executable_path"]) == selected_executable.resolve()
-    assert Path(evidence["librecad_lff_path"]) == selected_lff.resolve()
+    # Real paths come from the shareable=False diagnostics; the top-level
+    # fields are redacted, so comparing them to a real path can never match.
+    local = evidence["local_only_diagnostics"]
+    assert Path(local["librecad_executable_path"]) == selected_executable.resolve()
+    assert Path(local["librecad_lff_path"]) == selected_lff.resolve()
     assert evidence["librecad_lff_resolution_source"] == "executable_resources"
     assert {entity.dxftype() for entity in msp} == {"INSERT"}
 
