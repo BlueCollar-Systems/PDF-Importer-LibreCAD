@@ -742,12 +742,31 @@ def _resolve_item_font(
                     )
                 path = restored_path
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                # Restaging is a write we just attempted and watched fail, so
+                # this is affirmative proof the exact rung is unavailable here.
                 return _ExactFontResolution(
                     **base,
                     exact=False,
                     reason=f"exact embedded font asset could not be restaged: {exc}",
+                    proof_category="environment_write_fault",
+                    item_impossibility_proven=True,
                 )
         if path is None or not path.is_file():
+            staging_failed, staging_reason = _staging_fault_for_asset(
+                config, str(asset.asset_id)
+            )
+            if staging_failed:
+                return _ExactFontResolution(
+                    **base,
+                    exact=False,
+                    reason=(
+                        "exact embedded font could not be written to the output "
+                        f"asset directory: {staging_reason}"
+                    ),
+                    proof_category="environment_write_fault",
+                    item_impossibility_proven=True,
+                )
+            # No recorded fault: an unexplained absence, which must not descend.
             return _ExactFontResolution(
                 **base,
                 exact=False,
@@ -853,6 +872,37 @@ def _resolve_item_font(
     return _resolve_exact_font(source_name)
 
 
+def _staging_fault_for_asset(config: Any, asset_id: str) -> Tuple[bool, str]:
+    """Did staging this exact font asset fail for an environment reason?
+
+    A font the exporter physically could not write to disk is a proven
+    item-specific impossibility on this machine, not an unexplained miss, so
+    the item may descend a rung. Absence of a recorded fault is deliberately
+    NOT treated as proof: an asset that simply never got staged could be a real
+    bug, and the contract only permits descent on affirmative evidence.
+    """
+    faults = getattr(config, "_embedded_font_staging_faults", None)
+    if not isinstance(faults, dict):
+        return (False, "")
+    reason = str(faults.get(str(asset_id), "") or "")
+    return (bool(reason), reason)
+
+
+def _raise_for_unusable_font(
+    resolution: _ExactFontResolution,
+    attempt: TextDeliveryAttempt,
+) -> None:
+    """Convert a non-exact resolution into the right kind of failure.
+
+    _RepresentationImpossible is item-scoped and lets the ladder descend; a
+    plain ValueError is a generic failure and stops the import. The difference
+    is whether the impossibility was actually proven for this item.
+    """
+    if resolution.item_impossibility_proven:
+        raise _RepresentationImpossible(resolution.reason)
+    raise ValueError(resolution.reason)
+
+
 def _require_exact_item_font(
     text_item: NormalizedText,
     config: ImportConfig,
@@ -862,9 +912,7 @@ def _require_exact_item_font(
     attempt.evidence.update(resolution.evidence())
     if resolution.exact:
         return resolution
-    if resolution.item_impossibility_proven:
-        raise _RepresentationImpossible(resolution.reason)
-    raise ValueError(resolution.reason)
+    _raise_for_unusable_font(resolution, attempt)
 
 
 def _embedded_ezdxf_cap_height_ratio(

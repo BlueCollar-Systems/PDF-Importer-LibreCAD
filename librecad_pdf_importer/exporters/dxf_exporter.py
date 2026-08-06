@@ -1050,10 +1050,19 @@ def _stage_embedded_font_assets(
     extraction: DocumentExtraction,
     asset_root: Path,
     transaction: _AssetTransaction,
+    staging_faults: Optional[Dict[str, str]] = None,
 ) -> Dict[str, str]:
-    """Stage exact source font programs in this output's unique asset set."""
+    """Stage exact source font programs in this output's unique asset set.
+
+    ``staging_faults`` collects per-asset environment failures so the affected
+    items can descend a rung instead of the write escaping and failing the
+    whole export.
+    """
 
     from pdfcadcore.atomic_io import atomic_write_bytes
+
+    if staging_faults is None:
+        staging_faults = {}
 
     assets: Dict[str, Any] = {}
     for page in extraction.pages:
@@ -1069,7 +1078,15 @@ def _stage_embedded_font_assets(
     if not assets:
         return {}
     font_root = asset_root / "fonts"
-    font_root.mkdir(parents=True, exist_ok=True)
+    try:
+        font_root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # Nothing can be staged. Record one fault per asset so every affected
+        # item descends with a reason, instead of an OSError escaping to
+        # export_to_dxf, which would roll back and fail the whole document.
+        for asset_id in assets:
+            _record_font_staging_fault(staging_faults, asset_id, exc)
+        return {}
     transaction.register_directory(asset_root.parent)
     transaction.register_directory(asset_root)
     transaction.register_directory(font_root)
@@ -1083,10 +1100,36 @@ def _stage_embedded_font_assets(
         if extension not in {"otf", "ttf"}:
             raise RuntimeError(f"unsupported staged font format: {extension}")
         path = font_root / f"{digest}.{extension}"
-        atomic_write_bytes(path, content)
+        try:
+            atomic_write_bytes(path, content)
+        except OSError as exc:
+            # Environment fault on this one asset: the items that need it will
+            # descend a rung; the rest of the document is unaffected. Integrity
+            # failures above stay fatal -- they are our bugs, not the machine's.
+            _record_font_staging_fault(staging_faults, asset_id, exc)
+            continue
         transaction.register_file(path)
         paths[asset_id] = str(path)
     return paths
+
+
+def _record_font_staging_fault(
+    faults: Dict[str, str],
+    asset_id: str,
+    exc: BaseException,
+) -> bool:
+    """Record why one exact font could not be staged on this machine.
+
+    The reason is carried through to the per-item resolver, which treats a
+    recorded fault as affirmative proof that the exact rung is impossible here
+    and descends. Without the record the same absence is indistinguishable from
+    a bug, and correctly aborts instead.
+    """
+    key = str(asset_id or "")
+    if not key:
+        return False
+    faults[key] = f"{type(exc).__name__}: {exc}"
+    return True
 
 
 def _restore_embedded_font_asset(
@@ -2443,8 +2486,14 @@ def _export_to_dxf_impl(
     asset_root = asset_parent / session_token
     prior_owned_sessions = _owned_sessions_referenced_by_output(output, asset_parent)
     pending_raster_assets: List[_PendingRasterAsset] = []
+    embedded_font_staging_faults: Dict[str, str] = {}
     embedded_font_paths = (
-        _stage_embedded_font_assets(extraction, asset_root, asset_transaction)
+        _stage_embedded_font_assets(
+            extraction,
+            asset_root,
+            asset_transaction,
+            embedded_font_staging_faults,
+        )
         if opts.include_text
         else {}
     )
@@ -2715,6 +2764,11 @@ def _export_to_dxf_impl(
             text_cfg = ImportConfig.auto()
             text_cfg.text_mode = opts.text_mode
             text_cfg._embedded_font_asset_paths = dict(embedded_font_paths)  # noqa: B010
+            # Per-asset environment faults, so an item whose exact font could
+            # not be written descends with a reason instead of aborting.
+            text_cfg._embedded_font_staging_faults = dict(  # noqa: B010
+                embedded_font_staging_faults
+            )
             text_cfg._restore_embedded_font_asset = (  # noqa: B010
                 lambda asset_id: _restore_embedded_font_asset(
                     extraction,
