@@ -49,7 +49,7 @@ from dxf_text_builder import (
     reset_text_styles,
 )
 from conversion_control import check_cancel, report_progress
-from librecad_runtime import resolve_librecad_installation
+from librecad_runtime import local_path_for_io, resolve_librecad_installation
 
 
 TERMINAL_TILE_PIXELS = 1536
@@ -520,16 +520,17 @@ def _verify_serialized_text_deliveries(
                 local_diagnostics = dict(
                     evidence.get("local_only_diagnostics") or {}
                 )
-                bound_executable = str(
-                    local_diagnostics.get("librecad_executable_path")
-                    or evidence.get("librecad_executable_path")
-                    or ""
+                # These are handed to _resolve_librecad_unicode_lff, which
+                # resolves an installation off the real filesystem, so they must
+                # come from the unredacted half only. The previous fallback to
+                # evidence[...] substituted a "<user>" path whenever the local
+                # half was absent -- an account that exists nowhere, so the
+                # reopen check could never pass. Empty is better: the resolver
+                # treats it as unspecified and rediscovers normally.
+                bound_executable = local_path_for_io(
+                    evidence, "librecad_executable_path"
                 )
-                bound_lff = str(
-                    local_diagnostics.get("librecad_lff_path")
-                    or evidence.get("librecad_lff_path")
-                    or ""
-                )
+                bound_lff = local_path_for_io(evidence, "librecad_lff_path")
                 lff_binding_key = bound_lff or f"<unresolved>:{bound_executable}"
                 reopened_lff_resolution = reopened_lff_resolutions.get(
                     lff_binding_key

@@ -70,16 +70,58 @@ class LibreCadRuntimeBinding:
         }
 
 
+REDACTED_USER_PLACEHOLDER = "<user>"
+
+
 def redacted_local_path(path: str) -> Optional[str]:
-    """Return a stable display path without a local account name."""
+    """Return a stable display path without a local account name.
+
+    DISPLAY ONLY. The result names an account that does not exist, so it can
+    never be opened, stat-ed or resolved. Use local_path_for_io when a value is
+    going to touch the filesystem.
+    """
 
     if not path:
         return None
     parts = list(Path(path).parts)
     for index, part in enumerate(parts[:-1]):
         if part.casefold() in {"users", "home"}:
-            parts[index + 1] = "<user>"
+            parts[index + 1] = REDACTED_USER_PLACEHOLDER
     return str(Path(*parts))
+
+
+def is_redacted_path(path: Optional[str]) -> bool:
+    """True if this string has been through redacted_local_path."""
+
+    if not path:
+        return False
+    return REDACTED_USER_PLACEHOLDER in str(path)
+
+
+def local_path_for_io(evidence: Optional[dict], key: str) -> str:
+    """Pick the real path for a filesystem operation, or nothing at all.
+
+    Evidence carries two halves: a shareable one whose paths are redacted, and
+    ``local_only_diagnostics`` (``shareable: False``) holding the real ones.
+    Only the second may be used for I/O.
+
+    Falling back to the shareable half looks harmless and is not: a redacted
+    path is a guaranteed miss, so the caller fails on a machine where nothing is
+    wrong. Returning "" instead lets resolvers fall back to normal discovery,
+    which can actually succeed. A redacted value found anywhere -- including
+    inside local_only_diagnostics, in case that half is ever polluted -- is
+    refused for the same reason.
+    """
+
+    if not isinstance(evidence, dict):
+        return ""
+    local = evidence.get("local_only_diagnostics")
+    if not isinstance(local, dict):
+        return ""
+    value = str(local.get(key) or "")
+    if not value or is_redacted_path(value):
+        return ""
+    return value
 
 
 def _stable_file_fingerprint(
@@ -320,8 +362,11 @@ def resolve_librecad_runtime_binding(
 
 __all__ = [
     "LIBRECAD_RUNTIME_BINDING_CONTRACT_VERSION",
+    "REDACTED_USER_PLACEHOLDER",
     "LibreCadInstallation",
     "LibreCadRuntimeBinding",
+    "is_redacted_path",
+    "local_path_for_io",
     "redacted_local_path",
     "resolve_librecad_installation",
     "resolve_librecad_runtime_binding",
