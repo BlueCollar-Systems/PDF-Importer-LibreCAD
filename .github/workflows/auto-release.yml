@@ -39,6 +39,10 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       release_target: ${{ steps.target.outputs.sha }}
+      # Publish must consult this, not just needs.release.result: a job whose
+      # steps were all skipped still reports "success", so without it the
+      # publisher would run against artifacts that were never built.
+      release: ${{ steps.preflight.outputs.release }}
     # The image label is explicit; the accepted-artifact SHA gate below remains
     # authoritative because GitHub-hosted image contents can still evolve.
     runs-on: windows-2025
@@ -51,13 +55,53 @@ jobs:
           # Default GITHUB_TOKEN authenticates checkout and tag fetch.
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # A release is minted only when this push actually prepared one, i.e. the
+      # committed __version__ has no tag yet. Ordinary product commits do not
+      # bump it, so without this guard every one of them built the source zip,
+      # the portable zip and the candidate provenance, then failed several
+      # minutes later -- here on "candidate source_zip SHA-256/size provenance
+      # mismatch", which is the downstream symptom of an unprepared commit
+      # reaching the release path at all. A pipeline that is red on ordinary
+      # commits trains everyone to ignore it.
+      #
+      # Skipping is the correct outcome, not a failure: an unbumped version
+      # means the author did not intend to release. Cutting one stays explicit.
+      - name: Decide whether this push mints a release
+        id: preflight
+        run: |
+          version="$(sed -n 's:^__version__[[:space:]]*=[[:space:]]*"\([0-9][0-9.]*\)".*:\1:p' \
+            pdf2dxf.py | head -n1)"
+          if [ -z "$version" ]; then
+            echo "::error::Could not read __version__ from pdf2dxf.py"
+            exit 1
+          fi
+          tag="v${version}"
+          head="$(git rev-parse HEAD)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+          if ! git rev-parse -q --verify "refs/tags/${tag}^{commit}" >/dev/null 2>&1; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Version ${version} has no tag yet - minting release ${tag}."
+            exit 0
+          fi
+
+          tagged="$(git rev-list -n1 "refs/tags/${tag}")"
+          echo "release=false" >> "$GITHUB_OUTPUT"
+          if [ "$tagged" = "$head" ]; then
+            echo "::notice::${tag} already points at this commit; nothing to mint."
+          else
+            echo "::notice::Skipping release: committed version is still ${version}, and ${tag} already points at ${tagged}. This commit changes the product without preparing a release, which is normal. To cut one, run scripts/prepare_release.py <new-version> and push that commit."
+          fi
+
       - name: Set up Python
+        if: steps.preflight.outputs.release == 'true'
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12.10"
           architecture: "x64"
 
       - name: Run release gate tests
+        if: steps.preflight.outputs.release == 'true'
         run: |
           python -m pip install --require-hashes --only-binary=:all: -r requirements-release-win-py312.lock
           python -m pip install --require-hashes --only-binary=:all: -r requirements-ci-win-py312.lock
@@ -66,6 +110,7 @@ jobs:
           python -m pytest tests/ -q --basetemp "$RUNNER_TEMP/pytest-librecad"
 
       - name: Read committed version
+        if: steps.preflight.outputs.release == 'true'
         id: version
         run: |
           python - <<'PY'
@@ -99,23 +144,29 @@ jobs:
           PY
 
       - name: Set release target
+        if: steps.preflight.outputs.release == 'true'
         id: target
         run: |
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build source zip
+        if: steps.preflight.outputs.release == 'true'
         run: python build_release.py
 
       - name: Build Windows portable zip
+        if: steps.preflight.outputs.release == 'true'
         run: python build_windows_portable.py
 
       - name: Smoke Windows portable zip
+        if: steps.preflight.outputs.release == 'true'
         run: python scripts/smoke_portable_zip.py "dist/LibreCAD-PDF-Importer-Windows-Portable_v*.zip" --source-zip "dist/LibreCAD-PDF-Importer_v*.zip"
 
       - name: Write candidate provenance
+        if: steps.preflight.outputs.release == 'true'
         run: python scripts/verify_release_artifacts.py --write-candidate-provenance dist/release-candidate-provenance.json
 
       - name: Attest release candidate files
+        if: steps.preflight.outputs.release == 'true'
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
         with:
           subject-path: |
@@ -124,6 +175,7 @@ jobs:
             dist/release-candidate-provenance.json
 
       - name: Verify exact accepted release bytes
+        if: steps.preflight.outputs.release == 'true'
         id: verify
         env:
           GH_TOKEN: ${{ github.token }}
@@ -147,6 +199,7 @@ jobs:
           retention-days: 1
 
       - name: Transfer verified release archives to publisher
+        if: steps.preflight.outputs.release == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: verified-release-${{ github.run_id }}-${{ github.run_attempt }}
@@ -159,7 +212,10 @@ jobs:
 
   publish:
     needs: release
-    if: needs.release.result == 'success'
+    # A release job whose steps were all skipped still reports "success", so the
+    # explicit decision is required too; otherwise the publisher runs against
+    # artifacts that were never built.
+    if: needs.release.result == 'success' && needs.release.outputs.release == 'true'
     permissions:
       actions: read
       contents: write
