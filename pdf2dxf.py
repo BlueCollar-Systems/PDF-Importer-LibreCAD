@@ -91,7 +91,44 @@ def _parse_pages(raw: str | None) -> list[int] | None:
     return parse_page_selection(raw)
 
 
+def _ensure_stdio_can_carry_paths() -> None:
+    """Stop the console codepage from deciding the exit code.
+
+    A frozen console exe inherits the locale codepage (cp1252 on US Windows)
+    for redirected stdio, and the PyInstaller bootloader's isolated PyConfig
+    means PYTHONUTF8/PYTHONIOENCODING cannot fix it from outside. A strict
+    stream then raises UnicodeEncodeError the moment a diagnostic print
+    carries the user's own path -- after the DXF was already written. Keep the
+    stream's encoding (so cp1252-representable names still render exactly) and
+    relax only the error handler.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="backslashreplace")
+        except (ValueError, OSError):
+            pass
+
+
+def _safe_print(text: str = "", *, file: object = None) -> None:
+    """Print a diagnostic without ever letting it raise.
+
+    Belt to _ensure_stdio_can_carry_paths' braces: a stream with no
+    reconfigure() (or one swapped in later) still must not turn a successful
+    conversion into a failure. Unencodable text degrades to ASCII escapes.
+    """
+    target = file if file is not None else sys.stdout
+    try:
+        print(text, file=target)
+    except UnicodeEncodeError:
+        print(text.encode("ascii", "backslashreplace").decode("ascii"),
+              file=target)
+
+
 def main(argv: list[str] | None = None) -> int:
+    _ensure_stdio_can_carry_paths()
     parser = _build_parser()
     args = parser.parse_args(argv)
 
@@ -134,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
     except PdfOpenError as exc:
         from pdfcadcore.cli_error_copy import cli_error
 
-        print(cli_error("not_a_pdf", message=str(exc)), file=sys.stderr)
+        _safe_print(cli_error("not_a_pdf", message=str(exc)), file=sys.stderr)
         return 1
 
     # Derive output path
@@ -168,18 +205,20 @@ def main(argv: list[str] | None = None) -> int:
     from pdfcadcore.fitz_loader import PdfOpenError
 
     if args.verbose:
-        print(f"pdf2dxf {__version__} -- BlueCollar Systems")
-        print(f"  Input:  {args.input}")
-        print(f"  Output: {output}")
-        print(f"  Mode:   {args.mode}")
-        print(f"  DXF:    {args.dxf_version}")
-        print()
+        # _safe_print: these carry the user's own paths and run BEFORE the
+        # conversion -- a banner must never abort the tool with no DXF at all.
+        _safe_print(f"pdf2dxf {__version__} -- BlueCollar Systems")
+        _safe_print(f"  Input:  {args.input}")
+        _safe_print(f"  Output: {output}")
+        _safe_print(f"  Mode:   {args.mode}")
+        _safe_print(f"  DXF:    {args.dxf_version}")
+        _safe_print()
 
     t0 = time.perf_counter()
 
     def _progress(msg: str) -> None:
         if args.verbose:
-            print(f"  [{time.perf_counter() - t0:.1f}s] {msg}")
+            _safe_print(f"  [{time.perf_counter() - t0:.1f}s] {msg}")
 
     try:
         stats = convert(
@@ -198,27 +237,29 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 130
     except ConversionCancelled as exc:
-        print(str(exc), file=sys.stderr)
+        _safe_print(str(exc), file=sys.stderr)
         return 130
     except PdfOpenError as exc:
         from pdfcadcore.cli_error_copy import cli_error
 
-        print(cli_error("not_a_pdf", message=str(exc)), file=sys.stderr)
+        _safe_print(cli_error("not_a_pdf", message=str(exc)), file=sys.stderr)
         return 2
 
     elapsed = time.perf_counter() - t0
 
-    # Summary
-    print()
-    print("Conversion complete.")
-    print(f"  Pages converted: {stats.get('pages', '?')}")
-    print(f"  Entities:        {stats.get('entities', '?')}")
-    print(f"  Text items:      {stats.get('text_items', 0)}")
-    print(f"  Output:          {output}")
-    print(f"  Time:            {elapsed:.2f}s")
+    # Summary. _safe_print throughout: the conversion has succeeded and the
+    # DXF is on disk; a diagnostic that cannot be encoded must degrade, never
+    # decide the exit code (it used to -- exit 1 from the Output line alone).
+    _safe_print()
+    _safe_print("Conversion complete.")
+    _safe_print(f"  Pages converted: {stats.get('pages', '?')}")
+    _safe_print(f"  Entities:        {stats.get('entities', '?')}")
+    _safe_print(f"  Text items:      {stats.get('text_items', 0)}")
+    _safe_print(f"  Output:          {output}")
+    _safe_print(f"  Time:            {elapsed:.2f}s")
     report_path = stats.get("import_report_path")
     if report_path:
-        print(f"  import_report:   {report_path}")
+        _safe_print(f"  import_report:   {report_path}")
     return 0
 
 

@@ -94,6 +94,14 @@ def run_pyinstaller(name: str, entrypoint: Path, mode: str, python_exe: Path) ->
         str(ROOT / "build" / "pyinstaller_specs"),
         "--paths",
         str(ROOT),
+        # Start the frozen interpreter in UTF-8 mode. Without this, redirected
+        # stdio inherits the locale codepage (cp1252 on US Windows) and a
+        # diagnostic print of the user's own non-ASCII path raises
+        # UnicodeEncodeError -- and the bootloader's isolated PyConfig means
+        # PYTHONUTF8/PYTHONIOENCODING cannot supply it from outside the exe.
+        # Pinned by tests/test_frozen_stdio_alphabet.py.
+        "--python-option",
+        "X utf8=1",
     ]
     if mode == "windowed":
         cmd.append("--windowed")

@@ -98,6 +98,10 @@ def main() -> int:
         "--collect-submodules", "pdfcadcore",
         "--collect-submodules", "librecad_pdf_importer",
         "--paths", str(ROOT),
+        # UTF-8 mode for the frozen interpreter; see build_windows_portable.py
+        # for the full rationale (locale-codepage stdio cannot be fixed from
+        # outside a frozen exe). Pinned by tests/test_frozen_stdio_alphabet.py.
+        "--python-option", "X utf8=1",
     ]
     if ICON.exists():
         cmd += ["--icon", str(ICON)]
