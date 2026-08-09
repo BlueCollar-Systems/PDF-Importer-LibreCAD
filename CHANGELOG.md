@@ -2,6 +2,15 @@
 
 All notable release changes are recorded here.
 
+## 1.0.82 — 2026-08-09
+
+### Fixed
+
+- Stop redirected/frozen `pdf2dxf.exe` stdio from crashing on non-cp1252 output
+  paths after a successful conversion. Reconfigure stdout/stderr for path-safe
+  encoding, wrap diagnostic prints so encoding failure cannot decide the exit
+  code, and pin `--python-option X utf8=1` on portable PyInstaller builds.
+
 ## 1.0.81 — 2026-08-03
 
 ### Fixed
