@@ -77,18 +77,17 @@ _COMPLETION_RECOVERY = "visual recovery created; requested representation not ce
 
 
 def new_outcome(
-    requested_page_strategy="auto",
-    effective_page_strategy="incomplete",
-    requested_representation="none",
-    structural_status="not_certified",
-    visual_status="unproved",
-    requested_representation_status="not_applicable",
-    cell_status="fail",
-    visual_recovery="absent",
-    native_peer_count=0,
-    visual_proof_digest="",
-):
-    # type: (str, str, str, str, str, str, str, str, int, str) -> Dict[str, Any]
+    requested_page_strategy: str = "auto",
+    effective_page_strategy: str = "incomplete",
+    requested_representation: str = "none",
+    structural_status: str = "not_certified",
+    visual_status: str = "unproved",
+    requested_representation_status: str = "not_applicable",
+    cell_status: str = "fail",
+    visual_recovery: str = "absent",
+    native_peer_count: int = 0,
+    visual_proof_digest: str = "",
+) -> Dict[str, Any]:
     """Build an outcome record.
 
     Every default is the pessimistic value. A caller that forgets to set an axis
@@ -109,9 +108,8 @@ def new_outcome(
     }
 
 
-def _check_vocabulary(record):
-    # type: (Dict[str, Any]) -> List[str]
-    violations = []  # type: List[str]
+def _check_vocabulary(record: Dict[str, Any]) -> List[str]:
+    violations: List[str] = []
     for field in _REQUIRED_FIELDS:
         if field not in record:
             violations.append("missing required field %s" % field)
@@ -133,8 +131,7 @@ def _check_vocabulary(record):
     return violations
 
 
-def validate_outcome(record):
-    # type: (Dict[str, Any]) -> List[str]
+def validate_outcome(record: Dict[str, Any]) -> List[str]:
     """Return every law violation in *record*; an empty list means it is legal.
 
     Returning a list rather than raising is deliberate: a report writer should be
@@ -234,8 +231,7 @@ def validate_outcome(record):
     return violations
 
 
-def derive_cell_status(record):
-    # type: (Dict[str, Any]) -> str
+def derive_cell_status(record: Dict[str, Any]) -> str:
     """Compute the only cell status the axes support.
 
     Law 4: a required cell passes only when its structural requirements pass, its
@@ -258,8 +254,7 @@ def derive_cell_status(record):
     return "pass"
 
 
-def completion_class(record):
-    # type: (Dict[str, Any]) -> str
+def completion_class(record: Dict[str, Any]) -> str:
     """The user-facing completion sentence.
 
     Recovery pages get fixed wording that cannot be misread as delivery. This
@@ -272,8 +267,7 @@ def completion_class(record):
     return "requested representation not certified"
 
 
-def canonical_json(record):
-    # type: (Dict[str, Any]) -> str
+def canonical_json(record: Dict[str, Any]) -> str:
     """Stable UTF-8 JSON with sorted keys and LF endings.
 
     Python and Ruby compare these bytes, so formatting is part of the contract.
@@ -281,8 +275,7 @@ def canonical_json(record):
     return json.dumps(record, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
 
 
-def assert_outcome_legal(record):
-    # type: (Dict[str, Any]) -> None
+def assert_outcome_legal(record: Dict[str, Any]) -> None:
     """Raise ``ValueError`` when *record* breaks any law.
 
     For call sites on the delivery path that must fail closed rather than
