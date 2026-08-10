@@ -23,16 +23,19 @@ Usage (host adapter):
 """
 from __future__ import annotations
 
+import os
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator, List, Optional, Sequence, Tuple
 
+from . import ir_cache
 from .primitive_extractor import extract_page
 from .primitives import PageData
 
 #: D7 soft budget: a page slower than this is flagged ``over_budget`` so the
 #: host can surface a "this document is heavy" hint or a page-range prompt.
-DEFAULT_SOFT_BUDGET_S = 15.0
+DEFAULT_SOFT_BUDGET_S = 15.0  # seconds per page soft budget
 
 
 @dataclass
@@ -63,6 +66,152 @@ def _normalize_pages(requested: Optional[Sequence[int]], total: int) -> List[int
     return [p for p in requested if 1 <= p <= total]
 
 
+def _extract_with_cache(
+    page,
+    page_number: int,
+    pdf_path: Optional[str],
+    cache_key_fn: Optional[Callable[..., Optional[str]]],
+    scale: float,
+    flip_y: bool,
+    detect_arcs: bool,
+    arc_fit_tol_mm: float,
+    min_arc_angle_deg: float,
+    arc_min_pts: int,
+) -> Tuple[PageData, float, bool]:
+    """Extract a page, using disk cache when available. Returns (data, elapsed, from_cache)."""
+    key = None
+    if pdf_path and cache_key_fn:
+        key = cache_key_fn(
+            pdf_path=pdf_path,
+            page_number=page_number,
+            scale=scale,
+            flip_y=flip_y,
+            detect_arcs=detect_arcs,
+            arc_fit_tol_mm=arc_fit_tol_mm,
+            min_arc_angle_deg=min_arc_angle_deg,
+            arc_min_pts=arc_min_pts,
+        )
+        cached = ir_cache.load_ir(key)
+        if cached is not None:
+            return cached, 0.0, True
+    t0 = time.perf_counter()
+    page_data = extract_page(
+        page,
+        page_num=page_number,
+        scale=scale,
+        flip_y=flip_y,
+        detect_arcs=detect_arcs,
+        arc_fit_tol_mm=arc_fit_tol_mm,
+        min_arc_angle_deg=min_arc_angle_deg,
+        arc_min_pts=arc_min_pts,
+    )
+    elapsed = time.perf_counter() - t0
+    if key is not None:
+        try:
+            ir_cache.save_ir(key, page_data)
+        except Exception:
+            pass
+    return page_data, elapsed, False
+
+
+def _extract_page_worker_with_cache(
+    payload: Tuple[str, int, bool, float, bool, bool, float, float, int]
+) -> Tuple[int, PageData, float]:
+    """Module-level picklable worker for parallel page extraction."""
+    from .fitz_loader import safe_open
+
+    (
+        pdf_path,
+        page_number,
+        use_cache,
+        scale,
+        flip_y,
+        detect_arcs,
+        arc_fit_tol_mm,
+        min_arc_angle_deg,
+        arc_min_pts,
+    ) = payload
+    key = None
+    if use_cache:
+        key = ir_cache.cache_key(
+            pdf_path=pdf_path,
+            page_number=page_number,
+            scale=scale,
+            flip_y=flip_y,
+            detect_arcs=detect_arcs,
+            arc_fit_tol_mm=arc_fit_tol_mm,
+            min_arc_angle_deg=min_arc_angle_deg,
+            arc_min_pts=arc_min_pts,
+        )
+        cached = ir_cache.load_ir(key)
+        if cached is not None:
+            return page_number, cached, 0.0
+    t0 = time.perf_counter()
+    with safe_open(pdf_path) as doc:
+        page = doc.load_page(page_number - 1)
+        page_data = extract_page(
+            page,
+            page_num=page_number,
+            scale=scale,
+            flip_y=flip_y,
+            detect_arcs=detect_arcs,
+            arc_fit_tol_mm=arc_fit_tol_mm,
+            min_arc_angle_deg=min_arc_angle_deg,
+            arc_min_pts=arc_min_pts,
+        )
+    elapsed = time.perf_counter() - t0
+    if key is not None:
+        try:
+            ir_cache.save_ir(key, page_data)
+        except Exception:
+            pass
+    return page_number, page_data, elapsed
+
+
+def _extract_pages_parallel(
+    pdf_path: str,
+    wanted: List[int],
+    cache_key_fn: Optional[Callable[..., Optional[str]]],
+    scale: float,
+    flip_y: bool,
+    detect_arcs: bool,
+    arc_fit_tol_mm: float,
+    min_arc_angle_deg: float,
+    arc_min_pts: int,
+    max_workers: Optional[int],
+) -> List[Tuple[int, PageData, float]]:
+    """Extract pages concurrently; each worker opens its own PyMuPDF document.
+
+    PageData is picklable (plain dataclasses), but fitz.Page is not, so workers
+    open the source path independently. Caching is checked inside each worker
+    so identical re-runs remain fast.
+    """
+    payloads = [
+        (
+            pdf_path,
+            page_number,
+            cache_key_fn is not None,
+            scale,
+            flip_y,
+            detect_arcs,
+            arc_fit_tol_mm,
+            min_arc_angle_deg,
+            arc_min_pts,
+        )
+        for page_number in wanted
+    ]
+
+    workers = max_workers
+    if workers is None:
+        workers = int(os.environ.get("BCS_PDF_IMPORT_MAX_WORKERS", 0)) or None
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_extract_page_worker_with_cache, payload): payload[1] for payload in payloads}
+        results = []
+        for future in as_completed(futures):
+            results.append(future.result())
+    return results
+
+
 def iter_pages(
     source: Any,
     pages: Optional[Sequence[int]] = None,
@@ -75,6 +224,9 @@ def iter_pages(
     arc_fit_tol_mm: float = 0.05,
     min_arc_angle_deg: float = 5.0,
     arc_min_pts: int = 5,
+    parallel: bool = False,
+    max_workers: Optional[int] = None,
+    use_cache: bool = False,
 ) -> Iterator[Tuple[int, PageData]]:
     """Stream ``(page_number, PageData)`` tuples one page at a time.
 
@@ -94,32 +246,71 @@ def iter_pages(
     soft_budget_s:
         Per-page soft time budget; pages slower than this are flagged
         ``over_budget`` in the progress snapshot (D7 default 15 s).
+    parallel:
+        Extract pages concurrently using a process pool. This uses more
+        memory because results are buffered until the slowest page in the
+        set finishes, but it is significantly faster for multi-page PDFs
+        because PyMuPDF releases the GIL during parsing. Host-object
+        creation is still sequential because pages are yielded in order.
+    max_workers:
+        Number of parallel workers when ``parallel=True``. Defaults to the
+        number of logical CPUs or ``BCS_PDF_IMPORT_MAX_WORKERS``.
+    use_cache:
+        Persist extracted ``PageData`` to a disk cache keyed by source PDF
+        SHA-256 + extraction parameters. Re-importing the same PDF with the
+        same options skips the PDF parsing phase entirely. The cached IR is
+        bit-identical to a fresh extraction, so visual accuracy is unchanged.
 
     Remaining keyword arguments are forwarded to
     :func:`pdfcadcore.primitive_extractor.extract_page`.
     """
+    pdf_path: Optional[str] = None
+    if isinstance(source, (str, os.PathLike)):
+        pdf_path = str(source)
+    elif isinstance(getattr(source, "name", None), str):
+        pdf_path = source.name
+
     doc, owns_doc = _open_source(source)
     try:
         total = int(getattr(doc, "page_count", None) or len(doc))
         wanted = _normalize_pages(pages, total)
         total_elapsed = 0.0
+        cache_key_fn = ir_cache.cache_key if use_cache else None
 
-        for idx, page_number in enumerate(wanted, start=1):
-            t0 = time.perf_counter()
-            page = doc.load_page(page_number - 1)
-            page_data = extract_page(
-                page,
-                page_num=page_number,
+        if parallel and pdf_path:
+            results = _extract_pages_parallel(
+                pdf_path=pdf_path,
+                wanted=wanted,
+                cache_key_fn=cache_key_fn,
                 scale=scale,
                 flip_y=flip_y,
                 detect_arcs=detect_arcs,
                 arc_fit_tol_mm=arc_fit_tol_mm,
                 min_arc_angle_deg=min_arc_angle_deg,
                 arc_min_pts=arc_min_pts,
+                max_workers=max_workers,
             )
-            elapsed = time.perf_counter() - t0
-            total_elapsed += elapsed
+        else:
+            results = []
+            for page_number in wanted:
+                page = doc.load_page(page_number - 1)
+                page_data, elapsed, _ = _extract_with_cache(
+                    page,
+                    page_number,
+                    pdf_path,
+                    cache_key_fn,
+                    scale,
+                    flip_y,
+                    detect_arcs,
+                    arc_fit_tol_mm,
+                    min_arc_angle_deg,
+                    arc_min_pts,
+                )
+                results.append((page_number, page_data, elapsed))
 
+        results.sort(key=lambda x: wanted.index(x[0]))
+        for idx, (page_number, page_data, elapsed) in enumerate(results, start=1):
+            total_elapsed += elapsed
             yield page_number, page_data
 
             if progress is not None:
