@@ -31,6 +31,7 @@
   "streaming.py": "f9a0abe1cb624793972e2b25fed295406e62ffa1d84b92487ad7df720cb9f1fa",
   "text_scale.py": "c0fdfda5e4f3c4fd3745b44830ee3b75ccbdbbc1de22da8e4f3742e4919574f1",
   "validation.py": "0510e4367e8fd4214e2ea3d42e933e60e8b33961eeb1ecda5125728e80fd7142",
+  "visual_semantics.py": "d57393c2e6a2cdc932c9ba19e2f810d9bbbd46b6192699742c1036e35bf01344",
   "repo_context_builder_core.py": "f3c6d5abbfa8d422a2562c1a645548fee9330290307edf02c7f10deb38daceb4",
   "pdfcadcore_sync_check.py": "b024d8c37707fa3f323149790f3cf20c787e412407316af4cb10081eb6c5853e"
 }
