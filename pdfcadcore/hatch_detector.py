@@ -153,7 +153,7 @@ def detect(drawings: List[dict]) -> Set[int]:
     used = [False] * len(lines)
     angle_bins = _build_angle_bins(lines)
 
-    for i, line in enumerate(lines):
+    for i, _line in enumerate(lines):
         if used[i]:
             continue
         group = _group_parallel_lines(lines, used, i, angle_bins)
@@ -215,7 +215,7 @@ def tag_hatch_primitives(primitives) -> Set[int]:
     used = [False] * len(lines)
     angle_bins = _build_angle_bins(lines)
 
-    for i, line in enumerate(lines):
+    for i, _line in enumerate(lines):
         if used[i]:
             continue
         group = _group_parallel_lines(lines, used, i, angle_bins)
