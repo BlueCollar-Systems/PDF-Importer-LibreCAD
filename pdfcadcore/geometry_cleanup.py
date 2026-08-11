@@ -9,18 +9,27 @@ _ZERO_TOL = 1e-9
 
 
 def circle_fit(points: List[Tuple[float, float]]):
-    """Kasa algebraic circle fit -> (cx, cy, radius, rms) or None."""
+    """Kasa algebraic circle fit -> (cx, cy, radius, rms) or None.
+
+    Single-pass accumulation (and a single RMS pass) matches the Ruby
+    implementation and avoids the constant-factor cost of multiple generators.
+    """
     n = len(points)
     if n < 3:
         return None
-    sx = sum(p[0] for p in points)
-    sy = sum(p[1] for p in points)
-    sx2 = sum(p[0]**2 for p in points)
-    sy2 = sum(p[1]**2 for p in points)
-    sxy = sum(p[0]*p[1] for p in points)
-    sz = sum(p[0]**2 + p[1]**2 for p in points)
-    sxz = sum(p[0]*(p[0]**2 + p[1]**2) for p in points)
-    syz = sum(p[1]*(p[0]**2 + p[1]**2) for p in points)
+    sx = sy = sx2 = sy2 = sxy = sz = sxz = syz = 0.0
+    for x, y in points:
+        x2 = x * x
+        y2 = y * y
+        z = x2 + y2
+        sx += x
+        sy += y
+        sx2 += x2
+        sy2 += y2
+        sxy += x * y
+        sz += z
+        sxz += x * z
+        syz += y * z
     A = [[sx, sy, n], [sx2, sxy, sx], [sxy, sy2, sy]]
     B = [sz, sxz, syz]
     D = _det3(A)
@@ -32,7 +41,12 @@ def circle_fit(points: List[Tuple[float, float]]):
     a = _det3(A1)/D; b = _det3(A2)/D; c = _det3(A3)/D
     cx, cy = 0.5*a, 0.5*b
     r = math.sqrt(max(0, c + cx*cx + cy*cy))
-    rms = math.sqrt(sum((math.hypot(p[0]-cx, p[1]-cy) - r)**2 for p in points) / n)
+    rms = 0.0
+    for x, y in points:
+        dx = x - cx
+        dy = y - cy
+        rms += (math.sqrt(dx*dx + dy*dy) - r) ** 2
+    rms = math.sqrt(rms / n)
     return (cx, cy, r, rms)
 
 
