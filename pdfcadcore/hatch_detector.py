@@ -8,7 +8,7 @@ Modes: "import" (default), "skip" (remove), "group" (separate hidden group)
 from __future__ import annotations
 
 import math
-from typing import List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 MIN_HATCH_LINES = 6
 ANGLE_TOL_DEG = 3.0
@@ -29,6 +29,79 @@ def _angle_diff(a: float, b: float) -> float:
     if d > 90.0:
         d = 180.0 - d
     return d
+
+
+def _angle_bin_count() -> int:
+    return max(1, int(math.ceil(180.0 / ANGLE_TOL_DEG)))
+
+
+def _build_angle_bins(lines: List[dict]) -> Dict[int, List[int]]:
+    """Map quantized angle bins to line indices for O(n) neighbor lookup."""
+    bins: Dict[int, List[int]] = {}
+    for index, line in enumerate(lines):
+        bucket = int(line["angle"] // ANGLE_TOL_DEG)
+        bins.setdefault(bucket, []).append(index)
+    return bins
+
+
+def _neighbor_bin_ids(seed_bin: int) -> Tuple[int, ...]:
+    count = _angle_bin_count()
+    return tuple((seed_bin + delta) % count for delta in (-1, 0, 1))
+
+
+def _group_parallel_lines(
+    lines: List[dict],
+    used: List[bool],
+    seed_index: int,
+    angle_bins: Dict[int, List[int]],
+) -> List[dict]:
+    """Collect unused lines within ANGLE_TOL of the seed (same rule as all-pairs)."""
+    seed = lines[seed_index]
+    group = [seed]
+    used[seed_index] = True
+    seed_bin = int(seed["angle"] // ANGLE_TOL_DEG)
+    for bucket in _neighbor_bin_ids(seed_bin):
+        for j in angle_bins.get(bucket, ()):
+            if j <= seed_index or used[j]:
+                continue
+            other = lines[j]
+            if _angle_diff(seed["angle"], other["angle"]) < ANGLE_TOL_DEG:
+                group.append(other)
+                used[j] = True
+    return group
+
+
+def _accept_hatch_group(group: List[dict], id_key: str) -> Set:
+    """Apply spacing/length regularity checks; return accepted ids."""
+    accepted: Set = set()
+    if len(group) < MIN_HATCH_LINES:
+        return accepted
+    ref_rad = math.radians(group[0]["angle"])
+    perp_x = -math.sin(ref_rad)
+    perp_y = math.cos(ref_rad)
+    projections = sorted(
+        [{"proj": line["mx"] * perp_x + line["my"] * perp_y, "line": line} for line in group],
+        key=lambda item: item["proj"],
+    )
+    spacings = []
+    for index in range(1, len(projections)):
+        spacings.append(abs(projections[index]["proj"] - projections[index - 1]["proj"]))
+    if not spacings:
+        return accepted
+    mean_sp = sum(spacings) / len(spacings)
+    if mean_sp < 0.3:
+        return accepted
+    variance = sum((spacing - mean_sp) ** 2 for spacing in spacings) / len(spacings)
+    std_dev = math.sqrt(variance)
+    if mean_sp > 0 and (std_dev / mean_sp) < SPACING_REGULARITY:
+        lengths = [line["len"] for line in group]
+        mean_len = sum(lengths) / len(lengths)
+        len_var = sum((length - mean_len) ** 2 for length in lengths) / len(lengths)
+        len_cv = math.sqrt(len_var) / mean_len if mean_len > 0 else 1.0
+        if len_cv < LENGTH_CV_MAX:
+            for line in group:
+                accepted.add(line[id_key])
+    return accepted
 
 
 def detect(drawings: List[dict]) -> Set[int]:
@@ -78,46 +151,13 @@ def detect(drawings: List[dict]) -> Set[int]:
 
     hatch_indices: Set[int] = set()
     used = [False] * len(lines)
+    angle_bins = _build_angle_bins(lines)
 
-    for i, line in enumerate(lines):
+    for i, _line in enumerate(lines):
         if used[i]:
             continue
-        group = [line]
-        used[i] = True
-        for j, other in enumerate(lines):
-            if j <= i or used[j]:
-                continue
-            if _angle_diff(line["angle"], other["angle"]) < ANGLE_TOL_DEG:
-                group.append(other)
-                used[j] = True
-        if len(group) < MIN_HATCH_LINES:
-            continue
-
-        ref_rad = math.radians(group[0]["angle"])
-        perp_x = -math.sin(ref_rad)
-        perp_y = math.cos(ref_rad)
-        projections = sorted(
-            [{"proj": l["mx"] * perp_x + l["my"] * perp_y, "line": l} for l in group],
-            key=lambda p: p["proj"]
-        )
-        spacings = []
-        for k in range(1, len(projections)):
-            spacings.append(abs(projections[k]["proj"] - projections[k-1]["proj"]))
-        if not spacings:
-            continue
-        mean_sp = sum(spacings) / len(spacings)
-        if mean_sp < 0.3:
-            continue
-        variance = sum((s - mean_sp) ** 2 for s in spacings) / len(spacings)
-        std_dev = math.sqrt(variance)
-        if mean_sp > 0 and (std_dev / mean_sp) < SPACING_REGULARITY:
-            lengths = [l["len"] for l in group]
-            mean_len = sum(lengths) / len(lengths)
-            len_var = sum((v - mean_len) ** 2 for v in lengths) / len(lengths)
-            len_cv = math.sqrt(len_var) / mean_len if mean_len > 0 else 1.0
-            if len_cv < LENGTH_CV_MAX:
-                for l in group:
-                    hatch_indices.add(l["idx"])
+        group = _group_parallel_lines(lines, used, i, angle_bins)
+        hatch_indices.update(_accept_hatch_group(group, "idx"))
 
     return hatch_indices
 
@@ -171,53 +211,14 @@ def tag_hatch_primitives(primitives) -> Set[int]:
     if len(lines) < MIN_HATCH_LINES:
         return set()
 
-    # Step 2: group by angle (within tolerance)
     hatch_ids: Set[int] = set()
     used = [False] * len(lines)
+    angle_bins = _build_angle_bins(lines)
 
-    for i, line in enumerate(lines):
+    for i, _line in enumerate(lines):
         if used[i]:
             continue
-        group = [line]
-        used[i] = True
-        for j, other in enumerate(lines):
-            if j <= i or used[j]:
-                continue
-            if _angle_diff(line["angle"], other["angle"]) < ANGLE_TOL_DEG:
-                group.append(other)
-                used[j] = True
-        if len(group) < MIN_HATCH_LINES:
-            continue
-
-        # Step 3: check spacing regularity along perpendicular axis
-        ref_rad = math.radians(group[0]["angle"])
-        perp_x = -math.sin(ref_rad)
-        perp_y = math.cos(ref_rad)
-        projections = sorted(
-            [{"proj": l["mx"] * perp_x + l["my"] * perp_y, "line": l}
-             for l in group],
-            key=lambda p: p["proj"],
-        )
-        spacings = []
-        for k in range(1, len(projections)):
-            spacings.append(
-                abs(projections[k]["proj"] - projections[k - 1]["proj"])
-            )
-        if not spacings:
-            continue
-        mean_sp = sum(spacings) / len(spacings)
-        if mean_sp < 0.3:
-            continue
-        variance = sum((s - mean_sp) ** 2 for s in spacings) / len(spacings)
-        std_dev = math.sqrt(variance)
-        if mean_sp > 0 and (std_dev / mean_sp) < SPACING_REGULARITY:
-            # Step 4: check length consistency
-            lengths = [l["len"] for l in group]
-            mean_len = sum(lengths) / len(lengths)
-            len_var = sum((v - mean_len) ** 2 for v in lengths) / len(lengths)
-            len_cv = math.sqrt(len_var) / mean_len if mean_len > 0 else 1.0
-            if len_cv < LENGTH_CV_MAX:
-                for l in group:
-                    hatch_ids.add(l["pid"])
+        group = _group_parallel_lines(lines, used, i, angle_bins)
+        hatch_ids.update(_accept_hatch_group(group, "pid"))
 
     return hatch_ids
