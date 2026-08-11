@@ -2,6 +2,12 @@
 
 All notable release changes are recorded here.
 
+## 1.0.83 - 2026-08-10
+
+### Performance
+
+- Neighbor-bin hatch angle clustering replaces O(n²) all-pairs scans without
+  changing ANGLE_TOL / spacing / length acceptance (fidelity-safe).
 ## 1.0.82 — 2026-08-09
 
 ### Fixed
