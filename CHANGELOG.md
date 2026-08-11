@@ -2,6 +2,12 @@
 
 All notable release changes are recorded here.
 
+## 1.0.84 - 2026-08-11
+
+### Performance
+
+- Refresh shared pdfcadcore sync manifest after FreeCAD circle_fit / slots
+  dataclass speedups (lockstep with FC/BL).
 ## 1.0.83 - 2026-08-10
 
 ### Performance
