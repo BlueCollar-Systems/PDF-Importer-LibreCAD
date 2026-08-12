@@ -2,7 +2,7 @@
 
 All notable release changes are recorded here.
 
-## 1.0.84 - 2026-08-11
+## 1.0.85 - 2026-08-11
 
 ### Performance
 
