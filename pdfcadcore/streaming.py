@@ -32,6 +32,7 @@ from typing import Any, Callable, Iterator, List, Optional, Sequence, Tuple
 from . import ir_cache
 from .primitive_extractor import extract_page
 from .primitives import PageData
+from .stage_timing import StageTimer
 
 #: D7 soft budget: a page slower than this is flagged ``over_budget`` so the
 #: host can surface a "this document is heavy" hint or a page-range prompt.
@@ -227,6 +228,7 @@ def iter_pages(
     parallel: bool = False,
     max_workers: Optional[int] = None,
     use_cache: bool = False,
+    stage_timing: Optional[StageTimer] = None,
 ) -> Iterator[Tuple[int, PageData]]:
     """Stream ``(page_number, PageData)`` tuples one page at a time.
 
@@ -260,6 +262,14 @@ def iter_pages(
         SHA-256 + extraction parameters. Re-importing the same PDF with the
         same options skips the PDF parsing phase entirely. The cached IR is
         bit-identical to a fresh extraction, so visual accuracy is unchanged.
+    stage_timing:
+        Optional :class:`pdfcadcore.stage_timing.StageTimer`. When supplied it
+        receives ``extract_ms`` (time spent in this generator turning the PDF
+        into ``PageData``) and ``host_build_ms`` (time the caller spent between
+        one yield and the next, i.e. building host objects from what it was
+        handed). The host needs no changes to be measured: a generator already
+        knows when it is running and when its consumer is. Read the timer after
+        the loop finishes. Omitting it changes nothing about the pages yielded.
 
     Remaining keyword arguments are forwarded to
     :func:`pdfcadcore.primitive_extractor.extract_page`.
@@ -276,42 +286,54 @@ def iter_pages(
         wanted = _normalize_pages(pages, total)
         total_elapsed = 0.0
         cache_key_fn = ir_cache.cache_key if use_cache else None
+        # A throwaway timer when the caller supplied none keeps this a single code path.
+        # The cost is one perf_counter pair per stage and the result is never read, so
+        # behaviour is identical whether or not the caller is measuring.
+        timer = stage_timing if stage_timing is not None else StageTimer()
 
-        if parallel and pdf_path:
-            results = _extract_pages_parallel(
-                pdf_path=pdf_path,
-                wanted=wanted,
-                cache_key_fn=cache_key_fn,
-                scale=scale,
-                flip_y=flip_y,
-                detect_arcs=detect_arcs,
-                arc_fit_tol_mm=arc_fit_tol_mm,
-                min_arc_angle_deg=min_arc_angle_deg,
-                arc_min_pts=arc_min_pts,
-                max_workers=max_workers,
-            )
-        else:
-            results = []
-            for page_number in wanted:
-                page = doc.load_page(page_number - 1)
-                page_data, elapsed, _ = _extract_with_cache(
-                    page,
-                    page_number,
-                    pdf_path,
-                    cache_key_fn,
-                    scale,
-                    flip_y,
-                    detect_arcs,
-                    arc_fit_tol_mm,
-                    min_arc_angle_deg,
-                    arc_min_pts,
+        with timer.measure("extract_ms"):
+            if parallel and pdf_path:
+                results = _extract_pages_parallel(
+                    pdf_path=pdf_path,
+                    wanted=wanted,
+                    cache_key_fn=cache_key_fn,
+                    scale=scale,
+                    flip_y=flip_y,
+                    detect_arcs=detect_arcs,
+                    arc_fit_tol_mm=arc_fit_tol_mm,
+                    min_arc_angle_deg=min_arc_angle_deg,
+                    arc_min_pts=arc_min_pts,
+                    max_workers=max_workers,
                 )
-                results.append((page_number, page_data, elapsed))
+            else:
+                results = []
+                for page_number in wanted:
+                    page = doc.load_page(page_number - 1)
+                    page_data, elapsed, _ = _extract_with_cache(
+                        page,
+                        page_number,
+                        pdf_path,
+                        cache_key_fn,
+                        scale,
+                        flip_y,
+                        detect_arcs,
+                        arc_fit_tol_mm,
+                        min_arc_angle_deg,
+                        arc_min_pts,
+                    )
+                    results.append((page_number, page_data, elapsed))
 
-        results.sort(key=lambda x: wanted.index(x[0]))
+            results.sort(key=lambda x: wanted.index(x[0]))
+
         for idx, (page_number, page_data, elapsed) in enumerate(results, start=1):
             total_elapsed += elapsed
+            timer.note_page()
+            _yielded_at = time.perf_counter()
             yield page_number, page_data
+            # Control only returns here once the consumer has finished with this page,
+            # so the gap is host-side construction, not extraction. This is why the
+            # split needs no cooperation from the host.
+            timer.add("host_build_ms", (time.perf_counter() - _yielded_at) * 1000.0)
 
             if progress is not None:
                 keep_going = progress(PageProgress(
