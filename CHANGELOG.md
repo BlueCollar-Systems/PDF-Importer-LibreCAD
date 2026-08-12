@@ -2,7 +2,14 @@
 
 All notable release changes are recorded here.
 
-## 1.0.85 - 2026-08-11
+## 1.0.85 - 2026-08-12
+
+### Performance
+
+- Gate 0 stage timers (xtract_ms / host_build_ms) plus reviewed
+  circle_fit restore (lockstep with FC/BL).
+
+## 1.0.84 - 2026-08-11
 
 ### Performance
 
