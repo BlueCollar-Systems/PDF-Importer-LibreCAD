@@ -9,7 +9,30 @@ _ZERO_TOL = 1e-9
 
 
 def circle_fit(points: List[Tuple[float, float]]):
-    """Kasa algebraic circle fit -> (cx, cy, radius, rms) or None."""
+    """Kasa algebraic circle fit -> (cx, cy, radius, rms) or None.
+
+    The eight accumulators below MUST stay as builtin ``sum()`` calls, and the RMS pass
+    MUST stay a ``sum()`` generator. Collapsing them into one accumulation loop looks
+    like a free constant-factor win and is not: since CPython 3.12 (gh-100425) builtin
+    ``sum()`` applies Neumaier compensated summation to floats, so it is measurably MORE
+    accurate than an explicit ``+=`` loop.
+
+    Measured when that rewrite was proposed as a no-op: 0 of 400 random point sets
+    produced a bit-identical fit (worst relative divergence 3.13e-13), and across 2000
+    trials ``sum()`` landed closer to ``math.fsum`` 1809 times while a manual loop won 0.
+    The perturbation feeds the arc/circle promotion thresholds in
+    ``promote_circular_primitives()``, so it is a fidelity change, not a speed knob.
+
+    This is documented at length because the rewrite has already landed once (564f983)
+    and been reverted once (5f0be3b). ``tests/test_circle_fit_summation_guard.py`` is the
+    guard that makes a third attempt fail loudly instead of silently.
+
+    Version-dependence worth knowing: FreeCAD bundles Python 3.11, where ``sum()`` is
+    uncompensated and a loop is numerically identical, while Blender bundles 3.13 where
+    it is not. A numeric test therefore passes vacuously on the FreeCAD host while the
+    regression ships to Blender and LibreCAD -- which is why the guard checks the source
+    form rather than the arithmetic.
+    """
     n = len(points)
     if n < 3:
         return None
