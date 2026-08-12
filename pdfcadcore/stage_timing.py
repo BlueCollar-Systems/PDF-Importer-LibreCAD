@@ -34,7 +34,7 @@ import time
 from contextlib import contextmanager
 from typing import Dict, Iterator, Optional
 
-SCHEMA = "bcs.pdfcadcore_stage_timing/1.0"
+SCHEMA = "bcs.pdfcadcore_stage_timing/1.1"
 
 #: Stages that enclose other stages. Summing a parent alongside its children would
 #: double-count and understate ``unaccounted_ms`` -- the exact defect that field exists
@@ -66,12 +66,27 @@ class StageTimer:
     never be able to fail an import. A nonsense duration is dropped, not propagated.
     """
 
-    __slots__ = ("_stages", "_counts", "_pages")
+    __slots__ = (
+        "_stages",
+        "_counts",
+        "_pages",
+        "_attempted",
+        "_yielded",
+        "_completed",
+        "_clock",
+    )
 
-    def __init__(self) -> None:
+    def __init__(self, clock=None) -> None:
         self._stages: Dict[str, float] = {}
         self._counts: Dict[str, int] = {}
         self._pages: int = 0
+        self._attempted: int = 0
+        self._yielded: int = 0
+        self._completed: int = 0
+        self._clock = clock if clock is not None else time.perf_counter
+
+    def clock(self) -> float:
+        return self._clock()
 
     def add(self, stage: str, ms: float) -> None:
         """Accumulate ``ms`` against ``stage``. Negative or non-finite values drop."""
@@ -94,13 +109,20 @@ class StageTimer:
         The duration is recorded in a ``finally`` so a page that raises still reports
         the work it consumed; dropping it would make a failing import look cheap.
         """
-        started = time.perf_counter()
+        started = self.clock()
         try:
             yield
         finally:
-            self.add(stage, (time.perf_counter() - started) * 1000.0)
+            self.add(stage, (self.clock() - started) * 1000.0)
 
-    def note_page(self) -> None:
+    def note_attempted(self) -> None:
+        self._attempted += 1
+
+    def note_yielded(self) -> None:
+        self._yielded += 1
+
+    def note_completed(self) -> None:
+        self._completed += 1
         self._pages += 1
 
     @property
@@ -125,10 +147,12 @@ class StageTimer:
         assert complete attribution that was never measured.
         """
         out: Dict[str, object] = {"schema": SCHEMA}
+        out["attempted"] = self._attempted
+        out["yielded"] = self._yielded
+        out["completed"] = self._completed
+        out["pages"] = self._pages
         for name in sorted(self._stages):
             out[name] = round(self._stages[name], 3)
-        if self._pages:
-            out["pages"] = self._pages
         counts = {n: c for n, c in sorted(self._counts.items())}
         if counts:
             out["stage_counts"] = counts
