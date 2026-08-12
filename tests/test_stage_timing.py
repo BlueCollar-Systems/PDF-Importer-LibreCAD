@@ -15,8 +15,9 @@ import pytest
 from pdfcadcore import stage_timing
 from pdfcadcore.stage_timing import SCHEMA, StageTimer
 from pdfcadcore.streaming import iter_pages
+from pdfcadcore.fitz_loader import import_fitz
 
-fitz = pytest.importorskip("pymupdf", reason="PyMuPDF required to build a test PDF")
+fitz = import_fitz()
 
 
 def _pdf(tmp_path, pages=2):

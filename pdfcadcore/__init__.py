@@ -41,5 +41,5 @@ from .streaming import (
 )
 from .stage_timing import (
     StageTimer as StageTimer,
-    SCHEMA as STAGE_TIMING_SCHEMA,
+    SCHEMA as SCHEMA,
 )
