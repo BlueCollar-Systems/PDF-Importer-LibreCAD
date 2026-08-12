@@ -23,7 +23,6 @@ Usage (host adapter):
 """
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator, List, Optional, Sequence, Tuple
 
@@ -110,16 +109,14 @@ def iter_pages(
     """
     doc, owns_doc = _open_source(source)
     timer = stage_timing if stage_timing is not None else StageTimer()
-    host_build_start: Optional[float] = None
     try:
         total = int(getattr(doc, "page_count", None) or len(doc))
         wanted = _normalize_pages(pages, total)
         total_elapsed = 0.0
 
         for idx, page_number in enumerate(wanted, start=1):
-            if host_build_start is not None:
-                timer.add("host_build_ms", (time.perf_counter() - host_build_start) * 1000.0)
-
+            timer.note_attempted()
+            before_extract_ms = timer.get("extract_ms")
             with timer.measure("extract_ms"):
                 page = doc.load_page(page_number - 1)
                 page_data = extract_page(
@@ -132,12 +129,22 @@ def iter_pages(
                     min_arc_angle_deg=min_arc_angle_deg,
                     arc_min_pts=arc_min_pts,
                 )
-            elapsed = timer.get("extract_ms") - (total_elapsed * 1000.0)
-            total_elapsed = timer.get("extract_ms") / 1000.0
-
-            yield page_number, page_data
-            host_build_start = time.perf_counter()
-            timer.note_page()
+            elapsed = (timer.get("extract_ms") - before_extract_ms) / 1000.0
+            total_elapsed += elapsed
+            host_build_start = timer.clock()
+            timer.note_yielded()
+            consumer_completed = False
+            host_timing_flushed = False
+            try:
+                yield page_number, page_data
+                consumer_completed = True
+            finally:
+                if not host_timing_flushed:
+                    host_timing_flushed = True
+                    timer.add("host_build_ms", (timer.clock() - host_build_start) * 1000.0)
+            if not consumer_completed:
+                return
+            timer.note_completed()
 
             if progress is not None:
                 keep_going = progress(PageProgress(
@@ -153,7 +160,5 @@ def iter_pages(
                 if keep_going is False:
                     break
     finally:
-        if host_build_start is not None:
-            timer.add("host_build_ms", (time.perf_counter() - host_build_start) * 1000.0)
         if owns_doc:
             doc.close()
