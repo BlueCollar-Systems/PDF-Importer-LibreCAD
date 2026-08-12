@@ -119,31 +119,6 @@ def _parse_dashes(raw) -> Tuple[Optional[list], float]:
     return None, 0.0
 
 
-def _cubic_flatness(
-    p0: Tuple[float, float],
-    p1: Tuple[float, float],
-    p2: Tuple[float, float],
-    p3: Tuple[float, float],
-) -> float:
-    """Return the maximum squared deviation of control points from the chord."""
-    x0, y0 = p0
-    x1, y1 = p1
-    x2, y2 = p2
-    x3, y3 = p3
-    dx = x3 - x0
-    dy = y3 - y0
-    len2 = dx * dx + dy * dy
-    if len2 < 1e-18:
-        return max(
-            (x1 - x0) ** 2 + (y1 - y0) ** 2,
-            (x2 - x0) ** 2 + (y2 - y0) ** 2,
-        )
-
-    def _sq(p, q, r):
-        return abs((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])) ** 2 / len2
-    return max(_sq(p0, p3, p1), _sq(p0, p3, p2))
-
-
 def _append_linearized_cubic(
     current_pts: List[Tuple[float, float]],
     p0: Tuple[float, float],
@@ -152,44 +127,14 @@ def _append_linearized_cubic(
     p3: Tuple[float, float],
     *,
     max_samples: int = 32,
-    flatness_mm: float = 0.05,
 ) -> None:
-    """Append a cubic Bezier segment as an adaptive polyline.
-
-    Subdivides recursively until the curve is flat within ``flatness_mm``,
-    so visually straight sections become a single segment while tight
-    curves keep enough samples. The output is bounded by ``max_samples``.
-    """
+    """Append a cubic Bezier segment as a polyline."""
     if not current_pts:
         current_pts.append(p0)
-
-    stack = [(p0, p1, p2, p3)]
-    emitted = [p0]
-
-    while stack:
-        a0, a1, a2, a3 = stack.pop()
-        if _cubic_flatness(a0, a1, a2, a3) <= flatness_mm * flatness_mm:
-            emitted.append(a3)
-            continue
-        # De Casteljau split at t=0.5. Push the right sub-curve first so the
-        # left one is popped and emitted first, keeping points in order.
-        m0 = ((a0[0] + a1[0]) * 0.5, (a0[1] + a1[1]) * 0.5)
-        m1 = ((a1[0] + a2[0]) * 0.5, (a1[1] + a2[1]) * 0.5)
-        m2 = ((a2[0] + a3[0]) * 0.5, (a2[1] + a3[1]) * 0.5)
-        n0 = ((m0[0] + m1[0]) * 0.5, (m0[1] + m1[1]) * 0.5)
-        n1 = ((m1[0] + m2[0]) * 0.5, (m1[1] + m2[1]) * 0.5)
-        mid = ((n0[0] + n1[0]) * 0.5, (n0[1] + n1[1]) * 0.5)
-        stack.append((mid, n1, m2, a3))
-        stack.append((a0, m0, n0, mid))
-
-    if len(emitted) > max_samples + 1:
-        emitted = [p0]
-        samples = max(4, min(max_samples, int(math.ceil(_dist(p0, p3) / 0.5))))
-        for i in range(1, samples + 1):
-            t = i / float(samples)
-            emitted.append(_bezier_pt(p0, p1, p2, p3, t))
-
-    current_pts.extend(emitted[1:])
+    samples = max(4, min(max_samples, int(math.ceil(_dist(p0, p3) / 0.5))))
+    for i in range(1, samples + 1):
+        t = i / float(samples)
+        current_pts.append(_bezier_pt(p0, p1, p2, p3, t))
 
 
 def _quad_to_points(

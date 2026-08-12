@@ -7,20 +7,20 @@ Rule 2: Recognizers must operate on normalized primitives, not host entities.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
-import itertools
 from typing import Any, Dict, List, Optional, Tuple
 
-_id_counter = itertools.count(start=1)
-
+_next_id = 0
 def next_id() -> int:
-    return next(_id_counter)
+    global _next_id
+    _next_id += 1
+    return _next_id
 
 def reset_ids():
-    global _id_counter
-    _id_counter = itertools.count(start=1)
+    global _next_id
+    _next_id = 0
 
 
-@dataclass(slots=True)
+@dataclass
 class RecognitionConfig:
     vertex_merge_tol: float = 0.1        # mm
     min_segment_len: float = 0.05        # mm
@@ -36,7 +36,7 @@ class RecognitionConfig:
     confidence_threshold: float = 0.60
 
 
-@dataclass(slots=True)
+@dataclass
 class Primitive:
     id: int
     type: str              # "line", "arc", "circle", "polyline", "closed_loop", "rect"
@@ -58,7 +58,7 @@ class Primitive:
     generic_tags: List[str] = field(default_factory=list)
 
 
-@dataclass(slots=True)
+@dataclass
 class TextCharLayout:
     """One PDF character with immutable source and model-space placement truth."""
 
@@ -73,7 +73,7 @@ class TextCharLayout:
     glyph_height: float
 
 
-@dataclass(slots=True)
+@dataclass
 class NormalizedText:
     id: int
     text: str
@@ -104,7 +104,7 @@ class NormalizedText:
     font_failure: Optional[Any] = field(default=None, repr=False, compare=False)
 
 
-@dataclass(slots=True)
+@dataclass
 class ResolvedScale:
     factor: float = 1.0
     notation: str = "1:1"
@@ -113,7 +113,7 @@ class ResolvedScale:
     fallback_reason: str = ""
 
 
-@dataclass(slots=True)
+@dataclass
 class PageData:
     page_number: int
     width: float           # mm
@@ -125,7 +125,7 @@ class PageData:
     resolved_scale: Optional["ResolvedScale"] = None
 
 
-@dataclass(slots=True)
+@dataclass
 class ParsedDimension:
     raw_text: str
     kind: str = "unknown"  # linear, diameter, radius, slot, scale, unknown
@@ -137,7 +137,7 @@ class ParsedDimension:
     warnings: List[str] = field(default_factory=list)
 
 
-@dataclass(slots=True)
+@dataclass
 class Region:
     id: int = 0
     page_number: int = 0
@@ -150,7 +150,7 @@ class Region:
     confidence: float = 0.0
 
 
-@dataclass(slots=True)
+@dataclass
 class PageProfile:
     page_number: int = 0
     primary_type: str = "unknown"
