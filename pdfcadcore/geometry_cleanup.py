@@ -11,39 +11,39 @@ _ZERO_TOL = 1e-9
 def circle_fit(points: List[Tuple[float, float]]):
     """Kasa algebraic circle fit -> (cx, cy, radius, rms) or None.
 
-    The eight accumulators below MUST stay as builtin ``sum()`` calls, and the RMS pass
-    MUST stay a ``sum()`` generator. Collapsing them into one accumulation loop looks
-    like a free constant-factor win and is not: since CPython 3.12 (gh-100425) builtin
-    ``sum()`` applies Neumaier compensated summation to floats, so it is measurably MORE
-    accurate than an explicit ``+=`` loop.
+    The eight accumulators below and the RMS pass MUST stay ``math.fsum()`` calls.
+    fsum is exactly rounded, so the fit is bit-identical on every CPython version and
+    every platform. Neither alternative has that property:
 
-    Measured when that rewrite was proposed as a no-op: 0 of 400 random point sets
-    produced a bit-identical fit (worst relative divergence 3.13e-13), and across 2000
-    trials ``sum()`` landed closer to ``math.fsum`` 1809 times while a manual loop won 0.
-    The perturbation feeds the arc/circle promotion thresholds in
-    ``promote_circular_primitives()``, so it is a fidelity change, not a speed knob.
+    * builtin ``sum()`` is Neumaier-compensated only on CPython >= 3.12 (gh-100425),
+      so FreeCAD's bundled 3.11 and Blender's 3.13 computed DIFFERENT fits from the
+      byte-identical source of this file;
+    * an explicit ``+=`` loop is the uncompensated 3.11 behaviour everywhere.
 
-    This is documented at length because the rewrite has already landed once (564f983)
-    and been reverted once (5f0be3b). ``tests/test_circle_fit_summation_guard.py`` is the
-    guard that makes a third attempt fail loudly instead of silently.
+    The magnitude is not academic. The reviewed oracle case (seed 81011, case 143 --
+    a 163-degree arc of radius ~10 fit from points centred ~4,000 units away) is
+    ill-conditioned enough that the summation difference amplifies to a 5.3e-2 shift
+    in radius and moves RMS from 0.0312 to 0.0622, crossing the 0.0513 promotion
+    tolerance: compensated arithmetic promotes the arc, uncompensated does not. That
+    is a host-visible geometry difference, discovered when CI (Linux, 3.11) failed the
+    oracle that passes on a 3.12 dev machine.
 
-    Version-dependence worth knowing: FreeCAD bundles Python 3.11, where ``sum()`` is
-    uncompensated and a loop is numerically identical, while Blender bundles 3.13 where
-    it is not. A numeric test therefore passes vacuously on the FreeCAD host while the
-    regression ships to Blender and LibreCAD -- which is why the guard checks the source
-    form rather than the arithmetic.
+    History: a single-pass rewrite landed once (564f983) and was reverted once
+    (5f0be3b); ``tests/test_circle_fit_summation_guard.py`` pins the fsum form and is
+    run by CI. Do not change the accumulation without re-running the promotion oracle
+    on BOTH a <=3.11 and a >=3.12 interpreter.
     """
     n = len(points)
     if n < 3:
         return None
-    sx = sum(p[0] for p in points)
-    sy = sum(p[1] for p in points)
-    sx2 = sum(p[0]**2 for p in points)
-    sy2 = sum(p[1]**2 for p in points)
-    sxy = sum(p[0]*p[1] for p in points)
-    sz = sum(p[0]**2 + p[1]**2 for p in points)
-    sxz = sum(p[0]*(p[0]**2 + p[1]**2) for p in points)
-    syz = sum(p[1]*(p[0]**2 + p[1]**2) for p in points)
+    sx = math.fsum(p[0] for p in points)
+    sy = math.fsum(p[1] for p in points)
+    sx2 = math.fsum(p[0]**2 for p in points)
+    sy2 = math.fsum(p[1]**2 for p in points)
+    sxy = math.fsum(p[0]*p[1] for p in points)
+    sz = math.fsum(p[0]**2 + p[1]**2 for p in points)
+    sxz = math.fsum(p[0]*(p[0]**2 + p[1]**2) for p in points)
+    syz = math.fsum(p[1]*(p[0]**2 + p[1]**2) for p in points)
     A = [[sx, sy, n], [sx2, sxy, sx], [sxy, sy2, sy]]
     B = [sz, sxz, syz]
     D = _det3(A)
@@ -55,7 +55,7 @@ def circle_fit(points: List[Tuple[float, float]]):
     a = _det3(A1)/D; b = _det3(A2)/D; c = _det3(A3)/D
     cx, cy = 0.5*a, 0.5*b
     r = math.sqrt(max(0, c + cx*cx + cy*cy))
-    rms = math.sqrt(sum((math.hypot(p[0]-cx, p[1]-cy) - r)**2 for p in points) / n)
+    rms = math.sqrt(math.fsum((math.hypot(p[0]-cx, p[1]-cy) - r)**2 for p in points) / n)
     return (cx, cy, r, rms)
 
 
