@@ -2,6 +2,14 @@
 
 All notable release changes are recorded here.
 
+## 1.0.86 - 2026-08-13
+
+- circle_fit accumulation moved to math.fsum: geometry is now identical on every
+  CPython version and platform (an ill-conditioned arc previously fit differently
+  under 3.11 vs 3.12+ arithmetic, flipping borderline arc promotion).
+- CI now enforces the fsum summation guard and the Bezier flattener contract, and
+  prints which pdfcadcore copy the tests import.
+
 ## 1.0.85 - 2026-08-12
 
 ### Performance
