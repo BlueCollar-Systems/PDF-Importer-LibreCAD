@@ -135,9 +135,9 @@ def iter_pages(
             elapsed = timer.get("extract_ms") - (total_elapsed * 1000.0)
             total_elapsed = timer.get("extract_ms") / 1000.0
 
-            yield page_number, page_data
             host_build_start = time.perf_counter()
             timer.note_page()
+            yield page_number, page_data
 
             if progress is not None:
                 keep_going = progress(PageProgress(
