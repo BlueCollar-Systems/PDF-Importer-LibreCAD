@@ -2,6 +2,11 @@
 
 All notable release changes are recorded here.
 
+## 1.0.87 - 2026-08-15
+
+- Always emit `extra.fallback_transitions` so certified-ladder hops are visible
+  to 1011 accuracy scoring.
+
 ## 1.0.86 - 2026-08-13
 
 - circle_fit accumulation moved to math.fsum: geometry is now identical on every
