@@ -11,7 +11,11 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from pdfcadcore.import_report import build_import_contract_ready, build_import_report
+from pdfcadcore.import_report import (
+    build_fallback_transitions,
+    build_import_contract_ready,
+    build_import_report,
+)
 from librecad_pdf_importer.importer import _delivery_item_has_persisted_output
 
 
@@ -26,6 +30,7 @@ def test_librecad_report_records_text_mode():
     extra = report.to_dict()["extra"]
     assert extra["text_mode"] == "labels"
     assert extra["import_text"] is True
+    assert extra["fallback_transitions"] == []
     assert extra["diagnostics"]["quality_level"] == "empty"
     assert "text_mode_labels" in extra["diagnostics"]["signals"]
 
@@ -299,3 +304,50 @@ def test_unproven_empty_raster_delivery_remains_fail_closed(field, value):
     delivery = deepcopy(_verified_zero_ink_raster_delivery())
     delivery["attempts"][-1]["evidence"][field] = value
     assert _delivery_item_has_persisted_output(delivery) is False
+
+
+def test_librecad_fallback_transitions_expand_from_representation_delivery():
+    report = build_import_report(
+        host_app="librecad",
+        pdf_path="plan.pdf",
+        mode="vector",
+        text_count=1,
+        import_text=True,
+        text_mode="text",
+        extra={
+            "text_representation_delivery": {
+                "verified": True,
+                "items": [
+                    {
+                        "source_id": "text_span:1:12",
+                        "requested_representation": "text",
+                        "final_representation": "glyphs",
+                        "fallback_used": True,
+                        "reason": "host_cannot_render_source_ttf_as_native_text",
+                        "attempts": [
+                            {
+                                "outcome": "impossible",
+                                "reason": "host_cannot_render_source_ttf_as_native_text",
+                                "evidence": {"host_limit": True},
+                            }
+                        ],
+                    }
+                ],
+            }
+        },
+    )
+    extra = report.to_dict()["extra"]
+    assert extra["fallback_transitions"] == [
+        {
+            "source_span_id": "text_span:1:12",
+            "from_mode": "text",
+            "to_mode": "glyphs",
+            "reason_code": "host_cannot_render_source_ttf_as_native_text",
+            "affirmative_impossibility": True,
+            "generic_failure": False,
+        }
+    ]
+
+
+def test_librecad_keeps_explicit_empty_fallback_transition_ledger():
+    assert build_fallback_transitions({"fallback_transitions": []}) == []
