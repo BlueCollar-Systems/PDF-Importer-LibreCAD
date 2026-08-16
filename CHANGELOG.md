@@ -2,6 +2,13 @@
 
 All notable release changes are recorded here.
 
+## 1.0.90 - 2026-08-16
+
+- pdfcadcore sync: both-sides weld symbols keep the second stacked fraction (the
+  stacked-fraction merge selected every same-split span within 4.5 mm and the overlay
+  dedupe then removed the second slash; 14 fillet-weld sizes were dropped on a real
+  fabrication sheet).
+
 ## 1.0.89 - 2026-08-16
 
 - Four visible defects found by side-by-side comparison of the LibreCAD import with the
