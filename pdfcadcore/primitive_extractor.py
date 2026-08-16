@@ -65,6 +65,48 @@ def _norm_color(col) -> Optional[Tuple[float, float, float]]:
         return None
 
 
+def _composite_alpha(color, alpha):
+    """Composite a constant alpha (PDF /CA, /ca) into ``color`` against the white page.
+
+    CAD hosts have no page compositor (LibreCAD has no transparency at all), so the
+    only way a 40 % black separator bar or a 50 % grey label can look the way the
+    PDF viewer shows it is to deliver the colour the viewer actually paints on white:
+    ``a * c + (1 - a) * 1``. ``alpha`` is 0.0-1.0; None / non-finite / >= 1 leave the
+    colour untouched (opaque content is bit-identical to before); < 0 clamps to 0.
+    """
+    if color is None or alpha is None:
+        return color
+    try:
+        a = float(alpha)
+    except (TypeError, ValueError):
+        return color
+    if math.isnan(a) or a >= 1.0:
+        return color
+    a = max(0.0, a)
+    try:
+        return tuple(max(0.0, min(1.0, a * float(c) + (1.0 - a))) for c in color)
+    except (TypeError, ValueError):
+        return color
+
+
+def _span_alpha(span) -> Optional[float]:
+    """PyMuPDF text spans carry ``alpha`` as an int 0-255 (drawings use 0.0-1.0)."""
+    raw = span.get("alpha") if hasattr(span, "get") else None
+    if raw is None:
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(v):
+        return None
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int) or v > 1.0:
+        return max(0.0, min(1.0, v / 255.0))
+    return max(0.0, min(1.0, v))
+
+
 def _parse_dashes(raw) -> Tuple[Optional[list], float]:
     """Parse PyMuPDF dash patterns into a (dash_array, phase) tuple.
 
@@ -243,8 +285,11 @@ def extract_page(
         if not items:
             continue
 
-        stroke = _norm_color(path_group.get("color") or path_group.get("stroke"))
-        fill = _norm_color(path_group.get("fill"))
+        stroke = _composite_alpha(
+            _norm_color(path_group.get("color") or path_group.get("stroke")),
+            path_group.get("stroke_opacity"),
+        )
+        fill = _composite_alpha(_norm_color(path_group.get("fill")), path_group.get("fill_opacity"))
         width = path_group.get("width")
         try:
             width = float(width) * MM_PER_PT * scale if width is not None else None
@@ -697,8 +742,9 @@ def _extract_text(
                     descender_ratio = 0.0
                 baseline_descent = max(0.0, -descender_ratio) * size
 
-                # Extract text color from span
-                text_color = _norm_color(span.get("color"))
+                # Extract text color from span; constant alpha is composited
+                # against the white page (see _composite_alpha).
+                text_color = _composite_alpha(_norm_color(span.get("color")), _span_alpha(span))
 
                 bbox_mm = None
                 source_bbox_pdf = None
