@@ -2,6 +2,17 @@
 
 All notable release changes are recorded here.
 
+## 1.0.89 - 2026-08-16
+
+- Four visible defects found by side-by-side comparison of the LibreCAD import with the
+  PDF (LibreCAD's own dxf2png render vs the PDF page): clockwise-traversed arcs were
+  emitted as their complement (weld-all-around circles drawn as an open "C"); custom
+  PDF_DASH linetypes rendered continuous in LibreCAD (it only recognizes its own linetype
+  names) -- dashes are now mapped to the closest LibreCAD family/length variant;
+  lineweights were converted pt->mm twice (2.83x too thin); raster crops of merged
+  stacked-fraction items were squashed to 60% width (now square pixels, aspect
+  preserved).
+
 ## 1.0.88 - 2026-08-16
 
 - Glyph outlines now come from the exact embedded source-font program. ezdxf resolves
