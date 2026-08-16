@@ -1560,9 +1560,13 @@ def test_repeated_glyph_spans_share_nested_definitions_without_geometry_drift() 
         len(list(block)) + 3 for block in outer_blocks + definition_blocks
     )
     persisted_reduction = legacy_support_entities / nested_support_entities
-    # Exact outline complexity depends on the platform's resolved fallback font.
-    # The contract is the material reduction itself, not one machine's ratio.
-    assert persisted_reduction > 10.0
+    # The contract is the material reduction itself, not one machine's ratio. The
+    # old ">10" bound was only reachable because the outlines came from the
+    # platform's *fallback* font (dozens of vertices per glyph); the outline engine
+    # now draws the exact deterministic test font, whose glyphs are 4-5 vertex boxes,
+    # so per-item outer INSERT overhead bounds the ratio at a few x. Sharing is
+    # pinned exactly by construction_reduction == 40.0 and the reuse counts below.
+    assert persisted_reduction > 1.5
 
     second_evidence = results[1].attempts[-1].evidence
     assert second_evidence["glyph_definition_created_count"] == 0

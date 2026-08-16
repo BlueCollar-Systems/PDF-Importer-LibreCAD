@@ -33,7 +33,6 @@ from ezdxf import bbox as ezdxf_bbox
 from ezdxf import path as ezdxf_path
 from ezdxf.addons import text2path
 from ezdxf.fonts import fonts as ezdxf_fonts
-from ezdxf.fonts.font_face import FontFace
 from ezdxf.math import Matrix44
 from ezdxf.tools.text import plain_text
 from ezdxf.tools.text_size import text_size
@@ -1022,6 +1021,58 @@ def _delivery_cap_height(
     return height, ratio
 
 
+_OUTLINE_ENGINE_FONT_DIRS: set = set()
+_OUTLINE_ENGINE_FONT_SUFFIXES = frozenset({".ttf", ".otf", ".ttc"})
+
+
+def _outline_engine_font_name(filename: str) -> str:
+    """Return the name under which ezdxf's outline engine loads ``filename``.
+
+    ezdxf (``fonts.get_font_face`` / ``text2path`` / ``text_size``) resolves fonts by
+    *file name* against a cache of scanned system folders. The absolute path of an
+    extracted embedded-font asset is unknown to that cache, and the lookup does not
+    fail: it silently returns the FALLBACK face (Arial Unicode MS on the reference
+    machine). That is how 1011's embedded RomanT title -- a light serif in every PDF
+    viewer -- rendered as a bold sans in LibreCAD while every evidence field said
+    "exact embedded source-font program". Every outline in this module goes through
+    that lookup, so the fix is at the lookup: register the asset's folder once and hand
+    ezdxf the basename it can resolve.
+
+    Fails closed as an item-scoped impossibility when the engine still cannot load the
+    exact program (or would substitute another face): the ladder then descends to
+    raster, which is visually faithful; a silently substituted font is not.
+    """
+    raw = str(filename or "").strip()
+    if not raw:
+        raise _RepresentationImpossible("exact source font is unavailable")
+    manager = ezdxf_fonts.font_manager
+    path = Path(raw)
+    has_directory = path.is_absolute() or path.parent != Path(".")
+    if has_directory and path.suffix.lower() in _OUTLINE_ENGINE_FONT_SUFFIXES:
+        if not path.is_file():
+            raise _RepresentationImpossible(
+                f"exact source font program is missing: {path.name}"
+            )
+        folder = path.parent.resolve()
+        if str(folder).lower() not in _OUTLINE_ENGINE_FONT_DIRS:
+            manager.scan_folder(folder)
+            _OUTLINE_ENGINE_FONT_DIRS.add(str(folder).lower())
+        name = path.name
+    else:
+        name = raw
+    if not manager.has_font(name):
+        raise _RepresentationImpossible(
+            f"outline engine cannot load exact source font {name}"
+        )
+    face = manager.get_font_face(name)
+    resolved = str(getattr(face, "filename", "") or "")
+    if resolved.lower() != name.lower():
+        raise _RepresentationImpossible(
+            f"outline engine resolved {name} to {resolved}; refusing font substitution"
+        )
+    return name
+
+
 def _ensure_text_style(
     doc: ezdxf.document.Drawing,
     resolution: _ExactFontResolution,
@@ -1037,6 +1088,15 @@ def _ensure_text_style(
         raise ValueError("exact source font is unavailable")
     if style_font is None and not resolution.exact:
         raise ValueError("exact source font is unavailable")
+    selected_path = Path(selected_font)
+    if (
+        selected_path.suffix.lower() in _OUTLINE_ENGINE_FONT_SUFFIXES
+        and (selected_path.is_absolute() or selected_path.parent != Path("."))
+    ):
+        # A STYLE font is only ever consumed by name; an absolute asset path made
+        # ezdxf substitute its fallback face for every embedded-font outline. Bare
+        # names pass through; outline generation re-verifies them at use.
+        selected_font = _outline_engine_font_name(selected_font)
     cache_key = f"{resolution.source_name}|{selected_font}"
     if cache_key in _created_styles:
         style_name = _created_styles[cache_key]
@@ -1210,7 +1270,138 @@ def _verify_owned_state(
     return True
 
 
+_OUTLINE_ENTITY_TYPES = frozenset({"LWPOLYLINE", "POLYLINE"})
+
+
+def _transformed_definition_outlines(insert: Any):
+    """Transformed LWPOLYLINE/POLYLINE copies of one glyph-definition INSERT.
+
+    Same copy + ``transform(m)`` path as ezdxf's ``virtual_block_reference_entities``
+    (which ``recursive_decompose`` uses), but the SOLID fills are skipped *before* they
+    are copied and transformed. On the shape this builder writes they were ~96% of the
+    decomposed entities and the bbox filter discarded every one of them.
+    """
+    from ezdxf.disassemble import recursive_decompose
+    from ezdxf.explode import virtual_block_reference_entities
+    from ezdxf.math import NonUniformScalingError
+
+    layout = insert.block()
+    if layout is None:
+        # Let ezdxf raise its own error for the missing definition.
+        for entity in virtual_block_reference_entities(insert):
+            if entity.dxftype() in _OUTLINE_ENTITY_TYPES:
+                yield entity
+        return
+    if insert.mcount > 1 or any(
+        entity.dxftype() not in ("LWPOLYLINE", "POLYLINE", "SOLID") for entity in layout
+    ):
+        # Not the definition shape this builder writes: defer to ezdxf unchanged.
+        for entity in recursive_decompose([insert]):
+            if entity.dxftype() in _OUTLINE_ENTITY_TYPES:
+                yield entity
+        return
+    m = insert.matrix44()
+    for entity in layout:
+        if entity.dxftype() not in _OUTLINE_ENTITY_TYPES:
+            continue
+        copy = entity.copy()
+        if hasattr(copy, "remove_association"):
+            copy.remove_association()
+        try:
+            copy.transform(m)
+        except NonUniformScalingError:
+            # ezdxf would yield the transformed LINE/ARC/ELLIPSE sub-entities here,
+            # none of which pass the outline filter.
+            continue
+        except NotImplementedError:
+            continue
+        yield copy
+
+
+def iter_glyph_outline_entities(block_ref: Any):
+    """Yield exactly what ``[e for e in recursive_decompose([block_ref]) if e.dxftype()
+    in {"LWPOLYLINE", "POLYLINE"}]`` yields, in the same order and with the same
+    transformed coordinates, without transforming the SOLID fills that filter discards.
+
+    Only the nested-glyph structure this builder writes (outer BLOCK of INSERTs ->
+    definition BLOCKs of outlines + fills) takes the cheap path; anything else defers
+    to ezdxf's own decomposition so the result stays bit-identical everywhere.
+    """
+    from ezdxf.disassemble import recursive_decompose
+    from ezdxf.explode import virtual_block_reference_entities
+    from ezdxf.protocols import SupportsVirtualEntities
+
+    if block_ref.dxftype() != "INSERT" or block_ref.mcount > 1:
+        for entity in recursive_decompose([block_ref]):
+            if entity.dxftype() in _OUTLINE_ENTITY_TYPES:
+                yield entity
+        return
+    for child in virtual_block_reference_entities(block_ref):
+        dxftype = child.dxftype()
+        if dxftype in _OUTLINE_ENTITY_TYPES:
+            yield child
+        elif dxftype == "INSERT":
+            yield from _transformed_definition_outlines(child)
+        elif isinstance(child, SupportsVirtualEntities):
+            for entity in recursive_decompose([child]):
+                if entity.dxftype() in _OUTLINE_ENTITY_TYPES:
+                    yield entity
+        # SOLID and other leaves: the filter would drop them; skip without copying.
+
+
+def _plain_lwpolyline_bbox(
+    entities: Sequence[Any],
+) -> Optional[Tuple[float, float, float, float]]:
+    """Exact bbox of straight-segment, width-less, WCS-plane LWPOLYLINEs, or None.
+
+    For that shape ezdxf's ``bbox.extents`` builds a Path per polyline and takes the
+    precise bbox of its LINE_TO vertices -- i.e. the min/max of the very same vertex
+    floats -- after decomposing/converting every entity through the generic primitive
+    machinery. Anything outside that shape (bulges, widths, elevation, non-Z
+    extrusion, fewer than two vertices, non-finite coordinates, other entity types)
+    returns None so the caller falls back to ezdxf and stays bit-identical.
+    """
+    if not entities:
+        return None
+    min_x = min_y = math.inf
+    max_x = max_y = -math.inf
+    for entity in entities:
+        if entity.dxftype() != "LWPOLYLINE":
+            return None
+        try:
+            if entity.has_width:
+                return None
+            if float(entity.dxf.get("elevation", 0.0) or 0.0) != 0.0:
+                return None
+            ex, ey, ez = tuple(entity.dxf.get("extrusion", (0.0, 0.0, 1.0)))
+            if (float(ex), float(ey), float(ez)) != (0.0, 0.0, 1.0):
+                return None
+            points = entity.get_points(format="xyb")
+        except Exception:
+            return None
+        if len(points) < 2:
+            # ezdxf: a single-vertex polyline is an empty path with no bbox.
+            return None
+        for x, y, bulge in points:
+            if bulge:
+                return None
+            if not (math.isfinite(x) and math.isfinite(y)):
+                return None
+            if x < min_x:
+                min_x = x
+            if x > max_x:
+                max_x = x
+            if y < min_y:
+                min_y = y
+            if y > max_y:
+                max_y = y
+    return (float(min_x), float(min_y), float(max_x), float(max_y))
+
+
 def _bbox_tuple(entities: Sequence[Any]) -> Optional[Tuple[float, float, float, float]]:
+    plain = _plain_lwpolyline_bbox(entities)
+    if plain is not None:
+        return plain
     box = ezdxf_bbox.extents(entities)
     if not box.has_data:
         return None
@@ -2490,7 +2681,13 @@ def _nested_glyph_geometry_from_entity(
     height = _positive_finite(entity.dxf.height)
     if height is None:
         raise ValueError("glyph source height is invalid")
-    face = ezdxf_fonts.get_font_face(entity.font_name())
+    engine_name = _outline_engine_font_name(entity.font_name())
+    face = ezdxf_fonts.get_font_face(engine_name)
+    if str(face.filename or "").lower() != engine_name.lower():
+        raise _RepresentationImpossible(
+            f"outline engine resolved {engine_name} to {face.filename}; "
+            "refusing font substitution"
+        )
     font = text2path.get_font(face)
     font_key = font_identity
     run_unit_paths = font.text_glyph_paths(content, 1.0, 1.0)
@@ -2888,13 +3085,9 @@ def _commit_outlines(
             _handle(entity) for entity in outlines + fills
         )
     if glyph_geometries:
-        from ezdxf.disassemble import recursive_decompose
-
-        resolved_outlines = [
-            entity
-            for entity in recursive_decompose([block_ref])
-            if entity.dxftype() in {"LWPOLYLINE", "POLYLINE"}
-        ]
+        # Outline-only decomposition: bit-identical to filtering recursive_decompose
+        # to LWPOLYLINE/POLYLINE, without transforming the SOLID fills first.
+        resolved_outlines = list(iter_glyph_outline_entities(block_ref))
         resolved_bbox = _bbox_tuple(resolved_outlines)
     else:
         resolved_bbox = None
@@ -3148,6 +3341,16 @@ def _attempt_outline_entity(
                 "outline source text failed content, anchor, size, rotation, or width verification"
             )
         font_cache_identity = _exact_font_cache_identity(source, font_resolution)
+        # The outline engine must draw the exact program the evidence names. The
+        # source STYLE already carries the engine name (see _ensure_text_style);
+        # re-resolving here proves it still loads and is not substituted.
+        outline_engine_font = _outline_engine_font_name(str(source.font_name()))
+        attempt.evidence.update(
+            {
+                "outline_engine_font_name": outline_engine_font,
+                "outline_engine_font_verified": True,
+            }
+        )
         glyph_run = (
             _nested_glyph_geometry_from_entity(
                 source,
@@ -3290,9 +3493,13 @@ def _attempt_outline_string(
         height, cap_height_ratio = _delivery_cap_height(
             source_em_height, font_resolution
         )
-        face = FontFace(
-            filename=font_resolution.filename
-        )
+        engine_font_name = _outline_engine_font_name(font_resolution.filename)
+        face = ezdxf_fonts.get_font_face(engine_font_name)
+        if str(face.filename or "").lower() != engine_font_name.lower():
+            raise _RepresentationImpossible(
+                f"outline engine resolved {engine_font_name} to {face.filename}; "
+                "refusing font substitution"
+            )
         paths = text2path.make_paths_from_str(
             str(text_item.text),
             face,
