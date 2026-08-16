@@ -2,6 +2,21 @@
 
 All notable release changes are recorded here.
 
+## 1.0.88 - 2026-08-16
+
+- Glyph outlines now come from the exact embedded source-font program. ezdxf resolves
+  fonts by file name against its system cache and silently returned its fallback face
+  for the extracted asset path, so every embedded-font glyph delivery drew the fallback
+  (found by the LibreCAD visual oracle on 1011: RomanT title rendered as a bold sans).
+  The asset folder is registered with the engine, the exact program is re-verified at
+  use, and substitution is refused (item-scoped -> raster). Evidence records
+  `outline_engine_font_verified`.
+- Glyph export stops recomputing known values: definition fingerprints are hashed once
+  per verification pass, outline bboxes no longer copy/transform the SOLID fills, and
+  plain LWPOLYLINE bboxes are taken from the vertices directly (bit-identical). On
+  1011/labels the DXF export dropped 51.0/55.2 s -> 26.9/29.1 s (importer clock, same
+  machine, interleaved).
+
 ## 1.0.87 - 2026-08-15
 
 - Always emit `extra.fallback_transitions` so certified-ladder hops are visible
