@@ -792,6 +792,57 @@ _VALID_DENOMS = (2, 4, 8, 16, 32, 64)
 _FRAC_X_OVERLAP_MM = 5.0   # max horizontal gap between items to consider co-located
 _FRAC_Y_SPREAD_MM = 4.5    # max total vertical spread for the whole group
 _FRAC_STACKED_SCALE = 0.6  # scale factor for stacked fractions to match original footprint
+# Overlay duplicates (the same glyph stack drawn twice by a CAD PDF printer)
+# sit ON TOP of each other; a second stacked fraction on the other side of a
+# weld-symbol reference line sits one text height away (~4.6 mm at 10 pt).
+# The dedupe must only ever collapse the former.
+_FRAC_OVERLAY_TOL_MM = 1.5
+
+
+def _slash_up_offset(slash: NormalizedText, cand: NormalizedText) -> Optional[float]:
+    """Signed offset of ``cand`` from ``slash`` along the slash's own "up".
+
+    Positive = above the slash, negative = below, measured from bbox centres
+    (insertions when a bbox is missing) and rotated by the slash rotation so
+    a 90-degree dimension string is judged in its own frame.
+    """
+    sc = _bbox_center(slash.bbox) or slash.insertion
+    cc = _bbox_center(cand.bbox) or cand.insertion
+    if sc is None or cc is None:
+        return None
+    theta = math.radians(float(slash.rotation or 0.0))
+    up = (-math.sin(theta), math.cos(theta))
+    return (cc[0] - sc[0]) * up[0] + (cc[1] - sc[1]) * up[1]
+
+
+def _candidate_half_band(cand: NormalizedText) -> float:
+    """Half of the candidate's own vertical extent (mm), rotation-aware."""
+    if cand.glyph_height and cand.glyph_height > 0:
+        return 0.5 * float(cand.glyph_height)
+    if cand.bbox:
+        w = max(float(cand.bbox[2]) - float(cand.bbox[0]), 0.0)
+        h = max(float(cand.bbox[3]) - float(cand.bbox[1]), 0.0)
+        rot = abs(float(cand.rotation or 0.0)) % 180.0
+        if rot < 5.0 or rot > 175.0:
+            return 0.5 * h
+        if 85.0 < rot < 95.0:
+            return 0.5 * w
+        return 0.5 * max(w, h)
+    return 0.5 * max(float(cand.font_size or 0.0), 0.0) * 1.2
+
+
+def _slash_within_candidate_band(slash: NormalizedText, cand: NormalizedText) -> bool:
+    """True when the slash sits inside the candidate's own stacked band.
+
+    A concatenated "316" span spans the "3" row and the "16" row; its own
+    slash sits between them, so the slash centre lies inside the span band.
+    The other half of a both-sides weld symbol is a full band away and must
+    not be swallowed (1011 sheet: 14 symbols, 4.6 mm apart).
+    """
+    v = _slash_up_offset(slash, cand)
+    if v is None:
+        return True
+    return abs(v) <= _candidate_half_band(cand) + 0.3
 
 
 def _prefer_fraction_digit_candidates(indices: List[int], items: List[NormalizedText]) -> List[int]:
@@ -900,7 +951,10 @@ def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText
 
     Handles two PDF encoding patterns:
     1. Two items: concatenated digits + "/" (e.g. "716" + "/" -> "7/16")
-       This is the most common pattern in CAD PDFs.
+       This is the most common pattern in CAD PDFs.  Exactly one span merges
+       per slash (the nearest, preferring the span whose own stacked band
+       straddles the slash), so a both-sides weld symbol -- two stacks one
+       text height apart -- yields two fractions, never one.
     2. Three items: separate numerator + "/" + denominator (e.g. "15", "/", "16")
        Only matched when neither digit item is itself a concatenated fraction.
 
@@ -950,23 +1004,29 @@ def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText
                 if abs(cy - sy) > _FRAC_Y_SPREAD_MM:
                     continue
                 split = _split_concatenated_fraction(ct)
-                if split is not None:
-                    distance = abs(cx - sx) + abs(cy - sy)
-                    concat_candidates.append((ci, split, distance))
+                if split is None:
+                    continue
+                distance = abs(cx - sx) + abs(cy - sy)
+                # A span whose own stacked band contains this slash is this
+                # slash's numerator/denominator; the second half of a
+                # both-sides weld symbol is one band away and belongs to the
+                # next slash.  Rank straddling spans first (fall back to plain
+                # distance only when nothing straddles, e.g. synthetic pages).
+                straddles = _slash_within_candidate_band(slash, cand)
+                concat_candidates.append((ci, split, distance, 0 if straddles else 1))
 
             if concat_candidates:
-                concat_candidates.sort(key=lambda entry: entry[2])
-                _nearest_idx, nearest_split, nearest_distance = concat_candidates[0]
+                concat_candidates.sort(key=lambda entry: (entry[3], entry[2]))
+                nearest_idx, nearest_split, nearest_distance, _ = concat_candidates[0]
                 different_close = any(
                     split != nearest_split and distance <= nearest_distance + 1.0
-                    for _ci, split, distance in concat_candidates[1:]
+                    for _ci, split, distance, _rank in concat_candidates[1:]
                 )
-                selected_indices = [
-                    ci
-                    for ci, split, distance in concat_candidates
-                    if split == nearest_split and distance <= nearest_distance + _FRAC_Y_SPREAD_MM
-                ]
-                if not different_close and selected_indices:
+                # Each slash merges with at most ONE numerator/denominator
+                # span: the nearest.  Duplicate overlay stacks (if a printer
+                # ever draws one twice) are handled by _dedupe_fraction_overlays.
+                selected_indices = [] if different_close else [nearest_idx]
+                if selected_indices:
                     numer_s, denom_s = nearest_split
                     selected = [items[ci] for ci in selected_indices]
                     sizes = [item.font_size for item in selected] + [slash.font_size]
@@ -1190,9 +1250,11 @@ def _fraction_overlay_duplicate(a: NormalizedText, b: NormalizedText) -> bool:
     cb = _bbox_center(b.bbox)
     if ca is None or cb is None:
         return False
+    # Overlays coincide; a neighbouring stacked fraction (other side of a
+    # weld reference line) is a full text height away and is NOT a duplicate.
     return (
-        abs(ca[0] - cb[0]) <= _FRAC_X_OVERLAP_MM
-        and abs(ca[1] - cb[1]) <= (_FRAC_Y_SPREAD_MM + 1.0)
+        abs(ca[0] - cb[0]) <= _FRAC_OVERLAY_TOL_MM
+        and abs(ca[1] - cb[1]) <= _FRAC_OVERLAY_TOL_MM
         and _bbox_gap(a.bbox, b.bbox) <= 1.0
     )
 
@@ -1216,8 +1278,8 @@ def _slash_fraction_overlay_duplicate(slash: NormalizedText, fraction: Normalize
     if cs is None or cf is None:
         return False
     return (
-        abs(cs[0] - cf[0]) <= _FRAC_X_OVERLAP_MM
-        and abs(cs[1] - cf[1]) <= (_FRAC_Y_SPREAD_MM + 1.0)
+        abs(cs[0] - cf[0]) <= _FRAC_OVERLAY_TOL_MM
+        and abs(cs[1] - cf[1]) <= _FRAC_OVERLAY_TOL_MM
         and _bbox_gap(slash.bbox, fraction.bbox) <= 1.0
     )
 
