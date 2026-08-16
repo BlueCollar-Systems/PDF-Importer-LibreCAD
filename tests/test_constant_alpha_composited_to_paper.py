@@ -95,3 +95,27 @@ def test_span_alpha_accepts_pymupdf_0_255_ints():
                   (0.6, 0.6, 0.6))
     assert PE._span_alpha({}) is None
     assert PE._span_alpha({"alpha": 255}) == 1.0
+
+
+def test_invisible_text_render_mode_3_is_not_composited(tmp_path):
+    # PyMuPDF reports render-mode-3 (invisible / OCR layer) text with alpha 0 and no paint
+    # bits in char_flags. That is not a PDF constant alpha: leave the colour untouched
+    # (never paint the hidden OCR text white).
+    doc = pymupdf.open()
+    page = doc.new_page(width=200, height=100)
+    page.insert_text(pymupdf.Point(10, 50), "OCR HIDDEN", fontsize=12, color=(0, 0, 0), render_mode=3)
+    page.insert_text(pymupdf.Point(10, 80), "VISIBLE", fontsize=12, color=(0, 0, 0))
+    try:
+        data = _extract(doc)
+    finally:
+        doc.close()
+    by_text = {t.text.strip(): t for t in data.text_items}
+    assert _close(by_text["OCR HIDDEN"].color, (0.0, 0.0, 0.0), tol=0.01), by_text["OCR HIDDEN"].color
+    assert _close(by_text["VISIBLE"].color, (0.0, 0.0, 0.0), tol=0.01)
+
+
+def test_span_alpha_ignores_unpainted_render_modes():
+    assert PE._span_alpha({"alpha": 0, "char_flags": 0}) is None
+    assert PE._span_alpha({"alpha": 102, "char_flags": 16}) is not None
+    assert PE._span_alpha({"alpha": 102, "char_flags": 32}) is not None
+

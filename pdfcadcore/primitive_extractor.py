@@ -89,9 +89,29 @@ def _composite_alpha(color, alpha):
         return color
 
 
+# PyMuPDF span char_flags bits: 16 = filled, 32 = stroked (text render mode paints).
+_SPAN_PAINTED_FLAGS = 16 | 32
+
+
 def _span_alpha(span) -> Optional[float]:
-    """PyMuPDF text spans carry ``alpha`` as an int 0-255 (drawings use 0.0-1.0)."""
-    raw = span.get("alpha") if hasattr(span, "get") else None
+    """PyMuPDF text spans carry ``alpha`` as an int 0-255 (drawings use 0.0-1.0).
+
+    Invisible text (render mode 3, e.g. the OCR layer of a scanned sheet) is reported
+    by PyMuPDF with ``alpha`` 0 and ``char_flags`` lacking both paint bits -- that is
+    MuPDF's invisible-text encoding, not a PDF constant alpha, so it must not be
+    composited (it would turn the hidden OCR text white). Its colour is left as-is,
+    exactly as before.
+    """
+    if not hasattr(span, "get"):
+        return None
+    flags = span.get("char_flags")
+    if flags is not None:
+        try:
+            if int(flags) & _SPAN_PAINTED_FLAGS == 0:
+                return None
+        except (TypeError, ValueError):
+            pass
+    raw = span.get("alpha")
     if raw is None:
         return None
     try:
