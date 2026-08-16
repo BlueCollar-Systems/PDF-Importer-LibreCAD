@@ -33,7 +33,6 @@ from ezdxf import bbox as ezdxf_bbox
 from ezdxf import path as ezdxf_path
 from ezdxf.addons import text2path
 from ezdxf.fonts import fonts as ezdxf_fonts
-from ezdxf.fonts.font_face import FontFace
 from ezdxf.math import Matrix44
 from ezdxf.tools.text import plain_text
 from ezdxf.tools.text_size import text_size
@@ -1022,6 +1021,58 @@ def _delivery_cap_height(
     return height, ratio
 
 
+_OUTLINE_ENGINE_FONT_DIRS: set = set()
+_OUTLINE_ENGINE_FONT_SUFFIXES = frozenset({".ttf", ".otf", ".ttc"})
+
+
+def _outline_engine_font_name(filename: str) -> str:
+    """Return the name under which ezdxf's outline engine loads ``filename``.
+
+    ezdxf (``fonts.get_font_face`` / ``text2path`` / ``text_size``) resolves fonts by
+    *file name* against a cache of scanned system folders. The absolute path of an
+    extracted embedded-font asset is unknown to that cache, and the lookup does not
+    fail: it silently returns the FALLBACK face (Arial Unicode MS on the reference
+    machine). That is how 1011's embedded RomanT title -- a light serif in every PDF
+    viewer -- rendered as a bold sans in LibreCAD while every evidence field said
+    "exact embedded source-font program". Every outline in this module goes through
+    that lookup, so the fix is at the lookup: register the asset's folder once and hand
+    ezdxf the basename it can resolve.
+
+    Fails closed as an item-scoped impossibility when the engine still cannot load the
+    exact program (or would substitute another face): the ladder then descends to
+    raster, which is visually faithful; a silently substituted font is not.
+    """
+    raw = str(filename or "").strip()
+    if not raw:
+        raise _RepresentationImpossible("exact source font is unavailable")
+    manager = ezdxf_fonts.font_manager
+    path = Path(raw)
+    has_directory = path.is_absolute() or path.parent != Path(".")
+    if has_directory and path.suffix.lower() in _OUTLINE_ENGINE_FONT_SUFFIXES:
+        if not path.is_file():
+            raise _RepresentationImpossible(
+                f"exact source font program is missing: {path.name}"
+            )
+        folder = path.parent.resolve()
+        if str(folder).lower() not in _OUTLINE_ENGINE_FONT_DIRS:
+            manager.scan_folder(folder)
+            _OUTLINE_ENGINE_FONT_DIRS.add(str(folder).lower())
+        name = path.name
+    else:
+        name = raw
+    if not manager.has_font(name):
+        raise _RepresentationImpossible(
+            f"outline engine cannot load exact source font {name}"
+        )
+    face = manager.get_font_face(name)
+    resolved = str(getattr(face, "filename", "") or "")
+    if resolved.lower() != name.lower():
+        raise _RepresentationImpossible(
+            f"outline engine resolved {name} to {resolved}; refusing font substitution"
+        )
+    return name
+
+
 def _ensure_text_style(
     doc: ezdxf.document.Drawing,
     resolution: _ExactFontResolution,
@@ -1037,6 +1088,15 @@ def _ensure_text_style(
         raise ValueError("exact source font is unavailable")
     if style_font is None and not resolution.exact:
         raise ValueError("exact source font is unavailable")
+    selected_path = Path(selected_font)
+    if (
+        selected_path.suffix.lower() in _OUTLINE_ENGINE_FONT_SUFFIXES
+        and (selected_path.is_absolute() or selected_path.parent != Path("."))
+    ):
+        # A STYLE font is only ever consumed by name; an absolute asset path made
+        # ezdxf substitute its fallback face for every embedded-font outline. Bare
+        # names pass through; outline generation re-verifies them at use.
+        selected_font = _outline_engine_font_name(selected_font)
     cache_key = f"{resolution.source_name}|{selected_font}"
     if cache_key in _created_styles:
         style_name = _created_styles[cache_key]
@@ -2621,7 +2681,13 @@ def _nested_glyph_geometry_from_entity(
     height = _positive_finite(entity.dxf.height)
     if height is None:
         raise ValueError("glyph source height is invalid")
-    face = ezdxf_fonts.get_font_face(entity.font_name())
+    engine_name = _outline_engine_font_name(entity.font_name())
+    face = ezdxf_fonts.get_font_face(engine_name)
+    if str(face.filename or "").lower() != engine_name.lower():
+        raise _RepresentationImpossible(
+            f"outline engine resolved {engine_name} to {face.filename}; "
+            "refusing font substitution"
+        )
     font = text2path.get_font(face)
     font_key = font_identity
     run_unit_paths = font.text_glyph_paths(content, 1.0, 1.0)
@@ -3275,6 +3341,16 @@ def _attempt_outline_entity(
                 "outline source text failed content, anchor, size, rotation, or width verification"
             )
         font_cache_identity = _exact_font_cache_identity(source, font_resolution)
+        # The outline engine must draw the exact program the evidence names. The
+        # source STYLE already carries the engine name (see _ensure_text_style);
+        # re-resolving here proves it still loads and is not substituted.
+        outline_engine_font = _outline_engine_font_name(str(source.font_name()))
+        attempt.evidence.update(
+            {
+                "outline_engine_font_name": outline_engine_font,
+                "outline_engine_font_verified": True,
+            }
+        )
         glyph_run = (
             _nested_glyph_geometry_from_entity(
                 source,
@@ -3417,9 +3493,13 @@ def _attempt_outline_string(
         height, cap_height_ratio = _delivery_cap_height(
             source_em_height, font_resolution
         )
-        face = FontFace(
-            filename=font_resolution.filename
-        )
+        engine_font_name = _outline_engine_font_name(font_resolution.filename)
+        face = ezdxf_fonts.get_font_face(engine_font_name)
+        if str(face.filename or "").lower() != engine_font_name.lower():
+            raise _RepresentationImpossible(
+                f"outline engine resolved {engine_font_name} to {face.filename}; "
+                "refusing font substitution"
+            )
         paths = text2path.make_paths_from_str(
             str(text_item.text),
             face,
