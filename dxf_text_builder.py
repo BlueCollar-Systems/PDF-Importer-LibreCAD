@@ -1210,7 +1210,138 @@ def _verify_owned_state(
     return True
 
 
+_OUTLINE_ENTITY_TYPES = frozenset({"LWPOLYLINE", "POLYLINE"})
+
+
+def _transformed_definition_outlines(insert: Any):
+    """Transformed LWPOLYLINE/POLYLINE copies of one glyph-definition INSERT.
+
+    Same copy + ``transform(m)`` path as ezdxf's ``virtual_block_reference_entities``
+    (which ``recursive_decompose`` uses), but the SOLID fills are skipped *before* they
+    are copied and transformed. On the shape this builder writes they were ~96% of the
+    decomposed entities and the bbox filter discarded every one of them.
+    """
+    from ezdxf.disassemble import recursive_decompose
+    from ezdxf.explode import virtual_block_reference_entities
+    from ezdxf.math import NonUniformScalingError
+
+    layout = insert.block()
+    if layout is None:
+        # Let ezdxf raise its own error for the missing definition.
+        for entity in virtual_block_reference_entities(insert):
+            if entity.dxftype() in _OUTLINE_ENTITY_TYPES:
+                yield entity
+        return
+    if insert.mcount > 1 or any(
+        entity.dxftype() not in ("LWPOLYLINE", "POLYLINE", "SOLID") for entity in layout
+    ):
+        # Not the definition shape this builder writes: defer to ezdxf unchanged.
+        for entity in recursive_decompose([insert]):
+            if entity.dxftype() in _OUTLINE_ENTITY_TYPES:
+                yield entity
+        return
+    m = insert.matrix44()
+    for entity in layout:
+        if entity.dxftype() not in _OUTLINE_ENTITY_TYPES:
+            continue
+        copy = entity.copy()
+        if hasattr(copy, "remove_association"):
+            copy.remove_association()
+        try:
+            copy.transform(m)
+        except NonUniformScalingError:
+            # ezdxf would yield the transformed LINE/ARC/ELLIPSE sub-entities here,
+            # none of which pass the outline filter.
+            continue
+        except NotImplementedError:
+            continue
+        yield copy
+
+
+def iter_glyph_outline_entities(block_ref: Any):
+    """Yield exactly what ``[e for e in recursive_decompose([block_ref]) if e.dxftype()
+    in {"LWPOLYLINE", "POLYLINE"}]`` yields, in the same order and with the same
+    transformed coordinates, without transforming the SOLID fills that filter discards.
+
+    Only the nested-glyph structure this builder writes (outer BLOCK of INSERTs ->
+    definition BLOCKs of outlines + fills) takes the cheap path; anything else defers
+    to ezdxf's own decomposition so the result stays bit-identical everywhere.
+    """
+    from ezdxf.disassemble import recursive_decompose
+    from ezdxf.explode import virtual_block_reference_entities
+    from ezdxf.protocols import SupportsVirtualEntities
+
+    if block_ref.dxftype() != "INSERT" or block_ref.mcount > 1:
+        for entity in recursive_decompose([block_ref]):
+            if entity.dxftype() in _OUTLINE_ENTITY_TYPES:
+                yield entity
+        return
+    for child in virtual_block_reference_entities(block_ref):
+        dxftype = child.dxftype()
+        if dxftype in _OUTLINE_ENTITY_TYPES:
+            yield child
+        elif dxftype == "INSERT":
+            yield from _transformed_definition_outlines(child)
+        elif isinstance(child, SupportsVirtualEntities):
+            for entity in recursive_decompose([child]):
+                if entity.dxftype() in _OUTLINE_ENTITY_TYPES:
+                    yield entity
+        # SOLID and other leaves: the filter would drop them; skip without copying.
+
+
+def _plain_lwpolyline_bbox(
+    entities: Sequence[Any],
+) -> Optional[Tuple[float, float, float, float]]:
+    """Exact bbox of straight-segment, width-less, WCS-plane LWPOLYLINEs, or None.
+
+    For that shape ezdxf's ``bbox.extents`` builds a Path per polyline and takes the
+    precise bbox of its LINE_TO vertices -- i.e. the min/max of the very same vertex
+    floats -- after decomposing/converting every entity through the generic primitive
+    machinery. Anything outside that shape (bulges, widths, elevation, non-Z
+    extrusion, fewer than two vertices, non-finite coordinates, other entity types)
+    returns None so the caller falls back to ezdxf and stays bit-identical.
+    """
+    if not entities:
+        return None
+    min_x = min_y = math.inf
+    max_x = max_y = -math.inf
+    for entity in entities:
+        if entity.dxftype() != "LWPOLYLINE":
+            return None
+        try:
+            if entity.has_width:
+                return None
+            if float(entity.dxf.get("elevation", 0.0) or 0.0) != 0.0:
+                return None
+            ex, ey, ez = tuple(entity.dxf.get("extrusion", (0.0, 0.0, 1.0)))
+            if (float(ex), float(ey), float(ez)) != (0.0, 0.0, 1.0):
+                return None
+            points = entity.get_points(format="xyb")
+        except Exception:
+            return None
+        if len(points) < 2:
+            # ezdxf: a single-vertex polyline is an empty path with no bbox.
+            return None
+        for x, y, bulge in points:
+            if bulge:
+                return None
+            if not (math.isfinite(x) and math.isfinite(y)):
+                return None
+            if x < min_x:
+                min_x = x
+            if x > max_x:
+                max_x = x
+            if y < min_y:
+                min_y = y
+            if y > max_y:
+                max_y = y
+    return (float(min_x), float(min_y), float(max_x), float(max_y))
+
+
 def _bbox_tuple(entities: Sequence[Any]) -> Optional[Tuple[float, float, float, float]]:
+    plain = _plain_lwpolyline_bbox(entities)
+    if plain is not None:
+        return plain
     box = ezdxf_bbox.extents(entities)
     if not box.has_data:
         return None
@@ -2888,13 +3019,9 @@ def _commit_outlines(
             _handle(entity) for entity in outlines + fills
         )
     if glyph_geometries:
-        from ezdxf.disassemble import recursive_decompose
-
-        resolved_outlines = [
-            entity
-            for entity in recursive_decompose([block_ref])
-            if entity.dxftype() in {"LWPOLYLINE", "POLYLINE"}
-        ]
+        # Outline-only decomposition: bit-identical to filtering recursive_decompose
+        # to LWPOLYLINE/POLYLINE, without transforming the SOLID fills first.
+        resolved_outlines = list(iter_glyph_outline_entities(block_ref))
         resolved_bbox = _bbox_tuple(resolved_outlines)
     else:
         resolved_bbox = None

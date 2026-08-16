@@ -13,10 +13,8 @@ import uuid
 
 import ezdxf
 import numpy as np
-from ezdxf import bbox as ezdxf_bbox
 from ezdxf import path as ezdxf_path
 from ezdxf.colors import RGB, aci2rgb, rgb2int
-from ezdxf.disassemble import recursive_decompose
 from ezdxf.units import MM
 
 try:
@@ -40,12 +38,14 @@ from pdfcadcore.primitive_extractor import (
 from dxf_text_builder import (
     TextDeliveryAttempt,
     TextDeliveryResult,
+    _bbox_tuple,
     _glyph_definition_geometry_fingerprint,
     _glyph_instance_transform_fingerprint,
     _glyph_outer_block_structure_fingerprint,
     _resolve_librecad_unicode_lff,
     _nested_outline_tolerance,
     build_text,
+    iter_glyph_outline_entities,
     reset_text_styles,
 )
 from conversion_control import check_cancel, report_progress
@@ -226,6 +226,11 @@ def _verify_serialized_text_deliveries(
         "3d_text": {"TEXT"},
     }
     reopened_lff_resolutions: Dict[str, Any] = {}
+    # One verification pass reads an immutable re-opened document, and a block name
+    # maps to exactly one definition in it -- so each definition is hashed once per
+    # pass and every item that references it is checked against that hash. (Before:
+    # 130 definitions were hashed 3,599 times on a 979-item drawing.)
+    definition_fingerprints: Dict[str, str] = {}
     source_ids: set[str] = set()
     main_handles: set[str] = set()
     serialized_modelspace = doc.modelspace()
@@ -774,8 +779,18 @@ def _verify_serialized_text_deliveries(
                             f"serialized text delivery {source_id}: "
                             "glyph definition geometry changed"
                         )
+                    actual_definition_fingerprint = definition_fingerprints.get(
+                        definition_name
+                    )
+                    if actual_definition_fingerprint is None:
+                        actual_definition_fingerprint = (
+                            _glyph_definition_geometry_fingerprint(definition)
+                        )
+                        definition_fingerprints[definition_name] = (
+                            actual_definition_fingerprint
+                        )
                     if (
-                        _glyph_definition_geometry_fingerprint(definition)
+                        actual_definition_fingerprint
                         != expected_definition_fingerprints[definition_name]
                     ):
                         raise RuntimeError(
@@ -864,22 +879,22 @@ def _verify_serialized_text_deliveries(
                         f"serialized text delivery {source_id}: "
                         "glyph bbox tolerance evidence changed"
                     )
-                serialized_outlines = [
-                    entity
-                    for entity in recursive_decompose([insert])
-                    if entity.dxftype() in {"LWPOLYLINE", "POLYLINE"}
-                ]
-                serialized_box = ezdxf_bbox.extents(serialized_outlines)
-                if not serialized_box.has_data:
+                # Outline-only decomposition: bit-identical to filtering
+                # recursive_decompose to LWPOLYLINE/POLYLINE, minus the SOLID fills.
+                serialized_outlines = list(iter_glyph_outline_entities(insert))
+                # _bbox_tuple == ezdxf bbox.extents (exact vertex bbox on plain
+                # LWPOLYLINE outlines, ezdxf otherwise).
+                serialized_box = _bbox_tuple(serialized_outlines)
+                if serialized_box is None:
                     raise RuntimeError(
                         f"serialized text delivery {source_id}: "
                         "serialized glyph bbox missing"
                     )
                 serialized_bbox = (
-                    float(serialized_box.extmin.x) - actual_outer_insert[0],
-                    float(serialized_box.extmin.y) - actual_outer_insert[1],
-                    float(serialized_box.extmax.x) - actual_outer_insert[0],
-                    float(serialized_box.extmax.y) - actual_outer_insert[1],
+                    serialized_box[0] - actual_outer_insert[0],
+                    serialized_box[1] - actual_outer_insert[1],
+                    serialized_box[2] - actual_outer_insert[0],
+                    serialized_box[3] - actual_outer_insert[1],
                 )
                 serialized_bbox_errors = tuple(
                     abs(left - right)
