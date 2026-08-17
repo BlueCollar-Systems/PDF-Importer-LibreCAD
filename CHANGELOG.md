@@ -2,6 +2,14 @@
 
 All notable release changes are recorded here.
 
+## 1.0.92 - 2026-08-17
+
+- Positioned stacked fractions: exact producer character layout is preserved and
+  verified through the DXF (fill-only positioned geometry, page translations and
+  representable colours kept; malformed evidence refused instead of a silent raster
+  fallback). No more artificial 0.6x inline scale.
+- 1011 fallback transitions recorded (#35).
+
 ## 1.0.91 - 2026-08-16
 
 - pdfcadcore sync: constant alpha (/CA, /ca) is composited against the white page once
