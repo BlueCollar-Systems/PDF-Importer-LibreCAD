@@ -2,6 +2,16 @@
 
 All notable release changes are recorded here.
 
+## 1.0.91 - 2026-08-16
+
+- pdfcadcore sync: constant alpha (/CA, /ca) is composited against the white page once
+  at extraction for strokes, fills and text, so translucent separator bars and faint
+  labels look the way the PDF viewer shows them (LibreCAD has no transparency).
+  Invisible render-mode-3 text (OCR layers) is left uncomposited.
+- LibreCAD's white->black inversion (white ink would vanish on the default background)
+  now fires only for genuinely white ink; pale tints and composited washes keep their
+  colour instead of turning solid black.
+
 ## 1.0.90 - 2026-08-16
 
 - pdfcadcore sync: both-sides weld symbols keep the second stacked fraction (the

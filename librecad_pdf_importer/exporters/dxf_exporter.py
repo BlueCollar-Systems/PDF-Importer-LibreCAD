@@ -4504,13 +4504,19 @@ def _apply_color(attribs: dict, rgb) -> None:
     if rgb is None:
         return
     r, g, b = (int(max(0, min(255, round(float(c) * 255)))) for c in rgb)
-    # Invert near-white colors to black so geometry is visible on
-    # LibreCAD's default white background.  Without this, white-on-white
-    # entities are invisible and the user sees a blank/black screen.
-    luminance = 0.299 * r + 0.587 * g + 0.114 * b
-    if luminance > 230:
+    # Invert (near-)white to black so white-on-white geometry is visible on
+    # LibreCAD's default white background. Only genuinely white ink qualifies
+    # (every channel >= 250): a luminance threshold used to turn pale tints --
+    # light-grey lines, pale-yellow highlights, and every translucent colour that
+    # pdfcadcore now composites against the page (a 5 % black wash is 242 grey) --
+    # into solid black, which is not what the PDF viewer shows.
+    if _is_near_white(r, g, b):
         r, g, b = 0, 0, 0
     attribs["true_color"] = rgb2int((r, g, b))
+
+
+def _is_near_white(r: int, g: int, b: int) -> bool:
+    return min(r, g, b) >= 250
 
 
 def _apply_lineweight(attribs: dict, width_mm) -> None:

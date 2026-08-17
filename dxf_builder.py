@@ -87,9 +87,10 @@ def _rgb_to_aci(r: float, g: float, b: float) -> int:
 def _true_color_int(r: float, g: float, b: float) -> int:
     """Pack RGB (0-1 floats) into a 24-bit DXF true-color integer."""
     ri, gi, bi = round(r * 255), round(g * 255), round(b * 255)
-    # Invert near-white to black for visibility on light backgrounds.
-    luminance = 0.299 * ri + 0.587 * gi + 0.114 * bi
-    if luminance > 230:
+    # Invert (near-)white to black for visibility on light backgrounds -- white ink
+    # only (every channel >= 250); pale tints and composited translucent colours
+    # keep their colour, as the PDF viewer shows them.
+    if min(ri, gi, bi) >= 250:
         ri, gi, bi = 0, 0, 0
     return ezdxf_colors.rgb2int((ri, gi, bi))
 
