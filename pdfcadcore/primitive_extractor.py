@@ -8,7 +8,7 @@ Rule 1: Parser modules must not know about domain-specific logic.
 from __future__ import annotations
 import math
 import re
-from typing import List, Optional, Tuple
+from typing import List, NamedTuple, Optional, Tuple
 
 from .primitives import (
     NormalizedText,
@@ -788,84 +788,14 @@ _FRACTION_TEXT_RE = re.compile(r'^\d{1,3}\s*/\s*\d{1,3}$')
 # Valid denominators for imperial fractions.
 _VALID_DENOMS = (2, 4, 8, 16, 32, 64)
 
-# Thresholds (mm).  5 pt ≈ 1.76 mm, 6 pt ≈ 2.12 mm.
-_FRAC_X_OVERLAP_MM = 5.0   # max horizontal gap between items to consider co-located
-_FRAC_Y_SPREAD_MM = 4.5    # max total vertical spread for the whole group
-_FRAC_STACKED_SCALE = 0.6  # scale factor for stacked fractions to match original footprint
-# Overlay duplicates (the same glyph stack drawn twice by a CAD PDF printer)
-# sit ON TOP of each other; a second stacked fraction on the other side of a
-# weld-symbol reference line sits one text height away (~4.6 mm at 10 pt).
-# The dedupe must only ever collapse the former.
-_FRAC_OVERLAY_TOL_MM = 1.5
-
-
-def _slash_up_offset(slash: NormalizedText, cand: NormalizedText) -> Optional[float]:
-    """Signed offset of ``cand`` from ``slash`` along the slash's own "up".
-
-    Positive = above the slash, negative = below, measured from bbox centres
-    (insertions when a bbox is missing) and rotated by the slash rotation so
-    a 90-degree dimension string is judged in its own frame.
-    """
-    sc = _bbox_center(slash.bbox) or slash.insertion
-    cc = _bbox_center(cand.bbox) or cand.insertion
-    if sc is None or cc is None:
-        return None
-    theta = math.radians(float(slash.rotation or 0.0))
-    up = (-math.sin(theta), math.cos(theta))
-    return (cc[0] - sc[0]) * up[0] + (cc[1] - sc[1]) * up[1]
-
-
-def _candidate_half_band(cand: NormalizedText) -> float:
-    """Half of the candidate's own vertical extent (mm), rotation-aware."""
-    if cand.glyph_height and cand.glyph_height > 0:
-        return 0.5 * float(cand.glyph_height)
-    if cand.bbox:
-        w = max(float(cand.bbox[2]) - float(cand.bbox[0]), 0.0)
-        h = max(float(cand.bbox[3]) - float(cand.bbox[1]), 0.0)
-        rot = abs(float(cand.rotation or 0.0)) % 180.0
-        if rot < 5.0 or rot > 175.0:
-            return 0.5 * h
-        if 85.0 < rot < 95.0:
-            return 0.5 * w
-        return 0.5 * max(w, h)
-    return 0.5 * max(float(cand.font_size or 0.0), 0.0) * 1.2
-
-
-def _slash_within_candidate_band(slash: NormalizedText, cand: NormalizedText) -> bool:
-    """True when the slash sits inside the candidate's own stacked band.
-
-    A concatenated "316" span spans the "3" row and the "16" row; its own
-    slash sits between them, so the slash centre lies inside the span band.
-    The other half of a both-sides weld symbol is a full band away and must
-    not be swallowed (1011 sheet: 14 symbols, 4.6 mm apart).
-    """
-    v = _slash_up_offset(slash, cand)
-    if v is None:
-        return True
-    return abs(v) <= _candidate_half_band(cand) + 0.3
-
-
-def _prefer_fraction_digit_candidates(indices: List[int], items: List[NormalizedText]) -> List[int]:
-    """Drop nearby whole-number digits when smaller fraction digits are present."""
-    if len(indices) <= 2:
-        return indices
-
-    sizes = [max(float(items[i].font_size or 0.0), 0.0) for i in indices]
-    positive_sizes = [s for s in sizes if s > 0.0]
-    if len(positive_sizes) < 2:
-        return indices
-
-    min_size = min(positive_sizes)
-    max_size = max(positive_sizes)
-    if max_size <= min_size * 1.10:
-        return indices
-
-    small = [
-        idx
-        for idx in indices
-        if max(float(items[idx].font_size or 0.0), 0.0) <= min_size * 1.12
-    ]
-    return small if len(small) >= 2 else indices
+# All recognition thresholds are ratios of observed font size.  Fixed model-
+# space millimetres are not stable under user scale or PDF transforms.
+_FRAC_ROTATION_TOL_DEG = 1.0
+_FRAC_CANDIDATE_RADIUS_EM = 5.0
+_FRAC_AXIS_EPS_EM = 0.10
+_FRAC_INLINE_NORMAL_TOL_EM = 0.75
+_FRAC_STACK_ALONG_TOL_EM = 1.75
+_FRAC_STACK_NORMAL_MAX_EM = 3.5
 
 
 def _split_concatenated_fraction(digits: str):
@@ -890,459 +820,647 @@ def _split_concatenated_fraction(digits: str):
     return None
 
 
-def _merged_fraction_fidelity(parts: List[NormalizedText]) -> dict:
-    """Fidelity fields for a merged stacked-fraction replacement item.
+class _FractionProposal(NamedTuple):
+    kind: str
+    encoding: str
+    semantic_text: str
+    slash_indices: Tuple[int, ...]
+    numerator_indices: Tuple[int, ...]
+    denominator_indices: Tuple[int, ...]
+    source_char_layout: Tuple[TextCharLayout, ...]
 
-    The merged text (e.g. "7/16") is a semantic value whose characters no
-    longer map 1:1 onto any single source span, so per-character layout is
-    intentionally dropped and the merged item positions as a whole string at
-    the slash insertion (the documented legacy merged-fraction path).
-    Source/target quads are the unscaled union of the constituent spans;
-    font identity follows the numerator digits (``parts[0]``) with the
-    remaining parts as fallback.
-    """
-    fields: dict = {
-        "source_char_layout": (),
-        "requires_individual_positioning": False,
-    }
 
-    src_union = _merged_bbox(*[part.source_bbox_pdf for part in parts])
-    if src_union is not None:
-        x0, y0, x1, y1 = src_union
-        fields["source_bbox_pdf"] = src_union
-        # UL, UR, LR, LL in PDF space (y grows downward).
-        fields["source_quad_pdf"] = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+def _finite_number(value) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
 
-    points = [
-        point
-        for part in parts
-        if part.target_quad_model
-        for point in part.target_quad_model
-    ]
-    if points:
-        xs = [point[0] for point in points]
-        ys = [point[1] for point in points]
-        x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
-        # UL, UR, LR, LL in model space (y grows upward); q0->q1 spans the
-        # baseline direction and q0->q3 the vertical extent, matching
-        # ``_extract_text``.
-        quad = ((x0, y1), (x1, y1), (x1, y0), (x0, y0))
-        fields["target_quad_model"] = quad
-        fields["advance_width"] = _dist(quad[0], quad[1])
-        fields["glyph_height"] = _dist(quad[0], quad[3])
 
-    fields["baseline_descent"] = max(
-        [part.baseline_descent for part in parts] or [0.0]
+def _finite_point(value) -> bool:
+    return (
+        isinstance(value, (tuple, list))
+        and len(value) == 2
+        and all(_finite_number(component) for component in value)
     )
-    for part in parts:
-        if part.font_asset is not None:
-            fields["font_asset"] = part.font_asset
-            break
-    if fields.get("font_asset") is None:
-        for part in parts:
-            if part.font_failure is not None:
-                fields["font_failure"] = part.font_failure
-                break
-    return fields
+
+
+def _finite_quad(value) -> bool:
+    return (
+        isinstance(value, (tuple, list))
+        and len(value) == 4
+        and all(_finite_point(point) for point in value)
+    )
+
+
+def _angle_delta(left, right) -> float:
+    try:
+        return abs((float(left) - float(right) + 180.0) % 360.0 - 180.0)
+    except (TypeError, ValueError):
+        return math.inf
+
+
+def _valid_character_layout(char, rotation: float) -> bool:
+    if not isinstance(char, TextCharLayout):
+        return False
+    if not isinstance(char.text, str) or len(char.text) != 1:
+        return False
+    if char.glyph_id is not None and (
+        not isinstance(char.glyph_id, int) or isinstance(char.glyph_id, bool)
+    ):
+        return False
+    if not _finite_point(char.source_origin_pdf) or not _finite_point(char.target_origin):
+        return False
+    if not _finite_quad(char.source_quad_pdf) or not _finite_quad(char.target_quad):
+        return False
+    bbox = char.source_bbox_pdf
+    if (
+        not isinstance(bbox, (tuple, list))
+        or len(bbox) != 4
+        or not all(_finite_number(value) for value in bbox)
+        or float(bbox[2]) < float(bbox[0])
+        or float(bbox[3]) < float(bbox[1])
+    ):
+        return False
+    if not _finite_number(char.advance_width) or float(char.advance_width) <= 0.0:
+        return False
+    if not _finite_number(char.glyph_height) or float(char.glyph_height) <= 0.0:
+        return False
+    q0, q1 = char.target_quad[0], char.target_quad[1]
+    quad_rotation = math.degrees(
+        math.atan2(float(q1[1]) - float(q0[1]), float(q1[0]) - float(q0[0]))
+    )
+    return _angle_delta(quad_rotation, rotation) <= _FRAC_ROTATION_TOL_DEG
+
+
+def _exact_item_layout(item: NormalizedText) -> Optional[Tuple[TextCharLayout, ...]]:
+    layout = item.source_char_layout
+    text = str(item.text or "").strip()
+    if not isinstance(layout, tuple) or not layout or not text:
+        return None
+    if len(layout) != len(text) or len({id(char) for char in layout}) != len(layout):
+        return None
+    if any(not _valid_character_layout(char, item.rotation) for char in layout):
+        return None
+    if "".join(char.text for char in layout) != text:
+        return None
+    return layout
+
+
+def _orientations_compatible(*items: NormalizedText) -> bool:
+    if not items:
+        return False
+    rotation = items[0].rotation
+    return all(
+        _angle_delta(rotation, item.rotation) <= _FRAC_ROTATION_TOL_DEG
+        for item in items[1:]
+    )
+
+
+def _font_scale(*items: NormalizedText) -> Optional[float]:
+    values = []
+    for item in items:
+        if not _finite_number(item.font_size) or float(item.font_size) <= 0.0:
+            return None
+        values.append(float(item.font_size))
+    values.sort()
+    return values[len(values) // 2] if values else None
+
+
+def _sizes_compatible(*items: NormalizedText) -> bool:
+    values = [float(item.font_size) for item in items if _finite_number(item.font_size)]
+    return (
+        len(values) == len(items)
+        and min(values) > 0.0
+        and max(values) <= 2.0 * min(values)
+    )
+
+
+def _layout_centroid(layout: Tuple[TextCharLayout, ...]) -> Tuple[float, float]:
+    count = float(len(layout))
+    return (
+        sum(float(char.target_origin[0]) for char in layout) / count,
+        sum(float(char.target_origin[1]) for char in layout) / count,
+    )
+
+
+def _local_offset(
+    point: Tuple[float, float],
+    anchor: Tuple[float, float],
+    rotation: float,
+    scale: float,
+) -> Tuple[float, float]:
+    angle = math.radians(float(rotation))
+    dx = float(point[0]) - float(anchor[0])
+    dy = float(point[1]) - float(anchor[1])
+    along = (dx * math.cos(angle) + dy * math.sin(angle)) / scale
+    normal = (-dx * math.sin(angle) + dy * math.cos(angle)) / scale
+    return along, normal
+
+
+def _candidate_near_slash(
+    item: NormalizedText,
+    layout: Optional[Tuple[TextCharLayout, ...]],
+    slash: NormalizedText,
+    slash_layout: Tuple[TextCharLayout, ...],
+) -> bool:
+    scale = _font_scale(item, slash)
+    if scale is None:
+        return False
+    point = _layout_centroid(layout) if layout else tuple(item.insertion)
+    anchor = _layout_centroid(slash_layout)
+    along, normal = _local_offset(point, anchor, slash.rotation, scale)
+    return (
+        abs(along) <= _FRAC_CANDIDATE_RADIUS_EM
+        and abs(normal) <= _FRAC_CANDIDATE_RADIUS_EM
+    )
+
+
+def _fraction_encoding(
+    numerator_layout: Tuple[TextCharLayout, ...],
+    slash_layout: Tuple[TextCharLayout, ...],
+    denominator_layout: Tuple[TextCharLayout, ...],
+    numerator: NormalizedText,
+    slash: NormalizedText,
+    denominator: NormalizedText,
+) -> Optional[str]:
+    if not _orientations_compatible(numerator, slash, denominator):
+        return None
+    scale = _font_scale(numerator, slash, denominator)
+    if scale is None:
+        return None
+    anchor = _layout_centroid(slash_layout)
+    numer_along, numer_normal = _local_offset(
+        _layout_centroid(numerator_layout), anchor, slash.rotation, scale
+    )
+    denom_along, denom_normal = _local_offset(
+        _layout_centroid(denominator_layout), anchor, slash.rotation, scale
+    )
+    vertical = (
+        numer_normal >= _FRAC_AXIS_EPS_EM
+        and denom_normal <= -_FRAC_AXIS_EPS_EM
+        and max(abs(numer_normal), abs(denom_normal)) <= _FRAC_STACK_NORMAL_MAX_EM
+        and max(abs(numer_along), abs(denom_along)) <= _FRAC_STACK_ALONG_TOL_EM
+    )
+    horizontal = (
+        numer_along <= -_FRAC_AXIS_EPS_EM
+        and denom_along >= _FRAC_AXIS_EPS_EM
+        and max(abs(numer_along), abs(denom_along)) <= _FRAC_CANDIDATE_RADIUS_EM
+        and max(abs(numer_normal), abs(denom_normal)) <= _FRAC_INLINE_NORMAL_TOL_EM
+    )
+    if vertical == horizontal:
+        return None
+    return "vertical" if vertical else "horizontal"
+
+
+def _semantic_fraction_layout(
+    numerator_layout: Tuple[TextCharLayout, ...],
+    slash_layout: Tuple[TextCharLayout, ...],
+    denominator_layout: Tuple[TextCharLayout, ...],
+    semantic_text: str,
+) -> Optional[Tuple[TextCharLayout, ...]]:
+    layout = numerator_layout + slash_layout + denominator_layout
+    if len(layout) != len(semantic_text):
+        return None
+    if len({id(char) for char in layout}) != len(layout):
+        return None
+    if "".join(char.text for char in layout) != semantic_text:
+        return None
+    if semantic_text.count("/") != 1 or sum(char.text == "/" for char in layout) != 1:
+        return None
+    return layout
+
+
+def _safe_equal(left, right) -> bool:
+    if left is right:
+        return True
+    try:
+        return bool(left == right)
+    except (TypeError, ValueError):
+        return False
+
+
+def _rendering_bindings_compatible(*items: NormalizedText) -> bool:
+    """Require one exact item-level rendering binding for a merged value."""
+    if not items:
+        return False
+    reference = items[0]
+    attributes = ("font_name", "font_asset", "font_failure", "color")
+    return all(
+        _safe_equal(getattr(reference, name), getattr(item, name))
+        for item in items[1:]
+        for name in attributes
+    )
+
+
+def _observed_overlay_equivalent(left: NormalizedText, right: NormalizedText) -> bool:
+    if _angle_delta(left.rotation, right.rotation) > 1e-9:
+        return False
+    attributes = (
+        "text",
+        "normalized",
+        "insertion",
+        "bbox",
+        "font_size",
+        "font_name",
+        "color",
+        "page_number",
+        "generic_tags",
+        "domain_tags",
+        "source_bbox_pdf",
+        "source_quad_pdf",
+        "target_quad_model",
+        "advance_width",
+        "glyph_height",
+        "baseline_descent",
+        "source_char_layout",
+        "requires_individual_positioning",
+        "positioned_character",
+        "source_glyph_id",
+        "font_asset",
+        "font_failure",
+    )
+    return all(
+        _safe_equal(getattr(left, name), getattr(right, name))
+        for name in attributes
+    )
+
+
+def _proposal_consumed(proposal: _FractionProposal) -> set[int]:
+    return set(
+        proposal.slash_indices
+        + proposal.numerator_indices
+        + proposal.denominator_indices
+    )
+
+
+def _proposal_equivalent(
+    left: _FractionProposal,
+    right: _FractionProposal,
+    items: List[NormalizedText],
+) -> bool:
+    if (
+        left.kind != right.kind
+        or left.encoding != right.encoding
+        or left.semantic_text != right.semantic_text
+    ):
+        return False
+    role_pairs = (
+        (left.slash_indices, right.slash_indices),
+        (left.numerator_indices, right.numerator_indices),
+        (left.denominator_indices, right.denominator_indices),
+    )
+    for left_indices, right_indices in role_pairs:
+        if bool(left_indices) != bool(right_indices):
+            return False
+        if left_indices and not _observed_overlay_equivalent(
+            items[left_indices[0]], items[right_indices[0]]
+        ):
+            return False
+    return True
+
+
+def _combine_equivalent_proposals(
+    left: _FractionProposal,
+    right: _FractionProposal,
+) -> _FractionProposal:
+    return left._replace(
+        slash_indices=tuple(sorted(set(left.slash_indices + right.slash_indices))),
+        numerator_indices=tuple(
+            sorted(set(left.numerator_indices + right.numerator_indices))
+        ),
+        denominator_indices=tuple(
+            sorted(set(left.denominator_indices + right.denominator_indices))
+        ),
+    )
+
+
+def _insertion_near_slash(item: NormalizedText, slash: NormalizedText) -> bool:
+    scale = _font_scale(item, slash)
+    if scale is None or not _finite_point(item.insertion) or not _finite_point(slash.insertion):
+        return False
+    along, normal = _local_offset(
+        tuple(item.insertion), tuple(slash.insertion), slash.rotation, scale
+    )
+    return (
+        abs(along) <= _FRAC_CANDIDATE_RADIUS_EM
+        and abs(normal) <= _FRAC_CANDIDATE_RADIUS_EM
+    )
+
+
+def _proposal_for_slash(
+    items: List[NormalizedText],
+    indices: List[int],
+    slash_index: int,
+) -> Tuple[Optional[_FractionProposal], set[int]]:
+    slash = items[slash_index]
+    slash_layout = _exact_item_layout(slash)
+    if slash_layout is None or str(slash.text or "").strip() != "/":
+        blocked = {slash_index}
+        blocked.update(
+            index
+            for index in indices
+            if index != slash_index
+            and str(items[index].text or "").strip().isdigit()
+            and _orientations_compatible(items[index], slash)
+            and _insertion_near_slash(items[index], slash)
+        )
+        return None, blocked
+
+    candidates: List[Tuple[int, Tuple[TextCharLayout, ...]]] = []
+    invalid_candidates: set[int] = set()
+    for index in indices:
+        if index == slash_index:
+            continue
+        item = items[index]
+        text = str(item.text or "").strip()
+        if not _DIGITS_RE.match(text) or not _orientations_compatible(item, slash):
+            continue
+        layout = _exact_item_layout(item)
+        near = _candidate_near_slash(item, layout, slash, slash_layout)
+        if not near:
+            continue
+        if layout is None:
+            invalid_candidates.add(index)
+        else:
+            candidates.append((index, layout))
+
+    if invalid_candidates:
+        return None, invalid_candidates | {slash_index}
+
+    concatenated: List[_FractionProposal] = []
+    for index, layout in candidates:
+        item = items[index]
+        split = _split_concatenated_fraction(item.text)
+        if split is None or not _sizes_compatible(item, slash):
+            continue
+        numerator_text, denominator_text = split
+        split_at = len(numerator_text)
+        numerator_layout = layout[:split_at]
+        denominator_layout = layout[split_at:]
+        semantic_text = f"{numerator_text}/{denominator_text}"
+        semantic_layout = _semantic_fraction_layout(
+            numerator_layout,
+            slash_layout,
+            denominator_layout,
+            semantic_text,
+        )
+        encoding = _fraction_encoding(
+            numerator_layout,
+            slash_layout,
+            denominator_layout,
+            item,
+            slash,
+            item,
+        )
+        if semantic_layout is None:
+            return None, {index, slash_index}
+        if encoding is None:
+            continue
+        if not _rendering_bindings_compatible(item, slash):
+            return None, {index, slash_index}
+        concatenated.append(
+            _FractionProposal(
+                kind="concatenated",
+                encoding=encoding,
+                semantic_text=semantic_text,
+                slash_indices=(slash_index,),
+                numerator_indices=(index,),
+                denominator_indices=(),
+                source_char_layout=semantic_layout,
+            )
+        )
+
+    separate_candidates = [
+        (index, layout)
+        for index, layout in candidates
+        if _split_concatenated_fraction(items[index].text) is None
+    ]
+    separate: List[_FractionProposal] = []
+    for left_offset, (left_index, left_layout) in enumerate(separate_candidates):
+        for right_index, right_layout in separate_candidates[left_offset + 1:]:
+            left_item = items[left_index]
+            right_item = items[right_index]
+            try:
+                left_value = int(left_item.text.strip())
+                right_value = int(right_item.text.strip())
+            except ValueError:
+                continue
+            if left_value < right_value:
+                numerator_index, numerator_layout = left_index, left_layout
+                denominator_index, denominator_layout = right_index, right_layout
+            elif right_value < left_value:
+                numerator_index, numerator_layout = right_index, right_layout
+                denominator_index, denominator_layout = left_index, left_layout
+            else:
+                continue
+            numerator = items[numerator_index]
+            denominator = items[denominator_index]
+            denominator_value = int(denominator.text.strip())
+            numerator_value = int(numerator.text.strip())
+            if denominator_value not in _VALID_DENOMS or not 0 < numerator_value < denominator_value:
+                continue
+            if not _sizes_compatible(numerator, slash, denominator):
+                continue
+            semantic_text = f"{numerator.text.strip()}/{denominator.text.strip()}"
+            semantic_layout = _semantic_fraction_layout(
+                numerator_layout,
+                slash_layout,
+                denominator_layout,
+                semantic_text,
+            )
+            encoding = _fraction_encoding(
+                numerator_layout,
+                slash_layout,
+                denominator_layout,
+                numerator,
+                slash,
+                denominator,
+            )
+            if semantic_layout is None:
+                return None, {numerator_index, slash_index, denominator_index}
+            if encoding is None:
+                continue
+            if not _rendering_bindings_compatible(numerator, slash, denominator):
+                return None, {numerator_index, slash_index, denominator_index}
+            separate.append(
+                _FractionProposal(
+                    kind="separate",
+                    encoding=encoding,
+                    semantic_text=semantic_text,
+                    slash_indices=(slash_index,),
+                    numerator_indices=(numerator_index,),
+                    denominator_indices=(denominator_index,),
+                    source_char_layout=semantic_layout,
+                )
+            )
+
+    if concatenated and separate:
+        blocked = {slash_index}
+        for proposal in concatenated + separate:
+            blocked.update(_proposal_consumed(proposal))
+        return None, blocked
+    raw = concatenated or separate
+    if not raw:
+        return None, set()
+    collapsed = raw[0]
+    for proposal in raw[1:]:
+        if not _proposal_equivalent(collapsed, proposal, items):
+            blocked = {slash_index}
+            for value in raw:
+                blocked.update(_proposal_consumed(value))
+            return None, blocked
+        collapsed = _combine_equivalent_proposals(collapsed, proposal)
+    return collapsed, set()
+
+
+def _proposal_parts(
+    proposal: _FractionProposal,
+    items: List[NormalizedText],
+) -> Tuple[NormalizedText, ...]:
+    numerator = items[proposal.numerator_indices[0]]
+    slash = items[proposal.slash_indices[0]]
+    if proposal.kind == "concatenated":
+        return numerator, slash
+    return numerator, slash, items[proposal.denominator_indices[0]]
+
+
+def _build_fraction_item(
+    proposal: _FractionProposal,
+    items: List[NormalizedText],
+) -> NormalizedText:
+    parts = _proposal_parts(proposal, items)
+    anchor = items[proposal.slash_indices[0]]
+    primary = items[proposal.numerator_indices[0]]
+    font_asset = anchor.font_asset if anchor.font_asset is not None else primary.font_asset
+    font_failure = (
+        anchor.font_failure if anchor.font_failure is not None else primary.font_failure
+    )
+    return NormalizedText(
+        id=next_id(),
+        text=proposal.semantic_text,
+        normalized=proposal.semantic_text.upper().strip(),
+        insertion=anchor.insertion,
+        bbox=_merged_bbox(*[part.bbox for part in parts]),
+        font_size=anchor.font_size,
+        rotation=anchor.rotation,
+        font_name=anchor.font_name or primary.font_name,
+        color=anchor.color if anchor.color is not None else primary.color,
+        page_number=anchor.page_number,
+        generic_tags=_classify_generic(proposal.semantic_text),
+        source_bbox_pdf=_merged_bbox(*[part.source_bbox_pdf for part in parts]),
+        source_quad_pdf=None,
+        target_quad_model=None,
+        advance_width=0.0,
+        glyph_height=0.0,
+        baseline_descent=anchor.baseline_descent,
+        source_char_layout=proposal.source_char_layout,
+        requires_individual_positioning=True,
+        font_asset=font_asset,
+        font_failure=font_failure,
+    )
 
 
 def _merge_stacked_fractions(items: List[NormalizedText]) -> List[NormalizedText]:
-    """Merge stacked fraction spans into one.
+    """Merge only fractions with complete, unambiguous source placement truth.
 
-    Handles two PDF encoding patterns:
-    1. Two items: concatenated digits + "/" (e.g. "716" + "/" -> "7/16")
-       This is the most common pattern in CAD PDFs.  Exactly one span merges
-       per slash (the nearest, preferring the span whose own stacked band
-       straddles the slash), so a both-sides weld symbol -- two stacks one
-       text height apart -- yields two fractions, never one.
-    2. Three items: separate numerator + "/" + denominator (e.g. "15", "/", "16")
-       Only matched when neither digit item is itself a concatenated fraction.
-
-    NOTE: Merged fractions use reduced font_size (~0.6x) to match stacked footprint.
-    Replacement items take ids from the global counter; ``_extract_text``
-    re-indexes its output afterwards so pipeline ids stay page-local and
-    deterministic.
+    Recognition is performed in the slash's font-relative baseline/normal
+    frame.  A replacement is published only when every semantic character has
+    exactly one observed character layout and every competing candidate is
+    either absent or a proven equivalent overlay.
     """
     if len(items) < 2:
         return items
 
-    # Group candidates by page
     by_page: dict[int, list[int]] = {}
-    for idx, it in enumerate(items):
-        by_page.setdefault(it.page_number, []).append(idx)
+    for index, item in enumerate(items):
+        by_page.setdefault(item.page_number, []).append(index)
 
     merged_indices: set[int] = set()
-    replacements: dict[int, NormalizedText] = {}  # keyed by slash index
+    replacements: dict[int, NormalizedText] = {}
 
-    for page_num, indices in by_page.items():
-        # Find slash items on this page
-        slash_idxs = [i for i in indices if _SLASH_RE.match(items[i].text.strip())]
+    for indices in by_page.values():
+        slash_indices = [
+            index
+            for index in indices
+            if _SLASH_RE.match(str(items[index].text or "").strip())
+        ]
+        proposals: List[_FractionProposal] = []
+        blocked_indices: set[int] = set()
+        for slash_index in slash_indices:
+            proposal, blocked = _proposal_for_slash(items, indices, slash_index)
+            blocked_indices.update(blocked)
+            if proposal is not None:
+                proposals.append(proposal)
 
-        for si in slash_idxs:
-            if si in merged_indices:
-                continue
-            slash = items[si]
-            sx = slash.insertion[0]
-            sy = slash.insertion[1]
+        proposals = [
+            proposal
+            for proposal in proposals
+            if not (_proposal_consumed(proposal) & blocked_indices)
+        ]
 
-            # ----------------------------------------------------------
-            # Pattern A: Concatenated digits + slash (e.g. "716" + "/")
-            # Try this FIRST — it is the most common and unambiguous.
-            # ----------------------------------------------------------
-            concat_candidates = []
-            for ci in indices:
-                if ci == si or ci in merged_indices:
-                    continue
-                cand = items[ci]
-                ct = cand.text.strip()
-                if not ct.isdigit() or len(ct) < 2:
-                    continue
-                cx = cand.insertion[0]
-                cy = cand.insertion[1]
-                if abs(cx - sx) > _FRAC_X_OVERLAP_MM:
-                    continue
-                if abs(cy - sy) > _FRAC_Y_SPREAD_MM:
-                    continue
-                split = _split_concatenated_fraction(ct)
-                if split is None:
-                    continue
-                distance = abs(cx - sx) + abs(cy - sy)
-                # A span whose own stacked band contains this slash is this
-                # slash's numerator/denominator; the second half of a
-                # both-sides weld symbol is one band away and belongs to the
-                # next slash.  Rank straddling spans first (fall back to plain
-                # distance only when nothing straddles, e.g. synthetic pages).
-                straddles = _slash_within_candidate_band(slash, cand)
-                concat_candidates.append((ci, split, distance, 0 if straddles else 1))
-
-            if concat_candidates:
-                concat_candidates.sort(key=lambda entry: (entry[3], entry[2]))
-                nearest_idx, nearest_split, nearest_distance, _ = concat_candidates[0]
-                different_close = any(
-                    split != nearest_split and distance <= nearest_distance + 1.0
-                    for _ci, split, distance, _rank in concat_candidates[1:]
-                )
-                # Each slash merges with at most ONE numerator/denominator
-                # span: the nearest.  Duplicate overlay stacks (if a printer
-                # ever draws one twice) are handled by _dedupe_fraction_overlays.
-                selected_indices = [] if different_close else [nearest_idx]
-                if selected_indices:
-                    numer_s, denom_s = nearest_split
-                    selected = [items[ci] for ci in selected_indices]
-                    sizes = [item.font_size for item in selected] + [slash.font_size]
-                else:
-                    sizes = []
-                if sizes and min(sizes) > 0 and max(sizes) <= 2.0 * min(sizes):
-                    merged_text = f"{numer_s}/{denom_s}"
-                    avg_size = sum(sizes) / float(len(sizes))
-                    # Apply stacked fraction scale to match original footprint
-                    stacked_size = avg_size * _FRAC_STACKED_SCALE
-                    first = selected[0]
-                    merged_item = NormalizedText(
-                        id=next_id(),
-                        text=merged_text,
-                        normalized=merged_text.upper().strip(),
-                        insertion=slash.insertion,
-                        bbox=_merged_bbox(
-                            *[item.bbox for item in selected],
-                            slash.bbox,
-                            scale_width=_FRAC_STACKED_SCALE,
-                        ),
-                        font_size=stacked_size,
-                        rotation=slash.rotation,
-                        font_name=slash.font_name or first.font_name,
-                        color=slash.color or first.color,
-                        page_number=page_num,
-                        generic_tags=_classify_generic(merged_text),
-                        **_merged_fraction_fidelity(selected + [slash]),
-                    )
-                    merged_indices.update(selected_indices + [si])
-                    replacements[si] = merged_item
-                    continue
-
-            # ----------------------------------------------------------
-            # Pattern B: Three separate items (numerator + slash + denom)
-            # Only if Pattern A didn't match. Require that neither digit
-            # is itself a concatenated fraction (to avoid grabbing whole
-            # numbers that sit next to an already-handled concat fraction).
-            # ----------------------------------------------------------
-            digit_candidates = []
-            for ci in indices:
-                if ci == si or ci in merged_indices:
-                    continue
-                cand = items[ci]
-                ct = cand.text.strip()
-                if not _DIGITS_RE.match(ct):
-                    continue
-                # Skip items that are concatenated fractions — those belong
-                # to Pattern A with a different slash.
-                if len(ct) >= 2 and _split_concatenated_fraction(ct) is not None:
-                    continue
-                cx = cand.insertion[0]
-                cy = cand.insertion[1]
-                if abs(cx - sx) > _FRAC_X_OVERLAP_MM:
-                    continue
-                if abs(cy - sy) > _FRAC_Y_SPREAD_MM:
-                    continue
-                digit_candidates.append(ci)
-
-            if len(digit_candidates) >= 2:
-                # Try all pairs to find a valid numerator/denominator.
-                # Sort by closeness to slash Y so we prefer the tightest pair.
-                digit_candidates = _prefer_fraction_digit_candidates(digit_candidates, items)
-                digit_candidates.sort(key=lambda i: abs(items[i].insertion[1] - sy))
-                best_pair = None
-                best_spread = _FRAC_Y_SPREAD_MM + 1
-                for ai in range(len(digit_candidates)):
-                    for bi in range(ai + 1, len(digit_candidates)):
-                        ca, cb = digit_candidates[ai], digit_candidates[bi]
-                        ya = items[ca].insertion[1]
-                        yb = items[cb].insertion[1]
-                        spread = abs(ya - yb)
-                        if spread > _FRAC_Y_SPREAD_MM or spread < 0.3:
-                            continue
-                        try:
-                            va = int(items[ca].text.strip())
-                            vb = int(items[cb].text.strip())
-                        except ValueError:
-                            continue
-                        if va < vb:
-                            ni, di = ca, cb
-                        elif vb < va:
-                            ni, di = cb, ca
-                        else:
-                            continue
-                        d_val = int(items[di].text.strip())
-                        n_val = int(items[ni].text.strip())
-                        if d_val not in _VALID_DENOMS or n_val >= d_val:
-                            continue
-                        if spread < best_spread:
-                            best_spread = spread
-                            best_pair = (ni, di)
-                if best_pair is not None:
-                    numer_idx, denom_idx = best_pair
-                    numer = items[numer_idx]
-                    denom = items[denom_idx]
-                    sizes = [numer.font_size, slash.font_size, denom.font_size]
-                    if max(sizes) <= 2.0 * min(sizes):
-                        merged_text = f"{numer.text.strip()}/{denom.text.strip()}"
-                        avg_size = sum(sizes) / 3.0
-                        # Apply stacked fraction scale to match original footprint
-                        stacked_size = avg_size * _FRAC_STACKED_SCALE
-                        merged_item = NormalizedText(
-                            id=next_id(),
-                            text=merged_text,
-                            normalized=merged_text.upper().strip(),
-                            insertion=slash.insertion,
-                            bbox=_merged_bbox(numer.bbox, slash.bbox, denom.bbox, scale_width=_FRAC_STACKED_SCALE),
-                            font_size=stacked_size,
-                            rotation=slash.rotation,
-                            font_name=slash.font_name or numer.font_name,
-                            color=slash.color or numer.color,
-                            page_number=page_num,
-                            generic_tags=_classify_generic(merged_text),
-                            **_merged_fraction_fidelity([numer, slash, denom]),
-                        )
-                        merged_indices.update([numer_idx, si, denom_idx])
-                        replacements[si] = merged_item
+        # Equivalent overlays may yield duplicate proposals.  Collapse them
+        # only after every observed field (including char layout/glyph ids)
+        # proves equality apart from the source item id.
+        changed = True
+        while changed:
+            changed = False
+            for left_index in range(len(proposals)):
+                for right_index in range(left_index + 1, len(proposals)):
+                    left = proposals[left_index]
+                    right = proposals[right_index]
+                    if not (_proposal_consumed(left) & _proposal_consumed(right)):
                         continue
+                    if not _proposal_equivalent(left, right, items):
+                        continue
+                    proposals[left_index] = _combine_equivalent_proposals(left, right)
+                    proposals.pop(right_index)
+                    changed = True
+                    break
+                if changed:
+                    break
 
-            # ----------------------------------------------------------
-            # Pattern C: Horizontal fraction (e.g. "3" + "/" + "4" on one line)
-            # ----------------------------------------------------------
-            horiz_digits = []
-            for ci in indices:
-                if ci == si or ci in merged_indices:
-                    continue
-                cand = items[ci]
-                ct = cand.text.strip()
-                if not _DIGITS_RE.match(ct):
-                    continue
-                if len(ct) >= 2 and _split_concatenated_fraction(ct) is not None:
-                    continue
-                cx = cand.insertion[0]
-                cy = cand.insertion[1]
-                if abs(cy - sy) > 1.2:
-                    continue
-                horiz_digits.append(ci)
+        conflicted: set[int] = set()
+        for left_index in range(len(proposals)):
+            for right_index in range(left_index + 1, len(proposals)):
+                if _proposal_consumed(proposals[left_index]) & _proposal_consumed(
+                    proposals[right_index]
+                ):
+                    conflicted.update((left_index, right_index))
 
-            left = [ci for ci in horiz_digits if items[ci].insertion[0] < sx - 0.05]
-            right = [ci for ci in horiz_digits if items[ci].insertion[0] > sx + 0.05]
-            if len(left) == 1 and len(right) == 1:
-                numer_idx, denom_idx = left[0], right[0]
-                numer = items[numer_idx]
-                denom = items[denom_idx]
-                try:
-                    n_val = int(numer.text.strip())
-                    d_val = int(denom.text.strip())
-                except ValueError:
-                    n_val = d_val = -1
-                if d_val in _VALID_DENOMS and 0 < n_val < d_val:
-                    gap_l = sx - numer.insertion[0]
-                    gap_r = denom.insertion[0] - sx
-                    if gap_l <= 8.0 and gap_r <= 8.0:
-                        sizes = [numer.font_size, slash.font_size, denom.font_size]
-                        if max(sizes) <= 2.0 * min(sizes):
-                            merged_text = f"{numer.text.strip()}/{denom.text.strip()}"
-                            avg_size = sum(sizes) / 3.0
-                            # Apply stacked fraction scale to match original footprint
-                            stacked_size = avg_size * _FRAC_STACKED_SCALE
-                            merged_item = NormalizedText(
-                                id=next_id(),
-                                text=merged_text,
-                                normalized=merged_text.upper().strip(),
-                                insertion=slash.insertion,
-                                bbox=_merged_bbox(numer.bbox, slash.bbox, denom.bbox, scale_width=_FRAC_STACKED_SCALE),
-                                font_size=stacked_size,
-                                rotation=slash.rotation,
-                                font_name=slash.font_name or numer.font_name,
-                                color=slash.color or numer.color,
-                                page_number=page_num,
-                                generic_tags=_classify_generic(merged_text),
-                                **_merged_fraction_fidelity([numer, slash, denom]),
-                            )
-                            merged_indices.update([numer_idx, si, denom_idx])
-                            replacements[si] = merged_item
+        for proposal_index, proposal in enumerate(proposals):
+            if proposal_index in conflicted:
+                continue
+            consumed = _proposal_consumed(proposal)
+            if consumed & merged_indices:
+                continue
+            replacement_index = proposal.slash_indices[0]
+            replacements[replacement_index] = _build_fraction_item(proposal, items)
+            merged_indices.update(consumed)
 
     if not merged_indices:
         return items
 
-    # Rebuild list: keep non-merged items, insert merged items at slash position
-    result = []
-    for idx, it in enumerate(items):
-        if idx in merged_indices:
-            if idx in replacements:
-                result.append(replacements[idx])
-            # else: skip (numerator or denominator that was merged)
-        else:
-            result.append(it)
-    return _dedupe_fraction_overlays(result)
+    result: List[NormalizedText] = []
+    for index, item in enumerate(items):
+        if index not in merged_indices:
+            result.append(item)
+        elif index in replacements:
+            result.append(replacements[index])
+    return result
 
 
-def _bbox_center(box):
-    if not box:
+def _merged_bbox(*boxes):
+    """Return the exact union of observed bounding boxes, or None."""
+    values = [box for box in boxes if box is not None]
+    if not values:
         return None
-    return ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0)
-
-
-def _bbox_gap(a, b) -> float:
-    if not a or not b:
-        return 0.0
-    x_gap = max(a[0] - b[2], b[0] - a[2], 0.0)
-    y_gap = max(a[1] - b[3], b[1] - a[3], 0.0)
-    return max(x_gap, y_gap)
-
-
-def _fraction_overlay_duplicate(a: NormalizedText, b: NormalizedText) -> bool:
-    """Return True for duplicate fraction overlays emitted by CAD text stacks."""
-    ta = (a.text or "").strip().replace(" ", "")
-    tb = (b.text or "").strip().replace(" ", "")
-    if ta != tb or not _FRACTION_TEXT_RE.match(ta):
-        return False
-    if a.page_number != b.page_number:
-        return False
-    try:
-        if abs(float(a.rotation or 0.0) - float(b.rotation or 0.0)) > 1.0:
-            return False
-    except (TypeError, ValueError):
-        pass
-    ca = _bbox_center(a.bbox)
-    cb = _bbox_center(b.bbox)
-    if ca is None or cb is None:
-        return False
-    # Overlays coincide; a neighbouring stacked fraction (other side of a
-    # weld reference line) is a full text height away and is NOT a duplicate.
     return (
-        abs(ca[0] - cb[0]) <= _FRAC_OVERLAY_TOL_MM
-        and abs(ca[1] - cb[1]) <= _FRAC_OVERLAY_TOL_MM
-        and _bbox_gap(a.bbox, b.bbox) <= 1.0
+        min(box[0] for box in values),
+        min(box[1] for box in values),
+        max(box[2] for box in values),
+        max(box[3] for box in values),
     )
-
-
-def _slash_fraction_overlay_duplicate(slash: NormalizedText, fraction: NormalizedText) -> bool:
-    """Return True when a leftover slash is already represented by a fraction."""
-    if not _SLASH_RE.match((slash.text or "").strip()):
-        return False
-    text = (fraction.text or "").strip().replace(" ", "")
-    if not _FRACTION_TEXT_RE.match(text):
-        return False
-    if slash.page_number != fraction.page_number:
-        return False
-    try:
-        if abs(float(slash.rotation or 0.0) - float(fraction.rotation or 0.0)) > 1.0:
-            return False
-    except (TypeError, ValueError):
-        pass
-    cs = _bbox_center(slash.bbox)
-    cf = _bbox_center(fraction.bbox)
-    if cs is None or cf is None:
-        return False
-    return (
-        abs(cs[0] - cf[0]) <= _FRAC_OVERLAY_TOL_MM
-        and abs(cs[1] - cf[1]) <= _FRAC_OVERLAY_TOL_MM
-        and _bbox_gap(slash.bbox, fraction.bbox) <= 1.0
-    )
-
-
-def _fraction_dedupe_score(item: NormalizedText) -> tuple:
-    """Prefer the tighter/smaller fraction footprint when overlays collide."""
-    box = item.bbox or (0.0, 0.0, 0.0, 0.0)
-    width = max(float(box[2]) - float(box[0]), 0.0)
-    height = max(float(box[3]) - float(box[1]), 0.0)
-    size = max(float(item.font_size or 0.0), 0.0)
-    return (size, width * height, width)
-
-
-def _dedupe_fraction_overlays(items: List[NormalizedText]) -> List[NormalizedText]:
-    """Collapse same-position duplicate fractions left by PDF overlay glyphs."""
-    kept: List[NormalizedText] = []
-    for item in items:
-        replace_at = None
-        for idx, existing in enumerate(kept):
-            if _fraction_overlay_duplicate(existing, item):
-                replace_at = idx
-                break
-        if replace_at is None:
-            kept.append(item)
-        elif _fraction_dedupe_score(item) < _fraction_dedupe_score(kept[replace_at]):
-            kept[replace_at] = item
-
-    return [
-        item
-        for item in kept
-        if not (
-            _SLASH_RE.match((item.text or "").strip())
-            and any(
-                other is not item and _slash_fraction_overlay_duplicate(item, other)
-                for other in kept
-            )
-        )
-    ]
-
-
-def _merged_bbox(*boxes, scale_width=1.0):
-    """Return the union bounding box of one or more (x0,y0,x1,y1) or None boxes.
-
-    Args:
-        *boxes: Bounding boxes to merge
-        scale_width: Optional width scaling factor (e.g., for stacked fractions)
-    """
-    vals = [b for b in boxes if b is not None]
-    if not vals:
-        return None
-    x0 = min(b[0] for b in vals)
-    y0 = min(b[1] for b in vals)
-    x1 = max(b[2] for b in vals)
-    y1 = max(b[3] for b in vals)
-
-    # Apply width scaling if requested
-    if scale_width != 1.0:
-        center_x = (x0 + x1) / 2.0
-        width = (x1 - x0) * scale_width
-        x0 = center_x - width / 2.0
-        x1 = center_x + width / 2.0
-
-    return (x0, y0, x1, y1)
 
 
 # Precompiled classifier patterns.  ``_classify_generic`` runs once per text

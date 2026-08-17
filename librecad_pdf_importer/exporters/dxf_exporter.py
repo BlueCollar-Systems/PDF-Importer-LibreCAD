@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
+import json
 import math
 from pathlib import Path
 import re
 import shutil
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from types import MappingProxyType
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import uuid
+import weakref
 
 import ezdxf
 import numpy as np
@@ -34,6 +37,7 @@ from pdfcadcore.primitive_extractor import (
     _page_rotation_transform,
     _transform_pdf_point,
 )
+from pdfcadcore.primitives import TextCharLayout
 
 from dxf_text_builder import (
     TextDeliveryAttempt,
@@ -42,8 +46,10 @@ from dxf_text_builder import (
     _glyph_definition_geometry_fingerprint,
     _glyph_instance_transform_fingerprint,
     _glyph_outer_block_structure_fingerprint,
+    _positioned_geometry_fingerprint,
     _resolve_librecad_unicode_lff,
     _nested_outline_tolerance,
+    _solid_fill_verified,
     build_text,
     iter_glyph_outline_entities,
     reset_text_styles,
@@ -63,6 +69,49 @@ TERMINAL_MAX_JOB_ASSET_BYTES = 805_306_368
 TERMINAL_MIN_DPI = 36.0
 RECTANGULAR_CROP_MAX_PIXELS = 4_000_000
 OPAQUE_ALPHA_NORMALIZE_MAX_PIXELS = 16_000_000
+
+_POSITIONED_TRANSLATION_RECEIPT_APPID = "BCS_POSITIONED_TRANSLATION"
+_POSITIONED_TRANSLATION_RECEIPT_SCHEMA = "bcs-positioned-translation-receipt-v1"
+_POSITIONED_LAYOUT_PROOF_FIELDS = frozenset(
+    {
+        "positioned_character_text",
+        "positioned_source_glyph_ids",
+        "positioned_source_glyph_names",
+        "positioned_character_origins",
+        "positioned_character_quads",
+        "positioned_character_local_bboxes",
+        "positioned_character_rotations",
+        "positioned_character_count",
+        "positioned_layout_bijection_verified",
+        "positioned_source_font_glyphs_verified",
+        "positioned_source_font_identity_sha256",
+        "positioned_layout_sha256",
+        "positioned_visible_geometry_fill_only",
+        "positioned_contour_entities_omitted",
+    }
+)
+_POSITIONED_PAGE_TRANSLATION_PROOF_FIELDS = frozenset(
+    {
+        "export_page_translation",
+        "positioned_pretranslation_character_origins",
+        "positioned_pretranslation_character_quads",
+        "positioned_export_translation_verified",
+    }
+)
+_POSITIONED_RECEIPT_PROOF_FIELDS = frozenset(
+    {
+        "positioned_translation_receipt_schema",
+        "positioned_translation_receipt_sha256",
+    }
+)
+_POSITIONED_GEOMETRY_PROOF_FIELDS = frozenset(
+    {
+        "positioned_geometry_character_solid_counts",
+        "positioned_geometry_fingerprint_schema",
+        "positioned_geometry_entity_count",
+        "positioned_geometry_sha256",
+    }
+)
 
 
 @dataclass
@@ -106,6 +155,197 @@ class DxfExportResult:
     text_deliveries: List[Dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class _PositionedTranslationAnchor:
+    """Immutable, process-local authority captured before DXF serialization."""
+
+    source_id: str
+    final_representation: str
+    strategy: str
+    entity_handles: Tuple[str, ...]
+    export_page_translation: Tuple[float, float]
+    pretranslation_character_origins: Tuple[Tuple[float, float], ...]
+    pretranslation_character_quads: Tuple[
+        Tuple[Tuple[float, float], ...], ...
+    ]
+    positioned_character_origins: Tuple[Tuple[float, float], ...]
+    positioned_character_quads: Tuple[Tuple[Tuple[float, float], ...], ...]
+
+
+_POSITIONED_SESSION_MINT_CAPABILITY = object()
+
+
+class _PositionedVerificationSession:
+    """Opaque, export-local authority over original positioned anchors.
+
+    The persisted evidence and XDATA receipt remain consistency checks.  The
+    nonserialized session, its unique capability, and the retained anchor
+    objects supply the process-local authority used during the save/reopen
+    transaction.  Construction is intentionally unavailable to callers.
+    """
+
+    __slots__ = (
+        "__weakref__",
+        "_anchors",
+        "_anchor_capabilities",
+        "_anchor_registry",
+        "_anchor_views",
+        "_mint_capability",
+        "_original_session",
+        "_retained_session_capability",
+        "_session_capability",
+    )
+
+    def __init__(
+        self,
+        anchors: Mapping[str, _PositionedTranslationAnchor],
+        *,
+        _mint_capability: object,
+    ) -> None:
+        if _mint_capability is not _POSITIONED_SESSION_MINT_CAPABILITY:
+            raise TypeError("positioned verification sessions are export-local")
+        copied_anchors = dict(anchors)
+        if any(
+            not isinstance(source_id, str)
+            or type(anchor) is not _PositionedTranslationAnchor
+            for source_id, anchor in copied_anchors.items()
+        ):
+            raise RuntimeError("positioned verification anchor registry changed")
+        anchor_capabilities = {
+            source_id: object() for source_id in copied_anchors
+        }
+        anchor_registry = {
+            source_id: (anchor, anchor_capabilities[source_id])
+            for source_id, anchor in copied_anchors.items()
+        }
+        anchor_views = {
+            source_id: replace(anchor)
+            for source_id, anchor in copied_anchors.items()
+        }
+        session_capability = object()
+        object.__setattr__(self, "_anchors", MappingProxyType(copied_anchors))
+        object.__setattr__(
+            self,
+            "_anchor_capabilities",
+            MappingProxyType(dict(anchor_capabilities)),
+        )
+        object.__setattr__(
+            self,
+            "_anchor_registry",
+            MappingProxyType(dict(anchor_registry)),
+        )
+        object.__setattr__(
+            self,
+            "_anchor_views",
+            MappingProxyType(anchor_views),
+        )
+        object.__setattr__(self, "_mint_capability", _mint_capability)
+        object.__setattr__(self, "_session_capability", session_capability)
+        object.__setattr__(
+            self,
+            "_retained_session_capability",
+            session_capability,
+        )
+        object.__setattr__(self, "_original_session", self)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        del name, value
+        raise AttributeError("positioned verification sessions are immutable")
+
+    def __copy__(self) -> _PositionedVerificationSession:
+        copied = object.__new__(type(self))
+        for name in self.__slots__:
+            if name == "__weakref__":
+                continue
+            object.__setattr__(copied, name, getattr(self, name))
+        return copied
+
+    def __deepcopy__(self, memo: Dict[int, object]) -> _PositionedVerificationSession:
+        del memo
+        return self.__copy__()
+
+    @property
+    def anchors(self) -> Mapping[str, _PositionedTranslationAnchor]:
+        """Return read-only diagnostic copies, never authoritative aliases."""
+
+        return self._anchor_views
+
+
+@dataclass(frozen=True)
+class _IssuedPositionedSessionAuthority:
+    session_capability: object
+    canonical_anchors: Mapping[str, _PositionedTranslationAnchor]
+    anchor_registry: Mapping[
+        str,
+        Tuple[_PositionedTranslationAnchor, object],
+    ]
+
+
+_ISSUED_POSITIONED_SESSIONS: weakref.WeakKeyDictionary[
+    _PositionedVerificationSession,
+    _IssuedPositionedSessionAuthority,
+] = weakref.WeakKeyDictionary()
+
+
+def _positioned_session_anchor_map(
+    session: object,
+    *,
+    positioned_roster: set[str],
+) -> Mapping[str, _PositionedTranslationAnchor]:
+    """Authenticate one opaque session and its exact original anchor objects."""
+
+    failure = "serialized text delivery authoritative session changed"
+    if type(session) is not _PositionedVerificationSession:
+        raise RuntimeError(failure)
+    try:
+        issued_authority = _ISSUED_POSITIONED_SESSIONS.get(session)
+        anchors = session._anchors
+        capabilities = session._anchor_capabilities
+        registry = session._anchor_registry
+        valid_session_identity = bool(
+            session._mint_capability is _POSITIONED_SESSION_MINT_CAPABILITY
+            and session._original_session is session
+            and session._session_capability
+            is session._retained_session_capability
+        )
+        exact_roster = bool(
+            set(anchors) == positioned_roster
+            and set(capabilities) == positioned_roster
+            and set(registry) == positioned_roster
+            and issued_authority is not None
+            and set(issued_authority.canonical_anchors) == positioned_roster
+            and set(issued_authority.anchor_registry) == positioned_roster
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise RuntimeError(failure) from exc
+    if not valid_session_identity or not exact_roster:
+        raise RuntimeError(failure)
+    if issued_authority.session_capability is not session._session_capability:
+        raise RuntimeError(failure)
+    authenticated_anchors: Dict[str, _PositionedTranslationAnchor] = {}
+    for source_id in positioned_roster:
+        try:
+            anchor = anchors[source_id]
+            retained_anchor, retained_capability = registry[source_id]
+            issued_anchor, issued_capability = issued_authority.anchor_registry[
+                source_id
+            ]
+            canonical_anchor = issued_authority.canonical_anchors[source_id]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(failure) from exc
+        if (
+            type(anchor) is not _PositionedTranslationAnchor
+            or anchor is not retained_anchor
+            or anchor is not issued_anchor
+            or anchor != canonical_anchor
+            or capabilities[source_id] is not retained_capability
+            or retained_capability is not issued_capability
+        ):
+            raise RuntimeError(failure)
+        authenticated_anchors[source_id] = replace(canonical_anchor)
+    return MappingProxyType(authenticated_anchors)
+
+
 def _normalized_text_mode(text_mode: str) -> str:
     mode = str(text_mode or "text").strip().lower()
     if mode == "text3d":
@@ -113,6 +353,560 @@ def _normalized_text_mode(text_mode: str) -> str:
     if mode == "native_text":
         return "text"
     return mode
+
+
+def _translate_positioned_text_for_page(text: Any, dy: float) -> Any:
+    """Clone one text item into its stacked-page model coordinates.
+
+    PDF/source fields remain immutable.  Only model-space insertion, bbox, and the
+    complete individually positioned character target geometry receive the page
+    translation.  Malformed layout evidence is preserved for the text builder's
+    existing fail-closed validator rather than being partially rewritten here.
+    """
+
+    offset_y = float(dy)
+    raw_layout = getattr(text, "source_char_layout", ())
+    source_layout = raw_layout if isinstance(raw_layout, tuple) else ()
+    translated_layout = raw_layout
+    if bool(getattr(text, "requires_individual_positioning", False)) and source_layout:
+        try:
+            layout_shape_valid = bool(
+                all(isinstance(character, TextCharLayout) for character in source_layout)
+                and all(
+                    len(tuple(character.target_origin)) == 2
+                    for character in source_layout
+                )
+                and all(
+                    len(tuple(character.target_quad)) == 4
+                    and all(len(tuple(point)) == 2 for point in character.target_quad)
+                    for character in source_layout
+                )
+            )
+            if layout_shape_valid:
+                translated_layout = tuple(
+                    replace(
+                        character,
+                        target_origin=(
+                            float(character.target_origin[0]),
+                            float(character.target_origin[1]) + offset_y,
+                        ),
+                        target_quad=tuple(
+                            (float(point[0]), float(point[1]) + offset_y)
+                            for point in character.target_quad
+                        ),
+                    )
+                    for character in source_layout
+                )
+        except (TypeError, ValueError, OverflowError):
+            # Preserve malformed evidence byte-for-byte in spirit: the downstream
+            # positioned-layout validator owns the terminal refusal and must never
+            # receive an exporter-repaired container or field shape.
+            translated_layout = raw_layout
+
+    return replace(
+        text,
+        insertion=(
+            float(text.insertion[0]),
+            float(text.insertion[1]) + offset_y,
+        ),
+        bbox=(
+            (
+                float(text.bbox[0]),
+                float(text.bbox[1]) + offset_y,
+                float(text.bbox[2]),
+                float(text.bbox[3]) + offset_y,
+            )
+            if text.bbox
+            else None
+        ),
+        source_char_layout=translated_layout,
+    )
+
+
+def _points_translate_exactly(
+    before: Sequence[float],
+    after: Sequence[float],
+    *,
+    dx: float,
+    dy: float,
+) -> bool:
+    try:
+        before_xy = tuple(float(value) for value in before)
+        after_xy = tuple(float(value) for value in after)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        len(before_xy) == len(after_xy) == 2
+        and all(math.isfinite(value) for value in (*before_xy, *after_xy, dx, dy))
+        and math.isclose(after_xy[0], before_xy[0] + dx, rel_tol=0.0, abs_tol=1e-12)
+        and math.isclose(after_xy[1], before_xy[1] + dy, rel_tol=0.0, abs_tol=1e-12)
+    )
+
+
+def _positioned_proof_fields(
+    representation: str,
+    *,
+    include_translation: bool,
+    include_receipt: bool,
+) -> frozenset[str]:
+    if representation not in {"glyphs", "geometry"}:
+        raise ValueError(f"unsupported positioned representation: {representation!r}")
+    fields = set(_POSITIONED_LAYOUT_PROOF_FIELDS)
+    if representation == "geometry":
+        fields.update(_POSITIONED_GEOMETRY_PROOF_FIELDS)
+    if include_translation:
+        fields.update(_POSITIONED_PAGE_TRANSLATION_PROOF_FIELDS)
+    if include_receipt:
+        fields.update(_POSITIONED_RECEIPT_PROOF_FIELDS)
+    return frozenset(fields)
+
+
+def _positioned_proof_schema_is_complete(
+    evidence: Dict[str, Any],
+    representation: str,
+    *,
+    include_translation: bool,
+    include_receipt: bool,
+) -> bool:
+    try:
+        required = _positioned_proof_fields(
+            representation,
+            include_translation=include_translation,
+            include_receipt=include_receipt,
+        )
+    except ValueError:
+        return False
+    expected_positioned = {
+        field for field in required if field.startswith("positioned_")
+    }
+    actual_positioned = {
+        str(field) for field in evidence if str(field).startswith("positioned_")
+    }
+    if not required.issubset(evidence) or actual_positioned != expected_positioned:
+        return False
+    try:
+        character_count = int(evidence["positioned_character_count"])
+        sequence_fields = (
+            "positioned_character_text",
+            "positioned_source_glyph_ids",
+            "positioned_source_glyph_names",
+            "positioned_character_origins",
+            "positioned_character_quads",
+            "positioned_character_local_bboxes",
+            "positioned_character_rotations",
+        )
+        sequence_lengths = [len(evidence[field]) for field in sequence_fields]
+    except (KeyError, TypeError, ValueError):
+        return False
+    return bool(
+        character_count > 0
+        and all(length == character_count for length in sequence_lengths)
+        and evidence.get("positioned_layout_bijection_verified") is True
+        and evidence.get("positioned_source_font_glyphs_verified") is True
+        and evidence.get("positioned_visible_geometry_fill_only") is True
+        and evidence.get("positioned_contour_entities_omitted") is True
+    )
+
+
+def _positioned_translation_receipt_digest(
+    *,
+    evidence: Dict[str, Any],
+    source_id: str,
+    representation: str,
+    strategy: str,
+    entity_handles: Sequence[str],
+) -> str:
+    bound_fields = _positioned_proof_fields(
+        representation,
+        include_translation=True,
+        include_receipt=False,
+    )
+    payload = {
+        "entity_handles": [str(handle) for handle in entity_handles],
+        "evidence": {field: evidence[field] for field in sorted(bound_fields)},
+        "final_representation": str(representation),
+        "schema": _POSITIONED_TRANSLATION_RECEIPT_SCHEMA,
+        "source_id": str(source_id),
+        "strategy": str(strategy),
+    }
+    canonical = json.dumps(
+        payload,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(
+        b"BCS_POSITIONED_TRANSLATION_RECEIPT_V1\x00" + canonical
+    ).hexdigest()
+
+
+def _bind_positioned_page_translation(
+    delivery: TextDeliveryResult,
+    source_text: Any,
+    placed_text: Any,
+    *,
+    dy: float,
+    doc: Any,
+) -> Optional[_PositionedTranslationAnchor]:
+    """Bind page translation evidence to every main entity as exact XDATA."""
+
+    if not bool(getattr(source_text, "requires_individual_positioning", False)):
+        return None
+    verified_attempts = [
+        attempt for attempt in delivery.attempts if attempt.outcome == "verified"
+    ]
+    if len(verified_attempts) != 1:
+        raise RuntimeError(
+            f"{delivery.source_id}: positioned page translation has no unique proof"
+        )
+    evidence = verified_attempts[0].evidence
+    if not evidence.get("positioned_character_origins") or not evidence.get(
+        "positioned_character_quads"
+    ):
+        # Some ordinary PDF text carries source character layout for downstream
+        # fallbacks but does not use the positioned-fraction renderer.  Its final
+        # strategy has no positioned-layout evidence to bind here.
+        return None
+    before_layout = tuple(getattr(source_text, "source_char_layout", ()) or ())
+    after_layout = tuple(getattr(placed_text, "source_char_layout", ()) or ())
+    if (
+        not before_layout
+        or len(before_layout) != len(after_layout)
+        or not all(isinstance(value, TextCharLayout) for value in (*before_layout, *after_layout))
+    ):
+        raise RuntimeError(f"{delivery.source_id}: positioned page translation changed")
+
+    dx = 0.0
+    offset_y = float(dy)
+    before_origins = [list(map(float, value.target_origin)) for value in before_layout]
+    after_origins = [list(map(float, value.target_origin)) for value in after_layout]
+    before_quads = [
+        [list(map(float, point)) for point in value.target_quad]
+        for value in before_layout
+    ]
+    after_quads = [
+        [list(map(float, point)) for point in value.target_quad]
+        for value in after_layout
+    ]
+    emitted_origins = list(evidence.get("positioned_character_origins") or [])
+    emitted_quads = list(evidence.get("positioned_character_quads") or [])
+    translation_verified = bool(
+        len(emitted_origins) == len(after_origins) == len(before_origins)
+        and len(emitted_quads) == len(after_quads) == len(before_quads)
+        and all(
+            _points_translate_exactly(before, after, dx=dx, dy=offset_y)
+            for before, after in zip(before_origins, after_origins, strict=True)
+        )
+        and all(
+            len(before_quad) == len(after_quad) == len(emitted_quad) == 4
+            and all(
+                _points_translate_exactly(before, after, dx=dx, dy=offset_y)
+                for before, after in zip(before_quad, after_quad, strict=True)
+            )
+            for before_quad, after_quad, emitted_quad in zip(
+                before_quads,
+                after_quads,
+                emitted_quads,
+                strict=True,
+            )
+        )
+        and emitted_origins == after_origins
+        and emitted_quads == after_quads
+    )
+    evidence.update(
+        {
+            "export_page_translation": [dx, offset_y],
+            "positioned_pretranslation_character_origins": before_origins,
+            "positioned_pretranslation_character_quads": before_quads,
+            "positioned_export_translation_verified": translation_verified,
+        }
+    )
+    if not translation_verified:
+        raise RuntimeError(f"{delivery.source_id}: positioned page translation changed")
+
+    representation = str(delivery.final_representation or "")
+    strategy = str(verified_attempts[0].strategy or "")
+    if not _positioned_proof_schema_is_complete(
+        evidence,
+        representation,
+        include_translation=True,
+        include_receipt=False,
+    ):
+        raise RuntimeError(f"{delivery.source_id}: positioned proof schema changed")
+    handles = [str(handle) for handle in delivery.entity_handles]
+    if not handles or len(handles) != len(set(handles)):
+        raise RuntimeError(f"{delivery.source_id}: positioned receipt has invalid handles")
+    anchor = _PositionedTranslationAnchor(
+        source_id=str(delivery.source_id),
+        final_representation=representation,
+        strategy=strategy,
+        entity_handles=tuple(handles),
+        export_page_translation=(dx, offset_y),
+        pretranslation_character_origins=tuple(
+            tuple(map(float, point)) for point in before_origins
+        ),
+        pretranslation_character_quads=tuple(
+            tuple(tuple(map(float, point)) for point in quad)
+            for quad in before_quads
+        ),
+        positioned_character_origins=tuple(
+            tuple(map(float, point)) for point in after_origins
+        ),
+        positioned_character_quads=tuple(
+            tuple(tuple(map(float, point)) for point in quad)
+            for quad in after_quads
+        ),
+    )
+    try:
+        receipt_digest = _positioned_translation_receipt_digest(
+            evidence=evidence,
+            source_id=str(delivery.source_id),
+            representation=representation,
+            strategy=strategy,
+            entity_handles=handles,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"{delivery.source_id}: positioned receipt could not be canonicalized"
+        ) from exc
+    evidence.update(
+        {
+            "positioned_translation_receipt_schema": (
+                _POSITIONED_TRANSLATION_RECEIPT_SCHEMA
+            ),
+            "positioned_translation_receipt_sha256": receipt_digest,
+        }
+    )
+    if not doc.appids.has_entry(_POSITIONED_TRANSLATION_RECEIPT_APPID):
+        doc.appids.add(_POSITIONED_TRANSLATION_RECEIPT_APPID)
+    receipt_tags = [
+        (1000, _POSITIONED_TRANSLATION_RECEIPT_SCHEMA),
+        (1000, receipt_digest),
+    ]
+    for handle in handles:
+        entity = doc.entitydb.get(handle)
+        if entity is None or not getattr(entity, "is_alive", True):
+            raise RuntimeError(
+                f"{delivery.source_id}: positioned receipt entity is missing"
+            )
+        entity.set_xdata(_POSITIONED_TRANSLATION_RECEIPT_APPID, receipt_tags)
+    return anchor
+
+
+def _verify_positioned_page_translation_evidence(
+    evidence: Dict[str, Any],
+    source_id: str,
+    *,
+    representation: str,
+    strategy: str,
+    entity_handles: Sequence[str],
+) -> str:
+    """Validate closed positioned evidence and return its canonical receipt."""
+
+    if not _POSITIONED_PAGE_TRANSLATION_PROOF_FIELDS.issubset(
+        evidence
+    ) or evidence.get("positioned_export_translation_verified") is not True:
+        raise RuntimeError(
+            f"serialized text delivery {source_id}: positioned page translation changed"
+        )
+    if evidence.get("positioned_visible_geometry_fill_only") is not True:
+        raise RuntimeError(
+            f"serialized text delivery {source_id}: positioned geometry contract changed"
+        )
+    if not _positioned_proof_schema_is_complete(
+        evidence,
+        representation,
+        include_translation=True,
+        include_receipt=True,
+    ):
+        raise RuntimeError(
+            f"serialized text delivery {source_id}: positioned proof schema changed"
+        )
+    try:
+        translation = tuple(float(value) for value in evidence["export_page_translation"])
+        before_origins = list(evidence["positioned_pretranslation_character_origins"])
+        before_quads = list(evidence["positioned_pretranslation_character_quads"])
+        after_origins = list(evidence["positioned_character_origins"])
+        after_quads = list(evidence["positioned_character_quads"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"serialized text delivery {source_id}: positioned page translation changed"
+        ) from exc
+    translation_ok = bool(
+        len(translation) == 2
+        and len(before_origins) == len(after_origins) > 0
+        and len(before_quads) == len(after_quads) == len(before_origins)
+        and all(
+            _points_translate_exactly(
+                before,
+                after,
+                dx=translation[0],
+                dy=translation[1],
+            )
+            for before, after in zip(before_origins, after_origins, strict=True)
+        )
+        and all(
+            len(before_quad) == len(after_quad) == 4
+            and all(
+                _points_translate_exactly(
+                    before,
+                    after,
+                    dx=translation[0],
+                    dy=translation[1],
+                )
+                for before, after in zip(before_quad, after_quad, strict=True)
+            )
+            for before_quad, after_quad in zip(before_quads, after_quads, strict=True)
+        )
+    )
+    if not translation_ok:
+        raise RuntimeError(
+            f"serialized text delivery {source_id}: positioned page translation changed"
+        )
+    try:
+        expected_receipt = _positioned_translation_receipt_digest(
+            evidence=evidence,
+            source_id=source_id,
+            representation=representation,
+            strategy=strategy,
+            entity_handles=entity_handles,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"serialized text delivery {source_id}: positioned receipt changed"
+        ) from exc
+    if (
+        evidence.get("positioned_translation_receipt_schema")
+        != _POSITIONED_TRANSLATION_RECEIPT_SCHEMA
+        or evidence.get("positioned_translation_receipt_sha256") != expected_receipt
+    ):
+        raise RuntimeError(
+            f"serialized text delivery {source_id}: positioned receipt changed"
+        )
+    return expected_receipt
+
+
+def _verify_positioned_translation_entity_receipts(
+    doc: Any,
+    entities: Sequence[Any],
+    *,
+    source_id: str,
+    expected_digest: str,
+) -> None:
+    if not doc.appids.has_entry(_POSITIONED_TRANSLATION_RECEIPT_APPID):
+        raise RuntimeError(
+            f"serialized text delivery {source_id}: positioned receipt changed"
+        )
+    expected_tags = [
+        (1000, _POSITIONED_TRANSLATION_RECEIPT_SCHEMA),
+        (1000, expected_digest),
+    ]
+    for entity in entities:
+        try:
+            actual_tags = [
+                (int(tag.code), str(tag.value))
+                for tag in entity.get_xdata(_POSITIONED_TRANSLATION_RECEIPT_APPID)
+            ]
+        except ezdxf.DXFValueError as exc:
+            raise RuntimeError(
+                f"serialized text delivery {source_id}: positioned receipt changed"
+            ) from exc
+        if actual_tags != expected_tags:
+            raise RuntimeError(
+                f"serialized text delivery {source_id}: positioned receipt changed"
+            )
+
+
+def _verify_positioned_authoritative_anchor(
+    anchor: object,
+    evidence: Dict[str, Any],
+    *,
+    source_id: str,
+    representation: str,
+    strategy: str,
+    entity_handles: Sequence[str],
+) -> None:
+    """Compare mutable delivery evidence with the pre-serialization authority."""
+
+    if type(anchor) is not _PositionedTranslationAnchor:
+        raise RuntimeError(
+            f"serialized text delivery {source_id}: authoritative anchor changed"
+        )
+    try:
+        evidence_translation = tuple(
+            float(value) for value in evidence["export_page_translation"]
+        )
+        evidence_before_origins = tuple(
+            tuple(float(value) for value in point)
+            for point in evidence["positioned_pretranslation_character_origins"]
+        )
+        evidence_before_quads = tuple(
+            tuple(tuple(float(value) for value in point) for point in quad)
+            for quad in evidence["positioned_pretranslation_character_quads"]
+        )
+        evidence_after_origins = tuple(
+            tuple(float(value) for value in point)
+            for point in evidence["positioned_character_origins"]
+        )
+        evidence_after_quads = tuple(
+            tuple(tuple(float(value) for value in point) for point in quad)
+            for quad in evidence["positioned_character_quads"]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"serialized text delivery {source_id}: positioned page translation changed"
+        ) from exc
+    dx, dy = anchor.export_page_translation
+    anchor_translation_valid = bool(
+        len(anchor.pretranslation_character_origins)
+        == len(anchor.positioned_character_origins)
+        > 0
+        and len(anchor.pretranslation_character_quads)
+        == len(anchor.positioned_character_quads)
+        == len(anchor.pretranslation_character_origins)
+        and all(
+            _points_translate_exactly(before, after, dx=dx, dy=dy)
+            for before, after in zip(
+                anchor.pretranslation_character_origins,
+                anchor.positioned_character_origins,
+                strict=True,
+            )
+        )
+        and all(
+            len(before_quad) == len(after_quad) == 4
+            and all(
+                _points_translate_exactly(before, after, dx=dx, dy=dy)
+                for before, after in zip(before_quad, after_quad, strict=True)
+            )
+            for before_quad, after_quad in zip(
+                anchor.pretranslation_character_quads,
+                anchor.positioned_character_quads,
+                strict=True,
+            )
+        )
+    )
+    identity_valid = bool(
+        anchor.source_id == source_id
+        and anchor.final_representation == representation
+        and anchor.strategy == strategy
+        and anchor.entity_handles == tuple(map(str, entity_handles))
+    )
+    evidence_valid = bool(
+        evidence_translation == anchor.export_page_translation
+        and evidence_before_origins == anchor.pretranslation_character_origins
+        and evidence_before_quads == anchor.pretranslation_character_quads
+        and evidence_after_origins == anchor.positioned_character_origins
+        and evidence_after_quads == anchor.positioned_character_quads
+    )
+    if not anchor_translation_valid or not identity_valid:
+        raise RuntimeError(
+            f"serialized text delivery {source_id}: authoritative anchor changed"
+        )
+    if not evidence_valid:
+        raise RuntimeError(
+            f"serialized text delivery {source_id}: positioned page translation changed"
+        )
 
 
 def _delivered_text_entity_bucket(delivered_kind: str) -> str:
@@ -214,8 +1008,41 @@ def _serialized_entity(doc: Any, handle: str, source_id: str) -> Any:
 def _verify_serialized_text_deliveries(
     doc: Any,
     deliveries: List[Dict[str, Any]],
+    *,
+    trusted_positioned_session: _PositionedVerificationSession,
 ) -> None:
-    """Reconcile accepted item evidence against the re-opened DXF candidate."""
+    """Reconcile accepted evidence against the candidate and opaque authority.
+
+    Positioned translation authority is deliberately process-local and is never
+    reconstructed from delivery evidence or DXF XDATA.  A later independent
+    process cannot reproduce this identity capability and must fail closed unless
+    it receives a separately authenticated (for example, externally signed)
+    anchor ledger.  XDATA alone is consistency evidence, not authenticity.
+    """
+
+    positioned_roster: set[str] = set()
+    for delivery in deliveries:
+        source_id = str(delivery.get("source_id") or "")
+        verified_attempts = [
+            attempt
+            for attempt in delivery.get("attempts") or []
+            if attempt.get("outcome") == "verified"
+        ]
+        if len(verified_attempts) != 1:
+            continue
+        attempt = verified_attempts[0]
+        evidence = dict(attempt.get("evidence") or {})
+        if (
+            str(attempt.get("strategy") or "")
+            == "positioned_source_glyph_outlines"
+            or "export_page_translation" in evidence
+            or any(str(key).startswith("positioned_") for key in evidence)
+        ):
+            positioned_roster.add(source_id)
+    anchor_map = _positioned_session_anchor_map(
+        trusted_positioned_session,
+        positioned_roster=positioned_roster,
+    )
 
     expected_types = {
         "text": {"TEXT"},
@@ -272,6 +1099,31 @@ def _verify_serialized_text_deliveries(
             )
         final_attempt = verified_attempts[0]
         final_evidence = dict(final_attempt.get("evidence") or {})
+        final_strategy = str(final_attempt.get("strategy") or "")
+        positioned_delivery_evidence = bool(
+            final_strategy == "positioned_source_glyph_outlines"
+            or "export_page_translation" in final_evidence
+            or any(str(key).startswith("positioned_") for key in final_evidence)
+        )
+        positioned_receipt_digest: Optional[str] = None
+        if positioned_delivery_evidence:
+            _verify_positioned_authoritative_anchor(
+                anchor_map[source_id],
+                final_evidence,
+                source_id=source_id,
+                representation=representation,
+                strategy=final_strategy,
+                entity_handles=entity_handles,
+            )
+            positioned_receipt_digest = (
+                _verify_positioned_page_translation_evidence(
+                    final_evidence,
+                    source_id,
+                    representation=representation,
+                    strategy=final_strategy,
+                    entity_handles=entity_handles,
+                )
+            )
         zero_ink_omitted = bool(
             representation == "raster" and final_evidence.get("zero_ink_omitted") is True
         )
@@ -291,6 +1143,13 @@ def _verify_serialized_text_deliveries(
             )
         main_handles.update(entity_handles)
         entities = [_serialized_entity(doc, handle, source_id) for handle in entity_handles]
+        if positioned_receipt_digest is not None:
+            _verify_positioned_translation_entity_receipts(
+                doc,
+                entities,
+                source_id=source_id,
+                expected_digest=positioned_receipt_digest,
+            )
         for entity in entities:
             try:
                 actual_owner = str(entity.dxf.get("owner", "") or "")
@@ -372,6 +1231,100 @@ def _verify_serialized_text_deliveries(
             != set(referenced_handles)
         ):
             raise RuntimeError(f"serialized text delivery {source_id}: attempt handles disagree")
+
+        positioned_fill_only = bool(
+            final_evidence.get("positioned_visible_geometry_fill_only") is True
+        )
+        if positioned_delivery_evidence and not positioned_fill_only:
+            raise RuntimeError(
+                f"serialized text delivery {source_id}: "
+                "positioned geometry contract changed"
+            )
+        positioned_r12_aci: Optional[int] = None
+        if positioned_fill_only and doc.dxfversion == "AC1009":
+            color_encoding = str(
+                final_evidence.get("r12_source_color_encoding") or ""
+            )
+            if color_encoding == "exact_srgb8_aci_match":
+                try:
+                    source_rgb = tuple(
+                        int(value)
+                        for value in final_evidence.get("r12_source_color_rgb") or []
+                    )
+                    positioned_r12_aci = int(
+                        final_evidence.get("r12_source_color_aci")
+                    )
+                    max_channel_error = int(
+                        final_evidence.get(
+                            "r12_source_color_max_channel_error", -1
+                        )
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: invalid R12 color evidence"
+                    ) from exc
+                if (
+                    len(source_rgb) != 3
+                    or positioned_r12_aci not in range(1, 256)
+                    or max_channel_error != 0
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: R12 color mapping changed"
+                    )
+                palette_rgb = tuple(
+                    int(value) for value in aci2rgb(positioned_r12_aci)
+                )
+                if palette_rgb != source_rgb:
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: R12 color mapping changed"
+                    )
+            elif color_encoding != "source_color_absent":
+                raise RuntimeError(
+                    f"serialized text delivery {source_id}: missing R12 color contract"
+                )
+
+        if representation == "geometry" and positioned_fill_only:
+            expected_geometry_digest = str(
+                final_evidence.get("positioned_geometry_sha256") or ""
+            )
+            character_solid_counts = list(
+                final_evidence.get("positioned_geometry_character_solid_counts")
+                or []
+            )
+            geometry_ok = bool(
+                final_evidence.get("positioned_geometry_fingerprint_schema")
+                == "ordered-positioned-character-solids-v1"
+                and int(final_evidence.get("positioned_geometry_entity_count") or 0)
+                == len(entities)
+                and all(entity.dxftype() == "SOLID" for entity in entities)
+                and _solid_fill_verified(
+                    entities,
+                    is_r12=doc.dxfversion == "AC1009",
+                )
+                and len(expected_geometry_digest) == 64
+                and _positioned_geometry_fingerprint(
+                    entities,
+                    character_solid_counts=character_solid_counts,
+                    character_text=list(
+                        final_evidence.get("positioned_character_text") or []
+                    ),
+                    source_glyph_ids=list(
+                        final_evidence.get("positioned_source_glyph_ids") or []
+                    ),
+                )
+                == expected_geometry_digest
+                and (
+                    positioned_r12_aci is None
+                    or all(
+                        int(entity.dxf.get("color", 256)) == positioned_r12_aci
+                        for entity in entities
+                    )
+                )
+            )
+            if not geometry_ok:
+                raise RuntimeError(
+                    f"serialized text delivery {source_id}: positioned geometry changed"
+                )
 
         if representation in {"text", "labels", "3d_text"}:
             if len(entities) != 1 or entities[0].dxftype() not in {"TEXT", "MTEXT"}:
@@ -628,6 +1581,13 @@ def _verify_serialized_text_deliveries(
                     f"serialized text delivery {source_id}: glyph ownership overlaps"
                 )
             for insert in entities:
+                if (
+                    positioned_r12_aci is not None
+                    and int(insert.dxf.get("color", 256)) != positioned_r12_aci
+                ):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: outer R12 color changed"
+                    )
                 try:
                     block = doc.blocks.get(str(insert.dxf.name))
                 except Exception as exc:
@@ -746,6 +1706,14 @@ def _verify_serialized_text_deliveries(
                     == str(
                         final_evidence.get("glyph_instance_transform_sha256") or ""
                     )
+                    and (
+                        positioned_r12_aci is None
+                        or all(
+                            int(child.dxf.get("color", 256))
+                            == positioned_r12_aci
+                            for child in outer_children
+                        )
+                    )
                 )
                 if not nested_shape_ok:
                     raise RuntimeError(
@@ -773,6 +1741,27 @@ def _verify_serialized_text_deliveries(
                         )
                         or not any(
                             child.dxftype() == "SOLID" for child in definition_children
+                        )
+                        or (
+                            positioned_fill_only
+                            and (
+                                any(
+                                    child.dxftype() != "SOLID"
+                                    for child in definition_children
+                                )
+                                or not _solid_fill_verified(
+                                    definition_children,
+                                    is_r12=doc.dxfversion == "AC1009",
+                                )
+                                or (
+                                    positioned_r12_aci is not None
+                                    and any(
+                                        int(child.dxf.get("color", 256))
+                                        != positioned_r12_aci
+                                        for child in definition_children
+                                    )
+                                )
+                            )
                         )
                     ):
                         raise RuntimeError(
@@ -2614,6 +3603,7 @@ def _export_to_dxf_impl(
     text_fallbacks: List[Dict[str, Any]] = []
     delivered_text_entity_counts: Dict[str, int] = {}
     text_deliveries: List[Dict[str, Any]] = []
+    positioned_translation_anchors: Dict[str, _PositionedTranslationAnchor] = {}
     seen_text_source_ids: set[str] = set()
     seen_text_entity_handles: set[str] = set()
     serialized_image_expectations: List[_SerializedImageExpectation] = []
@@ -2828,25 +3818,7 @@ def _export_to_dxf_impl(
                 _ensure_layer(doc, layer, None)
                 ti = text
                 if dy != 0.0:
-                    from dataclasses import replace as _dc_replace
-
-                    ti = _dc_replace(
-                        text,
-                        insertion=(
-                            float(text.insertion[0]),
-                            float(text.insertion[1]) + dy,
-                        ),
-                        bbox=(
-                            (
-                                float(text.bbox[0]),
-                                float(text.bbox[1]) + dy,
-                                float(text.bbox[2]),
-                                float(text.bbox[3]) + dy,
-                            )
-                            if text.bbox
-                            else None
-                        ),
-                    )
+                    ti = _translate_positioned_text_for_page(text, dy)
                 delivery = build_text(
                     ti,
                     msp,
@@ -2894,6 +3866,13 @@ def _export_to_dxf_impl(
                         ),
                         delivery,
                     )
+                positioned_anchor = _bind_positioned_page_translation(
+                    delivery,
+                    text,
+                    ti,
+                    dy=dy,
+                    doc=doc,
+                )
                 if delivery.source_id in seen_text_source_ids:
                     raise RuntimeError(
                         f"{delivery.source_id}: duplicate stable text source identity"
@@ -2906,6 +3885,12 @@ def _export_to_dxf_impl(
                     )
                 seen_text_source_ids.add(delivery.source_id)
                 seen_text_entity_handles.update(delivery.entity_handles)
+                if positioned_anchor is not None:
+                    if delivery.source_id in positioned_translation_anchors:
+                        raise RuntimeError(
+                            f"{delivery.source_id}: duplicate positioned anchor"
+                        )
+                    positioned_translation_anchors[delivery.source_id] = positioned_anchor
                 text_deliveries.append(delivery.to_dict())
 
                 delivered_kind = delivery.delivered_kind
@@ -3185,6 +4170,34 @@ def _export_to_dxf_impl(
             asset_transaction.register_directory(asset.path.parent)
             asset_transaction.register_directory(asset.path.parent.parent)
 
+        trusted_positioned_session = _PositionedVerificationSession(
+            positioned_translation_anchors,
+            _mint_capability=_POSITIONED_SESSION_MINT_CAPABILITY,
+        )
+        _ISSUED_POSITIONED_SESSIONS[trusted_positioned_session] = (
+            _IssuedPositionedSessionAuthority(
+                session_capability=(
+                    trusted_positioned_session._session_capability
+                ),
+                canonical_anchors=MappingProxyType(
+                    {
+                        source_id: replace(anchor)
+                        for source_id, anchor in positioned_translation_anchors.items()
+                    }
+                ),
+                anchor_registry=MappingProxyType(
+                    {
+                        source_id: (
+                            anchor,
+                            trusted_positioned_session._anchor_capabilities[
+                                source_id
+                            ],
+                        )
+                        for source_id, anchor in positioned_translation_anchors.items()
+                    }
+                ),
+            )
+        )
         doc.saveas(str(temp_output))
         # Re-open the exact candidate before it can replace a prior good DXF.
         candidate = ezdxf.readfile(str(temp_output))
@@ -3193,7 +4206,11 @@ def _export_to_dxf_impl(
             raise RuntimeError(
                 f"serialized DXF candidate failed audit with {len(auditor.errors)} error(s)"
             )
-        _verify_serialized_text_deliveries(candidate, text_deliveries)
+        _verify_serialized_text_deliveries(
+            candidate,
+            text_deliveries,
+            trusted_positioned_session=trusted_positioned_session,
+        )
         _verify_serialized_image_assets(candidate, serialized_image_expectations)
         temp_output.replace(output)
     except Exception:

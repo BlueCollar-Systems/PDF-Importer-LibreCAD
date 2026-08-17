@@ -7,6 +7,7 @@ import json
 import hashlib
 import math
 import os
+from tempfile import TemporaryDirectory
 import weakref
 from io import BytesIO
 from pathlib import Path
@@ -44,7 +45,7 @@ from librecad_pdf_importer.exporters import dxf_exporter as dxf_exporter_module
 from librecad_pdf_importer.exporters.dxf_exporter import (
     DxfExportOptions,
     _pixmap_contains_ink,
-    _verify_serialized_text_deliveries,
+    _verify_serialized_text_deliveries as _verify_serialized_text_deliveries_impl,
     export_to_dxf,
 )
 from librecad_pdf_importer.importer import ImportRun, run_import, write_import_report
@@ -67,6 +68,73 @@ from pdfcadcore.text_scale import (
 
 
 fitz = import_fitz()
+_EMPTY_POSITIONED_SESSION: object | None = None
+
+
+def _production_empty_positioned_session() -> object:
+    global _EMPTY_POSITIONED_SESSION
+    if _EMPTY_POSITIONED_SESSION is not None:
+        return _EMPTY_POSITIONED_SESSION
+    captured: list[object] = []
+
+    def capture(
+        doc: object,
+        deliveries: list[dict[str, object]],
+        **kwargs: object,
+    ) -> None:
+        session = kwargs["trusted_positioned_session"]
+        captured.append(session)
+        _verify_serialized_text_deliveries_impl(
+            doc,
+            deliveries,
+            trusted_positioned_session=session,
+        )
+
+    with TemporaryDirectory(prefix="lc-empty-positioned-session-") as directory:
+        root = Path(directory)
+        with patch.object(
+            dxf_exporter_module,
+            "_verify_serialized_text_deliveries",
+            side_effect=capture,
+        ):
+            export_to_dxf(
+                DocumentExtraction(
+                    pdf_path=str(root / "must-not-be-read.pdf"),
+                    pages=[
+                        ExtractedPage(
+                            page_data=PageData(
+                                page_number=1,
+                                width=20.0,
+                                height=10.0,
+                            ),
+                            profile=SimpleNamespace(),
+                        )
+                    ],
+                ),
+                str(root / "empty-session.dxf"),
+                DxfExportOptions(
+                    include_images=False,
+                    include_text=False,
+                    attach_metadata=False,
+                ),
+            )
+    assert len(captured) == 1
+    _EMPTY_POSITIONED_SESSION = captured[0]
+    return _EMPTY_POSITIONED_SESSION
+
+
+def _verify_serialized_text_deliveries(
+    doc: object,
+    deliveries: list[dict[str, object]],
+    *,
+    trusted_positioned_anchors: object,
+) -> None:
+    assert trusted_positioned_anchors == {}
+    _verify_serialized_text_deliveries_impl(
+        doc,
+        deliveries,
+        trusted_positioned_session=_production_empty_positioned_session(),
+    )
 
 
 def test_dxf_export_options_preserves_legacy_positional_field_order() -> None:
@@ -308,7 +376,11 @@ def test_serialized_fallback_text_keeps_unused_embedded_font_provenance() -> Non
         ],
     }
 
-    _verify_serialized_text_deliveries(doc, [delivery])
+    _verify_serialized_text_deliveries(
+        doc,
+        [delivery],
+        trusted_positioned_anchors={},
+    )
 
 
 def test_serialized_delivery_indexes_modelspace_once_per_document() -> None:
@@ -352,7 +424,11 @@ def test_serialized_delivery_indexes_modelspace_once_per_document() -> None:
         )
 
     with patch.object(doc, "modelspace", wraps=doc.modelspace) as modelspace:
-        _verify_serialized_text_deliveries(doc, deliveries)
+        _verify_serialized_text_deliveries(
+            doc,
+            deliveries,
+            trusted_positioned_anchors={},
+        )
 
     assert modelspace.call_count == 1
     duplicate = json.loads(json.dumps(deliveries))
@@ -361,7 +437,11 @@ def test_serialized_delivery_indexes_modelspace_once_per_document() -> None:
         duplicate[0]["entity_handles"]
     )
     with pytest.raises(RuntimeError, match="missing or duplicate main handles"):
-        _verify_serialized_text_deliveries(doc, duplicate)
+        _verify_serialized_text_deliveries(
+            doc,
+            duplicate,
+            trusted_positioned_anchors={},
+        )
 
 
 def _item(
@@ -958,7 +1038,11 @@ def test_librecad_glyph_reopen_does_not_reparse_rejected_native_lff() -> None:
         "dxf_text_builder._parse_librecad_lff",
         side_effect=counted_parser,
     ):
-        _verify_serialized_text_deliveries(doc, deliveries)
+        _verify_serialized_text_deliveries(
+            doc,
+            deliveries,
+            trusted_positioned_anchors={},
+        )
 
     assert fresh_reads == []
 
@@ -1632,7 +1716,11 @@ def test_reopened_nested_definition_geometry_mutation_is_rejected(tmp_path) -> N
     doc.saveas(output)
     reopened = ezdxf.readfile(output)
     delivery = result.to_dict()
-    _verify_serialized_text_deliveries(reopened, [delivery])
+    _verify_serialized_text_deliveries(
+        reopened,
+        [delivery],
+        trusted_positioned_anchors={},
+    )
 
     evidence = result.attempts[-1].evidence
     definition = reopened.blocks.get(evidence["glyph_definition_names"][0])
@@ -1648,7 +1736,11 @@ def test_reopened_nested_definition_geometry_mutation_is_rejected(tmp_path) -> N
         RuntimeError,
         match="glyph definition geometry changed",
     ):
-        _verify_serialized_text_deliveries(reopened, [delivery])
+        _verify_serialized_text_deliveries(
+            reopened,
+            [delivery],
+            trusted_positioned_anchors={},
+        )
 
 
 def test_reopened_nested_transform_drift_exceeding_scale_bound_is_rejected(
@@ -1687,7 +1779,11 @@ def test_reopened_nested_transform_drift_exceeding_scale_bound_is_rejected(
     )
 
     with pytest.raises(RuntimeError, match="serialized glyph bbox changed"):
-        _verify_serialized_text_deliveries(reopened, [delivery])
+        _verify_serialized_text_deliveries(
+            reopened,
+            [delivery],
+            trusted_positioned_anchors={},
+        )
 
 
 @pytest.mark.parametrize(
@@ -1755,7 +1851,11 @@ def test_reopened_nested_delivery_visual_attribute_mutation_is_rejected(
                 "glyph definition geometry changed|serialized glyph bbox changed"
             ),
     ):
-        _verify_serialized_text_deliveries(reopened, [delivery])
+        _verify_serialized_text_deliveries(
+            reopened,
+            [delivery],
+            trusted_positioned_anchors={},
+        )
 
 
 @pytest.mark.parametrize(
@@ -1789,7 +1889,11 @@ def test_reopened_r12_polyline_default_width_mutation_is_rejected(
     setattr(outline.dxf, width_attribute, 0.5)
 
     with pytest.raises(RuntimeError, match="glyph definition geometry changed"):
-        _verify_serialized_text_deliveries(reopened, [delivery])
+        _verify_serialized_text_deliveries(
+            reopened,
+            [delivery],
+            trusted_positioned_anchors={},
+        )
 
 
 @pytest.mark.parametrize("dxf_version", ["R2010", "R12"])
@@ -1814,13 +1918,21 @@ def test_reopened_outer_block_small_base_point_drift_is_rejected(
     doc.saveas(output)
     reopened = ezdxf.readfile(output)
     delivery = result.to_dict()
-    _verify_serialized_text_deliveries(reopened, [delivery])
+    _verify_serialized_text_deliveries(
+        reopened,
+        [delivery],
+        trusted_positioned_anchors={},
+    )
     outer_ref = next(iter(reopened.modelspace()))
     outer_block = reopened.blocks.get(outer_ref.dxf.name)
     outer_block.block.dxf.base_point = (0.0005, 0.0, 0.0)
 
     with pytest.raises(RuntimeError, match="outer BLOCK structure changed"):
-        _verify_serialized_text_deliveries(reopened, [delivery])
+        _verify_serialized_text_deliveries(
+            reopened,
+            [delivery],
+            trusted_positioned_anchors={},
+        )
 
 
 @pytest.mark.parametrize("dxf_version", ["R2010", "R12"])
@@ -1870,7 +1982,11 @@ def test_reopened_main_delivery_cannot_be_redirected_out_of_modelspace(
     reopened = ezdxf.readfile(output)
 
     with pytest.raises(RuntimeError, match="main entity ownership changed"):
-        _verify_serialized_text_deliveries(reopened, [result.to_dict()])
+        _verify_serialized_text_deliveries(
+            reopened,
+            [result.to_dict()],
+            trusted_positioned_anchors={},
+        )
 
 
 def test_nested_tessellation_tolerance_is_axis_and_rotation_aware() -> None:
@@ -2326,12 +2442,37 @@ def test_extraction_merges_stacked_fractions_into_semantic_value() -> None:
     class _Page:
         @staticmethod
         def get_text(_kind):
-            def _span(text, origin, bbox):
+            def _span(text, origins):
+                chars = []
+                for char, origin in zip(text, origins, strict=True):
+                    x, y = origin
+                    chars.append(
+                        {
+                            "c": char,
+                            "origin": origin,
+                            "bbox": (x, y - 1.0, x + 0.8, y + 1.0),
+                            "quad": (
+                                (x, y - 1.0),
+                                (x + 0.8, y - 1.0),
+                                (x + 0.8, y + 1.0),
+                                (x, y + 1.0),
+                            ),
+                        }
+                    )
+                x_values = [origin[0] for origin in origins]
+                y_values = [origin[1] for origin in origins]
+                bbox = (
+                    min(x_values),
+                    min(y_values) - 1.0,
+                    max(x_values) + 0.8,
+                    max(y_values) + 1.0,
+                )
                 return {
                     "text": text,
+                    "chars": chars,
                     "size": 2.0,
                     "font": "BCS Deterministic Test",
-                    "origin": origin,
+                    "origin": origins[0],
                     "bbox": bbox,
                     "ascender": 0.8,
                     "descender": -0.2,
@@ -2348,8 +2489,7 @@ def test_extraction_merges_stacked_fractions_into_semantic_value() -> None:
                                 "spans": [
                                     _span(
                                         "716",
-                                        (10.0, 50.0),
-                                        (10.0, 48.0, 14.0, 51.0),
+                                        ((10.0, 48.0), (10.0, 56.0), (11.0, 56.0)),
                                     )
                                 ],
                             },
@@ -2359,8 +2499,7 @@ def test_extraction_merges_stacked_fractions_into_semantic_value() -> None:
                                 "spans": [
                                     _span(
                                         "/",
-                                        (10.5, 52.0),
-                                        (10.2, 50.5, 12.5, 53.5),
+                                        ((10.5, 52.0),),
                                     )
                                 ],
                             },
@@ -2378,13 +2517,15 @@ def test_extraction_merges_stacked_fractions_into_semantic_value() -> None:
     assert [item.id for item in extracted] == [1]
     assert [item.id for item in extracted_again] == [1]
     merged = extracted[0]
-    # The merged value positions as a whole string (per-character source
-    # layout no longer maps 1:1 onto the semantic text) and carries union
-    # source/target fidelity geometry from its constituent spans.
-    assert merged.requires_individual_positioning is False
-    assert merged.source_char_layout == ()
+    # A merge is legal only because all raw character dictionaries retain an
+    # exact semantic/layout bijection, including the observed slash position.
+    assert merged.requires_individual_positioning is True
+    assert "".join(char.text for char in merged.source_char_layout) == "7/16"
     assert merged.source_bbox_pdf is not None
-    assert merged.target_quad_model is not None
+    assert merged.source_quad_pdf is None
+    assert merged.target_quad_model is None
+    assert merged.advance_width == 0.0
+    assert merged.glyph_height == 0.0
 
 
 def test_render_stage_must_not_alter_delivered_text_representation(tmp_path) -> None:
@@ -2855,7 +2996,11 @@ def test_explicit_item_raster_is_verified_without_being_reported_as_fallback(
     original_insert = tuple(image.dxf.insert)
     image.dxf.insert = (original_insert[0] + 1.0, original_insert[1], 0.0)
     with pytest.raises(RuntimeError, match="raster placement changed"):
-        _verify_serialized_text_deliveries(drawing, result.text_deliveries)
+        _verify_serialized_text_deliveries(
+            drawing,
+            result.text_deliveries,
+            trusted_positioned_anchors={},
+        )
     image.dxf.insert = original_insert
 
     unsafe_raster = fitz.Pixmap(
@@ -2866,7 +3011,11 @@ def test_explicit_item_raster_is_verified_without_being_reported_as_fallback(
     unsafe_raster.clear_with(0)
     unsafe_raster.save(str(raster_path))
     with pytest.raises(RuntimeError, match="host-safe opaque RGB"):
-        _verify_serialized_text_deliveries(drawing, result.text_deliveries)
+        _verify_serialized_text_deliveries(
+            drawing,
+            result.text_deliveries,
+            trusted_positioned_anchors={},
+        )
 
     report_path = tmp_path / "requested_item_raster_import_report.json"
     write_import_report(run, str(report_path), elapsed_ms=1.0)
@@ -3453,7 +3602,11 @@ def test_serialized_native_text_fit_width_cannot_change_after_verification(
     )
 
     with pytest.raises(RuntimeError, match="FIT width changed"):
-        _verify_serialized_text_deliveries(drawing, [delivery])
+        _verify_serialized_text_deliveries(
+            drawing,
+            [delivery],
+            trusted_positioned_anchors={},
+        )
 
 
 def test_terminal_raster_clips_page_edge_and_preserves_visible_placement(tmp_path) -> None:

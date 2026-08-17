@@ -38,11 +38,12 @@ from ezdxf.tools.text import plain_text
 from ezdxf.tools.text_size import text_size
 
 from pdfcadcore.import_config import ImportConfig
-from pdfcadcore.primitives import NormalizedText
+from pdfcadcore.primitives import NormalizedText, TextCharLayout
 from librecad_runtime import redacted_local_path, resolve_librecad_installation
 
 
 _MTEXT_THRESHOLD = 120
+_POSITIONED_FRACTION_RE = re.compile(r"^[0-9]+/[0-9]+$")
 _created_styles: Dict[str, str] = {}
 _embedded_cap_height_cache: Dict[str, float] = {}
 _staged_font_verification_cache: Dict[Tuple[str, str, int, int], bool] = {}
@@ -76,6 +77,16 @@ _style_counter = 0
 
 class _RepresentationImpossible(ValueError):
     """The exact source item cannot be created in this representation."""
+
+
+class _R12ColorImpossible(_RepresentationImpossible):
+    """A positioned source color has no exact, context-free R12 ACI value."""
+
+    def __init__(self, rgb: Tuple[int, int, int]):
+        self.rgb = rgb
+        super().__init__(
+            f"positioned source RGB {rgb!r} has no exact R12 ACI representation"
+        )
 
 
 @dataclass
@@ -182,6 +193,7 @@ class _NestedGlyphGeometry:
     paths: List[Any]
     attribs: Dict[str, Any]
     fingerprint: str
+    outline_visible: bool = True
 
 
 @dataclass
@@ -1156,6 +1168,232 @@ def _positive_finite(value: Any) -> Optional[float]:
     return number
 
 
+def _finite_point(value: Any, *, field_name: str) -> Tuple[float, float]:
+    try:
+        point = tuple(float(component) for component in value)
+    except (TypeError, ValueError) as exc:
+        raise _RepresentationImpossible(
+            f"positioned fraction {field_name} is not a numeric point"
+        ) from exc
+    if len(point) != 2 or not all(math.isfinite(component) for component in point):
+        raise _RepresentationImpossible(
+            f"positioned fraction {field_name} is not a finite 2D point"
+        )
+    return point
+
+
+def _finite_quad(
+    value: Any,
+    *,
+    field_name: str,
+) -> Tuple[Tuple[float, float], ...]:
+    try:
+        points = tuple(
+            _finite_point(point, field_name=field_name) for point in value
+        )
+    except TypeError as exc:
+        raise _RepresentationImpossible(
+            f"positioned fraction {field_name} is not a four-point quad"
+        ) from exc
+    if len(points) != 4:
+        raise _RepresentationImpossible(
+            f"positioned fraction {field_name} is not a four-point quad"
+        )
+    return points
+
+
+def _finite_bbox(value: Any, *, field_name: str) -> Tuple[float, float, float, float]:
+    try:
+        bbox = tuple(float(component) for component in value)
+    except (TypeError, ValueError) as exc:
+        raise _RepresentationImpossible(
+            f"positioned fraction {field_name} is not a numeric bbox"
+        ) from exc
+    if (
+        len(bbox) != 4
+        or not all(math.isfinite(component) for component in bbox)
+        or bbox[2] <= bbox[0]
+        or bbox[3] <= bbox[1]
+    ):
+        raise _RepresentationImpossible(
+            f"positioned fraction {field_name} is not a finite positive bbox"
+        )
+    return bbox
+
+
+def _values_close(
+    expected: Sequence[float],
+    actual: Sequence[float],
+    *,
+    relative_tolerance: float = 1e-8,
+) -> bool:
+    if len(expected) != len(actual):
+        return False
+    scale = max(1.0, *(abs(float(value)) for value in (*expected, *actual)))
+    tolerance = scale * relative_tolerance
+    return all(
+        math.isclose(
+            float(left),
+            float(right),
+            rel_tol=relative_tolerance,
+            abs_tol=tolerance,
+        )
+        for left, right in zip(expected, actual, strict=True)
+    )
+
+
+def _quad_frame(
+    quad: Tuple[Tuple[float, float], ...],
+) -> Tuple[float, float, float]:
+    q0, q1, q2, q3 = quad
+    top = (q1[0] - q0[0], q1[1] - q0[1])
+    bottom = (q2[0] - q3[0], q2[1] - q3[1])
+    right = (q2[0] - q1[0], q2[1] - q1[1])
+    left = (q3[0] - q0[0], q3[1] - q0[1])
+    width = math.hypot(*top)
+    height = math.hypot(*right)
+    scale = max(1.0, width, height)
+    tolerance = scale * 1e-8
+    if width <= 0.0 or height <= 0.0:
+        raise _RepresentationImpossible("positioned fraction target quad has zero area")
+    if not _values_close(top, bottom) or not _values_close(right, left):
+        raise _RepresentationImpossible(
+            "positioned fraction target quad is not a parallelogram"
+        )
+    dot = top[0] * right[0] + top[1] * right[1]
+    if not math.isclose(dot, 0.0, rel_tol=0.0, abs_tol=tolerance * scale):
+        raise _RepresentationImpossible(
+            "positioned fraction target quad contains unsupported shear"
+        )
+    determinant = top[0] * (-right[1]) - top[1] * (-right[0])
+    if determinant <= 0.0:
+        raise _RepresentationImpossible(
+            "positioned fraction target quad has an invalid orientation"
+        )
+    rotation = math.degrees(math.atan2(top[1], top[0]))
+    return width, height, rotation
+
+
+def _positioned_fraction_layout(
+    text_item: NormalizedText,
+) -> Optional[Tuple[TextCharLayout, ...]]:
+    """Return complete stacked-fraction placement truth or fail closed.
+
+    Ordinary strings, including raw character spans which happen to retain a
+    character layout, are deliberately outside this contract.  The special
+    route is activated only by the merger's semantic fraction plus its exact
+    individual-positioning flag.
+    """
+
+    semantic = str(getattr(text_item, "text", "") or "")
+    if not (
+        bool(getattr(text_item, "requires_individual_positioning", False))
+        and _POSITIONED_FRACTION_RE.fullmatch(semantic)
+    ):
+        return None
+    if (
+        getattr(text_item, "font_asset", None) is not None
+        and getattr(text_item, "font_failure", None) is not None
+    ):
+        raise _RepresentationImpossible(
+            "positioned fraction carries conflicting exact-font bindings"
+        )
+    try:
+        aggregate_advance = float(
+            getattr(text_item, "advance_width", 0.0) or 0.0
+        )
+        aggregate_height = float(
+            getattr(text_item, "glyph_height", 0.0) or 0.0
+        )
+    except (TypeError, ValueError) as exc:
+        raise _RepresentationImpossible(
+            "positioned fraction aggregate placement metrics are invalid"
+        ) from exc
+    if (
+        getattr(text_item, "source_quad_pdf", None) is not None
+        or getattr(text_item, "target_quad_model", None) is not None
+        or not math.isfinite(aggregate_advance)
+        or not math.isfinite(aggregate_height)
+        or aggregate_advance != 0.0
+        or aggregate_height != 0.0
+    ):
+        raise _RepresentationImpossible(
+            "positioned fraction contains invented aggregate placement metrics"
+        )
+    raw_layout = getattr(text_item, "source_char_layout", ())
+    if not isinstance(raw_layout, tuple) or len(raw_layout) != len(semantic):
+        raise _RepresentationImpossible(
+            "positioned fraction layout is missing or not a complete bijection"
+        )
+    if len({id(character) for character in raw_layout}) != len(raw_layout):
+        raise _RepresentationImpossible(
+            "positioned fraction layout reuses a character occurrence"
+        )
+    if not all(isinstance(character, TextCharLayout) for character in raw_layout):
+        raise _RepresentationImpossible(
+            "positioned fraction layout contains an unexpected object"
+        )
+    layout = tuple(raw_layout)
+    if any(not isinstance(character.text, str) for character in layout):
+        raise _RepresentationImpossible(
+            "positioned fraction layout contains non-text character data"
+        )
+    layout_text = "".join(character.text for character in layout)
+    if (
+        layout_text != semantic
+        or layout_text.count("/") != 1
+        or any(len(character.text) != 1 for character in layout)
+    ):
+        raise _RepresentationImpossible(
+            "positioned fraction layout text is not the exact one-slash semantic"
+        )
+
+    try:
+        item_rotation = float(getattr(text_item, "rotation", 0.0) or 0.0)
+    except (TypeError, ValueError) as exc:
+        raise _RepresentationImpossible(
+            "positioned fraction rotation is not numeric"
+        ) from exc
+    if not math.isfinite(item_rotation):
+        raise _RepresentationImpossible("positioned fraction rotation is not finite")
+    for character in layout:
+        _finite_point(character.target_origin, field_name="target_origin")
+        _finite_point(character.source_origin_pdf, field_name="source_origin_pdf")
+        target_quad = _finite_quad(character.target_quad, field_name="target_quad")
+        _finite_quad(
+            character.source_quad_pdf,
+            field_name="source_quad_pdf",
+        )
+        _finite_bbox(
+            character.source_bbox_pdf,
+            field_name="source_bbox_pdf",
+        )
+        width, height, rotation = _quad_frame(target_quad)
+        advance_width = _positive_finite(character.advance_width)
+        glyph_height = _positive_finite(character.glyph_height)
+        if (
+            advance_width is None
+            or glyph_height is None
+            or not math.isclose(width, advance_width, rel_tol=1e-8, abs_tol=1e-9)
+            or not math.isclose(height, glyph_height, rel_tol=1e-8, abs_tol=1e-9)
+        ):
+            raise _RepresentationImpossible(
+                "positioned fraction target quad and character size disagree"
+            )
+        rotation_delta = (rotation - item_rotation + 180.0) % 360.0 - 180.0
+        if not math.isclose(rotation_delta, 0.0, rel_tol=0.0, abs_tol=1e-7):
+            raise _RepresentationImpossible(
+                "positioned fraction character orientation is incompatible"
+            )
+    _finite_bbox(getattr(text_item, "bbox", None), field_name="item bbox")
+    _finite_bbox(
+        getattr(text_item, "source_bbox_pdf", None),
+        field_name="item source_bbox_pdf",
+    )
+    _finite_point(getattr(text_item, "insertion", None), field_name="item insertion")
+    return layout
+
+
 def _target_advance_width(text_item: NormalizedText) -> Tuple[Optional[float], str]:
     explicit = _positive_finite(getattr(text_item, "advance_width", None))
     if explicit is not None:
@@ -1274,12 +1512,12 @@ _OUTLINE_ENTITY_TYPES = frozenset({"LWPOLYLINE", "POLYLINE"})
 
 
 def _transformed_definition_outlines(insert: Any):
-    """Transformed LWPOLYLINE/POLYLINE copies of one glyph-definition INSERT.
+    """Transformed bbox geometry from one glyph-definition INSERT.
 
     Same copy + ``transform(m)`` path as ezdxf's ``virtual_block_reference_entities``
-    (which ``recursive_decompose`` uses), but the SOLID fills are skipped *before* they
-    are copied and transformed. On the shape this builder writes they were ~96% of the
-    decomposed entities and the bbox filter discarded every one of them.
+    (which ``recursive_decompose`` uses). Ordinary mixed definitions use contours only.
+    A narrowly recognized SOLID-only positioned definition has no contour to inspect,
+    so its persisted fill triangles become the bbox geometry instead.
     """
     from ezdxf.disassemble import recursive_decompose
     from ezdxf.explode import virtual_block_reference_entities
@@ -1292,17 +1530,36 @@ def _transformed_definition_outlines(insert: Any):
             if entity.dxftype() in _OUTLINE_ENTITY_TYPES:
                 yield entity
         return
+    layout_entities = list(layout)
     if insert.mcount > 1 or any(
-        entity.dxftype() not in ("LWPOLYLINE", "POLYLINE", "SOLID") for entity in layout
+        entity.dxftype() not in ("LWPOLYLINE", "POLYLINE", "SOLID")
+        for entity in layout_entities
     ):
         # Not the definition shape this builder writes: defer to ezdxf unchanged.
         for entity in recursive_decompose([insert]):
             if entity.dxftype() in _OUTLINE_ENTITY_TYPES:
                 yield entity
         return
+    has_contours = any(
+        entity.dxftype() in _OUTLINE_ENTITY_TYPES for entity in layout_entities
+    )
+    if not has_contours and (
+        not layout_entities
+        or any(
+            entity.dxftype() != "SOLID"
+            or int(entity.dxf.get("invisible", 0) or 0) != 0
+            for entity in layout_entities
+        )
+    ):
+        # A positioned definition is accepted for fill-derived bounds only when
+        # every persisted child contributes visible SOLID ink. Filtering a mixed
+        # definition would make its bbox look complete while silently omitting a
+        # hidden source-owned child.
+        return
+    accepted_types = _OUTLINE_ENTITY_TYPES if has_contours else {"SOLID"}
     m = insert.matrix44()
-    for entity in layout:
-        if entity.dxftype() not in _OUTLINE_ENTITY_TYPES:
+    for entity in layout_entities:
+        if entity.dxftype() not in accepted_types:
             continue
         copy = entity.copy()
         if hasattr(copy, "remove_association"):
@@ -1319,13 +1576,12 @@ def _transformed_definition_outlines(insert: Any):
 
 
 def iter_glyph_outline_entities(block_ref: Any):
-    """Yield exactly what ``[e for e in recursive_decompose([block_ref]) if e.dxftype()
-    in {"LWPOLYLINE", "POLYLINE"}]`` yields, in the same order and with the same
-    transformed coordinates, without transforming the SOLID fills that filter discards.
+    """Yield persisted geometry used to verify a glyph block's bbox.
 
     Only the nested-glyph structure this builder writes (outer BLOCK of INSERTs ->
-    definition BLOCKs of outlines + fills) takes the cheap path; anything else defers
-    to ezdxf's own decomposition so the result stays bit-identical everywhere.
+    definition BLOCKs) takes the cheap path. Mixed ordinary definitions remain exactly
+    contour-based; only a definition containing SOLIDs and no contours uses its fills.
+    Anything else defers to ezdxf's own decomposition unchanged.
     """
     from ezdxf.disassemble import recursive_decompose
     from ezdxf.explode import virtual_block_reference_entities
@@ -1458,6 +1714,57 @@ def _base_attributes(
         attribs["true_color"] = rgb2int(rgb)
     attribs["style"] = style_name
     return attribs
+
+
+def _source_rgb8(text_item: NormalizedText) -> Optional[Tuple[int, int, int]]:
+    """Return the observed source color in the builder's existing sRGB8 rounding."""
+
+    color = getattr(text_item, "color", None)
+    if color is None:
+        return None
+    try:
+        components = tuple(float(value) for value in color[:3])
+    except (TypeError, ValueError) as exc:
+        raise _RepresentationImpossible("source text color is malformed") from exc
+    if len(components) != 3 or any(
+        not math.isfinite(value) or value < 0.0 or value > 1.0
+        for value in components
+    ):
+        raise _RepresentationImpossible("source text color is outside sRGB")
+    return tuple(round(value * 255.0) for value in components)
+
+
+def _exact_r12_aci(rgb: Tuple[int, int, int]) -> Optional[int]:
+    """Return the lowest deterministic ACI whose palette RGB is exactly ``rgb``."""
+
+    from ezdxf.colors import aci2rgb
+
+    for index in range(1, 256):
+        if tuple(int(component) for component in aci2rgb(index)) == rgb:
+            return index
+    return None
+
+
+def _positioned_r12_color_contract(
+    text_item: NormalizedText,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Bind positioned R12 ink to a zero-error, context-free ACI mapping."""
+
+    rgb = _source_rgb8(text_item)
+    if rgb is None:
+        return {}, {"r12_source_color_encoding": "source_color_absent"}
+    aci = _exact_r12_aci(rgb)
+    if aci is None:
+        raise _R12ColorImpossible(rgb)
+    return (
+        {"color": aci},
+        {
+            "r12_source_color_encoding": "exact_srgb8_aci_match",
+            "r12_source_color_rgb": list(rgb),
+            "r12_source_color_aci": aci,
+            "r12_source_color_max_channel_error": 0,
+        },
+    )
 
 
 def _fit_text_advance(
@@ -1758,6 +2065,26 @@ def _attempt_labels(
     style_created = False
     try:
         parent = str(target_app or "generic").strip().lower()
+        positioned_layout = _positioned_fraction_layout(text_item)
+        if positioned_layout is not None:
+            attempt.reason = (
+                "_RepresentationImpossible: native DXF text cannot preserve "
+                "the exact per-character transforms of a positioned fraction"
+            )
+            attempt.evidence.update(
+                {
+                    "target_app": parent,
+                    "source_item_id": source_id,
+                    "positioned_character_count": len(positioned_layout),
+                    "positioned_layout_bijection_verified": True,
+                    "native_text_per_character_transform_available": False,
+                    "item_specific_creation_attempted": False,
+                    "fallback_authorized_for_this_item": False,
+                }
+            )
+            attempt.outcome = "impossible"
+            attempt.cleanup_verified = True
+            return attempt
         if not is_3d_text and semantic_representation == "labels":
             # DXF has TEXT and MTEXT entities but no native Label entity.  A
             # report-only semantic tag on either text entity would be a peer
@@ -2167,6 +2494,11 @@ def _solid_fill_verified(fills: Sequence[Any], *, is_r12: bool) -> bool:
     if any(entity.dxftype() != expected_type for entity in fills):
         return False
     for entity in fills:
+        if (
+            not getattr(entity, "is_alive", True)
+            or int(entity.dxf.get("invisible", 0) or 0) != 0
+        ):
+            return False
         p0 = (float(entity.dxf.vtx0.x), float(entity.dxf.vtx0.y))
         p1 = (float(entity.dxf.vtx1.x), float(entity.dxf.vtx1.y))
         p2 = (float(entity.dxf.vtx2.x), float(entity.dxf.vtx2.y))
@@ -2514,6 +2846,68 @@ def _glyph_definition_geometry_fingerprint(block: Any) -> str:
     ).hexdigest()
 
 
+def _positioned_geometry_fingerprint(
+    entities: Sequence[Any],
+    *,
+    character_solid_counts: Sequence[int],
+    character_text: Sequence[str],
+    source_glyph_ids: Sequence[int],
+) -> str:
+    """Hash ordered per-character SOLID identity, placement, and styling."""
+
+    schema = "ordered-positioned-character-solids-v1"
+    try:
+        counts = tuple(int(value) for value in character_solid_counts)
+        texts = tuple(str(value) for value in character_text)
+        glyph_ids = tuple(int(value) for value in source_glyph_ids)
+    except (TypeError, ValueError):
+        return ""
+    if (
+        not counts
+        or len(counts) != len(texts)
+        or len(counts) != len(glyph_ids)
+        or any(count <= 0 for count in counts)
+        or sum(counts) != len(entities)
+    ):
+        return ""
+
+    character_records = []
+    offset = 0
+    for index, (text, glyph_id, count) in enumerate(
+        zip(texts, glyph_ids, counts, strict=True)
+    ):
+        solid_records = []
+        for entity in entities[offset : offset + count]:
+            entity_type = str(entity.dxftype())
+            geometry = (
+                tuple(
+                    _rounded_vector(
+                        entity.dxf.get(name, (0.0, 0.0, 0.0))
+                    )
+                    for name in ("vtx0", "vtx1", "vtx2", "vtx3")
+                )
+                if entity_type == "SOLID"
+                else ("unsupported",)
+            )
+            solid_records.append(
+                (
+                    entity_type,
+                    str(entity.dxf.get("handle", "") or ""),
+                    _entity_visual_attribute_record(entity),
+                    round(float(entity.dxf.get("thickness", 0.0) or 0.0), 12),
+                    _rounded_vector(
+                        entity.dxf.get("extrusion", (0.0, 0.0, 1.0))
+                    ),
+                    geometry,
+                )
+            )
+        character_records.append((index, text, glyph_id, tuple(solid_records)))
+        offset += count
+    return hashlib.sha256(
+        repr((schema, tuple(character_records))).encode("utf-8")
+    ).hexdigest()
+
+
 def _nested_outline_tolerance(
     entities: Sequence[Any],
     expected_bbox: Optional[Sequence[float]],
@@ -2632,6 +3026,296 @@ def _source_outline_bbox(
         paths = text2path.make_paths_from_entity(entity)
         _source_outline_bbox_cache[cache_key] = _path_bbox_tuple(paths)
     return _source_outline_bbox_cache[cache_key]
+
+
+def _positioned_font_identity(
+    resolution: _ExactFontResolution,
+) -> Tuple[str, ...]:
+    asset_sha256 = str(resolution.asset_sha256 or "").strip().lower()
+    if asset_sha256:
+        return ("asset_sha256", asset_sha256)
+    source_sha256 = str(resolution.source_sha256 or "").strip().lower()
+    if source_sha256:
+        return ("source_sha256", source_sha256)
+    asset_id = str(resolution.asset_id or "").strip()
+    if asset_id:
+        return ("asset_id", asset_id)
+    if resolution.source_xref is not None:
+        return (
+            "source_reference",
+            str(resolution.source_origin or "").strip().lower(),
+            str(resolution.source_page_number or ""),
+            str(int(resolution.source_xref)),
+        )
+    return (
+        "local_resolution",
+        str(resolution.filename or "").replace("\\", "/").lower(),
+        str(resolution.family or "").lower(),
+        str(resolution.style or "").lower(),
+        str(resolution.resolution_source or "").lower(),
+    )
+
+
+def _positioned_source_glyph_names(
+    layout: Sequence[TextCharLayout],
+    resolution: _ExactFontResolution,
+) -> List[str]:
+    """Bind every observed PDF glyph id to the exact outline font program."""
+
+    from fontTools.ttLib import TTFont
+
+    filename = str(resolution.filename or "")
+    if not filename:
+        raise _RepresentationImpossible(
+            "positioned fraction exact font program has no readable asset"
+        )
+    try:
+        font_program = TTFont(filename, lazy=True, recalcTimestamp=False)
+    except Exception as exc:
+        raise _RepresentationImpossible(
+            "positioned fraction exact font program cannot be inspected"
+        ) from exc
+    try:
+        cmap = font_program.getBestCmap() or {}
+        glyph_names: List[str] = []
+        for character in layout:
+            glyph_id = character.glyph_id
+            if (
+                not isinstance(glyph_id, int)
+                or isinstance(glyph_id, bool)
+                or glyph_id < 0
+            ):
+                raise _RepresentationImpossible(
+                    "positioned fraction character has no exact source glyph id"
+                )
+            glyph_name = str(cmap.get(ord(character.text)) or "")
+            if not glyph_name:
+                raise _RepresentationImpossible(
+                    "positioned fraction character is absent from the exact font"
+                )
+            try:
+                resolved_glyph_id = int(font_program.getGlyphID(glyph_name))
+            except Exception as exc:
+                raise _RepresentationImpossible(
+                    "positioned fraction glyph program cannot be resolved"
+                ) from exc
+            if resolved_glyph_id != glyph_id:
+                raise _RepresentationImpossible(
+                    "positioned fraction observed glyph id does not match the exact font"
+                )
+            glyph_names.append(glyph_name)
+        return glyph_names
+    finally:
+        font_program.close()
+
+
+def _positioned_character_local_bbox(
+    character: TextCharLayout,
+) -> Tuple[float, float, float, float, float]:
+    target_quad = tuple(
+        (float(point[0]), float(point[1])) for point in character.target_quad
+    )
+    _, _, rotation = _quad_frame(target_quad)
+    angle = math.radians(rotation)
+    cosine = math.cos(angle)
+    sine = math.sin(angle)
+    origin_x, origin_y = (
+        float(character.target_origin[0]),
+        float(character.target_origin[1]),
+    )
+    projected = []
+    for point_x, point_y in target_quad:
+        dx = point_x - origin_x
+        dy = point_y - origin_y
+        projected.append(
+            (
+                dx * cosine + dy * sine,
+                -dx * sine + dy * cosine,
+            )
+        )
+    return (
+        min(point[0] for point in projected),
+        min(point[1] for point in projected),
+        max(point[0] for point in projected),
+        max(point[1] for point in projected),
+        rotation,
+    )
+
+
+def _positioned_fraction_glyph_run(
+    text_item: NormalizedText,
+    layout: Sequence[TextCharLayout],
+    resolution: _ExactFontResolution,
+    *,
+    is_r12: bool,
+    attribs: Dict[str, Any],
+) -> Tuple[_NestedGlyphRun, List[List[Any]], Dict[str, Any]]:
+    """Create exact-font paths in each observed character coordinate frame."""
+
+    engine_name = _outline_engine_font_name(resolution.filename)
+    face = ezdxf_fonts.get_font_face(engine_name)
+    if str(face.filename or "").lower() != engine_name.lower():
+        raise _RepresentationImpossible(
+            f"outline engine resolved {engine_name} to {face.filename}; "
+            "refusing font substitution"
+        )
+    font = text2path.get_font(face)
+    font_identity = _positioned_font_identity(resolution)
+    glyph_names = _positioned_source_glyph_names(layout, resolution)
+    item_insert = tuple(float(value) for value in text_item.insertion[:2])
+    attribute_record = tuple(
+        (str(key), repr(value)) for key, value in sorted(attribs.items())
+    )
+    geometries: List[_NestedGlyphGeometry] = []
+    world_path_groups: List[List[Any]] = []
+    canonical_created_count = 0
+    canonical_reused_count = 0
+    local_bboxes: List[List[float]] = []
+    rotations: List[float] = []
+    for character in layout:
+        canonical_key = (font_identity, character.text)
+        if canonical_key not in _canonical_glyph_path_cache:
+            character_paths = font.text_glyph_paths(character.text, 1.0, 1.0)
+            _canonical_glyph_path_cache[canonical_key] = (
+                character_paths[0] if len(character_paths) == 1 else None
+            )
+            canonical_created_count += 1
+        else:
+            canonical_reused_count += 1
+        canonical_path = _canonical_glyph_path_cache[canonical_key]
+        if canonical_path is None:
+            raise _RepresentationImpossible(
+                "positioned fraction character has no single exact source-glyph path"
+            )
+        canonical_bbox = _path_bbox_tuple([canonical_path.to_path()])
+        if canonical_bbox is None:
+            raise _RepresentationImpossible(
+                "positioned fraction source glyph has no visible outline"
+            )
+        source_width = canonical_bbox[2] - canonical_bbox[0]
+        source_height = canonical_bbox[3] - canonical_bbox[1]
+        if source_width <= 0.0 or source_height <= 0.0:
+            raise _RepresentationImpossible(
+                "positioned fraction source glyph outline has zero area"
+            )
+        left, bottom, right, top, rotation = _positioned_character_local_bbox(
+            character
+        )
+        target_width = right - left
+        target_height = top - bottom
+        definition_path = canonical_path.clone()
+        definition_path.transform_inplace(
+            Matrix44.translate(-canonical_bbox[0], -canonical_bbox[1], 0.0)
+        )
+        definition_path.transform_inplace(
+            Matrix44.scale(
+                target_width / source_width,
+                target_height / source_height,
+                1.0,
+            )
+        )
+        definition_path.transform_inplace(Matrix44.translate(left, bottom, 0.0))
+        paths = list(definition_path.to_path().sub_paths())
+        if not paths:
+            raise _RepresentationImpossible(
+                "positioned fraction source glyph decomposition lost its outline"
+            )
+        base_fingerprint = _path_geometry_fingerprint(
+            paths,
+            is_r12=is_r12,
+            attribs=attribs,
+        )
+        fingerprint_payload = (
+            "positioned-fill-only-v1",
+            font_identity,
+            character.text,
+            character.glyph_id,
+            tuple(round(value, 12) for value in (left, bottom, right, top)),
+            attribute_record,
+            base_fingerprint,
+        )
+        fingerprint = hashlib.sha256(
+            repr(fingerprint_payload).encode("utf-8")
+        ).hexdigest()
+        target_origin = tuple(float(value) for value in character.target_origin)
+        geometries.append(
+            _NestedGlyphGeometry(
+                insertion=(
+                    target_origin[0] - item_insert[0],
+                    target_origin[1] - item_insert[1],
+                ),
+                xscale=1.0,
+                yscale=1.0,
+                rotation=rotation,
+                paths=paths,
+                attribs=dict(attribs),
+                fingerprint=fingerprint,
+                outline_visible=False,
+            )
+        )
+        rotation_matrix = Matrix44.z_rotate(math.radians(rotation))
+        translation_matrix = Matrix44.translate(
+            target_origin[0],
+            target_origin[1],
+            0.0,
+        )
+        world_path_groups.append(
+            [
+                path.transform(rotation_matrix).transform(translation_matrix)
+                for path in paths
+            ]
+        )
+        local_bboxes.append([left, bottom, right, top])
+        rotations.append(rotation)
+
+    origins = [list(map(float, character.target_origin)) for character in layout]
+    quads = [
+        [list(map(float, point)) for point in character.target_quad]
+        for character in layout
+    ]
+    layout_payload = (
+        str(text_item.text),
+        tuple(character.text for character in layout),
+        tuple(int(character.glyph_id) for character in layout),
+        tuple(tuple(origin) for origin in origins),
+        tuple(tuple(tuple(point) for point in quad) for quad in quads),
+        tuple(tuple(bbox) for bbox in local_bboxes),
+        tuple(rotations),
+        font_identity,
+    )
+    evidence = {
+        "positioned_character_text": [character.text for character in layout],
+        "positioned_source_glyph_ids": [
+            int(character.glyph_id) for character in layout
+        ],
+        "positioned_source_glyph_names": glyph_names,
+        "positioned_character_origins": origins,
+        "positioned_character_quads": quads,
+        "positioned_character_local_bboxes": local_bboxes,
+        "positioned_character_rotations": rotations,
+        "positioned_character_count": len(layout),
+        "positioned_layout_bijection_verified": True,
+        "positioned_source_font_glyphs_verified": True,
+        "positioned_source_font_identity_sha256": hashlib.sha256(
+            repr(font_identity).encode("utf-8")
+        ).hexdigest(),
+        "positioned_layout_sha256": hashlib.sha256(
+            repr(layout_payload).encode("utf-8")
+        ).hexdigest(),
+        "positioned_visible_geometry_fill_only": True,
+        "positioned_contour_entities_omitted": True,
+        "outline_engine_font_name": engine_name,
+        "outline_engine_font_verified": True,
+    }
+    return (
+        _NestedGlyphRun(
+            geometries=geometries,
+            canonical_created_count=canonical_created_count,
+            canonical_reused_count=canonical_reused_count,
+        ),
+        world_path_groups,
+        evidence,
+    )
 
 
 def _definition_scale_for_transform(xscale: float, yscale: float) -> float:
@@ -2892,9 +3576,15 @@ def _add_nested_glyph_definitions(
                 is_r12=is_r12,
                 attribs=geometry.attribs,
             )
-            if not outlines or not _solid_fill_verified(fills, is_r12=is_r12):
+            if (
+                (geometry.outline_visible and not outlines)
+                or not _solid_fill_verified(fills, is_r12=is_r12)
+            ):
                 raise ValueError("shared glyph definition is not visibly complete")
-            for entity in outlines + fills:
+            definition_entities = (
+                outlines + fills if geometry.outline_visible else fills
+            )
+            for entity in definition_entities:
                 definition.add_entity(entity)
                 handle = _handle(entity)
                 attempt.created_entity_handles.append(handle)
@@ -2955,10 +3645,11 @@ def _commit_outlines(
     expected_bbox: Optional[Tuple[float, float, float, float]],
     is_r12: bool,
     glyph_geometries: Optional[Sequence[_NestedGlyphGeometry]] = None,
+    fill_only: bool = False,
 ) -> None:
     doc = msp.doc
     nested_glyphs = bool(glyph_geometries)
-    if not outlines and not nested_glyphs:
+    if not outlines and not nested_glyphs and not (fill_only and fills):
         raise ValueError("outline strategy returned zero entities")
     fill_verified = (
         True if nested_glyphs else _solid_fill_verified(fills, is_r12=is_r12)
@@ -2977,13 +3668,19 @@ def _commit_outlines(
         for entity in outlines + fills:
             msp.add_entity(entity)
             attempt.created_entity_handles.append(_handle(entity))
-        attempt.entity_handles = [_handle(entity) for entity in outlines + fills]
-        actual_bbox = _bbox_tuple(outlines)
+        committed_entities = outlines + fills
+        attempt.entity_handles = [_handle(entity) for entity in committed_entities]
+        bbox_entities = fills if fill_only else outlines
+        actual_bbox = _bbox_tuple(bbox_entities)
         attempt.type_verified = (
             bool(attempt.entity_handles)
-            and all(
-                entity.dxftype() in {"LWPOLYLINE", "POLYLINE"}
-                for entity in outlines
+            and (
+                not outlines
+                if fill_only
+                else all(
+                    entity.dxftype() in {"LWPOLYLINE", "POLYLINE"}
+                    for entity in outlines
+                )
             )
             and _solid_fill_verified(fills, is_r12=is_r12)
         )
@@ -2992,8 +3689,39 @@ def _commit_outlines(
             {
                 "expected_outline_bbox": list(expected_bbox) if expected_bbox else None,
                 "actual_outline_bbox": list(actual_bbox) if actual_bbox else None,
+                "bbox_geometry_source": "solid_fills" if fill_only else "contours",
             }
         )
+        if fill_only:
+            character_solid_counts = list(
+                attempt.evidence.get(
+                    "positioned_geometry_character_solid_counts"
+                )
+                or []
+            )
+            geometry_digest = _positioned_geometry_fingerprint(
+                committed_entities,
+                character_solid_counts=character_solid_counts,
+                character_text=list(
+                    attempt.evidence.get("positioned_character_text") or []
+                ),
+                source_glyph_ids=list(
+                    attempt.evidence.get("positioned_source_glyph_ids") or []
+                ),
+            )
+            if not geometry_digest:
+                raise ValueError(
+                    "positioned geometry has no complete per-character SOLID mapping"
+                )
+            attempt.evidence.update(
+                {
+                    "positioned_geometry_fingerprint_schema": (
+                        "ordered-positioned-character-solids-v1"
+                    ),
+                    "positioned_geometry_entity_count": len(committed_entities),
+                    "positioned_geometry_sha256": geometry_digest,
+                }
+            )
         return
 
     if outlines:
@@ -3107,16 +3835,23 @@ def _commit_outlines(
         for left, right in zip(actual_insert, insertion, strict=True)
     )
     expected_true_color = block_attribs.get("true_color")
+    expected_color = block_attribs.get("color")
     actual_true_color = (
         block_ref.dxf.true_color
         if block_ref.dxf.hasattr("true_color")
         else None
     )
     insert_color_verified = bool(
-        expected_true_color is None
-        or (
-            actual_true_color is not None
-            and int(actual_true_color) == int(expected_true_color)
+        (
+            expected_true_color is None
+            or (
+                actual_true_color is not None
+                and int(actual_true_color) == int(expected_true_color)
+            )
+        )
+        and (
+            expected_color is None
+            or int(block_ref.dxf.get("color", 256)) == int(expected_color)
         )
     )
     attempt.type_verified = (
@@ -3178,6 +3913,7 @@ def _commit_outlines(
             "block_insert_verified": insert_verified,
             "block_insert_color_verified": insert_color_verified,
             "block_insert_true_color": expected_true_color,
+            "block_insert_aci": expected_color,
             "nested_glyph_definitions": bool(glyph_geometries),
             "glyph_instance_count": len(glyph_geometries or []),
             "glyph_definition_created_count": definition_created_count,
@@ -3284,6 +4020,123 @@ def _attempt_outline_entity(
         insertion = tuple(float(value) for value in text_item.insertion[:2])
         source_insert = (0.0, 0.0) if representation == "glyphs" else insertion
         font_resolution = _require_exact_item_font(text_item, config, attempt)
+        positioned_layout = _positioned_fraction_layout(text_item)
+        if positioned_layout is not None:
+            attempt.strategy = "positioned_source_glyph_outlines"
+            positioned_base_attribs = _base_attributes(
+                text_item,
+                layer_name=layer_name,
+                height=source_em_height,
+                insert=(0.0, 0.0),
+                is_r12=is_r12,
+                style_name="Standard",
+            )
+            if is_r12:
+                r12_attribs, r12_evidence = _positioned_r12_color_contract(
+                    text_item
+                )
+                positioned_base_attribs.update(r12_attribs)
+                attempt.evidence.update(r12_evidence)
+            positioned_attribs = _outline_attributes(positioned_base_attribs)
+            glyph_run, world_path_groups, positioned_evidence = (
+                _positioned_fraction_glyph_run(
+                    text_item,
+                    positioned_layout,
+                    font_resolution,
+                    is_r12=is_r12,
+                    attribs=positioned_attribs,
+                )
+            )
+            attempt.evidence.update(positioned_evidence)
+            attempt.evidence.update(
+                {
+                    "canonical_glyph_created_count": (
+                        glyph_run.canonical_created_count
+                    ),
+                    "canonical_glyph_reused_count": (
+                        glyph_run.canonical_reused_count
+                    ),
+                }
+            )
+            if len(glyph_run.geometries) != len(positioned_layout):
+                raise _RepresentationImpossible(
+                    "positioned fraction source-glyph decomposition is incomplete"
+                )
+            world_paths = [
+                path for path_group in world_path_groups for path in path_group
+            ]
+            if representation == "glyphs":
+                expected_entities = _to_solid_fill_entities(
+                    world_paths,
+                    is_r12=is_r12,
+                    attribs=positioned_attribs,
+                )
+                expected_world_bbox = _bbox_tuple(expected_entities)
+                expected_bbox = (
+                    (
+                        expected_world_bbox[0] - insertion[0],
+                        expected_world_bbox[1] - insertion[1],
+                        expected_world_bbox[2] - insertion[0],
+                        expected_world_bbox[3] - insertion[1],
+                    )
+                    if expected_world_bbox is not None
+                    else None
+                )
+                outlines = []
+                fills = []
+                glyph_geometries: Optional[
+                    Sequence[_NestedGlyphGeometry]
+                ] = glyph_run.geometries
+            else:
+                outlines = []
+                fills = []
+                character_solid_counts: List[int] = []
+                for path_group in world_path_groups:
+                    character_fills = _to_solid_fill_entities(
+                        path_group,
+                        is_r12=is_r12,
+                        attribs=positioned_attribs,
+                    )
+                    if not character_fills:
+                        raise _RepresentationImpossible(
+                            "positioned fraction character produced no visible SOLID ink"
+                        )
+                    character_solid_counts.append(len(character_fills))
+                    fills.extend(character_fills)
+                attempt.evidence["positioned_geometry_character_solid_counts"] = (
+                    character_solid_counts
+                )
+                expected_bbox = _bbox_tuple(fills)
+                glyph_geometries = None
+            if expected_bbox is None:
+                raise _RepresentationImpossible(
+                    "positioned fraction source glyphs produced no visible geometry"
+                )
+            _commit_outlines(
+                attempt,
+                outlines,
+                fills,
+                msp,
+                representation=representation,
+                insertion=insertion,
+                expected_bbox=expected_bbox,
+                is_r12=is_r12,
+                glyph_geometries=glyph_geometries,
+                fill_only=True,
+            )
+            if not attempt.type_verified or not attempt.visual_verified:
+                raise _RepresentationImpossible(
+                    "positioned fraction outline delivery failed structural or "
+                    "placement verification"
+                )
+            attempt.delivery_verified = True
+            attempt.outcome = "verified"
+            attempt.cleanup_verified = _verify_owned_state(doc, attempt)
+            if not attempt.cleanup_verified:
+                raise ValueError(
+                    "positioned fraction outline ownership verification failed"
+                )
+            return attempt
         height, cap_height_ratio = _delivery_cap_height(
             source_em_height, font_resolution
         )
@@ -3481,6 +4334,20 @@ def _attempt_outline_string(
     )
     doc = msp.doc
     try:
+        positioned_layout = _positioned_fraction_layout(text_item)
+        if positioned_layout is not None:
+            attempt.evidence.update(
+                {
+                    "positioned_character_count": len(positioned_layout),
+                    "positioned_layout_bijection_verified": True,
+                    "whole_string_outline_positioning_preserved": False,
+                    "item_specific_creation_attempted": False,
+                }
+            )
+            raise _RepresentationImpossible(
+                "whole-string outline conversion cannot preserve positioned "
+                "fraction character transforms"
+            )
         source_em_height = _positive_finite(getattr(text_item, "font_size", None))
         if source_em_height is None:
             raise _RepresentationImpossible(
@@ -3631,6 +4498,65 @@ def _build_delivery(
             verified=False,
             failure_reason="source text item is empty",
         )
+
+    try:
+        positioned_layout = _positioned_fraction_layout(text_item)
+    except _RepresentationImpossible as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        validation_attempt = TextDeliveryAttempt(
+            source_id=source_id,
+            requested_representation=requested,
+            attempted_representation=requested,
+            strategy="positioned_fraction_layout_validation",
+            outcome="impossible",
+            reason=reason,
+            cleanup_verified=True,
+            evidence={
+                "positioned_layout_bijection_verified": False,
+                "item_specific_creation_attempted": False,
+                "fallback_authorized_for_this_item": False,
+            },
+        )
+        return TextDeliveryResult(
+            source_id=source_id,
+            requested_representation=requested,
+            final_representation=None,
+            verified=False,
+            attempts=[validation_attempt],
+            terminal_fallback_authorized=False,
+            failure_reason=reason,
+        )
+
+    if positioned_layout is not None and is_r12:
+        try:
+            _positioned_r12_color_contract(text_item)
+        except _R12ColorImpossible as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            validation_attempt = TextDeliveryAttempt(
+                source_id=source_id,
+                requested_representation=requested,
+                attempted_representation=requested,
+                strategy="positioned_fraction_r12_color_validation",
+                outcome="impossible",
+                reason=reason,
+                cleanup_verified=True,
+                evidence={
+                    "fallback_authorized_for_this_item": False,
+                    "item_specific_creation_attempted": False,
+                    "positioned_layout_bijection_verified": True,
+                    "r12_source_color_encoding": "unrepresentable_srgb8",
+                    "r12_source_color_rgb": list(exc.rgb),
+                },
+            )
+            return TextDeliveryResult(
+                source_id=source_id,
+                requested_representation=requested,
+                final_representation=None,
+                verified=False,
+                attempts=[validation_attempt],
+                terminal_fallback_authorized=False,
+                failure_reason=reason,
+            )
 
     ladder = _representation_ladder(requested)
     if not ladder:
@@ -3790,7 +4716,13 @@ def _build_delivery(
     failure_reason = "; ".join(
         attempt.reason for attempt in attempts if attempt.reason
     ) or "all safe representation attempts failed verification"
-    return unverified_result(failure_reason, terminal=True)
+    if positioned_layout is not None:
+        for attempt in attempts:
+            attempt.evidence["fallback_authorized_for_this_item"] = False
+    return unverified_result(
+        failure_reason,
+        terminal=positioned_layout is None,
+    )
 
 
 def build_text(

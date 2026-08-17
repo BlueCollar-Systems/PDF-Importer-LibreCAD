@@ -7,14 +7,15 @@ with the PDF page. Three import defects surfaced that no report field showed:
    right half top->bottom) came out as two identical LEFT-half ARCs -- a "C" instead of a
    circle. `_promote_arcs` emitted (first, last) regardless of traversal direction, but a
    DXF ARC always sweeps counter-clockwise, so a clockwise polyline became its complement.
-2. Stacked-fraction raster crops were squashed to 60% width (169 of 935 IMAGEs): the full
-   source clip was placed into the merged item's bbox, whose width pdfcadcore shrinks by
-   _FRAC_STACKED_SCALE, and nothing asserted square pixels.
+2. The historical 0.6-width stacked-fraction rewrite was retired: exact observed union
+   geometry is retained, and an invalid positioned fraction cannot read the source PDF or
+   descend to Raster. Ordinary requested-Raster items still retain square pixels.
 3. Custom PDF_DASH linetypes render continuous in LibreCAD (tracked separately).
 """
 from __future__ import annotations
 
 import math
+from unittest.mock import patch
 
 import pytest
 
@@ -153,12 +154,17 @@ def test_lineweight_ignores_missing_or_non_finite_widths() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 2. Raster rung must never be anamorphic: square pixels even when the placed bbox
-#    (narrowed by pdfcadcore for merged stacked fractions) has a different aspect.
+# 2. Exact stacked-fraction truth does not use the retired 0.6-width rewrite.
+#    Invalid positioned evidence fails atomically; ordinary Raster remains square-pixel.
 # ---------------------------------------------------------------------------
-from librecad_pdf_importer.exporters.dxf_exporter import DxfExportOptions, export_to_dxf  # noqa: E402
+from librecad_pdf_importer.exporters.dxf_exporter import (  # noqa: E402
+    DxfExportOptions,
+    TextRepresentationDeliveryError,
+    export_to_dxf,
+)
 from librecad_pdf_importer.importer import run_import  # noqa: E402
 from pdfcadcore.fitz_loader import import_fitz  # noqa: E402
+from pdfcadcore import primitive_extractor as primitive_extractor_module  # noqa: E402
 
 fitz = import_fitz()
 
@@ -169,35 +175,138 @@ def _footprint_aspect(image):
     return w / h
 
 
-def test_raster_items_keep_the_source_clip_aspect_when_the_placed_bbox_is_narrowed(tmp_path) -> None:
-    pdf_path = tmp_path / "stacked-fraction.pdf"
+def _write_stacked_fraction_pdf(pdf_path, *, include_plate: bool = True) -> None:
     pdf = fitz.open()
     page = pdf.new_page(width=200, height=120)
-    # A stacked fraction the way CAD PDFs draw it: numerator over denominator in one
-    # column, plus a slash span; pdfcadcore merges these and narrows the item bbox.
+    # A stacked fraction the way CAD PDFs draw it: numerator over denominator,
+    # plus a separately positioned slash span.
     page.insert_text((60, 50), "13", fontsize=8)
     page.insert_text((60, 62), "16", fontsize=8)
     page.insert_text((59, 58), "/", fontsize=10)
-    page.insert_text((100, 90), "PLATE", fontsize=10)
+    if include_plate:
+        page.insert_text((100, 90), "PLATE", fontsize=10)
+    pdf.save(str(pdf_path))
+    pdf.close()
+
+
+def test_stacked_fraction_merge_preserves_full_observed_union(tmp_path) -> None:
+    pdf_path = tmp_path / "stacked-fraction-exact-union.pdf"
+    _write_stacked_fraction_pdf(pdf_path)
+
+    with patch.object(
+        primitive_extractor_module,
+        "_merge_stacked_fractions",
+        side_effect=lambda items: items,
+    ):
+        unmerged_run = run_import(
+            str(pdf_path),
+            mode="vector",
+            overrides={"pages": "1"},
+        )
+    merged_run = run_import(str(pdf_path), mode="vector", overrides={"pages": "1"})
+
+    observed_parts = [
+        item
+        for item in unmerged_run.extraction.pages[0].page_data.text_items
+        if item.text in {"13", "16", "/"}
+    ]
+    assert [item.text for item in observed_parts] == ["13", "16", "/"]
+    assert all(item.bbox is not None for item in observed_parts)
+    expected_union = (
+        min(item.bbox[0] for item in observed_parts),
+        min(item.bbox[1] for item in observed_parts),
+        max(item.bbox[2] for item in observed_parts),
+        max(item.bbox[3] for item in observed_parts),
+    )
+    merged = next(
+        item
+        for item in merged_run.extraction.pages[0].page_data.text_items
+        if item.text == "13/16"
+    )
+
+    assert merged.bbox == pytest.approx(expected_union, abs=1e-9)
+    assert merged.requires_individual_positioning is True
+    assert "".join(char.text for char in merged.source_char_layout) == "13/16"
+
+
+@pytest.mark.parametrize("fault", ["unsupported_shear", "partial_layout"])
+def test_invalid_positioned_fraction_refuses_without_pdf_or_raster_work(
+    tmp_path,
+    fault: str,
+) -> None:
+    pdf_path = tmp_path / f"stacked-fraction-{fault}.pdf"
+    _write_stacked_fraction_pdf(pdf_path, include_plate=False)
+    run = run_import(str(pdf_path), mode="vector", overrides={"pages": "1"})
+    fraction = next(
+        item
+        for item in run.extraction.pages[0].page_data.text_items
+        if item.text == "13/16"
+    )
+    if fault == "partial_layout":
+        fraction.source_char_layout = fraction.source_char_layout[:-1]
+
+    output = tmp_path / f"prior-{fault}.dxf"
+    prior = b"prior native artifact\n"
+    output.write_bytes(prior)
+    asset_root = output.with_name(f"{output.stem}_assets")
+
+    with (
+        patch.object(
+            dxf_exporter_module,
+            "_file_sha256",
+            side_effect=AssertionError("source PDF hash must not be read"),
+        ) as source_hash,
+        patch.object(
+            dxf_exporter_module,
+            "_attempt_terminal_text_raster",
+            side_effect=AssertionError("terminal Raster must not be attempted"),
+        ) as raster_attempt,
+        patch.object(
+            dxf_exporter_module,
+            "_rectangular_opaque_crop",
+            side_effect=AssertionError("source crop must not be attempted"),
+        ) as source_crop,
+        pytest.raises(TextRepresentationDeliveryError) as raised,
+    ):
+        export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(include_images=False, text_mode="raster"),
+        )
+
+    assert output.read_bytes() == prior
+    assert not asset_root.exists()
+    assert raised.value.delivery.verified is False
+    assert raised.value.delivery.final_representation is None
+    assert raised.value.delivery.terminal_fallback_authorized is False
+    assert all(attempt.cleanup_verified is True for attempt in raised.value.delivery.attempts)
+    assert source_hash.call_count == 0
+    assert raster_attempt.call_count == 0
+    assert source_crop.call_count == 0
+
+
+def test_non_fraction_requested_raster_keeps_source_clip_aspect(tmp_path) -> None:
+    pdf_path = tmp_path / "ordinary-raster-text.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=200, height=120)
+    page.insert_text((60, 60), "PLATE", fontsize=10)
     pdf.save(str(pdf_path))
     pdf.close()
     run = run_import(str(pdf_path), mode="vector", overrides={"pages": "1"})
-    output = tmp_path / "stacked-fraction.dxf"
-    result = export_to_dxf(run.extraction, str(output), DxfExportOptions(include_images=False, text_mode="raster"))
+    output = tmp_path / "ordinary-raster-text.dxf"
+    result = export_to_dxf(
+        run.extraction,
+        str(output),
+        DxfExportOptions(include_images=False, text_mode="raster"),
+    )
+
     assert result.text_deliveries
     doc = ezdxf.readfile(str(output))
     images = list(doc.modelspace().query("IMAGE"))
     assert images
     for delivery, image in zip(result.text_deliveries, images, strict=True):
         ev = delivery["attempts"][-1]["evidence"]
-        assert "footprint_aspect_corrected" in ev
-        # Whatever pdfcadcore did to the placed bbox, the IMAGE footprint has the
-        # source clip's aspect (square pixels): u == v per pixel.
         u = math.hypot(image.dxf.u_pixel.x, image.dxf.u_pixel.y)
         v = math.hypot(image.dxf.v_pixel.x, image.dxf.v_pixel.y)
         assert u == pytest.approx(v, rel=0.03), (delivery["source_id"], u, v)
         assert _footprint_aspect(image) == pytest.approx(ev["source_clip_aspect"], rel=0.03)
-    # Negative control: at least one item really had a narrowed placed bbox, so the
-    # correction path was exercised and is not vacuous.
-    corrected = [d for d in result.text_deliveries if d["attempts"][-1]["evidence"].get("footprint_aspect_corrected")]
-    assert corrected, "expected the merged stacked fraction to need the aspect correction"
