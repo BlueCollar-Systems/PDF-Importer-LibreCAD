@@ -2,6 +2,54 @@
 
 All notable release changes are recorded here.
 
+## 1.0.91 - 2026-08-16
+
+- pdfcadcore sync: constant alpha (/CA, /ca) is composited against the white page once
+  at extraction for strokes, fills and text, so translucent separator bars and faint
+  labels look the way the PDF viewer shows them (LibreCAD has no transparency).
+  Invisible render-mode-3 text (OCR layers) is left uncomposited.
+- LibreCAD's white->black inversion (white ink would vanish on the default background)
+  now fires only for genuinely white ink; pale tints and composited washes keep their
+  colour instead of turning solid black.
+
+## 1.0.90 - 2026-08-16
+
+- pdfcadcore sync: both-sides weld symbols keep the second stacked fraction (the
+  stacked-fraction merge selected every same-split span within 4.5 mm and the overlay
+  dedupe then removed the second slash; 14 fillet-weld sizes were dropped on a real
+  fabrication sheet).
+
+## 1.0.89 - 2026-08-16
+
+- Four visible defects found by side-by-side comparison of the LibreCAD import with the
+  PDF (LibreCAD's own dxf2png render vs the PDF page): clockwise-traversed arcs were
+  emitted as their complement (weld-all-around circles drawn as an open "C"); custom
+  PDF_DASH linetypes rendered continuous in LibreCAD (it only recognizes its own linetype
+  names) -- dashes are now mapped to the closest LibreCAD family/length variant;
+  lineweights were converted pt->mm twice (2.83x too thin); raster crops of merged
+  stacked-fraction items were squashed to 60% width (now square pixels, aspect
+  preserved).
+
+## 1.0.88 - 2026-08-16
+
+- Glyph outlines now come from the exact embedded source-font program. ezdxf resolves
+  fonts by file name against its system cache and silently returned its fallback face
+  for the extracted asset path, so every embedded-font glyph delivery drew the fallback
+  (found by the LibreCAD visual oracle on 1011: RomanT title rendered as a bold sans).
+  The asset folder is registered with the engine, the exact program is re-verified at
+  use, and substitution is refused (item-scoped -> raster). Evidence records
+  `outline_engine_font_verified`.
+- Glyph export stops recomputing known values: definition fingerprints are hashed once
+  per verification pass, outline bboxes no longer copy/transform the SOLID fills, and
+  plain LWPOLYLINE bboxes are taken from the vertices directly (bit-identical). On
+  1011/labels the DXF export dropped 51.0/55.2 s -> 26.9/29.1 s (importer clock, same
+  machine, interleaved).
+
+## 1.0.87 - 2026-08-15
+
+- Always emit `extra.fallback_transitions` so certified-ladder hops are visible
+  to 1011 accuracy scoring.
+
 ## 1.0.86 - 2026-08-13
 
 - circle_fit accumulation moved to math.fsum: geometry is now identical on every

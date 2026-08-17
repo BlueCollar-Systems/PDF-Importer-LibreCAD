@@ -13,10 +13,8 @@ import uuid
 
 import ezdxf
 import numpy as np
-from ezdxf import bbox as ezdxf_bbox
 from ezdxf import path as ezdxf_path
 from ezdxf.colors import RGB, aci2rgb, rgb2int
-from ezdxf.disassemble import recursive_decompose
 from ezdxf.units import MM
 
 try:
@@ -40,12 +38,14 @@ from pdfcadcore.primitive_extractor import (
 from dxf_text_builder import (
     TextDeliveryAttempt,
     TextDeliveryResult,
+    _bbox_tuple,
     _glyph_definition_geometry_fingerprint,
     _glyph_instance_transform_fingerprint,
     _glyph_outer_block_structure_fingerprint,
     _resolve_librecad_unicode_lff,
     _nested_outline_tolerance,
     build_text,
+    iter_glyph_outline_entities,
     reset_text_styles,
 )
 from conversion_control import check_cancel, report_progress
@@ -226,6 +226,11 @@ def _verify_serialized_text_deliveries(
         "3d_text": {"TEXT"},
     }
     reopened_lff_resolutions: Dict[str, Any] = {}
+    # One verification pass reads an immutable re-opened document, and a block name
+    # maps to exactly one definition in it -- so each definition is hashed once per
+    # pass and every item that references it is checked against that hash. (Before:
+    # 130 definitions were hashed 3,599 times on a 979-item drawing.)
+    definition_fingerprints: Dict[str, str] = {}
     source_ids: set[str] = set()
     main_handles: set[str] = set()
     serialized_modelspace = doc.modelspace()
@@ -774,8 +779,18 @@ def _verify_serialized_text_deliveries(
                             f"serialized text delivery {source_id}: "
                             "glyph definition geometry changed"
                         )
+                    actual_definition_fingerprint = definition_fingerprints.get(
+                        definition_name
+                    )
+                    if actual_definition_fingerprint is None:
+                        actual_definition_fingerprint = (
+                            _glyph_definition_geometry_fingerprint(definition)
+                        )
+                        definition_fingerprints[definition_name] = (
+                            actual_definition_fingerprint
+                        )
                     if (
-                        _glyph_definition_geometry_fingerprint(definition)
+                        actual_definition_fingerprint
                         != expected_definition_fingerprints[definition_name]
                     ):
                         raise RuntimeError(
@@ -864,22 +879,22 @@ def _verify_serialized_text_deliveries(
                         f"serialized text delivery {source_id}: "
                         "glyph bbox tolerance evidence changed"
                     )
-                serialized_outlines = [
-                    entity
-                    for entity in recursive_decompose([insert])
-                    if entity.dxftype() in {"LWPOLYLINE", "POLYLINE"}
-                ]
-                serialized_box = ezdxf_bbox.extents(serialized_outlines)
-                if not serialized_box.has_data:
+                # Outline-only decomposition: bit-identical to filtering
+                # recursive_decompose to LWPOLYLINE/POLYLINE, minus the SOLID fills.
+                serialized_outlines = list(iter_glyph_outline_entities(insert))
+                # _bbox_tuple == ezdxf bbox.extents (exact vertex bbox on plain
+                # LWPOLYLINE outlines, ezdxf otherwise).
+                serialized_box = _bbox_tuple(serialized_outlines)
+                if serialized_box is None:
                     raise RuntimeError(
                         f"serialized text delivery {source_id}: "
                         "serialized glyph bbox missing"
                     )
                 serialized_bbox = (
-                    float(serialized_box.extmin.x) - actual_outer_insert[0],
-                    float(serialized_box.extmin.y) - actual_outer_insert[1],
-                    float(serialized_box.extmax.x) - actual_outer_insert[0],
-                    float(serialized_box.extmax.y) - actual_outer_insert[1],
+                    serialized_box[0] - actual_outer_insert[0],
+                    serialized_box[1] - actual_outer_insert[1],
+                    serialized_box[2] - actual_outer_insert[0],
+                    serialized_box[3] - actual_outer_insert[1],
                 )
                 serialized_bbox_errors = tuple(
                     abs(left - right)
@@ -2175,6 +2190,20 @@ def _attempt_terminal_text_raster(
         visible_placed_height = target_y1 - target_y0
         if min(visible_placed_width, visible_placed_height) <= 0.0:
             raise ValueError("terminal raster visible model bbox is empty")
+        # A raster rung is a copy of the source pixels: it must never be anamorphic.
+        # pdfcadcore narrows the placed bbox of merged stacked-fraction items to 60 %
+        # of the source width (its inline-fraction footprint), so placing the full
+        # source clip into that bbox squashed 169 of 935 raster items on 1011 to 60 %
+        # width. Keep the placed height and centre, restore the clip's aspect ratio.
+        clip_aspect = float(clip.width) / float(clip.height) if float(clip.height) > 0.0 else 0.0
+        footprint_aspect_corrected = False
+        placed_footprint_aspect = visible_placed_width / visible_placed_height
+        if clip_aspect > 0.0 and abs(placed_footprint_aspect - clip_aspect) > 0.02 * clip_aspect:
+            centre_x = (target_x0 + target_x1) * 0.5
+            visible_placed_width = visible_placed_height * clip_aspect
+            target_x0 = centre_x - visible_placed_width * 0.5
+            target_x1 = centre_x + visible_placed_width * 0.5
+            footprint_aspect_corrected = True
         dpi = max(72, int(raster_dpi or 300))
         zero_ink_confirmation_dpi: Optional[int] = None
         if whitespace_only:
@@ -2277,6 +2306,9 @@ def _attempt_terminal_text_raster(
                 "source_bbox_clipped_to_page": bool(source_bbox_clipped),
                 "source_to_display_rotation": [float(value) for value in rotation_matrix],
                 "target_bbox_model": [target_x0, target_y0, target_x1, target_y1],
+                "footprint_aspect_corrected": footprint_aspect_corrected,
+                "placed_bbox_aspect": placed_footprint_aspect,
+                "source_clip_aspect": clip_aspect,
                 "pixel_size": [int(pixmap.width), int(pixmap.height)],
                 "raster_dpi": dpi,
                 "zero_ink_confirmation_dpi": zero_ink_confirmation_dpi,
@@ -2370,6 +2402,9 @@ def _attempt_terminal_text_raster(
                 target_x1,
                 target_y1,
             ],
+            "footprint_aspect_corrected": footprint_aspect_corrected,
+            "placed_bbox_aspect": placed_footprint_aspect,
+            "source_clip_aspect": clip_aspect,
             "pixel_size": [int(pixmap.width), int(pixmap.height)],
             "raster_dpi": dpi,
             "zero_ink_confirmation_dpi": zero_ink_confirmation_dpi,
@@ -2682,6 +2717,9 @@ def _export_to_dxf_impl(
                 ltype = _linetype_from_dash(doc, primitive.dash_pattern, dash_cache)
                 if ltype:
                     attribs["linetype"] = ltype
+                    ltscale = _linetype_scale_for_dash(primitive.dash_pattern)
+                    if ltscale is not None and not is_r12:
+                        attribs["ltscale"] = ltscale
 
             # Helper to offset a point by the page stacking offset
             def _ofs(pt, _dy=dy):
@@ -3449,21 +3487,98 @@ def _apply_color(attribs: dict, rgb) -> None:
     if rgb is None:
         return
     r, g, b = (int(max(0, min(255, round(float(c) * 255)))) for c in rgb)
-    # Invert near-white colors to black so geometry is visible on
-    # LibreCAD's default white background.  Without this, white-on-white
-    # entities are invisible and the user sees a blank/black screen.
-    luminance = 0.299 * r + 0.587 * g + 0.114 * b
-    if luminance > 230:
+    # Invert (near-)white to black so white-on-white geometry is visible on
+    # LibreCAD's default white background. Only genuinely white ink qualifies
+    # (every channel >= 250): a luminance threshold used to turn pale tints --
+    # light-grey lines, pale-yellow highlights, and every translucent colour that
+    # pdfcadcore now composites against the page (a 5 % black wash is 242 grey) --
+    # into solid black, which is not what the PDF viewer shows.
+    if _is_near_white(r, g, b):
         r, g, b = 0, 0, 0
     attribs["true_color"] = rgb2int((r, g, b))
 
 
-def _apply_lineweight(attribs: dict, width_pt) -> None:
-    if width_pt is None:
+def _is_near_white(r: int, g: int, b: int) -> bool:
+    return min(r, g, b) >= 250
+
+
+def _apply_lineweight(attribs: dict, width_mm) -> None:
+    """`Primitive.line_width` is already millimetres in model units (pdfcadcore
+    primitive_extractor multiplies the PDF stroke width by MM_PER_PT * scale). This
+    used to convert pt->mm a second time, making every LibreCAD lineweight 2.83x too
+    thin (0.84 pt border drawn as 0.13 mm instead of 0.30 mm) -- found by the visual
+    oracle on 1011: page border, title underlines and heavy plate outlines lighter
+    than the PDF."""
+    if width_mm is None:
         return
-    width_mm = float(width_pt) * (25.4 / 72.0)
+    try:
+        width_mm = float(width_mm)
+    except (TypeError, ValueError):
+        return
+    if not math.isfinite(width_mm):
+        return
     lw = int(max(5, min(211, round(width_mm * 100))))  # hundredths of mm
     attribs["lineweight"] = lw
+
+
+# LibreCAD does not interpret LTYPE table definitions: it recognizes a fixed set of
+# linetype NAMES (DASHED, DASHDOT, CENTER, DOT, DIVIDE, BORDER and their TINY/2/X2
+# length variants) and draws anything else -- including a perfectly valid custom
+# "PDF_DASH_n" definition -- as a continuous line. The visual oracle showed every
+# dashed centerline and hidden line on 1011 rendered solid in LibreCAD. So the
+# exported entity gets the LibreCAD name whose family and dash length are closest
+# to the PDF dash array; the exact PDF pattern is preserved in the LTYPE description
+# and in `ltscale` for consumers that honour it.
+_LIBRECAD_VARIANT_DASH_MM = (("TINY", 3.175), ("2", 6.35), ("", 12.7), ("X2", 25.4))
+_DOT_MAX_MM = 0.75
+
+
+def _librecad_linetype_for_dash(mm_vals: List[float]) -> Tuple[str, str, float]:
+    """Return (LibreCAD linetype name, family, variant dash length mm) for a PDF dash
+    array already converted to millimetres [dash, gap, dash, gap, ...]."""
+    dashes = [v for i, v in enumerate(mm_vals) if i % 2 == 0]
+    longest = max(dashes) if dashes else 0.0
+    dots = [d for d in dashes if d <= _DOT_MAX_MM]
+    long_dashes = [d for d in dashes if d > _DOT_MAX_MM]
+    if not long_dashes:
+        family = "DOT"
+    elif len(dashes) == 1 or all(abs(d - longest) <= 0.35 * longest for d in dashes):
+        family = "DASHED"
+    elif len(dashes) == 2:
+        family = "DASHDOT" if dots else "CENTER"
+    elif len(dashes) >= 3:
+        # dash-dot-dot -> DIVIDE; dash-dash-dot -> BORDER; anything else -> CENTER
+        if len(dots) >= 2 and len(long_dashes) == 1:
+            family = "DIVIDE"
+        elif len(long_dashes) >= 2 and len(dots) >= 1:
+            family = "BORDER"
+        else:
+            family = "CENTER"
+    else:
+        family = "DASHED"
+    reference = longest if family != "DOT" else (max(dashes + [g for i, g in enumerate(mm_vals) if i % 2 == 1]) if mm_vals else 1.0)
+    variant, variant_len = min(_LIBRECAD_VARIANT_DASH_MM, key=lambda item: abs(item[1] - reference))
+    return f"{family}{variant}", family, variant_len
+
+
+def _librecad_reference_pattern(family: str, variant_len: float) -> List[float]:
+    """An LTYPE definition matching the LibreCAD look, for consumers that read the table."""
+    d = variant_len
+    g = d * 0.5
+    dot = min(0.5, d * 0.1)
+    if family == "DASHED":
+        seq = [d, -g]
+    elif family == "DOT":
+        seq = [dot, -g]
+    elif family == "DASHDOT":
+        seq = [d, -g, dot, -g]
+    elif family == "CENTER":
+        seq = [d * 2, -g, d * 0.5, -g]
+    elif family == "DIVIDE":
+        seq = [d, -g, dot, -g, dot, -g]
+    else:  # BORDER
+        seq = [d, -g, d, -g, dot, -g]
+    return [sum(abs(v) for v in seq)] + seq
 
 
 def _linetype_from_dash(doc: ezdxf.EzDxf, dash_pattern, cache: Dict[str, str]) -> Optional[str]:
@@ -3483,18 +3598,32 @@ def _linetype_from_dash(doc: ezdxf.EzDxf, dash_pattern, cache: Dict[str, str]) -
         values.append(values[-1])
 
     mm_vals = [max(0.1, v * (25.4 / 72.0)) for v in values]
-    pattern = [sum(mm_vals)]
-    for idx, val in enumerate(mm_vals):
-        pattern.append(val if idx % 2 == 0 else -val)
-
-    name = f"PDF_DASH_{len(cache) + 1}"
-    try:
-        doc.linetypes.add(name=name, pattern=pattern, description=f"PDF dash {key}")
-    except Exception:
-        return None
+    name, family, variant_len = _librecad_linetype_for_dash(mm_vals)
+    if name not in doc.linetypes:
+        try:
+            doc.linetypes.add(
+                name=name,
+                pattern=_librecad_reference_pattern(family, variant_len),
+                description=f"LibreCAD {family} ({variant_len:g} mm) for PDF dash {key} pt",
+            )
+        except Exception:
+            return None
 
     cache[key] = name
     return name
+
+
+def _linetype_scale_for_dash(dash_pattern) -> Optional[float]:
+    """Entity ltscale so table-honouring consumers reproduce the PDF dash length."""
+    values = _normalize_dash(dash_pattern) if dash_pattern else []
+    if len(values) < 2:
+        return None
+    mm_vals = [max(0.1, v * (25.4 / 72.0)) for v in values]
+    _name, _family, variant_len = _librecad_linetype_for_dash(mm_vals)
+    dashes = [v for i, v in enumerate(mm_vals) if i % 2 == 0]
+    longest = max(dashes) if dashes else variant_len
+    scale = longest / variant_len if variant_len > 0 else 1.0
+    return round(min(max(scale, 0.05), 20.0), 4)
 
 
 def _normalize_dash(dash_pattern) -> list[float]:

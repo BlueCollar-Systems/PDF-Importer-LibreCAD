@@ -18,7 +18,7 @@ except ImportError:
 
 from pdfcadcore.document_profiler import profile as profile_page
 from pdfcadcore.fitz_loader import safe_open
-from pdfcadcore.geometry_cleanup import circle_fit
+from pdfcadcore.geometry_cleanup import _dxf_arc_angles, circle_fit
 from pdfcadcore.primitive_extractor import (
     _page_rotation_transform,
     _transform_pdf_point,
@@ -707,11 +707,17 @@ def _promote_arcs(page_data: PageData, arc_fit_tol_mm: float, min_arc_span_deg: 
         if span < min_arc_span_deg:
             continue
 
+        # DXF arcs always sweep counter-clockwise from start to end. A polyline
+        # traversed clockwise (unwrapped angles decreasing) must therefore be
+        # emitted as (last, first), or the ARC becomes the complementary half:
+        # the visual oracle found 34 bolt/weld circles on 1011 drawn as two
+        # identical left halves ("C") because both halves were emitted this way.
+        start, end = _dxf_arc_angles(unwrapped[0], unwrapped[-1])
         primitive.type = "arc"
         primitive.center = (cx, cy)
         primitive.radius = radius
-        primitive.start_angle = _wrap_angle(unwrapped[0])
-        primitive.end_angle = _wrap_angle(unwrapped[-1])
+        primitive.start_angle = start
+        primitive.end_angle = end
         primitive.closed = False
 
 
