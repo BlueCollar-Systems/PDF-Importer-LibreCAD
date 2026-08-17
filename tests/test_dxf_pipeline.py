@@ -17,7 +17,7 @@ except ImportError:
 
 from pdfcadcore.primitive_extractor import _merge_stacked_fractions, extract_page
 from pdfcadcore.import_config import ImportConfig
-from pdfcadcore.primitives import NormalizedText
+from pdfcadcore.primitives import NormalizedText, TextCharLayout
 from dxf_text_builder import build_text
 from librecad_pdf_importer.core.document import (
     ExtractionOptions,
@@ -1883,6 +1883,32 @@ class TestDxfPipeline(unittest.TestCase):
         self.assertGreaterEqual(len(page_data.primitives[0].points), 5)
 
     def test_stacked_fraction_text_is_merged(self) -> None:
+        def char_layout(text: str, x: float, y: float) -> tuple[TextCharLayout, ...]:
+            return tuple(
+                TextCharLayout(
+                    text=char,
+                    glyph_id=100 + offset,
+                    source_origin_pdf=(x + offset, y),
+                    source_bbox_pdf=(x + offset, y - 1.0, x + offset + 0.8, y + 1.0),
+                    source_quad_pdf=(
+                        (x + offset, y - 1.0),
+                        (x + offset + 0.8, y - 1.0),
+                        (x + offset + 0.8, y + 1.0),
+                        (x + offset, y + 1.0),
+                    ),
+                    target_origin=(x + offset, y),
+                    target_quad=(
+                        (x + offset, y + 1.0),
+                        (x + offset + 0.8, y + 1.0),
+                        (x + offset + 0.8, y - 1.0),
+                        (x + offset, y - 1.0),
+                    ),
+                    advance_width=0.8,
+                    glyph_height=2.0,
+                )
+                for offset, char in enumerate(text)
+            )
+
         def text_item(idx: int, text: str, y: float) -> NormalizedText:
             return NormalizedText(
                 id=idx,
@@ -1892,6 +1918,7 @@ class TestDxfPipeline(unittest.TestCase):
                 bbox=(10.0, y - 0.5, 14.0, y + 0.5),
                 font_size=2.0,
                 page_number=1,
+                source_char_layout=char_layout(text, 11.5, y),
             )
 
         merged = _merge_stacked_fractions([
@@ -1902,8 +1929,13 @@ class TestDxfPipeline(unittest.TestCase):
 
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0].text, "15/16")
+        self.assertTrue(merged[0].requires_individual_positioning)
+        self.assertEqual(
+            "".join(char.text for char in merged[0].source_char_layout),
+            "15/16",
+        )
 
-    def test_stacked_fraction_merge_ignores_full_size_whole_number(self) -> None:
+    def test_stacked_fraction_merge_refuses_ambiguous_full_size_whole_number(self) -> None:
         items = [
             NormalizedText(
                 id=1, text="2", normalized="2",
@@ -1928,11 +1960,18 @@ class TestDxfPipeline(unittest.TestCase):
         ]
 
         merged = _merge_stacked_fractions(items)
-        texts = [item.text for item in merged]
 
-        self.assertIn("2", texts)
-        self.assertIn("1/4", texts)
-        self.assertNotIn("2/4", texts)
+        # With neither per-character placement nor a unique numerator, choosing
+        # 1/4 over 2/4 would be a heuristic rewrite.  Strict extraction refuses
+        # the merge and preserves every source object and field instead.
+        self.assertIs(merged, items)
+        self.assertEqual([item.text for item in merged], ["2", "1", "4", "/"])
+        self.assertTrue(
+            all(
+                actual is expected
+                for actual, expected in zip(merged, items, strict=True)
+            )
+        )
 
     def test_auto_mode_fill_art_prefers_raster(self) -> None:
         fill_pdf = self.tmp_path / "fill_art.pdf"
