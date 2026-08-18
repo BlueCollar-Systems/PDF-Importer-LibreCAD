@@ -146,6 +146,7 @@ def _fonttools_loadable(data: bytes) -> bool:
         TTLibError,
         TypeError,
         ValueError,
+        struct.error,
     ):
         return False
 
@@ -191,6 +192,7 @@ def _font_delivery_metrics(data: bytes) -> tuple[int, int, int, tuple[int, ...]]
         TTLibError,
         TypeError,
         ValueError,
+        struct.error,
     ) as exc:
         raise ExactFontSourceImpossible(
             f"usable font delivery metrics are unavailable: {type(exc).__name__}: {exc}"
@@ -559,6 +561,7 @@ def _font_program_name_aliases(data: bytes, source_format: str) -> set[str]:
         TTLibError,
         TypeError,
         ValueError,
+        struct.error,
     ):
         return set()
     finally:
@@ -857,6 +860,18 @@ class EmbeddedFontCatalog:
                     int(page_number), base_name, "embedded_font_asset_build_failed",
                     xref, type(exc).__name__, str(exc),
                     "runtime_capability_unavailable_for_item",
+                )
+                continue
+            except struct.error as exc:
+                # fontTools unpacks fixed-width headers with struct; a truncated or
+                # corrupt table raises struct.error, which derives from Exception and
+                # not ValueError. That is a malformed source program for this item,
+                # exactly like the fontTools AssertionError case -- never a reason to
+                # abort text extraction for the whole page.
+                failures[base_name] = EmbeddedFontFailure(
+                    int(page_number), base_name, "embedded_font_asset_build_failed",
+                    xref, type(exc).__name__, str(exc),
+                    "source_specific_impossibility",
                 )
                 continue
             except (AttributeError, ImportError, OSError, RuntimeError) as exc:

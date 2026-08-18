@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import struct
 from io import BytesIO
 from unittest.mock import patch
 
@@ -756,3 +757,124 @@ def test_generated_pdf_matches_a_truetype_postscript_span_to_its_embedded_font(
         glyphs[cmap[ord("B")]].getCoordinates(glyphs)[0]
     )
 
+def _truncated_name_table_fixture() -> bytes:
+    """A real TTF whose sfnt directory declares a 4-byte 'name' table.
+
+    fontTools' name-table decompile unpacks a 6-byte header, so it raises
+    ``struct.error``.  ``struct.error`` derives from ``Exception``, not
+    ``ValueError``, so it is not covered by the malformed-source except tuples
+    unless it is listed explicitly.
+    """
+    builder = FontBuilder(1000, isTTF=True)
+    glyph_order = [".notdef", "glyph00001"]
+    builder.setupGlyphOrder(glyph_order)
+    builder.setupCharacterMap({0x41: "glyph00001"})
+    builder.setupHorizontalMetrics({name: (600, 0) for name in glyph_order})
+    builder.setupHorizontalHeader(ascent=800, descent=-200)
+    builder.setupNameTable({
+        "familyName": "Malformed Name Table",
+        "styleName": "Regular",
+        "fullName": "Malformed Name Table Regular",
+        "psName": "MalformedNameTable-Regular",
+    })
+    builder.setupOS2(
+        sTypoAscender=800,
+        sTypoDescender=-200,
+        usWinAscent=800,
+        usWinDescent=200,
+    )
+    builder.setupPost()
+    glyphs = {}
+    for index, name in enumerate(glyph_order):
+        pen = TTGlyphPen(None)
+        if index:
+            pen.moveTo((100, 0))
+            pen.lineTo((100, 700))
+            pen.lineTo((500, 700))
+            pen.lineTo((500, 0))
+            pen.closePath()
+        glyphs[name] = pen.glyph()
+    builder.setupGlyf(glyphs)
+    builder.setupMaxp()
+    output = BytesIO()
+    builder.font.save(output)
+    data = bytearray(output.getvalue())
+    table_count = struct.unpack(">H", bytes(data[4:6]))[0]
+    for index in range(table_count):
+        record = 12 + index * 16
+        if bytes(data[record:record + 4]) == b"name":
+            struct.pack_into(">I", data, record + 12, 4)
+            return bytes(data)
+    raise AssertionError("synthesized fixture has no name table")
+
+
+def _malformed_name_table_page(malformed: bytes):
+    class Document:
+        @staticmethod
+        def extract_font(_xref):
+            return ("MalformedNameTable-Regular", "ttf", "TrueType", malformed)
+
+    class Page:
+        parent = Document()
+
+        @staticmethod
+        def get_fonts(*, full=False):
+            return [(
+                11, "ttf", "TrueType", "MalformedNameTable-Regular",
+                "R9", "WinAnsiEncoding",
+            )]
+
+        @staticmethod
+        def get_texttrace():
+            return []
+
+    return Page()
+
+
+def test_malformed_name_table_struct_error_does_not_escape_font_readers():
+    # fontTools raises struct.error (not a ValueError) for a name table shorter
+    # than its 6-byte header; both readers must report "unusable", not raise.
+    malformed = _truncated_name_table_fixture()
+
+    with pytest.raises(struct.error):
+        TTFont(BytesIO(malformed), lazy=False, recalcTimestamp=False)["name"].names
+
+    assert embedded_fonts._font_program_name_aliases(malformed, "ttf") == set()
+    assert embedded_fonts._fonttools_loadable(malformed) is False
+
+
+def test_malformed_name_table_is_recorded_as_source_impossibility_not_a_page_abort():
+    # A single malformed embedded program must not abort text extraction for the
+    # whole page: the catalog records it like the fontTools AssertionError case.
+    malformed = _truncated_name_table_fixture()
+
+    catalog = EmbeddedFontCatalog.from_page(_malformed_name_table_page(malformed), 1)
+
+    assert catalog.assets == ()
+    assert catalog.for_span("MalformedNameTable-Regular") is None
+    failure = catalog.failure_for_span("MalformedNameTable-Regular")
+    assert failure.reason == "embedded_font_asset_build_failed"
+    assert failure.proof_category == "source_specific_impossibility"
+    assert failure.source_xref == 11
+
+
+def test_residual_struct_error_in_asset_build_is_item_scoped_not_a_page_abort(monkeypatch):
+    # Backstop: fontTools unpacks fixed-width headers with struct all over its
+    # table readers. Whichever helper raises it, one malformed program must stay
+    # an item-scoped source impossibility instead of aborting the page.
+    monkeypatch.setattr(
+        embedded_fonts,
+        "_usable_font",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            struct.error("unpack requires a buffer of 6 bytes")
+        ),
+    )
+    malformed = _truncated_name_table_fixture()
+
+    catalog = EmbeddedFontCatalog.from_page(_malformed_name_table_page(malformed), 1)
+
+    failure = catalog.failure_for_span("MalformedNameTable-Regular")
+    assert failure.reason == "embedded_font_asset_build_failed"
+    assert failure.proof_category == "source_specific_impossibility"
+    assert failure.error_type == "error"
+    assert "6 bytes" in failure.detail
