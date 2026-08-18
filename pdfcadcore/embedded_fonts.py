@@ -570,8 +570,17 @@ def _merged_trace_glyph_map(
     aliases: set[str],
     glyph_maps: Mapping[str, Mapping[int, int]],
     ambiguous_maps: set[str],
+    *,
+    inventory_name: str = "",
 ) -> tuple[dict[int, int], tuple[str, ...]]:
-    trace_names = tuple(sorted(name for name in aliases if name in glyph_maps))
+    preferred = str(inventory_name or "").strip()
+    if preferred and preferred in glyph_maps:
+        # The PDF inventory/span name is the exact painting identity. Family
+        # or PostScript aliases from the same SFNT (e.g. Arial-Bold → "Arial")
+        # must not union traces that belong to a sibling embedded program.
+        trace_names = (preferred,)
+    else:
+        trace_names = tuple(sorted(name for name in aliases if name in glyph_maps))
     if any(name in ambiguous_maps for name in trace_names):
         raise ExactFontSourceImpossible(
             "PDF Unicode maps one character to multiple glyph ids"
@@ -798,7 +807,10 @@ class EmbeddedFontCatalog:
                 source_format = str(extracted_format or source_format).lower().lstrip(".")
                 source_type = str(extracted_type or source_type)
                 unicode_map, trace_names = _merged_trace_glyph_map(
-                    name_aliases, glyph_maps, ambiguous_maps
+                    name_aliases,
+                    glyph_maps,
+                    ambiguous_maps,
+                    inventory_name=base_name,
                 )
                 usable_format, usable_bytes, cmap_installed = _usable_font(
                     source_bytes,

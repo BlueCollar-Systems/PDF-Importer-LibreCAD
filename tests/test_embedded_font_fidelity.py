@@ -240,6 +240,110 @@ def test_exact_inventory_name_outranks_weaker_internal_family_aliases(
     assert asset.base_font_name == "Arial"
 
 
+def test_merged_trace_glyph_map_prefers_inventory_trace_over_aliases():
+    glyph_maps = {"Arial": {65: 36}, "Arial,Bold": {65: 68}}
+
+    merged, trace_names = embedded_fonts._merged_trace_glyph_map(
+        {"Arial,Bold", "Arial", "Arial Bold", "Arial-BoldMT"},
+        glyph_maps,
+        set(),
+        inventory_name="Arial,Bold",
+    )
+    assert trace_names == ("Arial,Bold",)
+    assert merged == {65: 68}
+
+    # No trace under the inventory name: the alias union remains the fallback.
+    merged, trace_names = embedded_fonts._merged_trace_glyph_map(
+        {"ArialMT", "Arial"},
+        glyph_maps,
+        set(),
+        inventory_name="ArialMT",
+    )
+    assert trace_names == ("Arial",)
+    assert merged == {65: 36}
+
+
+@pytest.mark.parametrize(
+    ("trace_maps", "expected_bold_map"),
+    [
+        # Disjoint codepoints: a naive alias union would silently absorb the
+        # sibling program's glyphs into the bold face's unicode map.
+        ({"Arial": {65: 36}, "Arial,Bold": {66: 68}}, {66: 68}),
+        # Same codepoint, different glyph ids: a naive alias union raises
+        # "aliases disagree" and drops the bold face from the catalog.
+        ({"Arial": {65: 36}, "Arial,Bold": {65: 68}}, {65: 68}),
+    ],
+    ids=["disjoint_codepoints", "conflicting_glyph_ids"],
+)
+def test_inventory_name_selects_exact_program_when_sibling_aliases_overlap(
+    monkeypatch, trace_maps, expected_bold_map
+):
+    """Two embedded programs share SFNT family aliases ("Arial"). The PDF
+    inventory name is the painting identity: each asset must carry only its
+    own texttrace unicode map, never a union with a sibling program's."""
+
+    class Document:
+        @staticmethod
+        def extract_font(xref):
+            names = {11: "Arial-BoldMT", 12: "ArialMT"}
+            return names[xref], "ttf", "TrueType", f"font-{xref}".encode("ascii")
+
+    class Page:
+        parent = Document()
+
+        @staticmethod
+        def get_texttrace():
+            return []
+
+        @staticmethod
+        def get_fonts(*, full=False):
+            assert full is True
+            return [
+                (12, "ttf", "TrueType", "Arial", "F0", "WinAnsiEncoding"),
+                (11, "ttf", "TrueType", "Arial,Bold", "F1", "WinAnsiEncoding"),
+            ]
+
+    def aliases(data, _format):
+        if data == b"font-11":
+            return {"Arial", "Arial Bold", "Arial-BoldMT"}
+        return {"Arial", "ArialMT"}
+
+    seen_unicode_maps: dict[str, dict[int, int]] = {}
+
+    def usable_font(source, source_format, name, mapping):
+        seen_unicode_maps[name] = dict(mapping)
+        return source_format, source, True
+
+    monkeypatch.setattr(embedded_fonts, "_font_program_name_aliases", aliases)
+    monkeypatch.setattr(
+        embedded_fonts,
+        "_page_unicode_glyph_maps",
+        lambda _page: (
+            {name: dict(mapping) for name, mapping in trace_maps.items()},
+            set(),
+            None,
+        ),
+    )
+    monkeypatch.setattr(embedded_fonts, "_usable_font", usable_font)
+    monkeypatch.setattr(
+        embedded_fonts,
+        "_font_delivery_metrics",
+        lambda _data: (1000, 800, -200, (500, 500)),
+    )
+
+    catalog = EmbeddedFontCatalog.from_page(Page(), page_number=1)
+    regular = catalog.for_span("Arial")
+    bold = catalog.for_span("Arial,Bold")
+
+    assert regular is not None
+    assert bold is not None, catalog.failure_for_span("Arial,Bold")
+    assert regular.source_xref == 12
+    assert bold.source_xref == 11
+    assert regular.asset_id != bold.asset_id
+    assert seen_unicode_maps["Arial"] == {65: 36}
+    assert seen_unicode_maps["Arial,Bold"] == expected_bold_map
+
+
 def test_cmap_repair_classifies_fonttools_assertion_as_malformed_source(
     monkeypatch,
 ):
@@ -651,3 +755,4 @@ def test_generated_pdf_matches_a_truetype_postscript_span_to_its_embedded_font(
     assert tuple(glyphs[cmap[ord("A")]].getCoordinates(glyphs)[0]) != tuple(
         glyphs[cmap[ord("B")]].getCoordinates(glyphs)[0]
     )
+
