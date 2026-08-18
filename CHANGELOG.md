@@ -2,6 +2,16 @@
 
 All notable release changes are recorded here.
 
+## 1.0.93 - 2026-08-18
+
+- Shared pdfcadcore: exact inventory font traces (a font's own texttrace is preferred
+  over a union of SFNT family/PostScript aliases, so a sibling embedded program's
+  glyph identities can no longer be merged into another font's Unicode map).
+- Shared pdfcadcore: a malformed embedded font program no longer aborts a page's text
+  extraction. fontTools raises struct.error (not a ValueError) for a font whose name
+  table is shorter than its 6-byte header; that is now recorded as an item-scoped
+  source impossibility, like the existing fontTools AssertionError case.
+
 ## 1.0.92 - 2026-08-17
 
 - Positioned stacked fractions: exact producer character layout is preserved and
