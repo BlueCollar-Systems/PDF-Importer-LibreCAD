@@ -2,6 +2,14 @@
 
 All notable release changes are recorded here.
 
+## 1.0.94 - 2026-08-20
+
+- Shared pdfcadcore: EOFError is now treated as a malformed embedded font rather than
+  aborting a page's text extraction. fontTools raises it from a single site --
+  cffLib.readSID, "Unexpected end of file while reading SID" -- when a CFF Encoding
+  supplement stops mid-read, which is the same class of failure as the struct.error
+  case guarded in 1.0.93. It subclassed nothing already caught, so it propagated.
+
 ## 1.0.93 - 2026-08-18
 
 - Shared pdfcadcore: exact inventory font traces (a font's own texttrace is preferred
