@@ -344,6 +344,11 @@ def extract_page(
                     x1, y1 = _xy(data[1])
                     p0 = to_model(x0, y0)
                     p1 = to_model(x1, y1)
+                    # PyMuPDF records a move only as the next segment's start
+                    # point. Preserve that disconnected subpath instead of
+                    # inventing a connector from the preceding endpoint.
+                    if current_pts and _dist(current_pts[-1], p0) > 0.01:
+                        flush(False)
                     if not current_pts:
                         current_pts.append(p0)
                     current_pts.append(p1)
@@ -352,17 +357,23 @@ def extract_page(
                     current_pts.append(to_model(x, y))
 
             elif kind == "c":
-                if len(data) == 4 and all(hasattr(d, "x") for d in data):
+                has_explicit_start = len(data) == 4
+                if has_explicit_start:
                     pts = [_xy(d) for d in data]
+                    p0 = to_model(pts[0][0], pts[0][1])
+                    p1 = to_model(pts[1][0], pts[1][1])
+                    p2 = to_model(pts[2][0], pts[2][1])
+                    p3 = to_model(pts[3][0], pts[3][1])
+                    if current_pts and _dist(current_pts[-1], p0) > 0.01:
+                        flush(False)
                 else:
                     pts = _parse_cubic(data)
-                p0 = to_model(pts[0][0], pts[0][1])
-                p1 = to_model(pts[1][0], pts[1][1])
-                p2 = to_model(pts[2][0], pts[2][1])
-                p3 = to_model(
-                    pts[3][0] if len(pts) > 3 else pts[2][0],
-                    pts[3][1] if len(pts) > 3 else pts[2][1],
-                )
+                    if not current_pts:
+                        continue
+                    p0 = current_pts[-1]
+                    p1 = to_model(pts[0][0], pts[0][1])
+                    p2 = to_model(pts[1][0], pts[1][1])
+                    p3 = to_model(pts[2][0], pts[2][1])
                 _append_linearized_cubic(current_pts, p0, p1, p2, p3)
 
             elif kind == "re":
