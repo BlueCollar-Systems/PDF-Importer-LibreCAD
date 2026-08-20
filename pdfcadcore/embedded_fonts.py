@@ -141,6 +141,7 @@ def _fonttools_loadable(data: bytes) -> bool:
     except (
         AssertionError,
         AttributeError,
+        EOFError,
         KeyError,
         OSError,
         TTLibError,
@@ -187,6 +188,7 @@ def _font_delivery_metrics(data: bytes) -> tuple[int, int, int, tuple[int, ...]]
     except (
         AssertionError,
         AttributeError,
+        EOFError,
         KeyError,
         OSError,
         TTLibError,
@@ -556,6 +558,7 @@ def _font_program_name_aliases(data: bytes, source_format: str) -> set[str]:
     except (
         AssertionError,
         AttributeError,
+        EOFError,
         KeyError,
         OSError,
         TTLibError,
