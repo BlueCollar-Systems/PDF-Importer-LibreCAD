@@ -2,6 +2,12 @@
 
 All notable release changes are recorded here.
 
+## 1.0.95 - 2026-08-20
+
+- Shared pdfcadcore: disconnected PDF subpaths are preserved rather than being joined
+  into a single run. A subpath that starts away from the previous one no longer drags a
+  connecting segment across the drawing.
+
 ## 1.0.94 - 2026-08-20
 
 - Shared pdfcadcore: EOFError is now treated as a malformed embedded font rather than
