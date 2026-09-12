@@ -2594,6 +2594,11 @@ def _render_terminal_page_tiles(
                 f"budget even at {TERMINAL_MIN_DPI:g} DPI"
             )
         matrix = fitz.Matrix(zoom, zoom)
+        # One display list per page: Page.get_pixmap rebuilds the page's display
+        # list on every call, which on a 500k-path sheet costs ~0.75 s per tile.
+        # DisplayList.get_pixmap is the exact same rendering path PyMuPDF uses
+        # inside Page.get_pixmap, so the tile pixels are unchanged.
+        page_display_list = source_page.get_displaylist()
         rendered_bounds = (source_page.rect * matrix).irect
         full_width = int(rendered_bounds.width)
         full_height = int(rendered_bounds.height)
@@ -2622,7 +2627,7 @@ def _render_terminal_page_tiles(
                     float(source_page.rect.x0) + float(render_right) / zoom,
                     float(source_page.rect.y0) + float(render_bottom) / zoom,
                 )
-                rendered = source_page.get_pixmap(
+                rendered = page_display_list.get_pixmap(
                     matrix=matrix,
                     clip=render_clip,
                     colorspace=fitz.csRGB,
