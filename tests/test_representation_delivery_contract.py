@@ -3538,7 +3538,14 @@ def test_serialized_candidate_must_reconcile_delivery_handles_before_publish(
         "librecad_pdf_importer.exporters.dxf_exporter.ezdxf.readfile",
         return_value=ezdxf.new("R2010"),
     ):
-        with pytest.raises(RuntimeError, match="serialized text delivery"):
+        # The re-read candidate holds none of the written entities.  The entity
+        # count proof refuses it before the per-delivery handle reconciliation
+        # would; both are the same contract: a candidate that does not match
+        # what was serialized never replaces the prior accepted output.
+        with pytest.raises(
+            RuntimeError,
+            match="serialized (text delivery|DXF candidate entity count changed)",
+        ):
             export_to_dxf(
                 extraction,
                 str(output),
