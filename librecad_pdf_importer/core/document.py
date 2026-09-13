@@ -19,6 +19,7 @@ except ImportError:
 from pdfcadcore.document_profiler import profile as profile_page
 from pdfcadcore.fitz_loader import safe_open
 from pdfcadcore.geometry_cleanup import _dxf_arc_angles, circle_fit
+from pdfcadcore.auto_mode import drawings_need_text_counts
 from pdfcadcore.primitive_extractor import (
     _page_rotation_transform,
     _transform_pdf_point,
@@ -425,11 +426,16 @@ def _extract_document_impl(
             page = doc.load_page(page_number - 1)
             effective_mode = mode
             resolved_reason = ""
+            drawings = None
 
             if mode == "auto":
                 drawings = page.get_drawings()
-                text_blocks = page.get_text("blocks") or []
-                text_words = page.get_text("words") or []
+                if drawings_need_text_counts(drawings):
+                    text_blocks = page.get_text("blocks") or []
+                    text_words = page.get_text("words") or []
+                else:
+                    text_blocks = []
+                    text_words = []
                 auto_decision = _classify_auto_page(
                     drawings,
                     text_blocks_count=len(text_blocks),
@@ -456,6 +462,7 @@ def _extract_document_impl(
                 scale=opts.scale,
                 flip_y=opts.flip_y,
                 arc_min_pts=max(3, int(opts.arc_sampling_pts)),
+                drawings=drawings,
             )
             check_cancel(opts.cancel_requested, f"after vectors on page {page_number}")
 

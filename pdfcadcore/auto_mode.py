@@ -12,7 +12,7 @@ and _looks_like_fill_art_flood() functions.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 # ── Glyph-flood thresholds ──────────────────────────────────────────
 AUTO_GLYPH_DRAWING_THRESHOLD = 1500
@@ -257,3 +257,33 @@ def classify_page_content(
         "drawing_count": total,
         "stats": stats,
     }
+
+
+def drawings_need_text_counts(drawings: Optional[List[Dict[str, Any]]]) -> bool:
+    """True when ``classify_page_content`` still needs block/word counts.
+
+    Hosts previously called ``page.get_text("blocks")`` and ``page.get_text("words")``
+    on every auto-mode page *and then* extracted the page, which re-parsed the
+    same streams. Shop drawings are stroke-heavy, so the text-density glyph-flood
+    branch cannot fire; skipping those extra text passes does not change the
+    classification. Empty drawings still need a text count to distinguish
+    text-only pages from raster candidates.
+    """
+    if not drawings:
+        return True
+    total = len(drawings)
+    if total < AUTO_GLYPH_DRAWING_THRESHOLD:
+        return False
+    has_fill = 0
+    has_stroke = 0
+    for group in drawings:
+        if group.get("fill") is not None:
+            has_fill += 1
+        if group.get("color") is not None or group.get("stroke") is not None:
+            has_stroke += 1
+    fill_ratio = has_fill / float(total)
+    stroke_ratio = has_stroke / float(total)
+    return (
+        stroke_ratio <= AUTO_GLYPH_STROKE_SPARSE_RATIO
+        and fill_ratio >= AUTO_GLYPH_FILL_RATIO
+    )

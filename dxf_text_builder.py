@@ -402,6 +402,12 @@ def _parse_librecad_lff(
             int(stat_after.st_mtime_ns),
             executable_path,
         )
+        # A fresh read still proves the current bytes and file stability above.
+        # Identical verified bytes need no second glyph-grammar/coverage parse.
+        payload_sha256 = hashlib.sha256(payload).hexdigest()
+        parsed = _librecad_lff_cache.get(cache_key)
+        if parsed is not None and parsed.sha256 == payload_sha256:
+            return replace(parsed, **base)
         content = payload.decode("utf-8-sig")
     except (OSError, UnicodeError) as exc:
         return _LibreCadLffResolution(
@@ -483,7 +489,7 @@ def _parse_librecad_lff(
     result = _LibreCadLffResolution(
         **base,
         size_bytes=len(payload),
-        sha256=hashlib.sha256(payload).hexdigest(),
+        sha256=payload_sha256,
         glyph_codepoints=codepoints,
         drawable_codepoints=drawable_codepoints,
         verified=verified,

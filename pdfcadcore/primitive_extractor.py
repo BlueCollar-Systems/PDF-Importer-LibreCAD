@@ -7,6 +7,7 @@ Rule 1: Parser modules must not know about domain-specific logic.
 """
 from __future__ import annotations
 import math
+from collections import deque
 import re
 from typing import List, Optional, Tuple
 
@@ -276,8 +277,14 @@ def extract_page(
     arc_fit_tol_mm: float = 0.05,
     min_arc_angle_deg: float = 5.0,
     arc_min_pts: int = 5,
+    drawings: Optional[list] = None,
 ) -> PageData:
-    """Extract normalized primitives from a PyMuPDF page."""
+    """Extract normalized primitives from a PyMuPDF page.
+
+    ``drawings`` may be a previously fetched ``page.get_drawings()`` result so
+    auto-mode classification can reuse the same path list instead of parsing
+    the page twice. Omit it to fetch drawings here.
+    """
     # ``page.rect`` is the authoritative visible CropBox + UserUnit + /Rotate
     # extent. PyMuPDF drawing/text coordinates remain crop-local source points;
     # apply the page rotation matrix once before the model Y flip.
@@ -298,7 +305,8 @@ def extract_page(
     page_h_mm = page_h_pts * MM_PER_PT * scale
 
     primitives = []
-    drawings = page.get_drawings()
+    if drawings is None:
+        drawings = page.get_drawings()
 
     for path_group in drawings:
         items = path_group.get("items", [])
@@ -479,6 +487,7 @@ def extract_page(
         primitives=primitives, text_items=text_items,
         layers=layers, xobject_names=[]
     )
+    page_data._source_drawings = drawings
     from .generic_classifier import classify_text
     from .resolved_scale import resolve_page_scale
 
@@ -626,7 +635,7 @@ def _trace_glyph_queues(page):
                     glyph_id = int(entry[1])
             except (IndexError, TypeError, ValueError):
                 continue
-            queues.setdefault((font, codepoint), []).append(glyph_id)
+            queues.setdefault((font, codepoint), deque()).append(glyph_id)
     return queues
 
 
@@ -637,7 +646,7 @@ def _pop_trace_glyph_id(queues, font: str, text: str):
     candidates = queues.get(key)
     if not candidates:
         return None
-    return candidates.pop(0)
+    return candidates.popleft() if isinstance(candidates, deque) else candidates.pop(0)
 
 
 def _span_text_and_chars(span: dict):
@@ -1359,31 +1368,66 @@ def _fraction_dedupe_score(item: NormalizedText) -> tuple:
     return (size, width * height, width)
 
 
-def _dedupe_fraction_overlays(items: List[NormalizedText]) -> List[NormalizedText]:
-    """Collapse same-position duplicate fractions left by PDF overlay glyphs."""
-    kept: List[NormalizedText] = []
-    for item in items:
-        replace_at = None
-        for idx, existing in enumerate(kept):
-            if _fraction_overlay_duplicate(existing, item):
-                replace_at = idx
-                break
-        if replace_at is None:
-            kept.append(item)
-        elif _fraction_dedupe_score(item) < _fraction_dedupe_score(kept[replace_at]):
-            kept[replace_at] = item
+def _fraction_overlay_cell(item):
+    center = _bbox_center(item.bbox)
+    if center is None or not all(math.isfinite(v) for v in center):
+        return None
+    return tuple(math.floor(v / _FRAC_OVERLAY_TOL_MM) for v in center)
 
+
+def _overlay_neighbors(cell):
+    # Include rounded floating-point boundary neighbors; exact predicates decide.
+    if cell is not None:
+        for x in range(cell[0] - 2, cell[0] + 3):
+            for y in range(cell[1] - 2, cell[1] + 3):
+                yield x, y
+
+
+def _dedupe_fraction_overlays(items: List[NormalizedText]) -> List[NormalizedText]:
+    """Use spatial candidates; preserve the exact predicate and first-match order."""
+    kept: List[NormalizedText] = []
+    cells = {}
+    for item in items:
+        text = (item.text or "").strip().replace(" ", "")
+        cell = _fraction_overlay_cell(item) if _FRACTION_TEXT_RE.match(text) else None
+        key = (item.page_number, text)
+        candidates = sorted(
+            idx for neighbor in _overlay_neighbors(cell)
+            for idx in cells.get((key, neighbor), ())
+        )
+        replace_at = next(
+            (idx for idx in candidates if _fraction_overlay_duplicate(kept[idx], item)), None
+        )
+        if replace_at is None:
+            idx = len(kept)
+            kept.append(item)
+            if cell is not None:
+                cells.setdefault((key, cell), set()).add(idx)
+        elif _fraction_dedupe_score(item) < _fraction_dedupe_score(kept[replace_at]):
+            previous_cell = _fraction_overlay_cell(kept[replace_at])
+            cells[(key, previous_cell)].remove(replace_at)
+            kept[replace_at] = item
+            cells.setdefault((key, cell), set()).add(replace_at)
+
+    # Leftover slashes can only match fractions on their own page nearby.
+    fractions = {}
+    for item in kept:
+        if _FRACTION_TEXT_RE.match((item.text or "").strip().replace(" ", "")):
+            cell = _fraction_overlay_cell(item)
+            if cell is not None:
+                fractions.setdefault((item.page_number, cell), []).append(item)
     return [
-        item
-        for item in kept
+        item for item in kept
         if not (
             _SLASH_RE.match((item.text or "").strip())
             and any(
-                other is not item and _slash_fraction_overlay_duplicate(item, other)
-                for other in kept
+                _slash_fraction_overlay_duplicate(item, other)
+                for neighbor in _overlay_neighbors(_fraction_overlay_cell(item))
+                for other in fractions.get((item.page_number, neighbor), ())
             )
         )
     ]
+
 
 
 def _merged_bbox(*boxes, scale_width=1.0):

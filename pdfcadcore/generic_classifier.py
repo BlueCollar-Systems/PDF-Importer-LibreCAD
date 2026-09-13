@@ -7,26 +7,42 @@ import re
 from .primitives import PageData
 
 
+_NOTE_RE = re.compile(r"\b(NOTE|NOTES|N\.?T\.?S\.?|SEE\s+DWG)\b")
+_QTY_RE = re.compile(r"\b(QTY|EA|EACH|PCS)\b")
+_REV_RE = re.compile(r"\bREV[.\s]?[A-Z0-9]?\b")
+_DETAIL_RE = re.compile(r"\b(DETAIL|SECTION|VIEW|ELEVATION)\s+[A-Z]")
+_SCALE_WORD_RE = re.compile(r"\b(SCALE|SC\.?|SCL\.?)\b")
+_SCALE_RATIO_RE = re.compile(r"\d+\s*:\s*\d+")
+_TITLEBLOCK_RE = re.compile(r"\b(DRAWN|CHECKED|APPROVED|PROJECT|JOB|DATE|SHEET)\b")
+_DIM_EQ_RE = re.compile(r'\d+(?:\.\d+)?(?:\s*/\s*\d+)?\s*["\u2033]?\s*=\s*\d')
+_DIM_UNIT_RE = re.compile(r"\b\d+(?:\.\d+)?\s*(MM|CM|IN|FT|M)\b")
+
 def classify_text(page_data: PageData):
     """Add generic tags to text items (in place)."""
     for txt in page_data.text_items:
         tags = list(txt.generic_tags)
         tu = txt.normalized
-        if re.search(r"\b(NOTE|NOTES|N\.?T\.?S\.?|SEE\s+DWG)\b", tu):
-            tags.append("note_indicator")
-        if re.search(r"\b(QTY|EA|EACH|PCS)\b", tu):
-            tags.append("quantity_indicator")
-        if re.search(r"\bREV[.\s]?[A-Z0-9]?\b", tu):
-            tags.append("revision_like")
-        if re.search(r"\b(DETAIL|SECTION|VIEW|ELEVATION)\s+[A-Z]", tu):
-            tags.append("detail_reference")
-        if re.search(r"\b(SCALE|SC\.?|SCL\.?)\b", tu) or re.search(r"\d+\s*:\s*\d+", tu):
-            tags.append("scale_like")
-        if re.search(r"\b(DRAWN|CHECKED|APPROVED|PROJECT|JOB|DATE|SHEET)\b", tu):
-            tags.append("titleblock_like")
-        if re.search(r'\d+(?:\.\d+)?(?:\s*/\s*\d+)?\s*["\u2033]?\s*=\s*\d', tu) or \
-           re.search(r"\b\d+(?:\.\d+)?\s*(MM|CM|IN|FT|M)\b", tu):
-            tags.append("dimension_like")
+        if _NOTE_RE.search(tu):
+            if "note_indicator" not in tags:
+                tags.append("note_indicator")
+        if _QTY_RE.search(tu):
+            if "quantity_indicator" not in tags:
+                tags.append("quantity_indicator")
+        if _REV_RE.search(tu):
+            if "revision_like" not in tags:
+                tags.append("revision_like")
+        if _DETAIL_RE.search(tu):
+            if "detail_reference" not in tags:
+                tags.append("detail_reference")
+        if _SCALE_WORD_RE.search(tu) or _SCALE_RATIO_RE.search(tu):
+            if "scale_like" not in tags:
+                tags.append("scale_like")
+        if _TITLEBLOCK_RE.search(tu):
+            if "titleblock_like" not in tags:
+                tags.append("titleblock_like")
+        if _DIM_EQ_RE.search(tu) or _DIM_UNIT_RE.search(tu):
+            if "dimension_like" not in tags:
+                tags.append("dimension_like")
         txt.generic_tags = tags
 
 
@@ -36,14 +52,14 @@ def classify_primitives(page_data: PageData):
     for p in page_data.primitives:
         tags = list(p.generic_tags)
         if p.type == "closed_loop" and p.area and p.area > page_area * 0.7:
-            if p.points and len(p.points) <= 5:
+            if p.points and len(p.points) <= 5 and "page_border" not in tags:
                 tags.append("page_border")
         if p.type == "closed_loop" and p.area and p.area < 50.0:
-            if p.points and len(p.points) <= 5:
+            if p.points and len(p.points) <= 5 and "possible_table_cell" not in tags:
                 tags.append("possible_table_cell")
-        if p.dash_pattern:
+        if p.dash_pattern and "dashed_line" not in tags:
             tags.append("dashed_line")
-        if p.line_width is not None and p.line_width < 0.3:
+        if p.line_width is not None and p.line_width < 0.3 and "thin_line" not in tags:
             tags.append("thin_line")
         p.generic_tags = tags
 

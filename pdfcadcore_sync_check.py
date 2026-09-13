@@ -42,9 +42,18 @@ SELF_COPY_PATHS: Tuple[Path, ...] = (
     Path(r"C:\1PDF-Importer-LibreCAD") / SELF_NAME,
 )
 
-# No intentional divergences: all repos must match the canonical manifest exactly.
-# A real per-repo difference must be recorded with its own expected hash, never a blind skip.
-KNOWN_DIVERGENCES: Dict[str, Tuple[str, ...]] = {}
+# Preserve existing host-specific text fidelity. Every exception is pinned to
+# exact reviewed bytes, never a filename-only exemption. --fix must not copy
+# FC over these specialized implementations. Update hashes only after review.
+KNOWN_DIVERGENCES: Dict[str, Dict[str, str]] = {
+    "BL": {
+        "embedded_fonts.py": "5f1d7ad53e16560042970ccce15fc135668a27c891a1dea8bdb51e903b094b50",
+        "primitive_extractor.py": "7f75b794e4ea41b655e04adcfe03def846fce8f28b52e2ade2bcefa9672fea07",
+    },
+    "LC": {
+        "primitive_extractor.py": "c67c0898f686595191d7a70c7cf242f2d20376d536fe38bff79a7c7eada9db0a",
+    },
+}
 
 
 def sha256_file(path: Path) -> str:
@@ -102,7 +111,7 @@ def check_repo_core(
     canonical_dir: Path,
 ) -> List[str]:
     errors: List[str] = []
-    allowed = set(KNOWN_DIVERGENCES.get(repo, ()))
+    overrides = KNOWN_DIVERGENCES.get(repo, {})
 
     if not core_dir.is_dir():
         return [f"{repo}: missing core directory {core_dir}"]
@@ -114,18 +123,14 @@ def check_repo_core(
             continue
 
         actual = sha256_file(path)
-        expected = manifest[name]
+        expected = overrides.get(name, manifest[name])
         if actual == expected:
-            continue
-
-        if name in allowed:
-            print(f"NOTE: {repo}/{name} differs from canonical (expected divergence)")
             continue
 
         errors.append(
             f"{repo}/{name}: hash mismatch (expected {expected[:12]}..., got {actual[:12]}...)"
         )
-        if fix and repo != "FC":
+        if fix and repo != "FC" and name not in overrides:
             src = canonical_dir / name
             if src.is_file():
                 shutil.copy2(src, path)
@@ -136,7 +141,7 @@ def check_repo_core(
     present = {p.name for p in iter_core_files(core_dir)}
     for name in sorted(set(manifest) - present - {"repo_context_builder_core.py", SELF_NAME}):
         errors.append(f"{repo}: missing core file listed in manifest: {name}")
-        if fix and repo != "FC":
+        if fix and repo != "FC" and name not in overrides:
             src = canonical_dir / name
             if src.is_file():
                 shutil.copy2(src, core_dir / name)
