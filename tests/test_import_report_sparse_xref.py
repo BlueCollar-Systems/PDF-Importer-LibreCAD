@@ -13,6 +13,11 @@ import sys
 
 import pytest
 
+try:
+    import pymupdf as fitz
+except ImportError:  # pragma: no cover - legacy name
+    import fitz  # type: ignore
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -64,7 +69,6 @@ def _write_sparse_xref_pdf(path: Path) -> None:
 
 
 def test_pdf_audit_extras_completes_on_a_sparse_xref_file(tmp_path):
-    fitz = pytest.importorskip("pymupdf")
     pdf_path = tmp_path / "sparse_xref.pdf"
     _write_sparse_xref_pdf(pdf_path)
     doc = fitz.open(str(pdf_path))
