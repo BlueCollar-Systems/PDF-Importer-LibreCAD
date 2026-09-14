@@ -352,10 +352,25 @@ def build_pdf_interactive_note(doc: Any) -> Dict[str, Any]:
     if doc is None:
         return {}
 
+    # Recent PyMuPDF versions expose FzErrorBase directly instead of wrapping
+    # it in RuntimeError. Sparse, otherwise valid PDFs can have free xrefs;
+    # this optional audit must keep scanning later objects and report gaps.
+    audit_errors = (AttributeError, RuntimeError, TypeError, ValueError)
+    try:
+        from .fitz_loader import import_fitz
+
+        mupdf_error = getattr(getattr(import_fitz(), "mupdf", None), "FzErrorBase", None)
+        if isinstance(mupdf_error, type) and issubclass(mupdf_error, Exception):
+            audit_errors += (mupdf_error,)
+    except ImportError:
+        pass
+    unreadable_xrefs: set[int] = set()
+
     def key_present(xref: int, key: str) -> bool:
         try:
             value = doc.xref_get_key(xref, key)
-        except (AttributeError, RuntimeError, TypeError, ValueError):
+        except audit_errors:
+            unreadable_xrefs.add(xref)
             return False
         if not value:
             return False
@@ -370,7 +385,7 @@ def build_pdf_interactive_note(doc: Any) -> Dict[str, Any]:
         js = doc.get_js() if hasattr(doc, "get_js") else None
         if js:
             flags.append("JavaScript")
-    except (AttributeError, RuntimeError, TypeError, ValueError):
+    except audit_errors:
         pass
     try:
         catalog = doc.pdf_catalog()
@@ -378,7 +393,7 @@ def build_pdf_interactive_note(doc: Any) -> Dict[str, Any]:
             flags.append("OpenAction")
         if catalog and key_present(catalog, "AA"):
             flags.append("AdditionalActions")
-    except (AttributeError, RuntimeError, TypeError, ValueError):
+    except audit_errors:
         pass
     try:
         for xref in range(1, int(doc.xref_length())):
@@ -387,19 +402,28 @@ def build_pdf_interactive_note(doc: Any) -> Dict[str, Any]:
                 break
             try:
                 subtype = doc.xref_get_key(xref, "S")
-            except (AttributeError, RuntimeError, TypeError, ValueError):
+            except audit_errors:
+                unreadable_xrefs.add(xref)
                 continue
             raw = " ".join(str(part) for part in subtype) if isinstance(subtype, tuple) else str(subtype)
             if "JavaScript" in raw:
                 flags.append("JavaScript")
                 break
-    except (AttributeError, RuntimeError, TypeError, ValueError):
+    except audit_errors:
         pass
+    audit: Dict[str, Any] = {}
+    if unreadable_xrefs:
+        audit["pdf_interactive_audit"] = {
+            "status": "partial",
+            "unreadable_xrefs": sorted(unreadable_xrefs),
+            "note": "Some PDF objects could not be read during the optional action audit; scripts are never executed.",
+        }
     if not flags:
-        return {}
+        return audit
     flags = _unique_strings(flags)
     joined = ", ".join(flags)
     return {
+        **audit,
         "pdf_interactive_flags": flags,
         "pdf_interactive_note": (
             f"PDF contains document scripts or actions ({joined}) — import uses static "
