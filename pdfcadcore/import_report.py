@@ -353,9 +353,15 @@ def build_pdf_interactive_note(doc: Any) -> Dict[str, Any]:
         return {}
 
     def key_present(xref: int, key: str) -> bool:
+        # Every object number below xref_length() is probed, including numbers
+        # the file never allocated (an Aspose markup export lists its xref
+        # stream with /Index gaps).  MuPDF raises its own FzErrorFormat
+        # ("cannot find object in xref") for those, which derives from
+        # Exception, not RuntimeError; an unallocated number carries no action,
+        # so any failure to read a key means "not present".
         try:
             value = doc.xref_get_key(xref, key)
-        except (AttributeError, RuntimeError, TypeError, ValueError):
+        except Exception:
             return False
         if not value:
             return False
@@ -387,7 +393,7 @@ def build_pdf_interactive_note(doc: Any) -> Dict[str, Any]:
                 break
             try:
                 subtype = doc.xref_get_key(xref, "S")
-            except (AttributeError, RuntimeError, TypeError, ValueError):
+            except Exception:
                 continue
             raw = " ".join(str(part) for part in subtype) if isinstance(subtype, tuple) else str(subtype)
             if "JavaScript" in raw:
@@ -466,7 +472,11 @@ def _pdf_audit_extras(pdf_path: str) -> Dict[str, Any]:
         doc = safe_open(path)
         merged.update(build_font_embedding_hints(doc))
         merged.update(build_pdf_interactive_note(doc))
-    except (OSError, RuntimeError, TypeError, ValueError):
+    except Exception:
+        # The audit annotates a finished import; it must never turn one into a
+        # failure.  PyMuPDF's own error classes (FzErrorFormat and friends)
+        # derive from Exception directly, so a narrower tuple let a sparse
+        # xref abort every host after its geometry had been written.
         return merged
     finally:
         if doc is not None:
