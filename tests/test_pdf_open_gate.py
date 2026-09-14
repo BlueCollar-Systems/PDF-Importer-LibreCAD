@@ -52,6 +52,25 @@ class TestPdfOpenGate(unittest.TestCase):
             finally:
                 doc.close()
 
+    def test_safe_open_accepts_spaces_in_filename(self) -> None:
+        minimal_pdf = (
+            b"%PDF-1.1\n"
+            b"1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n"
+            b"2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj\n"
+            b"3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 3 3] >>endobj\n"
+            b"xref\n0 4\n0000000000 65535 f \n"
+            b"0000000009 00000 n \n0000000068 00000 n \n0000000125 00000 n \n"
+            b"trailer<< /Size 4 /Root 1 0 R >>\nstartxref\n196\n%%EOF\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="lc_open_gate_") as tmp:
+            path = Path(tmp) / "Large Sheet_ Section Details Rev.0 markup.pdf"
+            path.write_bytes(minimal_pdf)
+            doc = safe_open(str(path))
+            try:
+                self.assertGreaterEqual(int(doc.page_count), 1)
+            finally:
+                doc.close()
+
     def test_safe_open_reads_only_the_header_before_path_delegation(self) -> None:
         with tempfile.TemporaryDirectory(prefix="lc_open_gate_") as tmp:
             path = Path(tmp) / "large—drawing.pdf"

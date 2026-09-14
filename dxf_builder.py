@@ -21,7 +21,7 @@ from dataclasses import replace as _dc_replace
 
 from pdfcadcore.primitives import PageData, Primitive
 from pdfcadcore.import_config import ImportConfig
-from pdfcadcore.import_bounds import ImportBounds, compute_import_bounds
+from pdfcadcore.import_bounds import ImportBounds, compute_import_bounds, sheet_xy
 
 from dxf_text_builder import TextDeliveryResult, build_text
 
@@ -194,10 +194,22 @@ def _make_attribs(
 # ---------------------------------------------------------------------------
 # Geometry writers
 # ---------------------------------------------------------------------------
+def _xy_points(points) -> list:
+    """Keep DXF strokes on the sheet plane (drop orthogonal Z leakage)."""
+    out = []
+    for pt in points or ():
+        xy = sheet_xy(pt)
+        if xy is not None:
+            out.append(xy)
+    return out
+
+
 def _add_line(msp, prim: Primitive, attribs: dict) -> int:
     """Add a LINE entity. Returns 1."""
-    p0, p1 = prim.points[0], prim.points[1]
-    msp.add_line(start=p0, end=p1, dxfattribs=attribs)
+    pts = _xy_points(prim.points)
+    if len(pts) < 2:
+        return 0
+    msp.add_line(start=pts[0], end=pts[1], dxfattribs=attribs)
     return 1
 
 
@@ -230,15 +242,18 @@ def _add_polyline(msp, prim: Primitive, attribs: dict) -> int:
     """Add an LWPOLYLINE, or a SPLINE for curved polylines. Returns 1."""
     # For open, dense polylines with curvature, use SPLINE for better
     # Bezier fidelity in downstream CAD programs.
-    if not prim.closed and len(prim.points) >= 8 and _has_curvature(prim.points):
+    pts = _xy_points(prim.points)
+    if not pts:
+        return 0
+    if not prim.closed and len(pts) >= 8 and _has_curvature(pts):
         try:
-            points_3d = [(x, y, 0) for x, y in prim.points]
+            points_3d = [(x, y, 0) for x, y in pts]
             msp.add_spline(points_3d, dxfattribs=attribs)
             return 1
         except Exception:
             pass  # Fall through to LWPOLYLINE
     msp.add_lwpolyline(
-        prim.points,
+        pts,
         close=prim.closed,
         dxfattribs=attribs,
     )
@@ -255,8 +270,9 @@ def _add_arc(msp, prim: Primitive, attribs: dict) -> int:
     # zero-length entity that confuses some CAD viewers.
     if math.isclose(start, end, abs_tol=1e-6):
         end = (end + 359.999) % 360.0
+    center = sheet_xy(prim.center) or prim.center[:2]
     msp.add_arc(
-        center=prim.center,
+        center=center,
         radius=prim.radius,
         start_angle=start,
         end_angle=end,
@@ -269,8 +285,9 @@ def _add_circle(msp, prim: Primitive, attribs: dict) -> int:
     """Add a CIRCLE entity. Returns 1."""
     if prim.center is None or prim.radius is None:
         return _add_polyline(msp, prim, attribs)
+    center = sheet_xy(prim.center) or prim.center[:2]
     msp.add_circle(
-        center=prim.center,
+        center=center,
         radius=prim.radius,
         dxfattribs=attribs,
     )
@@ -279,13 +296,16 @@ def _add_circle(msp, prim: Primitive, attribs: dict) -> int:
 
 def _add_closed_loop(msp, prim: Primitive, attribs: dict) -> int:
     """Add a closed LWPOLYLINE. Returns 1."""
-    msp.add_lwpolyline(prim.points, close=True, dxfattribs=attribs)
+    pts = _xy_points(prim.points)
+    if len(pts) < 3:
+        return 0
+    msp.add_lwpolyline(pts, close=True, dxfattribs=attribs)
     return 1
 
 
 def _add_rect(msp, prim: Primitive, attribs: dict) -> int:
     """Add a rectangle as a closed LWPOLYLINE (4 corners). Returns 1."""
-    pts = prim.points
+    pts = _xy_points(prim.points)
     if len(pts) < 4:
         return _add_polyline(msp, prim, attribs)
     msp.add_lwpolyline(pts[:4], close=True, dxfattribs=attribs)
