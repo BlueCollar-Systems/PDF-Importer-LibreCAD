@@ -998,6 +998,35 @@ def _append_text_fallback(
     )
 
 
+def _verification_keep_handles(
+    text_deliveries: List[Dict[str, Any]],
+    image_expectations: List["_SerializedImageExpectation"],
+) -> set[str]:
+    """Every entity handle the serialized-delivery verification may address."""
+
+    handles: set[str] = set()
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key.endswith("handles") and isinstance(child, (list, tuple)):
+                    handles.update(str(item) for item in child if str(item))
+                elif key.endswith("handle") and isinstance(child, (str, int)):
+                    handles.add(str(child))
+                else:
+                    collect(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                collect(child)
+
+    for delivery in text_deliveries:
+        collect(delivery)
+    for expected in image_expectations:
+        handles.add(str(expected.image_handle))
+        handles.add(str(expected.image_def_handle))
+    return handles
+
+
 def _serialized_entity(doc: Any, handle: str, source_id: str) -> Any:
     entity = doc.entitydb.get(str(handle))
     if entity is None or not getattr(entity, "is_alive", True):
@@ -2208,21 +2237,287 @@ def _resolve_serialized_asset_path(doc: Any, raw_path: str) -> Path:
     return path.resolve()
 
 
+# ---------------------------------------------------------------------------
+# Streaming DXF record access.
+#
+# The post-write verification and the prior-output asset scan used to load the
+# whole DXF through ezdxf a second time.  On a 452k-entity sheet that is a 121 MB
+# text file and ~24 s of object construction for records the verification never
+# looks at.  A DXF text file is a flat sequence of (group code, value) line
+# pairs and every record starts with a group-0 tag, so records can be walked
+# without building objects.  The verification then reopens a copy that keeps
+# every record it inspects and leaves out only bulk geometry it never inspects,
+# after that geometry has been syntax-checked here.
+# ---------------------------------------------------------------------------
+
+_DXF_HANDLE_VALUE = re.compile(r"^[0-9A-Fa-f]+$")
+
+# Single-record bulk geometry that the serialized-delivery verification never
+# addresses by type.  Multi-record entities (POLYLINE/VERTEX/SEQEND) and every
+# text, block reference, image, solid and unknown type are always kept.
+_REDUCIBLE_BULK_TYPES = frozenset(
+    {"LINE", "LWPOLYLINE", "ARC", "CIRCLE", "ELLIPSE", "SPLINE", "HATCH", "POINT"}
+)
+
+
+class _ReducedCopyUnavailable(Exception):
+    """The file has a layout the streaming pass does not model; load it fully."""
+
+
+class _DxfRecordIndex:
+    """Line-level index over DXF text: (code, value) pairs and record starts.
+
+    Pair ``i`` is line ``2*i`` (group code) and line ``2*i + 1`` (value).  A
+    record starts at every pair whose group code is 0; record ``r`` covers pairs
+    ``starts[r]`` up to ``starts[r + 1]``.  Lines keep their trailing CR so
+    :meth:`record_text` reproduces the original bytes of a record exactly.
+    Group codes are validated for the whole file at once: the distinct code
+    strings of even a 120 MB file number a few dozen.
+    """
+
+    __slots__ = ("lines", "codes", "values", "starts")
+
+    def __init__(self, text: str) -> None:
+        lines = text.split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()
+        if len(lines) % 2:
+            raise _ReducedCopyUnavailable("odd line count")
+        raw_codes = lines[0::2]
+        normalized: Dict[str, str] = {}
+        for raw in set(raw_codes):
+            code = raw.rstrip("\r").strip()
+            if not code.lstrip("-").isdigit():
+                raise _ReducedCopyUnavailable(f"non-numeric group code {code!r}")
+            normalized[raw] = code
+        self.lines = lines
+        self.codes: List[str] = list(map(normalized.__getitem__, raw_codes))
+        self.values: List[str] = lines[1::2]
+        self.starts: List[int] = [index for index, code in enumerate(self.codes) if code == "0"]
+        if not self.starts or self.starts[0] != 0:
+            raise _ReducedCopyUnavailable("file does not open with a group-0 tag")
+
+    def __len__(self) -> int:
+        return len(self.starts)
+
+    def record_range(self, record: int) -> Tuple[int, int]:
+        start = self.starts[record]
+        end = self.starts[record + 1] if record + 1 < len(self.starts) else len(self.codes)
+        return start, end
+
+    def record_type(self, record: int) -> str:
+        return self.values[self.starts[record]].rstrip("\r").strip()
+
+    def record_values(self, record: int, code: str) -> List[str]:
+        """Values of every tag with ``code`` in the record, CR stripped."""
+
+        start, end = self.record_range(record)
+        codes = self.codes
+        values = self.values
+        return [
+            values[index].rstrip("\r")
+            for index in range(start + 1, end)
+            if codes[index] == code
+        ]
+
+    def record_text(self, record: int) -> str:
+        start, end = self.record_range(record)
+        return "\n".join(self.lines[2 * start : 2 * end]) + "\n"
+
+    def write_records(self, records: Sequence[int], destination: Path) -> None:
+        destination.write_bytes("".join(self.record_text(record) for record in records).encode("utf-8"))
+
+
+def _reduced_verification_copy(
+    temp_output: Path,
+    keep_handles: set[str],
+    modelspace_owner_handle: str,
+) -> Tuple[Path, int]:
+    """Write a reduced copy of the serialized candidate for verification.
+
+    Every record outside the ENTITIES section, every entity whose type is not
+    plain bulk geometry, every bulk entity whose handle is delivered or
+    referenced, and every bulk entity not owned by the modelspace is copied
+    verbatim.  A bulk entity is left out only after its record parsed as
+    complete (code, value) pairs with exactly one handle that is unique among
+    every entity in the file and an owner equal to the modelspace block record,
+    so the verification that follows still runs on the exact serialized bytes of
+    everything it inspects.  The redraw order (SORTENTSTABLE) is copied verbatim
+    and every entity it names must have been written.  Returns the reduced path
+    and the number of entities left out so the caller can prove
+    ``kept + left out == entities written``.
+    """
+
+    index = _DxfRecordIndex(temp_output.read_bytes().decode("utf-8", errors="strict"))
+    keep = {str(handle).upper() for handle in keep_handles if str(handle)}
+    owner = str(modelspace_owner_handle).upper()
+    codes = index.codes
+    values = index.values
+    starts = index.starts
+    pair_count = len(codes)
+
+    # One pass: section layout, the handle census over every ENTITIES record
+    # (bulk or not, so a bulk record sharing a handle with any other entity is
+    # refused instead of left out), and the redraw-order references.
+    candidates: List[Tuple[int, str, str, bool]] = []  # record, type, handle, owner ok
+    current_section: Optional[str] = None
+    seen_handles: Dict[str, int] = {}
+    sort_references: List[str] = []
+    for record in range(len(starts)):
+        start = starts[record]
+        type_name = values[start].rstrip("\r").strip()
+        if type_name == "SECTION":
+            names = index.record_values(record, "2")
+            current_section = names[0].strip() if names else None
+            continue
+        if type_name == "ENDSEC":
+            current_section = None
+            continue
+        if type_name == "SORTENTSTABLE":
+            # The redraw order lists every modelspace entity when a page carries
+            # images.  Nothing in the verification reads it back and ezdxf does
+            # not audit it, so its entries do not decide what is kept; they are
+            # checked below to resolve to an entity that was written.
+            sort_references.extend(value.strip().upper() for value in index.record_values(record, "331"))
+            continue
+        if current_section != "ENTITIES":
+            continue
+        end = starts[record + 1] if record + 1 < len(starts) else pair_count
+        sub = codes[start + 1 : end]
+        handle_count = sub.count("5")
+        if type_name not in _REDUCIBLE_BULK_TYPES or handle_count != 1:
+            for handle in index.record_values(record, "5"):
+                handle = handle.strip().upper()
+                seen_handles[handle] = seen_handles.get(handle, 0) + 1
+            if type_name in _REDUCIBLE_BULK_TYPES:
+                raise RuntimeError(
+                    f"serialized DXF candidate {type_name} record has {handle_count} handle tags"
+                )
+            continue
+        handle = values[start + 1 + sub.index("5")].rstrip("\r").strip().upper()
+        if not _DXF_HANDLE_VALUE.match(handle):
+            raise RuntimeError(
+                f"serialized DXF candidate {type_name} record has a malformed handle {handle!r}"
+            )
+        seen_handles[handle] = seen_handles.get(handle, 0) + 1
+        owner_ok = (
+            sub.count("330") == 1
+            and values[start + 1 + sub.index("330")].rstrip("\r").strip().upper() == owner
+        )
+        candidates.append((record, type_name, handle, owner_ok))
+
+    missing_sort_targets = [handle for handle in sort_references if handle not in seen_handles]
+    if missing_sort_targets:
+        raise RuntimeError(
+            "serialized DXF candidate redraw order references a missing entity "
+            f"{missing_sort_targets[0]}"
+        )
+
+    leave_out: set[int] = set()
+    for record, type_name, handle, owner_ok in candidates:
+        if seen_handles.get(handle, 0) != 1:
+            raise RuntimeError(
+                f"serialized DXF candidate repeats entity handle {handle} ({type_name})"
+            )
+        if owner_ok and handle not in keep:
+            leave_out.add(record)
+    reduced = temp_output.with_name(temp_output.name + ".verify")
+    index.write_records(
+        [record for record in range(len(starts)) if record not in leave_out], reduced
+    )
+    return reduced, len(leave_out)
+
+
+def _reopen_candidate_for_verification(
+    temp_output: Path,
+    *,
+    keep_handles: set[str],
+    modelspace_owner_handle: str,
+    entities_written: int,
+) -> Tuple[Any, Any]:
+    """Re-open and audit the serialized candidate without a full parse.
+
+    Returns ``(candidate, auditor)``.  Falls back to a complete ezdxf load and
+    audit whenever the reduced copy cannot be produced for a structural reason
+    or its audit reports errors, so a surprising file never weakens the check
+    and a reduced copy can never refuse what the full file would accept; it
+    only slows it.  Corruption found by the streaming pass raises.
+    """
+
+    reduced: Optional[Path] = None
+    dropped = 0
+    try:
+        reduced, dropped = _reduced_verification_copy(
+            temp_output, keep_handles, modelspace_owner_handle
+        )
+    except _ReducedCopyUnavailable:
+        reduced = None
+    if reduced is not None:
+        try:
+            candidate = ezdxf.readfile(str(reduced))
+        finally:
+            try:
+                reduced.unlink(missing_ok=True)
+            except OSError:
+                pass
+        # Relative asset paths resolve against the real candidate, not the copy.
+        candidate.filename = str(temp_output)
+        kept = len(candidate.modelspace())
+        if kept + dropped != entities_written:
+            raise RuntimeError(
+                "serialized DXF candidate entity count changed: "
+                f"wrote {entities_written}, re-read {kept} + {dropped} left out"
+            )
+        auditor = candidate.audit()
+        if not auditor.has_errors:
+            return candidate, auditor
+    candidate = ezdxf.readfile(str(temp_output))
+    return candidate, candidate.audit()
+
+
+def _scan_asset_reference_paths(output: Path) -> Tuple[List[str], List[str]]:
+    """Return (IMAGEDEF filenames, STYLE fonts) from a DXF without loading it."""
+
+    index = _DxfRecordIndex(output.read_bytes().decode("utf-8", errors="strict"))
+    image_paths: List[str] = []
+    fonts: List[str] = []
+    for record in range(len(index)):
+        type_name = index.record_type(record)
+        if type_name == "IMAGEDEF":
+            image_paths.extend(index.record_values(record, "1"))
+        elif type_name == "STYLE":
+            fonts.extend(font for font in index.record_values(record, "3") if font.strip())
+    return image_paths, fonts
+
+
+class _PriorOutputPathAnchor:
+    """Minimal stand-in for a loaded document: only its filename is needed."""
+
+    def __init__(self, filename: Path) -> None:
+        self.filename = str(filename)
+
+
 def _owned_sessions_referenced_by_output(output: Path, asset_parent: Path) -> set[Path]:
     """Find only UUID session directories referenced by the prior accepted DXF."""
 
     if not output.is_file() or not asset_parent.is_dir():
         return set()
+    prior: Any
     try:
-        prior = ezdxf.readfile(str(output))
-    except (OSError, ezdxf.DXFError):
-        return set()
-    raw_paths = [
-        str(image_def.dxf.filename or "") for image_def in prior.objects.query("IMAGEDEF")
-    ]
-    raw_paths.extend(
-        str(style.dxf.font or "") for style in prior.styles if str(style.dxf.font or "")
-    )
+        image_paths, fonts = _scan_asset_reference_paths(output)
+        raw_paths = list(image_paths) + [font for font in fonts if font]
+        prior = _PriorOutputPathAnchor(output)
+    except (OSError, RuntimeError, UnicodeDecodeError, _ReducedCopyUnavailable):
+        try:
+            prior = ezdxf.readfile(str(output))
+        except (OSError, ezdxf.DXFError):
+            return set()
+        raw_paths = [
+            str(image_def.dxf.filename or "") for image_def in prior.objects.query("IMAGEDEF")
+        ]
+        raw_paths.extend(
+            str(style.dxf.font or "") for style in prior.styles if str(style.dxf.font or "")
+        )
     sessions: set[Path] = set()
     for raw_path in raw_paths:
         try:
@@ -2594,6 +2889,11 @@ def _render_terminal_page_tiles(
                 f"budget even at {TERMINAL_MIN_DPI:g} DPI"
             )
         matrix = fitz.Matrix(zoom, zoom)
+        # One display list per page: Page.get_pixmap rebuilds the page's display
+        # list on every call, which on a 500k-path sheet costs ~0.75 s per tile.
+        # DisplayList.get_pixmap is the exact same rendering path PyMuPDF uses
+        # inside Page.get_pixmap, so the tile pixels are unchanged.
+        page_display_list = source_page.get_displaylist()
         rendered_bounds = (source_page.rect * matrix).irect
         full_width = int(rendered_bounds.width)
         full_height = int(rendered_bounds.height)
@@ -2622,7 +2922,7 @@ def _render_terminal_page_tiles(
                     float(source_page.rect.x0) + float(render_right) / zoom,
                     float(source_page.rect.y0) + float(render_bottom) / zoom,
                 )
-                rendered = source_page.get_pixmap(
+                rendered = page_display_list.get_pixmap(
                     matrix=matrix,
                     clip=render_clip,
                     colorspace=fitz.csRGB,
@@ -4198,10 +4498,20 @@ def _export_to_dxf_impl(
                 ),
             )
         )
+        entities_written = len(msp)
         doc.saveas(str(temp_output))
         # Re-open the exact candidate before it can replace a prior good DXF.
-        candidate = ezdxf.readfile(str(temp_output))
-        auditor = candidate.audit()
+        # Every record the verification inspects is re-read from the written
+        # bytes; bulk geometry it never inspects is syntax-checked in a
+        # streaming pass instead of being rebuilt as ezdxf objects.
+        candidate, auditor = _reopen_candidate_for_verification(
+            temp_output,
+            keep_handles=_verification_keep_handles(
+                text_deliveries, serialized_image_expectations
+            ),
+            modelspace_owner_handle=str(msp.block_record.dxf.handle),
+            entities_written=entities_written,
+        )
         if auditor.has_errors:
             raise RuntimeError(
                 f"serialized DXF candidate failed audit with {len(auditor.errors)} error(s)"

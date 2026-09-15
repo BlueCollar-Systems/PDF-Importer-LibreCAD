@@ -1291,6 +1291,18 @@ def _positioned_fraction_layout(
         and _POSITIONED_FRACTION_RE.fullmatch(semantic)
     ):
         return None
+    # An ordinary text span whose text merely looks like a fraction ("3/8" on a
+    # dimension string) keeps its real source quad and aggregate advance from
+    # rawdict extraction; the extractor marks every span that carries a
+    # character layout as requiring individual positioning.  Such a span is an
+    # ordinary string and is delivered through the regular ladder exactly as it
+    # was before positioned-fraction fidelity existed.  Only the merger's
+    # semantic fraction, which never carries quads, enters the special route.
+    if (
+        getattr(text_item, "source_quad_pdf", None) is not None
+        or getattr(text_item, "target_quad_model", None) is not None
+    ):
+        return None
     if (
         getattr(text_item, "font_asset", None) is not None
         and getattr(text_item, "font_failure", None) is not None
@@ -1310,9 +1322,7 @@ def _positioned_fraction_layout(
             "positioned fraction aggregate placement metrics are invalid"
         ) from exc
     if (
-        getattr(text_item, "source_quad_pdf", None) is not None
-        or getattr(text_item, "target_quad_model", None) is not None
-        or not math.isfinite(aggregate_advance)
+        not math.isfinite(aggregate_advance)
         or not math.isfinite(aggregate_height)
         or aggregate_advance != 0.0
         or aggregate_height != 0.0
