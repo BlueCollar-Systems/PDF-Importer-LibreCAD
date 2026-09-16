@@ -1,8 +1,8 @@
 # PDF to DXF Converter for LibreCAD
 
-**BlueCollar Systems -- BUILT. NOT BOUGHT.**
+**BlueCollar-Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.87](https://img.shields.io/badge/Version-1.0.91-blue.svg)
+![Version: 1.0.87](https://img.shields.io/badge/Version-1.0.96-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
@@ -377,4 +377,4 @@ pdfcadcore/           Shared PDF extraction core
 
 ## License
 
-MIT License. Copyright (c) 2024-2026 BlueCollar Systems.
+MIT License. Copyright (c) 2024-2026 BlueCollar-Systems.

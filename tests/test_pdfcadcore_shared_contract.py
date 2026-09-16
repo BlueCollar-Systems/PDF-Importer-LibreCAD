@@ -8,6 +8,8 @@ import importlib
 import json
 from pathlib import Path
 
+import pymupdf
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -146,3 +148,164 @@ def test_local_manifest_covers_and_hashes_every_shared_file() -> None:
             "pdfcadcore_sync_check.py",
         } else core / name
         assert manifest[name] == _sha256(path), name
+
+
+class _DrawingPage:
+    rect = pymupdf.Rect(0.0, 0.0, 200.0, 200.0)
+    rotation = 0
+    rotation_matrix = pymupdf.Matrix(1.0, 1.0)
+    parent = None
+
+    def __init__(self, items: list[tuple[object, ...]]) -> None:
+        self._items = list(items)
+
+    def get_drawings(self) -> list[dict[str, object]]:
+        return [
+            {
+                "items": list(self._items),
+                "color": (0.0, 0.0, 0.0),
+                "width": 1.0,
+                "closePath": False,
+            }
+        ]
+
+    def get_text(self, _mode: str) -> dict[str, list[object]]:
+        return {"blocks": []}
+
+    def get_texttrace(self) -> list[object]:
+        return []
+
+    def get_fonts(self, *, full: bool = False) -> list[object]:
+        del full
+        return []
+
+
+def _extract_drawings(items: list[tuple[object, ...]]):
+    extractor = _module("primitive_extractor")
+    return extractor.extract_page(
+        _DrawingPage(items),
+        1,
+        flip_y=False,
+        detect_arcs=False,
+    )
+
+
+def _point(x: float, y: float) -> pymupdf.Point:
+    return pymupdf.Point(x, y)
+
+
+def test_disconnected_line_items_remain_separate_primitives() -> None:
+    page = _extract_drawings(
+        [
+            ("l", _point(10.0, 10.0), _point(20.0, 10.0)),
+            ("l", _point(100.0, 100.0), _point(110.0, 100.0)),
+        ]
+    )
+
+    mm_per_point = 25.4 / 72.0
+    assert [primitive.type for primitive in page.primitives] == ["line", "line"]
+    assert [primitive.points for primitive in page.primitives] == [
+        [(10.0 * mm_per_point, 10.0 * mm_per_point),
+         (20.0 * mm_per_point, 10.0 * mm_per_point)],
+        [(100.0 * mm_per_point, 100.0 * mm_per_point),
+         (110.0 * mm_per_point, 100.0 * mm_per_point)],
+    ]
+
+
+def test_disconnected_cubic_items_remain_separate_primitives() -> None:
+    page = _extract_drawings(
+        [
+            (
+                "c",
+                _point(10.0, 10.0),
+                _point(13.0, 6.0),
+                _point(17.0, 14.0),
+                _point(20.0, 10.0),
+            ),
+            (
+                "c",
+                _point(100.0, 100.0),
+                _point(103.0, 96.0),
+                _point(107.0, 104.0),
+                _point(110.0, 100.0),
+            ),
+        ]
+    )
+
+    mm_per_point = 25.4 / 72.0
+    assert len(page.primitives) == 2
+    assert page.primitives[0].points[0] == (10.0 * mm_per_point, 10.0 * mm_per_point)
+    assert page.primitives[0].points[-1] == (20.0 * mm_per_point, 10.0 * mm_per_point)
+    assert page.primitives[1].points[0] == (100.0 * mm_per_point, 100.0 * mm_per_point)
+    assert page.primitives[1].points[-1] == (110.0 * mm_per_point, 100.0 * mm_per_point)
+
+
+def test_continuous_line_and_cubic_items_share_one_primitive() -> None:
+    page = _extract_drawings(
+        [
+            ("l", _point(10.0, 10.0), _point(20.0, 10.0)),
+            (
+                "c",
+                _point(20.0, 10.0),
+                _point(23.0, 6.0),
+                _point(27.0, 14.0),
+                _point(30.0, 10.0),
+            ),
+        ]
+    )
+
+    assert len(page.primitives) == 1
+    assert page.primitives[0].type == "polyline"
+
+
+def test_implicit_start_cubic_items_continue_from_the_current_endpoint() -> None:
+    implicit_items = [
+        (
+            "c",
+            _point(23.0, 6.0),
+            _point(27.0, 14.0),
+            _point(30.0, 10.0),
+        ),
+        ("c", 23.0, 6.0, 27.0, 14.0, 30.0, 10.0),
+    ]
+
+    for cubic_item in implicit_items:
+        page = _extract_drawings(
+            [
+                ("l", _point(10.0, 10.0), _point(20.0, 10.0)),
+                cubic_item,
+            ]
+        )
+
+        mm_per_point = 25.4 / 72.0
+        assert len(page.primitives) == 1
+        assert page.primitives[0].type == "polyline"
+        assert page.primitives[0].points[0] == (
+            10.0 * mm_per_point,
+            10.0 * mm_per_point,
+        )
+        assert page.primitives[0].points[-1] == (
+            30.0 * mm_per_point,
+            10.0 * mm_per_point,
+        )
+
+
+def test_tuple_point_cubic_keeps_its_explicit_start_and_endpoint() -> None:
+    page = _extract_drawings(
+        [
+            ("l", _point(10.0, 10.0), _point(20.0, 10.0)),
+            ("c", (20.0, 10.0), (23.0, 6.0), (27.0, 14.0), (30.0, 10.0)),
+        ]
+    )
+
+    mm_per_point = 25.4 / 72.0
+    assert len(page.primitives) == 1
+    assert page.primitives[0].type == "polyline"
+    assert page.primitives[0].points[0] == (
+        10.0 * mm_per_point,
+        10.0 * mm_per_point,
+    )
+    assert page.primitives[0].points[-1] == (
+        30.0 * mm_per_point,
+        10.0 * mm_per_point,
+    )

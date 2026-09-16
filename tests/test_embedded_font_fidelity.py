@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import struct
 from io import BytesIO
 from unittest.mock import patch
 
@@ -238,6 +239,110 @@ def test_exact_inventory_name_outranks_weaker_internal_family_aliases(
     assert asset is not None
     assert asset.source_xref == 1
     assert asset.base_font_name == "Arial"
+
+
+def test_merged_trace_glyph_map_prefers_inventory_trace_over_aliases():
+    glyph_maps = {"Arial": {65: 36}, "Arial,Bold": {65: 68}}
+
+    merged, trace_names = embedded_fonts._merged_trace_glyph_map(
+        {"Arial,Bold", "Arial", "Arial Bold", "Arial-BoldMT"},
+        glyph_maps,
+        set(),
+        inventory_name="Arial,Bold",
+    )
+    assert trace_names == ("Arial,Bold",)
+    assert merged == {65: 68}
+
+    # No trace under the inventory name: the alias union remains the fallback.
+    merged, trace_names = embedded_fonts._merged_trace_glyph_map(
+        {"ArialMT", "Arial"},
+        glyph_maps,
+        set(),
+        inventory_name="ArialMT",
+    )
+    assert trace_names == ("Arial",)
+    assert merged == {65: 36}
+
+
+@pytest.mark.parametrize(
+    ("trace_maps", "expected_bold_map"),
+    [
+        # Disjoint codepoints: a naive alias union would silently absorb the
+        # sibling program's glyphs into the bold face's unicode map.
+        ({"Arial": {65: 36}, "Arial,Bold": {66: 68}}, {66: 68}),
+        # Same codepoint, different glyph ids: a naive alias union raises
+        # "aliases disagree" and drops the bold face from the catalog.
+        ({"Arial": {65: 36}, "Arial,Bold": {65: 68}}, {65: 68}),
+    ],
+    ids=["disjoint_codepoints", "conflicting_glyph_ids"],
+)
+def test_inventory_name_selects_exact_program_when_sibling_aliases_overlap(
+    monkeypatch, trace_maps, expected_bold_map
+):
+    """Two embedded programs share SFNT family aliases ("Arial"). The PDF
+    inventory name is the painting identity: each asset must carry only its
+    own texttrace unicode map, never a union with a sibling program's."""
+
+    class Document:
+        @staticmethod
+        def extract_font(xref):
+            names = {11: "Arial-BoldMT", 12: "ArialMT"}
+            return names[xref], "ttf", "TrueType", f"font-{xref}".encode("ascii")
+
+    class Page:
+        parent = Document()
+
+        @staticmethod
+        def get_texttrace():
+            return []
+
+        @staticmethod
+        def get_fonts(*, full=False):
+            assert full is True
+            return [
+                (12, "ttf", "TrueType", "Arial", "F0", "WinAnsiEncoding"),
+                (11, "ttf", "TrueType", "Arial,Bold", "F1", "WinAnsiEncoding"),
+            ]
+
+    def aliases(data, _format):
+        if data == b"font-11":
+            return {"Arial", "Arial Bold", "Arial-BoldMT"}
+        return {"Arial", "ArialMT"}
+
+    seen_unicode_maps: dict[str, dict[int, int]] = {}
+
+    def usable_font(source, source_format, name, mapping):
+        seen_unicode_maps[name] = dict(mapping)
+        return source_format, source, True
+
+    monkeypatch.setattr(embedded_fonts, "_font_program_name_aliases", aliases)
+    monkeypatch.setattr(
+        embedded_fonts,
+        "_page_unicode_glyph_maps",
+        lambda _page: (
+            {name: dict(mapping) for name, mapping in trace_maps.items()},
+            set(),
+            None,
+        ),
+    )
+    monkeypatch.setattr(embedded_fonts, "_usable_font", usable_font)
+    monkeypatch.setattr(
+        embedded_fonts,
+        "_font_delivery_metrics",
+        lambda _data: (1000, 800, -200, (500, 500)),
+    )
+
+    catalog = EmbeddedFontCatalog.from_page(Page(), page_number=1)
+    regular = catalog.for_span("Arial")
+    bold = catalog.for_span("Arial,Bold")
+
+    assert regular is not None
+    assert bold is not None, catalog.failure_for_span("Arial,Bold")
+    assert regular.source_xref == 12
+    assert bold.source_xref == 11
+    assert regular.asset_id != bold.asset_id
+    assert seen_unicode_maps["Arial"] == {65: 36}
+    assert seen_unicode_maps["Arial,Bold"] == expected_bold_map
 
 
 def test_cmap_repair_classifies_fonttools_assertion_as_malformed_source(
@@ -651,3 +756,125 @@ def test_generated_pdf_matches_a_truetype_postscript_span_to_its_embedded_font(
     assert tuple(glyphs[cmap[ord("A")]].getCoordinates(glyphs)[0]) != tuple(
         glyphs[cmap[ord("B")]].getCoordinates(glyphs)[0]
     )
+
+def _truncated_name_table_fixture() -> bytes:
+    """A real TTF whose sfnt directory declares a 4-byte 'name' table.
+
+    fontTools' name-table decompile unpacks a 6-byte header, so it raises
+    ``struct.error``.  ``struct.error`` derives from ``Exception``, not
+    ``ValueError``, so it is not covered by the malformed-source except tuples
+    unless it is listed explicitly.
+    """
+    builder = FontBuilder(1000, isTTF=True)
+    glyph_order = [".notdef", "glyph00001"]
+    builder.setupGlyphOrder(glyph_order)
+    builder.setupCharacterMap({0x41: "glyph00001"})
+    builder.setupHorizontalMetrics({name: (600, 0) for name in glyph_order})
+    builder.setupHorizontalHeader(ascent=800, descent=-200)
+    builder.setupNameTable({
+        "familyName": "Malformed Name Table",
+        "styleName": "Regular",
+        "fullName": "Malformed Name Table Regular",
+        "psName": "MalformedNameTable-Regular",
+    })
+    builder.setupOS2(
+        sTypoAscender=800,
+        sTypoDescender=-200,
+        usWinAscent=800,
+        usWinDescent=200,
+    )
+    builder.setupPost()
+    glyphs = {}
+    for index, name in enumerate(glyph_order):
+        pen = TTGlyphPen(None)
+        if index:
+            pen.moveTo((100, 0))
+            pen.lineTo((100, 700))
+            pen.lineTo((500, 700))
+            pen.lineTo((500, 0))
+            pen.closePath()
+        glyphs[name] = pen.glyph()
+    builder.setupGlyf(glyphs)
+    builder.setupMaxp()
+    output = BytesIO()
+    builder.font.save(output)
+    data = bytearray(output.getvalue())
+    table_count = struct.unpack(">H", bytes(data[4:6]))[0]
+    for index in range(table_count):
+        record = 12 + index * 16
+        if bytes(data[record:record + 4]) == b"name":
+            struct.pack_into(">I", data, record + 12, 4)
+            return bytes(data)
+    raise AssertionError("synthesized fixture has no name table")
+
+
+def _malformed_name_table_page(malformed: bytes):
+    class Document:
+        @staticmethod
+        def extract_font(_xref):
+            return ("MalformedNameTable-Regular", "ttf", "TrueType", malformed)
+
+    class Page:
+        parent = Document()
+
+        @staticmethod
+        def get_fonts(*, full=False):
+            return [(
+                11, "ttf", "TrueType", "MalformedNameTable-Regular",
+                "R9", "WinAnsiEncoding",
+            )]
+
+        @staticmethod
+        def get_texttrace():
+            return []
+
+    return Page()
+
+
+def test_malformed_name_table_struct_error_does_not_escape_font_readers():
+    # fontTools raises struct.error (not a ValueError) for a name table shorter
+    # than its 6-byte header; both readers must report "unusable", not raise.
+    malformed = _truncated_name_table_fixture()
+
+    with pytest.raises(struct.error):
+        TTFont(BytesIO(malformed), lazy=False, recalcTimestamp=False)["name"].names
+
+    assert embedded_fonts._font_program_name_aliases(malformed, "ttf") == set()
+    assert embedded_fonts._fonttools_loadable(malformed) is False
+
+
+def test_malformed_name_table_is_recorded_as_source_impossibility_not_a_page_abort():
+    # A single malformed embedded program must not abort text extraction for the
+    # whole page: the catalog records it like the fontTools AssertionError case.
+    malformed = _truncated_name_table_fixture()
+
+    catalog = EmbeddedFontCatalog.from_page(_malformed_name_table_page(malformed), 1)
+
+    assert catalog.assets == ()
+    assert catalog.for_span("MalformedNameTable-Regular") is None
+    failure = catalog.failure_for_span("MalformedNameTable-Regular")
+    assert failure.reason == "embedded_font_asset_build_failed"
+    assert failure.proof_category == "source_specific_impossibility"
+    assert failure.source_xref == 11
+
+
+def test_residual_struct_error_in_asset_build_is_item_scoped_not_a_page_abort(monkeypatch):
+    # Backstop: fontTools unpacks fixed-width headers with struct all over its
+    # table readers. Whichever helper raises it, one malformed program must stay
+    # an item-scoped source impossibility instead of aborting the page.
+    monkeypatch.setattr(
+        embedded_fonts,
+        "_usable_font",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            struct.error("unpack requires a buffer of 6 bytes")
+        ),
+    )
+    malformed = _truncated_name_table_fixture()
+
+    catalog = EmbeddedFontCatalog.from_page(_malformed_name_table_page(malformed), 1)
+
+    failure = catalog.failure_for_span("MalformedNameTable-Regular")
+    assert failure.reason == "embedded_font_asset_build_failed"
+    assert failure.proof_category == "source_specific_impossibility"
+    assert failure.error_type == "error"
+    assert "6 bytes" in failure.detail

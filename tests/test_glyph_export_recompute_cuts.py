@@ -14,6 +14,9 @@ replace, and prove the memo cannot hide a changed definition.
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import ezdxf
@@ -29,13 +32,83 @@ from dxf_text_builder import (
     iter_glyph_outline_entities,
 )
 from librecad_pdf_importer.exporters import dxf_exporter as dxf_exporter_module
+from librecad_pdf_importer.core.document import DocumentExtraction, ExtractedPage
 from librecad_pdf_importer.exporters.dxf_exporter import (
-    _verify_serialized_text_deliveries,
+    DxfExportOptions,
+    _verify_serialized_text_deliveries as _verify_serialized_text_deliveries_impl,
+    export_to_dxf,
 )
 from pdfcadcore.import_config import ImportConfig
-from pdfcadcore.primitives import NormalizedText
+from pdfcadcore.primitives import NormalizedText, PageData
 
 OUTLINE_TYPES = {"LWPOLYLINE", "POLYLINE"}
+_EMPTY_POSITIONED_SESSION: object | None = None
+
+
+def _production_empty_positioned_session() -> object:
+    global _EMPTY_POSITIONED_SESSION
+    if _EMPTY_POSITIONED_SESSION is not None:
+        return _EMPTY_POSITIONED_SESSION
+    captured: list[object] = []
+
+    def capture(
+        doc: object,
+        deliveries: list[dict[str, object]],
+        **kwargs: object,
+    ) -> None:
+        session = kwargs["trusted_positioned_session"]
+        captured.append(session)
+        _verify_serialized_text_deliveries_impl(
+            doc,
+            deliveries,
+            trusted_positioned_session=session,
+        )
+
+    with TemporaryDirectory(prefix="lc-empty-positioned-session-") as directory:
+        root = Path(directory)
+        with patch.object(
+            dxf_exporter_module,
+            "_verify_serialized_text_deliveries",
+            side_effect=capture,
+        ):
+            export_to_dxf(
+                DocumentExtraction(
+                    pdf_path=str(root / "must-not-be-read.pdf"),
+                    pages=[
+                        ExtractedPage(
+                            page_data=PageData(
+                                page_number=1,
+                                width=20.0,
+                                height=10.0,
+                            ),
+                            profile=SimpleNamespace(),
+                        )
+                    ],
+                ),
+                str(root / "empty-session.dxf"),
+                DxfExportOptions(
+                    include_images=False,
+                    include_text=False,
+                    attach_metadata=False,
+                ),
+            )
+    assert len(captured) == 1
+    _EMPTY_POSITIONED_SESSION = captured[0]
+    return _EMPTY_POSITIONED_SESSION
+
+
+def _verify_serialized_text_deliveries(
+    doc: object,
+    deliveries: list[dict[str, object]],
+    *,
+    trusted_positioned_anchors: object,
+) -> None:
+    assert trusted_positioned_anchors == {}
+    _verify_serialized_text_deliveries_impl(
+        doc,
+        deliveries,
+        trusted_positioned_session=_production_empty_positioned_session(),
+    )
 
 
 def _item(item_id: int, insertion, rotation: float, text: str = "W12X30") -> NormalizedText:
@@ -190,7 +263,11 @@ def test_serialized_verification_hashes_each_glyph_definition_once() -> None:
     with patch.object(
         dxf_exporter_module, "_glyph_definition_geometry_fingerprint", side_effect=counting
     ):
-        _verify_serialized_text_deliveries(doc, deliveries)
+        _verify_serialized_text_deliveries(
+            doc,
+            deliveries,
+            trusted_positioned_anchors={},
+        )
 
     assert sorted(calls) == sorted(distinct), (
         "verification must hash each immutable definition exactly once per pass, "
@@ -216,7 +293,11 @@ def test_memoized_verification_still_detects_a_changed_definition() -> None:
     assert _glyph_definition_geometry_fingerprint(definition) != recorded
 
     with pytest.raises(RuntimeError, match="glyph definition geometry changed"):
-        _verify_serialized_text_deliveries(doc, deliveries)
+        _verify_serialized_text_deliveries(
+            doc,
+            deliveries,
+            trusted_positioned_anchors={},
+        )
 
 
 def test_commit_outlines_no_longer_transforms_solid_fills() -> None:
@@ -234,7 +315,11 @@ def test_commit_outlines_no_longer_transforms_solid_fills() -> None:
     for delivery in deliveries:
         attempt = [a for a in delivery["attempts"] if a.get("outcome") == "verified"][0]
         assert attempt["evidence"]["outline_bbox_verified"] is True
-    _verify_serialized_text_deliveries(doc, deliveries)
+    _verify_serialized_text_deliveries(
+        doc,
+        deliveries,
+        trusted_positioned_anchors={},
+    )
 
 
 # ---------------------------------------------------------------------------

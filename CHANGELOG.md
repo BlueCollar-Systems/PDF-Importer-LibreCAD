@@ -2,6 +2,57 @@
 
 All notable release changes are recorded here.
 
+## 1.0.96 - 2026-09-16
+
+- Shared pdfcadcore: the import report's PDF audit no longer aborts a finished import
+  when the file's cross-reference stream has index gaps. It probes every object number
+  for JavaScript actions, and MuPDF raises an error class deriving from Exception rather
+  than RuntimeError for an unallocated number, so the exception escaped every guard on
+  the path and turned a completed conversion into a failure after the DXF had already
+  been written. Reported on an Aspose markup export of a 48x36 in foundation sheet.
+- Ordinary fraction-shaped labels ("3/8" on a dimension string) stay on the regular text
+  ladder. The positioned-fraction route engaged for any span that merely looked like a
+  fraction and refused the whole page as "invented aggregate placement metrics"; it now
+  engages only for the merger's semantic stacked fraction.
+- Terminal raster tiles build the page display list once instead of once per tile, and
+  the post-write verification re-opens a reduced copy of the serialized candidate rather
+  than re-reading the whole file through ezdxf. Every record the verification inspects is
+  still read from the written bytes; bulk geometry it never inspects is syntax-checked in
+  a streaming pass and its count reconciled. A 452k-entity submittal page converts in
+  76 s where it took 121 s, byte-identical output.
+
+## 1.0.95 - 2026-08-20
+
+- Shared pdfcadcore: disconnected PDF subpaths are preserved rather than being joined
+  into a single run. A subpath that starts away from the previous one no longer drags a
+  connecting segment across the drawing.
+
+## 1.0.94 - 2026-08-20
+
+- Shared pdfcadcore: EOFError is now treated as a malformed embedded font rather than
+  aborting a page's text extraction. fontTools raises it from a single site --
+  cffLib.readSID, "Unexpected end of file while reading SID" -- when a CFF Encoding
+  supplement stops mid-read, which is the same class of failure as the struct.error
+  case guarded in 1.0.93. It subclassed nothing already caught, so it propagated.
+
+## 1.0.93 - 2026-08-18
+
+- Shared pdfcadcore: exact inventory font traces (a font's own texttrace is preferred
+  over a union of SFNT family/PostScript aliases, so a sibling embedded program's
+  glyph identities can no longer be merged into another font's Unicode map).
+- Shared pdfcadcore: a malformed embedded font program no longer aborts a page's text
+  extraction. fontTools raises struct.error (not a ValueError) for a font whose name
+  table is shorter than its 6-byte header; that is now recorded as an item-scoped
+  source impossibility, like the existing fontTools AssertionError case.
+
+## 1.0.92 - 2026-08-17
+
+- Positioned stacked fractions: exact producer character layout is preserved and
+  verified through the DXF (fill-only positioned geometry, page translations and
+  representable colours kept; malformed evidence refused instead of a silent raster
+  fallback). No more artificial 0.6x inline scale.
+- 1011 fallback transitions recorded (#35).
+
 ## 1.0.91 - 2026-08-16
 
 - pdfcadcore sync: constant alpha (/CA, /ca) is composited against the white page once

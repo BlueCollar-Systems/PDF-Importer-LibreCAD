@@ -2,33 +2,33 @@
   "artifacts": {
     "lcpdf_batch_exe": {
       "path": "dist/windows-portable/lcpdf-batch.exe",
-      "sha256": "3f4de01a61879b9e8491672f45905b4e506956b6a0fe1dd0120762cebfdd42f2",
-      "size_bytes": 66618954
+      "sha256": "2d4950a1172bcb325c4105ca7e8885209a09a3769ba1ee8780cf8ab5ecec2b12",
+      "size_bytes": 66664826
     },
     "lcpdf_gui_exe": {
       "path": "dist/windows-portable/lcpdf-gui.exe",
-      "sha256": "af7ba72633f76905142c0a506b85bf474d00f10635bdc11d427e764ba727ca62",
-      "size_bytes": 66611616
+      "sha256": "dd8bf78a8cfed540aa82c652073b2d78587a48509e9ccc59f1e435dfa7c35c77",
+      "size_bytes": 66657488
     },
     "lcpdf_import_exe": {
       "path": "dist/windows-portable/lcpdf-import.exe",
-      "sha256": "1f594d3e2f6bf41170ff7dbe0368f4abb473ee51ca9f1fd306d40f97654b33c1",
-      "size_bytes": 66620531
+      "sha256": "7f14890c1df664c7b2c476aa68263c5bb92fc5d2396f82c8a8b9d3680daa03cf",
+      "size_bytes": 66666403
     },
     "pdf2dxf_exe": {
       "path": "dist/windows-portable/pdf2dxf.exe",
-      "sha256": "2855d2ea999acb8ab92aa49c605554e50b87925c8c539e346d6183af4831a9c5",
-      "size_bytes": 66614870
+      "sha256": "3f0de6f3f17ced69add29d22b8c213837b9d3d1e4bba465088053da56ea38a29",
+      "size_bytes": 66660742
     },
     "portable_zip": {
-      "path": "dist/LibreCAD-PDF-Importer-Windows-Portable_v1.0.91.zip",
-      "sha256": "16be2700244c6cd8b615a4f6447f6b7b356fcccaf15fad87b31ac5878de6bcf3",
-      "size_bytes": 264158732
+      "path": "dist/LibreCAD-PDF-Importer-Windows-Portable_v1.0.96.zip",
+      "sha256": "0a6c39fd6784d3e4dfb82c1ca1330bf399b57de82f0139f256ac2ebd9f003ebd",
+      "size_bytes": 264342115
     },
     "source_zip": {
-      "path": "dist/LibreCAD-PDF-Importer_v1.0.91.zip",
-      "sha256": "918fd160d0e9955612809bae5adf16698e386c881dc4bae40326b5da8196159f",
-      "size_bytes": 321128
+      "path": "dist/LibreCAD-PDF-Importer_v1.0.96.zip",
+      "sha256": "6d06e70faf7fe17f65cc89700b81aeabee97c0ffae2702db9f19714475397152",
+      "size_bytes": 340981
     }
   },
   "build_contract": {
@@ -48,14 +48,14 @@
   "provenance": {
     "artifacts": {
       "portable_zip": {
-        "path": "dist/LibreCAD-PDF-Importer-Windows-Portable_v1.0.91.zip",
-        "sha256": "16be2700244c6cd8b615a4f6447f6b7b356fcccaf15fad87b31ac5878de6bcf3",
-        "size_bytes": 264158732
+        "path": "dist/LibreCAD-PDF-Importer-Windows-Portable_v1.0.96.zip",
+        "sha256": "0a6c39fd6784d3e4dfb82c1ca1330bf399b57de82f0139f256ac2ebd9f003ebd",
+        "size_bytes": 264342115
       },
       "source_zip": {
-        "path": "dist/LibreCAD-PDF-Importer_v1.0.91.zip",
-        "sha256": "918fd160d0e9955612809bae5adf16698e386c881dc4bae40326b5da8196159f",
-        "size_bytes": 321128
+        "path": "dist/LibreCAD-PDF-Importer_v1.0.96.zip",
+        "sha256": "6d06e70faf7fe17f65cc89700b81aeabee97c0ffae2702db9f19714475397152",
+        "size_bytes": 340981
       }
     },
     "build_contract": {
@@ -74,28 +74,28 @@
     },
     "release_payload": {
       "file_count": 111,
-      "sha256": "797bd5e831f3a65cf78d4d7ef471c1d737a745739c2d3e36d1d3c4987767a4eb"
+      "sha256": "8ae653e66c9c98dc88d17d5eac0db7aa46b46c1342205e28716ba30cdf28396a"
     },
     "runner": {
       "architecture": "X64",
       "image_os": "win25-vs2026",
-      "image_version": "20260810.198.2",
+      "image_version": "20260907.229.1",
       "label": "windows-2025",
       "os": "Windows"
     },
     "schema": "bcs.release_candidate_provenance/1.0",
     "source": {
       "event_name": "push",
-      "head_sha": "36e86d5eacecc14af9659c7cfa3fe40270d2b108",
+      "head_sha": "de1b0386979d30ed8ad094e91dd58331e4d0ae31",
       "repository": "BlueCollar-Systems/PDF-Importer-LibreCAD",
       "run_attempt": 1,
-      "run_id": 31978888431,
+      "run_id": 35149531023,
       "workflow": "auto-release",
       "workflow_ref": "BlueCollar-Systems/PDF-Importer-LibreCAD/.github/workflows/auto-release.yml@refs/heads/main",
-      "workflow_sha": "36e86d5eacecc14af9659c7cfa3fe40270d2b108"
+      "workflow_sha": "de1b0386979d30ed8ad094e91dd58331e4d0ae31"
     },
-    "version": "1.0.91"
+    "version": "1.0.96"
   },
   "schema": "bcs.release_artifacts/1.1",
-  "version": "1.0.91"
+  "version": "1.0.96"
 }

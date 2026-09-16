@@ -141,11 +141,13 @@ def _fonttools_loadable(data: bytes) -> bool:
     except (
         AssertionError,
         AttributeError,
+        EOFError,
         KeyError,
         OSError,
         TTLibError,
         TypeError,
         ValueError,
+        struct.error,
     ):
         return False
 
@@ -186,11 +188,13 @@ def _font_delivery_metrics(data: bytes) -> tuple[int, int, int, tuple[int, ...]]
     except (
         AssertionError,
         AttributeError,
+        EOFError,
         KeyError,
         OSError,
         TTLibError,
         TypeError,
         ValueError,
+        struct.error,
     ) as exc:
         raise ExactFontSourceImpossible(
             f"usable font delivery metrics are unavailable: {type(exc).__name__}: {exc}"
@@ -554,11 +558,13 @@ def _font_program_name_aliases(data: bytes, source_format: str) -> set[str]:
     except (
         AssertionError,
         AttributeError,
+        EOFError,
         KeyError,
         OSError,
         TTLibError,
         TypeError,
         ValueError,
+        struct.error,
     ):
         return set()
     finally:
@@ -570,8 +576,17 @@ def _merged_trace_glyph_map(
     aliases: set[str],
     glyph_maps: Mapping[str, Mapping[int, int]],
     ambiguous_maps: set[str],
+    *,
+    inventory_name: str = "",
 ) -> tuple[dict[int, int], tuple[str, ...]]:
-    trace_names = tuple(sorted(name for name in aliases if name in glyph_maps))
+    preferred = str(inventory_name or "").strip()
+    if preferred and preferred in glyph_maps:
+        # The PDF inventory/span name is the exact painting identity. Family
+        # or PostScript aliases from the same SFNT (e.g. Arial-Bold → "Arial")
+        # must not union traces that belong to a sibling embedded program.
+        trace_names = (preferred,)
+    else:
+        trace_names = tuple(sorted(name for name in aliases if name in glyph_maps))
     if any(name in ambiguous_maps for name in trace_names):
         raise ExactFontSourceImpossible(
             "PDF Unicode maps one character to multiple glyph ids"
@@ -798,7 +813,10 @@ class EmbeddedFontCatalog:
                 source_format = str(extracted_format or source_format).lower().lstrip(".")
                 source_type = str(extracted_type or source_type)
                 unicode_map, trace_names = _merged_trace_glyph_map(
-                    name_aliases, glyph_maps, ambiguous_maps
+                    name_aliases,
+                    glyph_maps,
+                    ambiguous_maps,
+                    inventory_name=base_name,
                 )
                 usable_format, usable_bytes, cmap_installed = _usable_font(
                     source_bytes,
@@ -845,6 +863,18 @@ class EmbeddedFontCatalog:
                     int(page_number), base_name, "embedded_font_asset_build_failed",
                     xref, type(exc).__name__, str(exc),
                     "runtime_capability_unavailable_for_item",
+                )
+                continue
+            except struct.error as exc:
+                # fontTools unpacks fixed-width headers with struct; a truncated or
+                # corrupt table raises struct.error, which derives from Exception and
+                # not ValueError. That is a malformed source program for this item,
+                # exactly like the fontTools AssertionError case -- never a reason to
+                # abort text extraction for the whole page.
+                failures[base_name] = EmbeddedFontFailure(
+                    int(page_number), base_name, "embedded_font_asset_build_failed",
+                    xref, type(exc).__name__, str(exc),
+                    "source_specific_impossibility",
                 )
                 continue
             except (AttributeError, ImportError, OSError, RuntimeError) as exc:

@@ -12,7 +12,7 @@ and _looks_like_fill_art_flood() functions.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 # ── Glyph-flood thresholds ──────────────────────────────────────────
 AUTO_GLYPH_DRAWING_THRESHOLD = 1500

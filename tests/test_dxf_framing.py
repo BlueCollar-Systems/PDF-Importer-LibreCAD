@@ -8,7 +8,13 @@ from pathlib import Path
 import ezdxf
 
 from pdfcadcore.import_config import ImportConfig
-from pdfcadcore.primitives import NormalizedText, PageData, Primitive, reset_ids
+from pdfcadcore.primitives import (
+    NormalizedText,
+    PageData,
+    Primitive,
+    TextCharLayout,
+    reset_ids,
+)
 
 from dxf_builder import build_dxf
 from pdfcadcore.primitive_extractor import _merge_stacked_fractions
@@ -87,25 +93,54 @@ class TestDxfFraming(unittest.TestCase):
         self.assertTrue({"LWPOLYLINE", "POLYLINE"}.intersection(types))
 
     def test_horizontal_fraction_merge(self) -> None:
+        def layout(text: str, x: float, y: float) -> tuple[TextCharLayout, ...]:
+            return (
+                TextCharLayout(
+                    text=text,
+                    glyph_id=ord(text),
+                    source_origin_pdf=(x, y),
+                    source_bbox_pdf=(x - 0.4, y - 1.0, x + 0.4, y + 1.0),
+                    source_quad_pdf=(
+                        (x - 0.4, y - 1.0),
+                        (x + 0.4, y - 1.0),
+                        (x + 0.4, y + 1.0),
+                        (x - 0.4, y + 1.0),
+                    ),
+                    target_origin=(x, y),
+                    target_quad=(
+                        (x - 0.4, y + 1.0),
+                        (x + 0.4, y + 1.0),
+                        (x + 0.4, y - 1.0),
+                        (x - 0.4, y - 1.0),
+                    ),
+                    advance_width=0.8,
+                    glyph_height=2.0,
+                ),
+            )
+
         merged = _merge_stacked_fractions([
             NormalizedText(
                 id=1, text="3", normalized="3",
                 insertion=(10.0, 20.0), bbox=(9.5, 19.5, 11.0, 20.5),
                 font_size=2.0, page_number=1,
+                source_char_layout=layout("3", 10.0, 20.0),
             ),
             NormalizedText(
                 id=2, text="/", normalized="/",
                 insertion=(12.0, 20.0), bbox=(11.8, 19.5, 12.5, 20.5),
                 font_size=2.0, page_number=1,
+                source_char_layout=layout("/", 12.0, 20.0),
             ),
             NormalizedText(
                 id=3, text="4", normalized="4",
                 insertion=(14.0, 20.0), bbox=(13.5, 19.5, 15.0, 20.5),
                 font_size=2.0, page_number=1,
+                source_char_layout=layout("4", 14.0, 20.0),
             ),
         ])
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0].text, "3/4")
+        self.assertTrue(merged[0].requires_individual_positioning)
 
 
 if __name__ == "__main__":

@@ -178,7 +178,7 @@ def test_partial_existing_classifier_tags_do_not_suppress_other_meanings():
 
 def test_extract_page_reuses_prefetched_drawings(tmp_path) -> None:
     extractor = _module("primitive_extractor")
-    fitz = pytest.importorskip("pymupdf")
+    fitz = _module("fitz_loader").import_fitz()
 
     doc = fitz.open()
     page = doc.new_page(width=300, height=200)

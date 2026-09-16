@@ -45,15 +45,7 @@ SELF_COPY_PATHS: Tuple[Path, ...] = (
 # Preserve existing host-specific text fidelity. Every exception is pinned to
 # exact reviewed bytes, never a filename-only exemption. --fix must not copy
 # FC over these specialized implementations. Update hashes only after review.
-KNOWN_DIVERGENCES: Dict[str, Dict[str, str]] = {
-    "BL": {
-        "embedded_fonts.py": "5f1d7ad53e16560042970ccce15fc135668a27c891a1dea8bdb51e903b094b50",
-        "primitive_extractor.py": "7f75b794e4ea41b655e04adcfe03def846fce8f28b52e2ade2bcefa9672fea07",
-    },
-    "LC": {
-        "primitive_extractor.py": "c67c0898f686595191d7a70c7cf242f2d20376d536fe38bff79a7c7eada9db0a",
-    },
-}
+KNOWN_DIVERGENCES: Dict[str, Dict[str, str]] = {}
 
 
 def sha256_file(path: Path) -> str:
