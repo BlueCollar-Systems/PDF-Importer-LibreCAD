@@ -370,7 +370,7 @@ def build_pdf_interactive_note(doc: Any) -> Dict[str, Any]:
         # Keep scanning after a sparse/free object and record the incomplete audit.
         try:
             value = doc.xref_get_key(xref, key)
-        except audit_errors:
+        except Exception:
             unreadable_xrefs.add(xref)
             return False
         if not value:
@@ -403,7 +403,7 @@ def build_pdf_interactive_note(doc: Any) -> Dict[str, Any]:
                 break
             try:
                 subtype = doc.xref_get_key(xref, "S")
-            except audit_errors:
+            except Exception:
                 unreadable_xrefs.add(xref)
                 continue
             raw = " ".join(str(part) for part in subtype) if isinstance(subtype, tuple) else str(subtype)
