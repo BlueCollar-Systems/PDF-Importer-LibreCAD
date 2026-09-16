@@ -2,6 +2,25 @@
 
 All notable release changes are recorded here.
 
+## 1.0.96 - 2026-09-16
+
+- Shared pdfcadcore: the import report's PDF audit no longer aborts a finished import
+  when the file's cross-reference stream has index gaps. It probes every object number
+  for JavaScript actions, and MuPDF raises an error class deriving from Exception rather
+  than RuntimeError for an unallocated number, so the exception escaped every guard on
+  the path and turned a completed conversion into a failure after the DXF had already
+  been written. Reported on an Aspose markup export of a 48x36 in foundation sheet.
+- Ordinary fraction-shaped labels ("3/8" on a dimension string) stay on the regular text
+  ladder. The positioned-fraction route engaged for any span that merely looked like a
+  fraction and refused the whole page as "invented aggregate placement metrics"; it now
+  engages only for the merger's semantic stacked fraction.
+- Terminal raster tiles build the page display list once instead of once per tile, and
+  the post-write verification re-opens a reduced copy of the serialized candidate rather
+  than re-reading the whole file through ezdxf. Every record the verification inspects is
+  still read from the written bytes; bulk geometry it never inspects is syntax-checked in
+  a streaming pass and its count reconciled. A 452k-entity submittal page converts in
+  76 s where it took 121 s, byte-identical output.
+
 ## 1.0.95 - 2026-08-20
 
 - Shared pdfcadcore: disconnected PDF subpaths are preserved rather than being joined
