@@ -113,9 +113,17 @@ def _text_mode_fallback_for_report(config: ImportConfig, text_source_spans: int)
         and str(item.get("final_representation") or "").strip()
     ]
     if fallbacks:
+        # The report describes the complete delivered drawing. A zero-ink
+        # whitespace item may use TEXT while every visible item stays in the
+        # requested outline mode; reporting only the fallback subset wrongly
+        # claims that the whole drawing was converted to editable text.
         delivered_types = {
             str(item.get("final_representation") or "").strip()
-            for item in fallbacks
+            for item in deliveries
+            if isinstance(item, dict)
+            and item.get("verified") is True
+            and _normalized_text_mode(item.get("requested_representation")) == requested
+            and str(item.get("final_representation") or "").strip()
         }
         delivered = (
             next(iter(delivered_types))

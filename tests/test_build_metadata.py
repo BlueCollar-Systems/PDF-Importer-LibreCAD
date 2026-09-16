@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tomllib
 from unittest.mock import patch
 
 import pytest
@@ -19,7 +20,9 @@ import build_windows_portable
     ],
 )
 def test_release_builders_share_the_exact_product_version(reader) -> None:
-    assert reader() == "1.0.96"
+    with Path("pyproject.toml").open("rb") as project_file:
+        product_version = tomllib.load(project_file)["project"]["version"]
+    assert reader() == product_version
 
 
 def test_source_release_refuses_to_publish_an_unknown_version() -> None:

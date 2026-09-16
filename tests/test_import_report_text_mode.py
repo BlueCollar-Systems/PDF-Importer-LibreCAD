@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,7 +17,32 @@ from pdfcadcore.import_report import (
     build_import_contract_ready,
     build_import_report,
 )
-from librecad_pdf_importer.importer import _delivery_item_has_persisted_output
+from librecad_pdf_importer.importer import (
+    _delivery_item_has_persisted_output,
+    _text_mode_fallback_for_report,
+)
+
+
+@pytest.mark.parametrize("requested", ["glyphs", "geometry", "text"])
+def test_mixed_report_includes_successful_items_beside_a_whitespace_fallback(requested):
+    native = requested if requested != "text" else "text"
+    fallback = "text" if requested != "text" else "glyphs"
+    config = SimpleNamespace(
+        import_text=True,
+        text_mode=requested,
+        _text_representation_deliveries=[
+            {"requested_representation": requested, "final_representation": native,
+             "verified": True, "fallback_used": False},
+            {"requested_representation": requested, "final_representation": fallback,
+             "verified": True, "fallback_used": True},
+            {"requested_representation": requested, "final_representation": "raster",
+             "verified": False, "fallback_used": True},
+        ],
+    )
+    summary = _text_mode_fallback_for_report(config, 2)
+    assert summary["requested"] == requested
+    assert summary["delivered"] == "mixed"
+    assert summary["count"] == 1
 
 
 def test_librecad_report_records_text_mode():

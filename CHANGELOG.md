@@ -2,6 +2,16 @@
 
 All notable release changes are recorded here.
 
+## 1.0.97 - 2026-09-16
+
+- Preserve dense drawing geometry and embedded images while avoiding repeated
+  page classification, text extraction and font-cache work on large PDFs.
+- Report mixed text delivery accurately when visible source text uses outlines
+  and zero-ink whitespace retains native TEXT. The requested mode, item proofs
+  and existing geometry remain unchanged.
+- Verified conversion of a sparse-cross-reference, marked-up 48 by 36 inch
+  foundation sheet through all six text modes, retaining every source text item.
+
 ## 1.0.96 - 2026-09-16
 
 - Shared pdfcadcore: the import report's PDF audit no longer aborts a finished import
