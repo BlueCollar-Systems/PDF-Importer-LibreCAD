@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # pdf2dxf.py -- CLI entry point for PDF to DXF conversion
-# Copyright (c) 2024-2026 BlueCollar Systems -- BUILT. NOT BOUGHT.
+# Copyright (c) 2024-2026 BlueCollar-Systems -- BUILT. NOT BOUGHT.
 # Licensed under the MIT License. See LICENSE for details.
 """
 Standalone PDF-to-DXF converter.  Generates DXF files that open natively
@@ -31,7 +31,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="pdf2dxf",
         description=(
-            "PDF to DXF Converter -- BlueCollar Systems\n"
+            "PDF to DXF Converter -- BlueCollar-Systems\n"
             "Convert PDF vector drawings to DXF for use with LibreCAD, "
             "AutoCAD, DraftSight, QCAD, and any DXF-compatible CAD software."
         ),
@@ -207,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.verbose:
         # _safe_print: these carry the user's own paths and run BEFORE the
         # conversion -- a banner must never abort the tool with no DXF at all.
-        _safe_print(f"pdf2dxf {__version__} -- BlueCollar Systems")
+        _safe_print(f"pdf2dxf {__version__} -- BlueCollar-Systems")
         _safe_print(f"  Input:  {args.input}")
         _safe_print(f"  Output: {output}")
         _safe_print(f"  Mode:   {args.mode}")
