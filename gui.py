@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # gui.py -- Tkinter GUI for PDF to DXF conversion
-# Copyright (c) 2024-2026 BlueCollar Systems -- BUILT. NOT BOUGHT.
+# Copyright (c) 2024-2026 BlueCollar-Systems -- BUILT. NOT BOUGHT.
 # Licensed under the MIT License. See LICENSE for details.
 """
 A straightforward, functional tkinter interface for the PDF-to-DXF
@@ -52,7 +52,7 @@ class Pdf2DxfApp(tk.Tk):
 
     def __init__(self) -> None:
         super().__init__()
-        self.title("PDF to DXF Converter - BlueCollar Systems")
+        self.title("PDF to DXF Converter - BlueCollar-Systems")
         self.resizable(True, True)
         self.minsize(560, 500)
 
@@ -79,7 +79,7 @@ class Pdf2DxfApp(tk.Tk):
         ).grid(row=0, column=0, columnspan=3, sticky=tk.W, **pad)
         ttk.Label(
             frame,
-            text="BlueCollar Systems -- BUILT. NOT BOUGHT.",
+            text="BlueCollar-Systems -- BUILT. NOT BOUGHT.",
             font=("Segoe UI", 9),
         ).grid(row=1, column=0, columnspan=3, sticky=tk.W, padx=8)
         ttk.Label(

@@ -5,7 +5,7 @@
 ; Produces: installer\Output\LibreCAD-PDF-Importer-Setup_vX.Y.Z.exe
 
 #define AppName "LibreCAD PDF Importer"
-#define AppPublisher "BlueCollar Systems"
+#define AppPublisher "BlueCollar-Systems"
 #define AppExeName "LibreCAD-PDF-Importer.exe"
 #ifndef AppVersion
   #error AppVersion must be supplied with /DAppVersion=X.Y.Z

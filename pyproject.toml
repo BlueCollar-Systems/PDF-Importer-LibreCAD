@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [
-  { name = "BlueCollar Systems" }
+  { name = "BlueCollar-Systems" }
 ]
 dependencies = [
   "PyMuPDF==1.28.0",
