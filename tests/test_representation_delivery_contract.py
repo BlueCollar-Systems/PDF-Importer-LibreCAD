@@ -1259,6 +1259,7 @@ def test_fallback_ladders_use_the_nearest_remaining_representation(
 def test_trace_inventory_failure_cannot_be_relabelled_as_exact_native_text() -> None:
     item = __import__("dataclasses").replace(
         _item(),
+        font_name="Arial",
         font_asset=None,
         font_failure=EmbeddedFontFailure(
             page_number=3,
@@ -1274,16 +1275,12 @@ def test_trace_inventory_failure_cannot_be_relabelled_as_exact_native_text() -> 
 
     assert result.verified is False
     assert result.final_representation is None
-    assert result.terminal_fallback_authorized is True
+    assert result.terminal_fallback_authorized is False
     assert list(msp) == []
     assert [attempt.attempted_representation for attempt in result.attempts] == [
         "text",
-        "glyphs",
-        "glyphs",
-        "geometry",
-        "geometry",
     ]
-    assert all(attempt.outcome == "impossible" for attempt in result.attempts)
+    assert all(attempt.outcome == "failed" for attempt in result.attempts)
     assert all(
         attempt.evidence.get("font_failure_proof_category")
         == "runtime_inventory_unavailable_for_item"

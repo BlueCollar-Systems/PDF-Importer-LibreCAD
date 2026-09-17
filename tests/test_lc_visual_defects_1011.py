@@ -15,6 +15,7 @@ with the PDF page. Three import defects surfaced that no report field showed:
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
@@ -244,6 +245,15 @@ def test_invalid_positioned_fraction_refuses_without_pdf_or_raster_work(
     )
     if fault == "partial_layout":
         fraction.source_char_layout = fraction.source_char_layout[:-1]
+    elif fault == "unsupported_shear":
+        character = fraction.source_char_layout[0]
+        q0, q1, q2, q3 = character.target_quad
+        shear = 0.2 * character.glyph_height
+        sheared = (q0, q1, (q2[0] + shear, q2[1]), (q3[0] + shear, q3[1]))
+        fraction.source_char_layout = (
+            replace(character, target_quad=sheared),
+            *fraction.source_char_layout[1:],
+        )
 
     output = tmp_path / f"prior-{fault}.dxf"
     prior = b"prior native artifact\n"

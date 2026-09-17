@@ -1,29 +1,8 @@
-"""A font we could not write to disk must descend, not abort the import.
+"""Record font staging diagnostics without authorizing representation fallback.
 
-`_stage_embedded_font_assets` writes each exact source font into the export's
-asset directory before any item is built. Both the mkdir and the write were
-unguarded, so an environment fault -- a read-only output directory, an
-antivirus lock, a path over MAX_PATH -- escaped as a bare OSError all the way to
-`export_to_dxf`, which rolls the transaction back, stamps the result "failed"
-and re-raises. One unwritable font killed the whole document.
-
-The staged filenames are `{64-hex}.{ext}` and the old temp sibling added 38
-more characters, so the helper was itself a large part of why the limit got hit.
-
-Descent is already available for this case; it just was not being reached. The
-per-item resolver distinguishes:
-
-    if resolution.item_impossibility_proven:
-        raise _RepresentationImpossible(...)   # ladder descends
-    raise ValueError(...)                      # whole import aborts
-
-A font that physically could not be materialised on this machine is a proven
-item-specific impossibility, so it belongs on the first branch.
-
-Deliberately narrow: only an asset with a RECORDED staging fault is treated as
-proven. "Not staged" with no recorded reason still aborts, because that is an
-unexplained absence and could be a real bug -- exactly the distinction the
-contract draws between proven impossibility and generic failure.
+Disk, permission, path and helper failures do not establish impossibility in
+the source PDF. The resolver must report these as failed attempts; only an
+affirmatively proven source impossibility may descend the representation ladder.
 """
 from __future__ import annotations
 
@@ -93,15 +72,15 @@ def test_unproven_failure_still_aborts():
     )
 
 
-# --- a recorded staging fault is affirmative evidence -------------------------
+# --- a recorded staging fault is an actionable diagnostic --------------------
 
 
-def test_recorded_staging_fault_is_proven_impossible():
+def test_recorded_staging_fault_preserves_environment_reason():
     config = _Config(
         faults={"sha256:" + "a" * 64: "could not publish fonts/aaa.otf: disk full"}
     )
-    proven, reason = builder._staging_fault_for_asset(config, "sha256:" + "a" * 64)
-    assert proven is True
+    recorded, reason = builder._staging_fault_for_asset(config, "sha256:" + "a" * 64)
+    assert recorded is True
     assert "disk full" in reason, "the environment reason must reach the report"
 
 

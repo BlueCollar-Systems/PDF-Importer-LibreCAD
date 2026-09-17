@@ -38,12 +38,16 @@ from ezdxf.tools.text import plain_text
 from ezdxf.tools.text_size import text_size
 
 from pdfcadcore.import_config import ImportConfig
+from pdfcadcore.embedded_fonts import EmbeddedFontFailure
 from pdfcadcore.primitives import NormalizedText, TextCharLayout
 from librecad_runtime import redacted_local_path, resolve_librecad_installation
 
 
 _MTEXT_THRESHOLD = 120
 _POSITIONED_FRACTION_RE = re.compile(r"^[0-9]+/[0-9]+$")
+# E2's recovered float32 quads reach 1.45e-5 angular noise. Bound that
+# dimensionless error independently of drawing units; retain original quads.
+_POSITIONED_FRAME_NOISE = 2e-5
 _created_styles: Dict[str, str] = {}
 _embedded_cap_height_cache: Dict[str, float] = {}
 _staged_font_verification_cache: Dict[Tuple[str, str, int, int], bool] = {}
@@ -694,6 +698,35 @@ def _staged_font_matches_source(
     return matches
 
 
+def _font_failure_bound_to_item(text_item: NormalizedText) -> bool:
+    failure = getattr(text_item, "font_failure", None)
+    if not isinstance(failure, EmbeddedFontFailure):
+        return False
+    source_name = re.sub(r"^[A-Z]{6}\+", "", str(text_item.font_name or ""))
+    return bool(
+        source_name
+        and failure.span_font_name == source_name
+        and failure.page_number == text_item.page_number
+        and failure.page_number > 0
+    )
+
+
+def _positioned_empty_font_program_proven(text_item: NormalizedText) -> bool:
+    """Accept the catalog's observed empty program, never an extraction error."""
+    if not _font_failure_bound_to_item(text_item):
+        return False
+    failure = text_item.font_failure
+    return bool(
+        failure.proof_category == "source_specific_impossibility"
+        and failure.reason == "embedded_font_asset_build_failed"
+        and failure.error_type == "ExactFontSourceImpossible"
+        and failure.detail == "embedded font stream is empty"
+        and isinstance(failure.source_xref, int)
+        and not isinstance(failure.source_xref, bool)
+        and failure.source_xref > 0
+    )
+
+
 def _resolve_item_font(
     text_item: NormalizedText,
     config: ImportConfig,
@@ -759,14 +792,14 @@ def _resolve_item_font(
                     )
                 path = restored_path
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                # Restaging is a write we just attempted and watched fail, so
-                # this is affirmative proof the exact rung is unavailable here.
+                # An observed staging error is diagnostic evidence, not proof
+                # that this source item cannot use the requested representation.
                 return _ExactFontResolution(
                     **base,
                     exact=False,
                     reason=f"exact embedded font asset could not be restaged: {exc}",
                     proof_category="environment_write_fault",
-                    item_impossibility_proven=True,
+                    item_impossibility_proven=False,
                 )
         if path is None or not path.is_file():
             staging_failed, staging_reason = _staging_fault_for_asset(
@@ -781,7 +814,7 @@ def _resolve_item_font(
                         f"asset directory: {staging_reason}"
                     ),
                     proof_category="environment_write_fault",
-                    item_impossibility_proven=True,
+                    item_impossibility_proven=False,
                 )
             # No recorded fault: an unexplained absence, which must not descend.
             return _ExactFontResolution(
@@ -846,7 +879,8 @@ def _resolve_item_font(
         )
         proof_category = str(getattr(failure, "proof_category", "") or "")
         installed = _resolve_exact_font(source_name)
-        installed_may_prove_equivalence = proof_category in {
+        failure_bound = _font_failure_bound_to_item(text_item)
+        installed_may_prove_equivalence = failure_bound and proof_category in {
             "",
             "source_font_absent_for_item",
         }
@@ -855,15 +889,16 @@ def _resolve_item_font(
         reason = failure_code
         if detail:
             reason = f"{reason}: {detail}"
-        source_program_absence_proven = proof_category in {
-            "source_font_absent_for_item",
-            "source_font_ambiguous_for_item",
-            "source_specific_impossibility",
-            "runtime_inventory_unavailable_for_item",
-            "runtime_source_document_unavailable_for_item",
-            "runtime_source_font_extraction_unavailable_for_item",
-            "source_inventory_invalid_for_page",
-        }
+        source_program_absence_proven = failure_bound and (
+            (
+                proof_category == "source_font_absent_for_item"
+                and failure_code == "no_exact_embedded_font_match"
+            )
+            or (
+                proof_category == "source_specific_impossibility"
+                and failure.error_type == "ExactFontSourceImpossible"
+            )
+        )
         item_impossibility_proven = bool(
             source_name
             and source_program_absence_proven
@@ -881,6 +916,8 @@ def _resolve_item_font(
             reason=combined_reason,
             resolution_source="source_pdf_and_installed_exact_font",
             source_xref=getattr(failure, "source_xref", None),
+            source_page_number=getattr(failure, "page_number", None),
+            asset_span_font_name=str(getattr(failure, "span_font_name", "") or ""),
             pdf_font_failure_reason=reason,
             installed_font_failure_reason=installed.reason,
             item_impossibility_proven=item_impossibility_proven,
@@ -892,11 +929,9 @@ def _resolve_item_font(
 def _staging_fault_for_asset(config: Any, asset_id: str) -> Tuple[bool, str]:
     """Did staging this exact font asset fail for an environment reason?
 
-    A font the exporter physically could not write to disk is a proven
-    item-specific impossibility on this machine, not an unexplained miss, so
-    the item may descend a rung. Absence of a recorded fault is deliberately
-    NOT treated as proof: an asset that simply never got staged could be a real
-    bug, and the contract only permits descent on affirmative evidence.
+    Record the actionable environment fault without treating it as source
+    impossibility. Neither a failed staging write nor an unexplained missing
+    asset authorizes switching the requested text representation.
     """
     faults = getattr(config, "_embedded_font_staging_faults", None)
     if not isinstance(faults, dict):
@@ -1258,16 +1293,20 @@ def _quad_frame(
     left = (q3[0] - q0[0], q3[1] - q0[1])
     width = math.hypot(*top)
     height = math.hypot(*right)
-    scale = max(1.0, width, height)
-    tolerance = scale * 1e-8
     if width <= 0.0 or height <= 0.0:
         raise _RepresentationImpossible("positioned fraction target quad has zero area")
-    if not _values_close(top, bottom) or not _values_close(right, left):
+    edge_tolerance = max(width, height) * _POSITIONED_FRAME_NOISE
+    if any(
+        abs(expected - actual) > edge_tolerance
+        for expected, actual in zip((*top, *right), (*bottom, *left), strict=True)
+    ):
         raise _RepresentationImpossible(
             "positioned fraction target quad is not a parallelogram"
         )
     dot = top[0] * right[0] + top[1] * right[1]
-    if not math.isclose(dot, 0.0, rel_tol=0.0, abs_tol=tolerance * scale):
+    # PDF quads can carry small rounding noise. A dimensionless bound keeps
+    # the same shear rejected at tiny and large model scales.
+    if abs(dot) / (width * height) > _POSITIONED_FRAME_NOISE:
         raise _RepresentationImpossible(
             "positioned fraction target quad contains unsupported shear"
         )
@@ -1397,7 +1436,10 @@ def _positioned_fraction_layout(
                 "positioned fraction target quad and character size disagree"
             )
         rotation_delta = (rotation - item_rotation + 180.0) % 360.0 - 180.0
-        if not math.isclose(rotation_delta, 0.0, rel_tol=0.0, abs_tol=1e-7):
+        if not math.isclose(
+            rotation_delta, 0.0, rel_tol=0.0,
+            abs_tol=math.degrees(_POSITIONED_FRAME_NOISE),
+        ):
             raise _RepresentationImpossible(
                 "positioned fraction character orientation is incompatible"
             )
@@ -4732,12 +4774,26 @@ def _build_delivery(
     failure_reason = "; ".join(
         attempt.reason for attempt in attempts if attempt.reason
     ) or "all safe representation attempts failed verification"
-    if positioned_layout is not None:
-        for attempt in attempts:
-            attempt.evidence["fallback_authorized_for_this_item"] = False
+    if positioned_layout is None:
+        return unverified_result(failure_reason, terminal=True)
+    # Only the observed, item-bound empty font program opens this new route.
+    # Invalid layout, runtime inventory/extraction/staging errors, and merely
+    # missing font assets never prove source-representation impossibility.
+    authorize_item_raster = bool(
+        _positioned_empty_font_program_proven(text_item)
+        and attempts
+        and all(attempt.outcome == "impossible" for attempt in attempts)
+        and any(
+            attempt.evidence.get("font_item_impossibility_proven") is True
+            and attempt.evidence.get("font_source_xref") == text_item.font_failure.source_xref
+            for attempt in attempts
+        )
+    )
+    for attempt in attempts:
+        attempt.evidence["fallback_authorized_for_this_item"] = authorize_item_raster
     return unverified_result(
         failure_reason,
-        terminal=positioned_layout is None,
+        terminal=authorize_item_raster,
     )
 
 
