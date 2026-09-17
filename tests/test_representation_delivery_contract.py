@@ -1259,11 +1259,11 @@ def test_fallback_ladders_use_the_nearest_remaining_representation(
 def test_trace_inventory_failure_cannot_be_relabelled_as_exact_native_text() -> None:
     item = __import__("dataclasses").replace(
         _item(),
-        font_name="Arial",
+        font_name="BCS Deterministic Test",
         font_asset=None,
         font_failure=EmbeddedFontFailure(
             page_number=3,
-            span_font_name="Arial",
+            span_font_name="BCS Deterministic Test",
             reason="page_text_trace_inventory_failed",
             source_xref=41,
             error_type="RuntimeError",

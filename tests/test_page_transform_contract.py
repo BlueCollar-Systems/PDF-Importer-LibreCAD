@@ -116,7 +116,11 @@ def test_cropbox_and_rotate_transform_page_geometry_text_and_quad_once(
             detect_arcs=False,
         )
         line, span = _first_span(page)
-        raw_quad = fitz.recover_span_quad(line["dir"], span)
+        # This synthetic source is horizontal and has no shear. Its native
+        # character quad union is the span rectangle. recover_span_quad
+        # reconstructs rounded font metrics and can invent a slight shear.
+        assert line["dir"] == (1.0, 0.0)
+        raw_quad = fitz.Rect(span["bbox"]).quad
     finally:
         doc.close()
 
@@ -153,7 +157,8 @@ def test_cropbox_and_rotate_transform_page_geometry_text_and_quad_once(
         )
         for point in raw_points
     ]
-    assert text.target_quad_model == pytest.approx(expected_quad)
+    for actual, expected in zip(text.target_quad_model, expected_quad, strict=True):
+        assert actual == pytest.approx(expected, abs=1e-7)
     assert text.advance_width == pytest.approx(
         math.dist(expected_quad[0], expected_quad[1])
     )

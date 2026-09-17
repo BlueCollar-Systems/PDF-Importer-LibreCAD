@@ -66,6 +66,29 @@ def _norm_color(col) -> Optional[Tuple[float, float, float]]:
         return None
 
 
+def _source_paint_opacity(raw) -> float:
+    """Normalize PDF constant opacity, preserving opaque legacy defaults."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(value):
+        return 1.0
+    return max(0.0, min(1.0, value))
+
+
+def _source_draw_order(raw) -> Optional[int]:
+    if isinstance(raw, bool):
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if value < 0 or (not isinstance(raw, (int, str)) and raw != value):
+        return None
+    return value
+
+
 def _composite_alpha(color, alpha):
     """Composite a constant alpha (PDF /CA, /ca) into ``color`` against the white page.
 
@@ -318,11 +341,10 @@ def extract_page(
         if not items:
             continue
 
-        stroke = _composite_alpha(
-            _norm_color(path_group.get("color") or path_group.get("stroke")),
-            path_group.get("stroke_opacity"),
-        )
-        fill = _composite_alpha(_norm_color(path_group.get("fill")), path_group.get("fill_opacity"))
+        source_stroke = _norm_color(path_group.get("color") or path_group.get("stroke"))
+        source_fill = _norm_color(path_group.get("fill"))
+        stroke = _composite_alpha(source_stroke, path_group.get("stroke_opacity"))
+        fill = _composite_alpha(source_fill, path_group.get("fill_opacity"))
         width = path_group.get("width")
         try:
             width = float(width) * MM_PER_PT * scale if width is not None else None
@@ -469,6 +491,11 @@ def extract_page(
                 area=area, page_number=page_num,
                 clip_fill_group_id=clip_fill_group,
                 clip_fill_even_odd=bool(clip_fill_group and path_group.get("even_odd", False)),
+                source_stroke_color=source_stroke,
+                source_fill_color=source_fill,
+                stroke_opacity=_source_paint_opacity(path_group.get("stroke_opacity")),
+                fill_opacity=_source_paint_opacity(path_group.get("fill_opacity")),
+                source_draw_order=_source_draw_order(path_group.get("seqno")),
             ))
             if path_group.get("bcs_preserve_source_edges"):
                 preserve_edge_ids.add(primitives[-1].id)
@@ -578,6 +605,9 @@ def _span_baseline_pdf(span: dict, line: dict) -> Tuple[float, float]:
 
 def _span_quad_pdf(line: dict, span: dict):
     """Return one source span quad as UL, UR, LR, LL coordinates."""
+    explicit = _quad_points(span.get("quad"))
+    if explicit is not None:
+        return explicit
     try:
         try:
             import pymupdf as fitz
@@ -722,6 +752,78 @@ def _character_layout(line, span, font, to_model, glyph_queues):
     return tuple(layouts)
 
 
+def _raw_text_with_source_quads(page):
+    """Keep MuPDF's actual affine character quads beside RAWDICT identities.
+
+    recover_char_quad reconstructs corners from an axis-aligned box and span
+    metrics. Non-uniform PDF text matrices can make those metrics disagree,
+    inventing shear even for horizontal letters. The same TextPage retains the
+    original fz_stext_char quad; bind it by exact Unicode/origin occurrence so
+    repeated or reordered text cannot acquire another character's geometry.
+    Older bindings and lightweight page adapters retain the established path.
+    """
+    try:
+        try:
+            import pymupdf as fitz
+        except ImportError:  # pragma: no cover
+            import fitz  # type: ignore
+        textpage = page.get_textpage(flags=fitz.TEXTFLAGS_RAWDICT)
+        tdict = textpage.extractRAWDICT()
+        queues = {}
+        for block in textpage.this:
+            if block.m_internal.type != 0:
+                continue
+            for line in block:
+                for native_char in line:
+                    char = native_char.m_internal
+                    origin = (float(char.origin.x), float(char.origin.y))
+                    quad = _quad_points(char.quad)
+                    if quad is None or not all(
+                        math.isfinite(v) for point in quad for v in point
+                    ):
+                        continue
+                    key = (chr(char.c), *origin)
+                    queues.setdefault(key, deque()).append(quad)
+    except (AttributeError, ImportError, RuntimeError, TypeError, ValueError):
+        return page.get_text("rawdict")
+
+    for block in tdict.get("blocks", ()):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", ()):
+            for span in line.get("spans", ()):
+                chars = span.get("chars", ())
+                for char in chars:
+                    origin = char.get("origin", ())
+                    if len(origin) != 2:
+                        continue
+                    candidates = queues.get((char.get("c", ""), *origin))
+                    if candidates:
+                        char["quad"] = candidates.popleft()
+                # A uniform span's outer corners are original source corners,
+                # not recovered font-metric estimates. Keep the old span box
+                # path for mixed-height or non-collinear positioned text.
+                quads = [char.get("quad") for char in chars]
+                if not quads or any(quad is None for quad in quads):
+                    continue
+                first, last = quads[0], quads[-1]
+                vx, vy = first[1][0] - first[0][0], first[1][1] - first[0][1]
+                length = math.hypot(vx, vy)
+                side = (first[3][0] - first[0][0], first[3][1] - first[0][1])
+                if length <= 0:
+                    continue
+                if all(
+                    abs(vx * (point[1] - first[0][1]) - vy * (point[0] - first[0][0])) / length < 1e-4
+                    for quad in quads for point in quad[:2]
+                ) and all(
+                    math.hypot(quad[3][0] - quad[0][0] - side[0],
+                               quad[3][1] - quad[0][1] - side[1]) < 1e-4
+                    for quad in quads
+                ):
+                    span["quad"] = (first[0], last[1], last[2], first[3])
+    return tdict
+
+
 def _extract_text(
     page,
     page_h,
@@ -746,7 +848,7 @@ def _extract_text(
             rotation=rotation,
         )
     try:
-        tdict = page.get_text("rawdict")
+        tdict = _raw_text_with_source_quads(page)
     except (AssertionError, RuntimeError, TypeError, ValueError):
         try:
             tdict = page.get_text("dict")

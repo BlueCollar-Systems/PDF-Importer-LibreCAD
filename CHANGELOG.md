@@ -2,6 +2,17 @@
 
 All notable release changes are recorded here.
 
+## 1.0.99 - 2026-09-17
+
+- Preserve original PDF character quads instead of reconstructing glyph frames
+  from rounded font metrics, avoiding false shear in source outlines.
+- Omit geometry only when renderer paint bounds prove that it lies entirely
+  outside the visible PDF page; retain partially visible strokes unchanged.
+- Handle positioned fractions with proven empty source font programs while
+  keeping runtime, extraction, and font-staging failures out of the fallback path.
+- Retain raw source paint colors, opacity, and drawing order in shared extraction
+  metadata. LibreCAD's native renderer still does not composite DXF transparency.
+
 ## 1.0.98 - 2026-09-16
 
 - Preserve covered PDF clipping masks as compound vector fills, including logo
