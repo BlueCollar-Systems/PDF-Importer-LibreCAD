@@ -98,3 +98,23 @@ def test_adapter_compatibility_does_not_swallow_parser_type_errors():
             raise TypeError("invalid drawing content")
     with pytest.raises(TypeError, match="invalid drawing content"):
         get_clip_aware_drawings(BrokenPage())
+
+
+def test_mask_outline_strokes_preserve_source_edges_without_changing_items():
+    near = dict(type="s", level=0, rect=(4, 2, 16, 9), items=[("l", (4, 2), (16, 9))])
+    far = dict(type="s", level=0, rect=(40, 2, 60, 9), items=[("l", (40, 2), (60, 9))])
+    result = resolve_covered_clip_fills([clip(), fill(), near, far])
+    assert result[1]["bcs_preserve_source_edges"] is True
+    assert result[1]["items"] is near["items"]
+    assert "bcs_preserve_source_edges" not in near
+    assert result[2] is far
+
+
+def test_outline_grid_handles_negative_and_far_source_coordinates():
+    mask = clip(bounds=(-1000, -300, -980, -290))
+    paint = fill(bounds=(-1000, -300, -980, -290))
+    near = dict(type="s", level=0, rect=(-990, -299, -989, -291), items=[])
+    far = dict(type="s", level=0, rect=(1e9, 1e9, 1e9+100, 1e9+100), items=[])
+    result = resolve_covered_clip_fills([mask, paint, near, far])
+    assert result[1]["bcs_preserve_source_edges"]
+    assert result[2] is far

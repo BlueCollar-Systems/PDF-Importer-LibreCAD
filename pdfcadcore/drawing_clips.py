@@ -42,12 +42,55 @@ def _single_rectangle(row):
     return len(items) == 1 and items[0][0] == "re"
 
 
+def _preserve_clip_outline_edges(rows):
+    """Keep artwork strokes aligned with the exact clip fill they outline.
+
+    A fitted circle can cross the polygon mask's counter and leave a crescent
+    between them. Mark nearby source strokes to retain their actual vertices.
+    The grid bounds the lookup work on dense sheets; source path items are
+    never changed, including rows that do not intersect a mask.
+    """
+    bounds = [_rect(row.get("rect")) for row in rows if row.get("bcs_compound_clip_fill")]
+    bounds = [box for box in bounds if box is not None]
+    if not bounds:
+        return rows
+    cell = max(1.0, max(abs(v) for box in bounds for v in box) / 32.0)
+    grid = {}
+    for index, box in enumerate(bounds):
+        for x in range(math.floor(box[0] / cell), math.floor(box[2] / cell) + 1):
+            for y in range(math.floor(box[1] / cell), math.floor(box[3] / cell) + 1):
+                grid.setdefault((x, y), []).append(index)
+    xmin = min(key[0] for key in grid)
+    xmax = max(key[0] for key in grid)
+    ymin = min(key[1] for key in grid)
+    ymax = max(key[1] for key in grid)
+    output = []
+    for row in rows:
+        box = _rect(row.get("rect")) if row.get("type") in {"s", "fs"} else None
+        overlap = False
+        if box is not None:
+            candidates = set()
+            for x in range(max(xmin, math.floor(box[0] / cell)), min(xmax, math.floor(box[2] / cell)) + 1):
+                for y in range(max(ymin, math.floor(box[1] / cell)), min(ymax, math.floor(box[3] / cell)) + 1):
+                    candidates.update(grid.get((x, y), ()))
+            overlap = any(
+                box[0] <= bounds[i][2] and box[2] >= bounds[i][0]
+                and box[1] <= bounds[i][3] and box[3] >= bounds[i][1]
+                for i in candidates
+            )
+        if overlap:
+            row = dict(row, bcs_preserve_source_edges=True)
+        output.append(row)
+    return output
+
+
 def resolve_covered_clip_fills(drawings):
     """Return paint rows, resolving completely covered opaque clip fills.
 
     ``drawings`` is the result of ``get_drawings(extended=True)``. Clip/group
     rows are structural, not paint. Rows outside this bounded rectangle-fill
-    operation are preserved; callers must not describe this as general clipping
+    operation keep their geometry; overlapping artwork strokes are marked to
+    prevent later circle fitting. Do not describe this as general clipping
     support. Partial or nested intersections of candidate rectangle fills fail
     explicitly instead of returning an inaccurate bounding-box replacement.
     The caller owns the returned rows; input dictionaries/items are not changed.
@@ -101,7 +144,7 @@ def resolve_covered_clip_fills(drawings):
             bcs_clip_fill_group_id=f"clip-fill:{seqno}",
         )
         resolved.append(replacement)
-    return resolved
+    return _preserve_clip_outline_edges(resolved)
 
 
 def get_clip_aware_drawings(page):

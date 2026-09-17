@@ -2,12 +2,19 @@
 
 All notable release changes are recorded here.
 
+## 1.0.98 - 2026-09-16
+
+- Preserve covered PDF clipping masks as compound vector fills, including logo
+  counters and knockout contours, instead of filling their bounding rectangles.
+- Use actual polygon containment for native SOLID fills so overlapping logo
+  bounding boxes cannot remove unrelated letters or create connector strokes.
+- Keep source artwork edges aligned with these exact fills instead of circle
+  fitting nearby polygon outlines.
+
 ## 1.0.97 - 2026-09-16
 
 - Preserve dense drawing geometry and embedded images while avoiding repeated
   page classification, text extraction and font-cache work on large PDFs.
-- Preserve covered PDF clipping masks as compound vector fills, including logo
-  counters and knockout contours, instead of filling their bounding rectangles.
 - Report mixed text delivery accurately when visible source text uses outlines
   and zero-ink whitespace retains native TEXT. The requested mode, item proofs
   and existing geometry remain unchanged.

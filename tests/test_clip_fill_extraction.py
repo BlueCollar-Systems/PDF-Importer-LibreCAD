@@ -1,5 +1,6 @@
 """Synthetic vector masks: no private drawing required."""
 import sys
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -62,3 +63,18 @@ def test_plain_fill_keeps_existing_primitive_behavior(monkeypatch):
     result = pe.extract_page(page, 1, detect_arcs=False, drawings=[row])
     assert len(result.primitives) == 1
     assert result.primitives[0].clip_fill_group_id is None
+
+
+def test_circle_fitting_keeps_exact_polygons_around_clip_artwork(monkeypatch):
+    fitz = import_fitz()
+    def polygon(cx, seq):
+        pts = [fitz.Point(cx+2*math.cos(i*math.tau/16), 5+2*math.sin(i*math.tau/16)) for i in range(16)]
+        return dict(type="s", level=0, seqno=seq, closePath=True, color=(0,0,0),
+                    rect=fitz.Rect(cx-2,3,cx+2,7), items=[("l", p, pts[(i+1)%16]) for i,p in enumerate(pts)])
+    rows = clip_rows() + [polygon(5, 8), polygon(50, 9)]
+    page = SimpleNamespace(rect=fitz.Rect(0, 0, 100, 100))
+    monkeypatch.setattr(pe, "_extract_text", lambda *args, **kwargs: [])
+    result = pe.extract_page(page, 1, detect_arcs=True, drawings=rows)
+    strokes = sorted((p for p in result.primitives if p.stroke_color), key=lambda p:p.bbox[0])
+    assert strokes[0].type == "closed_loop" and len(strokes[0].points) == 17
+    assert strokes[1].type == "circle"  # unrelated ordinary circles are unchanged

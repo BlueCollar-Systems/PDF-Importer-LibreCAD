@@ -305,6 +305,7 @@ def extract_page(
     page_h_mm = page_h_pts * MM_PER_PT * scale
 
     primitives = []
+    preserve_edge_ids = set()
     from .drawing_clips import get_clip_aware_drawings, resolve_covered_clip_fills
 
     if drawings is None:
@@ -469,6 +470,8 @@ def extract_page(
                 clip_fill_group_id=clip_fill_group,
                 clip_fill_even_odd=bool(clip_fill_group and path_group.get("even_odd", False)),
             ))
+            if path_group.get("bcs_preserve_source_edges"):
+                preserve_edge_ids.add(primitives[-1].id)
 
     if detect_arcs:
         # Performance gate: only pass polylines that have enough points to
@@ -487,6 +490,7 @@ def extract_page(
         for p in primitives:
             if (
                 not p.clip_fill_group_id
+                and p.id not in preserve_edge_ids
                 and p.type in ("polyline", "closed_loop")
                 and len(p.points or []) >= arc_min_pts
             ):
