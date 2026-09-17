@@ -56,6 +56,10 @@ class Primitive:
     area: Optional[float] = None
     page_number: int = 0
     generic_tags: List[str] = field(default_factory=list)
+    # Contours of one PDF clip-filled shape must be filled together, including
+    # counters. They are never independent faces or circle-fit candidates.
+    clip_fill_group_id: Optional[str] = None
+    clip_fill_even_odd: bool = False
 
 
 @dataclass

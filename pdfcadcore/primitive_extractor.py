@@ -281,7 +281,7 @@ def extract_page(
 ) -> PageData:
     """Extract normalized primitives from a PyMuPDF page.
 
-    ``drawings`` may be a previously fetched ``page.get_drawings()`` result so
+    ``drawings`` may be a previously fetched clip-aware drawing result so
     auto-mode classification can reuse the same path list instead of parsing
     the page twice. Omit it to fetch drawings here.
     """
@@ -305,8 +305,12 @@ def extract_page(
     page_h_mm = page_h_pts * MM_PER_PT * scale
 
     primitives = []
+    from .drawing_clips import get_clip_aware_drawings, resolve_covered_clip_fills
+
     if drawings is None:
-        drawings = page.get_drawings()
+        drawings = get_clip_aware_drawings(page)
+    else:
+        drawings = resolve_covered_clip_fills(drawings)
 
     for path_group in drawings:
         items = path_group.get("items", [])
@@ -326,6 +330,10 @@ def extract_page(
         dashes, dash_phase = _parse_dashes(path_group.get("dashes"))
         close_path = path_group.get("closePath", False)
         layer_name = path_group.get("oc") or path_group.get("layer")
+        clip_fill_group = (
+            path_group.get("bcs_clip_fill_group_id")
+            if path_group.get("bcs_compound_clip_fill") else None
+        )
 
         current_pts: List[Tuple[float, float]] = []
         sub_paths: List[Tuple[List[Tuple[float, float]], bool]] = []
@@ -355,7 +363,7 @@ def extract_page(
                     # PyMuPDF records a move only as the next segment's start
                     # point. Preserve that disconnected subpath instead of
                     # inventing a connector from the preceding endpoint.
-                    if current_pts and _dist(current_pts[-1], p0) > 0.01:
+                    if current_pts and _dist(current_pts[-1], p0) > (0.0 if clip_fill_group else 0.01):
                         flush(False)
                     if not current_pts:
                         current_pts.append(p0)
@@ -372,7 +380,7 @@ def extract_page(
                     p1 = to_model(pts[1][0], pts[1][1])
                     p2 = to_model(pts[2][0], pts[2][1])
                     p3 = to_model(pts[3][0], pts[3][1])
-                    if current_pts and _dist(current_pts[-1], p0) > 0.01:
+                    if current_pts and _dist(current_pts[-1], p0) > (0.0 if clip_fill_group else 0.01):
                         flush(False)
                 else:
                     pts = _parse_cubic(data)
@@ -430,9 +438,13 @@ def extract_page(
         for pts, is_closed in sub_paths:
             if len(pts) < 2:
                 continue
+            # PDF fills implicitly close every subpath. Preserve the exact
+            # clip contour vertices, including short segments and counters.
+            is_closed = is_closed or bool(clip_fill_group)
+            point_tolerance = 0.0 if clip_fill_group else 0.01
             cleaned = [pts[0]]
             for p in pts[1:]:
-                if _dist(p, cleaned[-1]) > 0.01:
+                if _dist(p, cleaned[-1]) > point_tolerance:
                     cleaned.append(p)
             if len(cleaned) < 2:
                 continue
@@ -453,7 +465,9 @@ def extract_page(
                 dash_pattern=dashes, dash_phase=dash_phase,
                 line_width=width,
                 layer_name=layer_name, closed=is_closed,
-                area=area, page_number=page_num
+                area=area, page_number=page_num,
+                clip_fill_group_id=clip_fill_group,
+                clip_fill_even_odd=bool(clip_fill_group and path_group.get("even_odd", False)),
             ))
 
     if detect_arcs:
@@ -471,7 +485,11 @@ def extract_page(
         arc_candidates = []
         non_candidates = []
         for p in primitives:
-            if p.type in ("polyline", "closed_loop") and len(p.points or []) >= arc_min_pts:
+            if (
+                not p.clip_fill_group_id
+                and p.type in ("polyline", "closed_loop")
+                and len(p.points or []) >= arc_min_pts
+            ):
                 arc_candidates.append(p)
             else:
                 non_candidates.append(p)

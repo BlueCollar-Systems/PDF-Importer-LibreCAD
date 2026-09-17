@@ -429,7 +429,9 @@ def _extract_document_impl(
             drawings = None
 
             if mode == "auto":
-                drawings = page.get_drawings()
+                from pdfcadcore.drawing_clips import get_clip_aware_drawings
+
+                drawings = get_clip_aware_drawings(page)
                 if drawings_need_text_counts(drawings):
                     text_blocks = page.get_text("blocks") or []
                     text_words = page.get_text("words") or []

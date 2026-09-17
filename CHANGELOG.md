@@ -6,6 +6,8 @@ All notable release changes are recorded here.
 
 - Preserve dense drawing geometry and embedded images while avoiding repeated
   page classification, text extraction and font-cache work on large PDFs.
+- Preserve covered PDF clipping masks as compound vector fills, including logo
+  counters and knockout contours, instead of filling their bounding rectangles.
 - Report mixed text delivery accurately when visible source text uses outlines
   and zero-ink whitespace retains native TEXT. The requested mode, item proofs
   and existing geometry remain unchanged.

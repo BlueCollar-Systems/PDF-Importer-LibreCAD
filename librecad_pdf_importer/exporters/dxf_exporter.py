@@ -18,6 +18,8 @@ import ezdxf
 import numpy as np
 from ezdxf import path as ezdxf_path
 from ezdxf.colors import RGB, aci2rgb, rgb2int
+from ezdxf.math import Vec2, is_point_in_polygon_2d
+from ezdxf.math.triangulation import mapbox_earcut_2d
 from ezdxf.units import MM
 
 try:
@@ -3980,6 +3982,12 @@ def _export_to_dxf_impl(
         _track_xy(0.0, 0.0 + dy)
         _track_xy(page_w, page_h + dy)
 
+        clip_fill_groups = {}
+        for primitive in page.page_data.primitives:
+            group_id = getattr(primitive, "clip_fill_group_id", None)
+            if group_id:
+                clip_fill_groups.setdefault(group_id, []).append(primitive)
+        emitted_clip_fills = set()
         for primitive_index, primitive in enumerate(page.page_data.primitives, start=1):
             if primitive_index % 64 == 0:
                 check_cancel(cancel_requested, "active page vector build")
@@ -4016,6 +4024,30 @@ def _export_to_dxf_impl(
                 return (pt[0], pt[1] + _dy)
 
             offset_pts = [_ofs(point) for point in (primitive.points or [])]
+            clip_group_id = getattr(primitive, "clip_fill_group_id", None)
+            if clip_group_id:
+                if clip_group_id in emitted_clip_fills:
+                    continue
+                members = clip_fill_groups[clip_group_id]
+                even_odd = bool(getattr(primitive, "clip_fill_even_odd", False))
+                if any(
+                    member.fill_color != fill_rgb
+                    or member.stroke_color is not None
+                    or bool(getattr(member, "clip_fill_even_odd", False)) != even_odd
+                    for member in members
+                ):
+                    raise RuntimeError(f"clipped fill {clip_group_id} has inconsistent paint metadata")
+                contours = [[_ofs(point) for point in member.points] for member in members]
+                fills = _add_compound_filled_paths(
+                    msp, contours, fill_rgb, fill_attribs,
+                    is_r12=is_r12, even_odd=even_odd,
+                )
+                entity_count += len(fills)
+                for contour in contours:
+                    for px, py in contour:
+                        _track_xy(float(px), float(py))
+                emitted_clip_fills.add(clip_group_id)
+                continue
             page_background_fill = _is_redundant_white_page_fill(
                 primitive,
                 page_width=page_w,
@@ -4698,6 +4730,81 @@ def _filled_path_has_visible_area(points) -> bool:
     ):
         return False
     return True
+
+
+def _compound_clip_regions(contours):
+    """Nest disjoint clip rings by actual containment, never by bbox centres.
+
+    A logo's diagonal mark and adjacent letters can have overlapping bounding
+    boxes while their painted regions are disjoint. Bounding-box nesting would
+    incorrectly remove a whole letter as a counter.
+    """
+    rings = []
+    for contour in contours:
+        points = [Vec2(point) for point in contour]
+        if points[0] == points[-1]:
+            points.pop()
+        area = abs(sum(a.x*b.y-b.x*a.y for a,b in zip(points, points[1:]+points[:1], strict=True))) / 2
+        if area == 0:
+            raise RuntimeError("clipping contour needs a self-intersection-aware tessellator")
+        rings.append((points, area))
+    parents = []
+    for index, (points, area) in enumerate(rings):
+        containing = []
+        for other, (boundary, outer_area) in enumerate(rings):
+            if index == other or outer_area <= area:
+                continue
+            relations = [is_point_in_polygon_2d(point, boundary) for point in points]
+            if all(relation >= 0 for relation in relations) and any(relation > 0 for relation in relations):
+                containing.append(other)
+        parents.append(min(containing, key=lambda candidate:rings[candidate][1]) if containing else None)
+    depths = []
+    for index in range(len(rings)):
+        depth = 0; parent = parents[index]
+        while parent is not None:
+            depth += 1; parent = parents[parent]
+        depths.append(depth)
+    return [
+        (points, [rings[child][0] for child,parent in enumerate(parents) if parent == index])
+        for index,(points,_area) in enumerate(rings) if depths[index] % 2 == 0
+    ]
+
+
+def _add_compound_filled_paths(
+    msp, contours, fill_rgb, attribs: dict, *, is_r12: bool, even_odd: bool,
+) -> List[Any]:
+    """Keep every counter in a PDF clipping mask in one native compound fill."""
+    visible = [points for points in contours if _filled_path_has_visible_area(points)]
+    if not visible:
+        return []
+    if len(visible) > 1 and not even_odd:
+        raise RuntimeError(
+            "multi-contour nonzero clipping fill requires a winding-aware intersection; "
+            "refusing to replace it with an inaccurate even-odd fill"
+        )
+    # LibreCAD's native HATCH renderer creates spurious connectors between
+    # these separate mask contours. Native SOLID triangles preserve both the
+    # visible regions and empty counters in every supported DXF version.
+    attribs = dict(attribs)
+    if not is_r12:
+        parent_rgb = _rgb_bytes(fill_rgb)
+        if parent_rgb == (255, 255, 255):
+            parent_rgb = (254, 254, 254)
+        attribs["true_color"] = rgb2int(parent_rgb)
+        attribs["color"] = _nearest_r12_aci(fill_rgb)
+    solids = []
+    for exterior, holes in _compound_clip_regions(visible):
+        for triangle in mapbox_earcut_2d(exterior, holes):
+            vertices = [(float(point.x), float(point.y)) for point in triangle]
+            if len(vertices) != 3:
+                continue
+            p0, p1, p2 = vertices
+            area2 = abs((p1[0]-p0[0])*(p2[1]-p0[1])-(p1[1]-p0[1])*(p2[0]-p0[0]))
+            if math.isfinite(area2) and area2 > 1e-14:
+                solids.append(msp.add_solid([p0, p1, p2, p2], dxfattribs=dict(attribs)))
+    if not solids:
+        raise RuntimeError("clipped source fill produced no native fill entities")
+    return solids
 
 
 def _add_filled_path(
