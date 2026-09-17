@@ -38,6 +38,7 @@ from librecad_pdf_importer.exporters.dxf_exporter import (
     _verify_serialized_text_deliveries,
     export_to_dxf,
 )
+from pdfcadcore.embedded_fonts import EmbeddedFontFailure
 from pdfcadcore.import_config import ImportConfig
 from pdfcadcore.primitives import NormalizedText, PageData, TextCharLayout
 
@@ -2005,6 +2006,53 @@ def test_invalid_positioned_fraction_export_never_reads_pdf_or_attempts_raster(
     assert hash_pdf.call_count == 0
     assert raster_fallback.call_count == 0
     assert not output.with_name(f"{output.stem}_assets").exists()
+
+
+def test_empty_embedded_stream_positioned_fraction_authorizes_item_raster() -> None:
+    """An empty font program must be bound to the synthetic item page.
+
+    Glyphs/geometry cannot bind outlines without a font program, and native TEXT
+    cannot keep per-character transforms. Item Raster is the remaining rung.
+    """
+    item = replace(
+        _positioned_fraction("vertical"),
+        font_name="BCS Deterministic Test",
+        font_asset=None,
+        font_failure=EmbeddedFontFailure(
+            page_number=3,
+            span_font_name="BCS Deterministic Test",
+            reason="embedded_font_asset_build_failed",
+            source_xref=61,
+            error_type="ExactFontSourceImpossible",
+            detail="embedded font stream is empty",
+            proof_category="source_specific_impossibility",
+        ),
+    )
+    reset_text_styles()
+    doc = ezdxf.new("R2010")
+    result = build_text(
+        item,
+        doc.modelspace(),
+        "TEXT",
+        ImportConfig(text_mode="glyphs"),
+        target_app="librecad",
+        dxf_version="R2010",
+        return_delivery_result=True,
+    )
+
+    assert result.verified is False
+    assert result.final_representation is None
+    assert result.terminal_fallback_authorized is True
+    assert list(doc.modelspace()) == []
+    assert all(attempt.outcome == "impossible" for attempt in result.attempts)
+    assert any(
+        attempt.evidence.get("font_item_impossibility_proven") is True
+        for attempt in result.attempts
+    )
+    assert all(
+        attempt.evidence.get("fallback_authorized_for_this_item") is True
+        for attempt in result.attempts
+    )
 
 
 def _resolution(

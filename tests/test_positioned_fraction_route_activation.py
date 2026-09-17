@@ -14,7 +14,11 @@ from __future__ import annotations
 import fitz
 import pytest
 
-from dxf_text_builder import _RepresentationImpossible, _positioned_fraction_layout
+from dxf_text_builder import (
+    _RepresentationImpossible,
+    _positioned_fraction_layout,
+    _quad_frame,
+)
 from librecad_pdf_importer.exporters.dxf_exporter import DxfExportOptions, export_to_dxf
 from librecad_pdf_importer.importer import run_import
 from pdfcadcore.primitives import NormalizedText, TextCharLayout
@@ -119,3 +123,42 @@ def test_plain_fraction_label_page_converts_in_every_text_mode(tmp_path, text_mo
     )
     assert output.exists() and output.stat().st_size > 0
     assert result is not None
+
+
+def test_quad_frame_accepts_pdf_float_noise() -> None:
+    # E2 markup 1/4 numerator: ~5e-6 mm dot product on a 3 mm glyph.
+    quad = (
+        (0.0, 0.0),
+        (1.5297515869140739, 1.516125394118717e-06),
+        (1.5297515869140739, 1.516125394118717e-06 - 3.073217444106774),
+        (0.0, -3.073217444106774),
+    )
+    width, height, rotation = _quad_frame(quad)
+    assert width == pytest.approx(1.5297515869140739, rel=1e-9)
+    assert height == pytest.approx(3.073217444106774, rel=1e-9)
+    assert abs(rotation) < 0.001
+
+
+def test_quad_frame_rotation_noise_matches_zero_item_rotation() -> None:
+    width, height, rotation = _quad_frame(
+        (
+            (0.0, 0.0),
+            (1.5297515869140739, 1.516125394118717e-06),
+            (1.5297515869140739, 1.516125394118717e-06 - 3.073217444106774),
+            (0.0, -3.073217444106774),
+        )
+    )
+    rotation_delta = (rotation - 0.0 + 180.0) % 360.0 - 180.0
+    assert abs(rotation_delta) < 0.05
+
+
+def test_quad_frame_rejects_visible_italic_shear() -> None:
+    shear = 0.5
+    quad = (
+        (shear, 0.0),
+        (1.0 + shear, 0.0),
+        (1.0, -3.0),
+        (0.0, -3.0),
+    )
+    with pytest.raises(_RepresentationImpossible, match="unsupported shear"):
+        _quad_frame(quad)
