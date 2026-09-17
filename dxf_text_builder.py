@@ -1258,16 +1258,19 @@ def _quad_frame(
     left = (q3[0] - q0[0], q3[1] - q0[1])
     width = math.hypot(*top)
     height = math.hypot(*right)
-    scale = max(1.0, width, height)
-    tolerance = scale * 1e-8
     if width <= 0.0 or height <= 0.0:
         raise _RepresentationImpossible("positioned fraction target quad has zero area")
-    if not _values_close(top, bottom) or not _values_close(right, left):
+    if not _values_close(top, bottom, relative_tolerance=1e-6) or not _values_close(
+        right, left, relative_tolerance=1e-6
+    ):
         raise _RepresentationImpossible(
             "positioned fraction target quad is not a parallelogram"
         )
     dot = top[0] * right[0] + top[1] * right[1]
-    if not math.isclose(dot, 0.0, rel_tol=0.0, abs_tol=tolerance * scale):
+    # |cos theta| * width * height. Shop PDFs carry ~1e-6 mm float noise on a
+    # 3 mm glyph (~5e-5 deg). Reject visible italic shear, not IEEE rounding.
+    max_dot = max(1e-6, width * height * 1e-4)
+    if abs(dot) > max_dot:
         raise _RepresentationImpossible(
             "positioned fraction target quad contains unsupported shear"
         )
@@ -1397,7 +1400,7 @@ def _positioned_fraction_layout(
                 "positioned fraction target quad and character size disagree"
             )
         rotation_delta = (rotation - item_rotation + 180.0) % 360.0 - 180.0
-        if not math.isclose(rotation_delta, 0.0, rel_tol=0.0, abs_tol=1e-7):
+        if not math.isclose(rotation_delta, 0.0, rel_tol=0.0, abs_tol=0.05):
             raise _RepresentationImpossible(
                 "positioned fraction character orientation is incompatible"
             )
@@ -4732,12 +4735,24 @@ def _build_delivery(
     failure_reason = "; ".join(
         attempt.reason for attempt in attempts if attempt.reason
     ) or "all safe representation attempts failed verification"
-    if positioned_layout is not None:
-        for attempt in attempts:
-            attempt.evidence["fallback_authorized_for_this_item"] = False
+    if positioned_layout is None:
+        return unverified_result(failure_reason, terminal=True)
+    # Layout-invalid fractions stay fail-closed. A valid stacked fraction whose
+    # exact font program is proven absent (empty embed, Type3, etc.) has already
+    # exhausted glyphs/geometry/native text; item Raster is the remaining rung.
+    font_impossible = any(
+        bool(attempt.evidence.get("font_item_impossibility_proven"))
+        for attempt in attempts
+    )
+    all_impossible = bool(attempts) and all(
+        attempt.outcome == "impossible" for attempt in attempts
+    )
+    authorize_item_raster = bool(font_impossible and all_impossible)
+    for attempt in attempts:
+        attempt.evidence["fallback_authorized_for_this_item"] = authorize_item_raster
     return unverified_result(
         failure_reason,
-        terminal=positioned_layout is None,
+        terminal=authorize_item_raster,
     )
 
 
