@@ -4,6 +4,8 @@ All notable release changes are recorded here.
 
 ## 1.0.99 - 2026-09-17
 
+- Match annotation images by exact decoded pixels and placement when PDF
+  inventory numbers differ, retaining their source transparency masks.
 - Raster crops include original source character quads beyond short font boxes while preserving source identity and page placement.
 
 - Choose the nearest supported DXF stroke weight before saving, preventing

@@ -461,6 +461,13 @@ def extract_page(
         for pts, is_closed in sub_paths:
             if len(pts) < 2:
                 continue
+            # PDF writers often repeat the first vertex instead of emitting h.
+            # A single explicitly closed filled contour is still a filled shape;
+            # closePath=False only says that no closing operator was recorded.
+            # Keep compound fills out of this rule: their counters need one
+            # grouped fill, not an independent face for each subpath.
+            if fill is not None and len(sub_paths) == 1 and len(pts) >= 4 and pts[0] == pts[-1]:
+                is_closed = True
             # PDF fills implicitly close every subpath. Preserve the exact
             # clip contour vertices, including short segments and counters.
             is_closed = is_closed or bool(clip_fill_group)
