@@ -262,6 +262,7 @@ def write_import_report(
         },
         "auto_mode": extraction.summary().get("auto_mode"),
         "image_delivery": extraction.summary().get("image_delivery"),
+        "final_rect_paint_delivery": list(getattr(run.config, "_final_rect_paint_deliveries", ()) or ()),
         "model_3d_intent": analyze_model3d_intent(
             text_items,
             host_supports_3d=False,

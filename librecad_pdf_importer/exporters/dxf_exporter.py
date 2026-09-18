@@ -218,6 +218,7 @@ class DxfExportResult:
     text_fallbacks: List[Dict[str, Any]] = field(default_factory=list)
     delivered_text_entity_counts: Dict[str, int] = field(default_factory=dict)
     text_deliveries: List[Dict[str, Any]] = field(default_factory=list)
+    final_rect_paints: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -2020,26 +2021,21 @@ def _verify_serialized_text_deliveries(
                 raise RuntimeError(
                     f"serialized text delivery {source_id}: raster evidence incomplete"
                 )
-            expected_insert = (target_bbox[0], target_bbox[1])
-            expected_size = (
-                target_bbox[2] - target_bbox[0],
-                target_bbox[3] - target_bbox[1],
+            from librecad_pdf_importer.raster_geometry import raster_pixel_geometry
+            expected = raster_pixel_geometry(
+                evidence.get("pixel_origin") or [], pixel_size, evidence.get("raster_dpi", 0),
+                evidence.get("display_to_model") or [], evidence.get("export_page_offset_y", 0),
             )
-            actual_insert = tuple(float(value) for value in tuple(raster.dxf.insert)[:2])
-            actual_size = (
-                math.hypot(raster.dxf.u_pixel.x, raster.dxf.u_pixel.y)
-                * float(raster.dxf.image_size.x),
-                math.hypot(raster.dxf.v_pixel.x, raster.dxf.v_pixel.y)
-                * float(raster.dxf.image_size.y),
-            )
+            actual_values = (tuple(raster.dxf.insert) + tuple(raster.dxf.u_pixel)
+                             + tuple(raster.dxf.v_pixel) + tuple(raster.dxf.image_size))
+            expected_values = (*expected["image_insert"], 0.0,
+                               *expected["image_u_pixel"], 0.0,
+                               *expected["image_v_pixel"], 0.0, *pixel_size, 0.0)
             placement_ok = all(
-                math.isclose(left, right, rel_tol=0.0, abs_tol=1e-9)
-                for left, right in zip(
-                    actual_insert + actual_size,
-                    expected_insert + expected_size,
-                    strict=True,
-                )
-            )
+                math.isclose(float(left), float(right), rel_tol=0.0, abs_tol=1e-9)
+                for left, right in zip(actual_values, expected_values, strict=True)
+            ) and all(math.isclose(a, b, rel_tol=0.0, abs_tol=1e-9)
+                      for a, b in zip(target_bbox, expected["target_bbox_model"], strict=True))
             if not placement_ok:
                 raise RuntimeError(
                     f"serialized text delivery {source_id}: raster placement changed"
@@ -3439,6 +3435,8 @@ def _attempt_terminal_text_raster(
     raster_dpi: int,
     source_pdf_sha256: str,
     raster_session: _RasterRenderSession,
+    display_to_model: Optional[Tuple[float, ...]] = None,
+    page_offset_y: float = 0.0,
 ) -> Tuple[TextDeliveryResult, Optional[_PendingRasterAsset]]:
     """Attempt a real item crop as requested or after proven structural failure."""
     attempts = list(delivery.attempts)
@@ -3466,16 +3464,12 @@ def _attempt_terminal_text_raster(
                 "from unrelated page ink"
             )
         source_bbox = getattr(source_text, "source_bbox_pdf", None)
-        placed_bbox = getattr(placed_text, "bbox", None)
-        if not source_bbox or len(source_bbox) < 4 or not placed_bbox or len(placed_bbox) < 4:
+        if not source_bbox or len(source_bbox) != 4:
             raise ValueError("terminal raster requires an exact source item bbox")
-        sx0, sy0, sx1, sy1 = [float(value) for value in source_bbox[:4]]
-        px0, py0, px1, py1 = [float(value) for value in placed_bbox[:4]]
-        source_width = abs(sx1 - sx0)
-        source_height = abs(sy1 - sy0)
-        placed_width = abs(px1 - px0)
-        placed_height = abs(py1 - py0)
-        if min(source_width, source_height, placed_width, placed_height) <= 0.0:
+        if display_to_model is None:
+            raise ValueError("terminal raster has no bound source page-to-model transform")
+        sx0, sy0, sx1, sy1 = [float(value) for value in source_bbox]
+        if min(abs(sx1-sx0), abs(sy1-sy0)) <= 0:
             raise ValueError("terminal raster source item bbox is empty")
 
         page, page_display_list = raster_session.page(
@@ -3486,21 +3480,6 @@ def _attempt_terminal_text_raster(
         rotation_matrix = _page_rotation_transform(
             page.rect,
             getattr(page, "rotation_matrix", None),
-        )
-        source_corners = [
-            _transform_pdf_point(x, y, rotation_matrix)
-            for x, y in (
-                (sx0, sy0),
-                (sx1, sy0),
-                (sx1, sy1),
-                (sx0, sy1),
-            )
-        ]
-        original_clip = fitz.Rect(
-            min(point[0] for point in source_corners),
-            min(point[1] for point in source_corners),
-            max(point[0] for point in source_corners),
-            max(point[1] for point in source_corners),
         )
         from librecad_pdf_importer.raster_geometry import source_raster_bounds
         coverage_bbox = source_raster_bounds(source_text)
@@ -3531,50 +3510,16 @@ def _attempt_terminal_text_raster(
                 strict=True,
             )
         )
-        # PDF producers commonly emit text whose font ascent extends a
-        # fraction of a point beyond the CropBox.  Only the intersection is
-        # visible in a conforming viewer, so rasterize that intersection and
-        # map it to the corresponding (not stretched) portion of the model
-        # bbox.  The source-to-display transform is axis-aligned for PDF
-        # page rotations; the model transform only reverses display Y.
-        requested_width = float(original_clip.width)
-        requested_height = float(original_clip.height)
-        if requested_width <= 0.0 or requested_height <= 0.0:
-            raise ValueError("terminal raster requested clip is empty")
-        x_fraction_0 = (float(clip.x0) - float(original_clip.x0)) / requested_width
-        x_fraction_1 = (float(clip.x1) - float(original_clip.x0)) / requested_width
-        y_fraction_0 = (float(clip.y0) - float(original_clip.y0)) / requested_height
-        y_fraction_1 = (float(clip.y1) - float(original_clip.y0)) / requested_height
-        target_x0 = min(px0, px1) + x_fraction_0 * placed_width
-        target_x1 = min(px0, px1) + x_fraction_1 * placed_width
-        target_y0 = max(py0, py1) - y_fraction_1 * placed_height
-        target_y1 = max(py0, py1) - y_fraction_0 * placed_height
-        visible_placed_width = target_x1 - target_x0
-        visible_placed_height = target_y1 - target_y0
-        if min(visible_placed_width, visible_placed_height) <= 0.0:
-            raise ValueError("terminal raster visible model bbox is empty")
-        # A raster rung is a copy of the source pixels: it must never be anamorphic.
-        # pdfcadcore narrows the placed bbox of merged stacked-fraction items to 60 %
-        # of the source width (its inline-fraction footprint), so placing the full
-        # source clip into that bbox squashed 169 of 935 raster items on 1011 to 60 %
-        # width. Keep the placed height and centre, restore the clip's aspect ratio.
-        clip_aspect = float(clip.width) / float(clip.height) if float(clip.height) > 0.0 else 0.0
-        footprint_aspect_corrected = False
-        placed_footprint_aspect = visible_placed_width / visible_placed_height
-        if clip_aspect > 0.0 and abs(placed_footprint_aspect - clip_aspect) > 0.02 * clip_aspect:
-            centre_x = (target_x0 + target_x1) * 0.5
-            visible_placed_width = visible_placed_height * clip_aspect
-            target_x0 = centre_x - visible_placed_width * 0.5
-            target_x1 = centre_x + visible_placed_width * 0.5
-            footprint_aspect_corrected = True
+        # The source clip selects pixels only. Their physical placement comes
+        # from the actual device lattice below, never a text/glyph bbox.
         dpi = max(72, int(raster_dpi or 300))
         zero_ink_confirmation_dpi: Optional[int] = None
         if whitespace_only:
-            pixel_width = max(1, int(math.ceil(float(clip.width) * dpi / 72.0)))
-            pixel_height = max(1, int(math.ceil(float(clip.height) * dpi / 72.0)))
+            device_rect = (clip * fitz.Matrix(dpi / 72.0, dpi / 72.0)).irect
+            pixel_width, pixel_height = device_rect.width, device_rect.height
             pixmap = fitz.Pixmap(
                 fitz.csRGB,
-                fitz.IRect(0, 0, pixel_width, pixel_height),
+                device_rect,
                 True,
             )
             pixmap.clear_with(0)
@@ -3631,6 +3576,17 @@ def _attempt_terminal_text_raster(
                     attempt.strategy = "verified_source_zero_ink_transparent_item"
         if pixmap.width <= 0 or pixmap.height <= 0:
             raise ValueError("terminal raster rendered zero pixels")
+        from librecad_pdf_importer.raster_geometry import raster_pixel_geometry
+        pixel_geometry = raster_pixel_geometry(
+            (pixmap.x, pixmap.y), (pixmap.width, pixmap.height), dpi,
+            display_to_model, page_offset_y,
+        )
+        target_x0, target_y0, target_x1, target_y1 = pixel_geometry["target_bbox_model"]
+        image_insert = pixel_geometry["image_insert"]
+        image_u = pixel_geometry["image_u_pixel"]
+        image_v = pixel_geometry["image_v_pixel"]
+        visible_placed_width = math.hypot(*image_u) * pixmap.width
+        visible_placed_height = math.hypot(*image_v) * pixmap.height
         png = bytes(pixmap.tobytes("png"))
         if not png.startswith(b"\x89PNG\r\n\x1a\n"):
             raise ValueError("terminal raster output is not a PNG")
@@ -3670,9 +3626,8 @@ def _attempt_terminal_text_raster(
                 "source_bbox_clipped_to_page": bool(source_bbox_clipped),
                 "source_to_display_rotation": [float(value) for value in rotation_matrix],
                 "target_bbox_model": [target_x0, target_y0, target_x1, target_y1],
-                "footprint_aspect_corrected": footprint_aspect_corrected,
-                "placed_bbox_aspect": placed_footprint_aspect,
-                "source_clip_aspect": clip_aspect,
+                **pixel_geometry,
+                "source_pixel_lattice_verified": True,
                 "pixel_size": [int(pixmap.width), int(pixmap.height)],
                 "raster_dpi": dpi,
                 "zero_ink_confirmation_dpi": zero_ink_confirmation_dpi,
@@ -3708,10 +3663,12 @@ def _attempt_terminal_text_raster(
         )
         image = msp.add_image(
             image_def,
-            insert=(target_x0, target_y0),
+            insert=image_insert,
             size_in_units=(visible_placed_width, visible_placed_height),
             dxfattribs={"layer": layer_name},
         )
+        image.dxf.u_pixel = (*image_u, 0.0)
+        image.dxf.v_pixel = (*image_v, 0.0)
         image.dxf.flags = int(image.dxf.flags or 0) | 8
         image_handle = str(image.dxf.handle or "")
         image_def_handle = str(image_def.dxf.handle or "")
@@ -3730,7 +3687,7 @@ def _attempt_terminal_text_raster(
         )
         insert_ok = all(
             math.isclose(left, right, rel_tol=0.0, abs_tol=1e-9)
-            for left, right in zip(actual_insert, (target_x0, target_y0), strict=True)
+            for left, right in zip(actual_insert, image_insert, strict=True)
         )
         size_ok = math.isclose(
             actual_width, visible_placed_width, rel_tol=1e-8, abs_tol=1e-9
@@ -3738,7 +3695,10 @@ def _attempt_terminal_text_raster(
         attempt.type_verified = image.dxftype() == "IMAGE"
         visible_ink_expected = not (whitespace_only or verified_source_zero_ink)
         content_ok = not contains_ink if not visible_ink_expected else contains_ink
-        attempt.visual_verified = insert_ok and size_ok and content_ok
+        axes_ok = all(math.isclose(a, b, rel_tol=0.0, abs_tol=1e-12)
+                      for a, b in zip(tuple(image.dxf.u_pixel) + tuple(image.dxf.v_pixel),
+                                      (*image_u, 0.0, *image_v, 0.0), strict=True))
+        attempt.visual_verified = insert_ok and size_ok and axes_ok and content_ok
         attempt.cleanup_verified = all(
             doc.entitydb.get(handle) is not None
             and getattr(doc.entitydb.get(handle), "is_alive", True)
@@ -3767,9 +3727,8 @@ def _attempt_terminal_text_raster(
                 target_x1,
                 target_y1,
             ],
-            "footprint_aspect_corrected": footprint_aspect_corrected,
-            "placed_bbox_aspect": placed_footprint_aspect,
-            "source_clip_aspect": clip_aspect,
+            **pixel_geometry,
+            "source_pixel_lattice_verified": True,
             "pixel_size": [int(pixmap.width), int(pixmap.height)],
             "raster_dpi": dpi,
             "zero_ink_confirmation_dpi": zero_ink_confirmation_dpi,
@@ -4041,6 +4000,9 @@ def _export_to_dxf_impl(
     cancel_requested = getattr(opts.provenance_opts, "_cancel_requested", None)
     progress_callback = getattr(opts.provenance_opts, "_progress_callback", None)
     source_dash_expectations = []
+    final_paint_records = []
+    final_paint_expectations = []
+    final_paint_stroke_handles = set()
     source_paint_keys = {}
     has_source_image_order = False
     for page_position, page in enumerate(extraction.pages, start=1):
@@ -4066,10 +4028,20 @@ def _export_to_dxf_impl(
         if int(page.page_data.page_number) in compositing_pages:
             paint_order = None  # Existing exact page-fidelity surface contract.
         has_source_image_order = has_source_image_order or paint_order is not None
+        final_paints = [] if is_r12 or int(page.page_data.page_number) in compositing_pages else page.final_rect_paints
+        final_by_id = {row["primitive_id"]: row for row in final_paints}
+        if len(final_by_id) != len(final_paints):
+            raise RuntimeError("Final paint source identity is not unique")
+        final_entities = {}
+        page_raster_handles = []
         primitive_entity_start = page_entity_start
         previous_primitive_key = None
+        previous_primitive_id = None
 
-        def record_primitive_entities(start, key, _order=paint_order, _page=page_position):
+        def record_primitive_entities(start, key, primitive_id, _order=paint_order,
+                                      _page=page_position, _final=final_by_id, _entities=final_entities):
+            if primitive_id in _final:
+                _entities[primitive_id] = list(msp.entity_space.entities[start:])
             if _order is not None and key is not None:
                 for entity in msp.entity_space.entities[start:]:
                     source_paint_keys[str(entity.dxf.handle)] = (_page, key)
@@ -4081,8 +4053,9 @@ def _export_to_dxf_impl(
                 clip_fill_groups.setdefault(group_id, []).append(primitive)
         emitted_clip_fills = set()
         for primitive_index, primitive in enumerate(page.page_data.primitives, start=1):
-            record_primitive_entities(primitive_entity_start, previous_primitive_key)
+            record_primitive_entities(primitive_entity_start, previous_primitive_key, previous_primitive_id)
             primitive_entity_start = len(msp.entity_space.entities)
+            previous_primitive_id = primitive.id
             previous_primitive_key = (
                 paint_order.primitive_keys[primitive.id] if paint_order is not None else None
             )
@@ -4095,6 +4068,7 @@ def _export_to_dxf_impl(
                 )
             stroke_rgb = primitive.stroke_color
             fill_rgb = primitive.fill_color
+            final_paint = final_by_id.get(primitive.id)
             layer_rgb = stroke_rgb if stroke_rgb is not None else fill_rgb
             layer = _layer_name(page.page_data.page_number, primitive.layer_name, layer_rgb, opts)
             _ensure_layer(doc, layer, layer_rgb)
@@ -4158,6 +4132,46 @@ def _export_to_dxf_impl(
                         _track_xy(float(px), float(py))
                 emitted_clip_fills.add(clip_group_id)
                 continue
+            if final_paint is not None:
+                from .final_rect_paint import bind_metadata, image_style_snapshot, render_uniform_source_paint
+                png, renderer_proof = render_uniform_source_paint(
+                    final_paint["fill_rgb"], final_paint["fill_opacity"])
+                x0, y0, x1, y1 = map(float, final_paint["model_bounds"])
+                if not all(math.isfinite(v) for v in (x0, y0, x1, y1)) or x1 <= x0 or y1 <= y0:
+                    raise RuntimeError("Final source paint bounds are invalid")
+                safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(primitive.id))
+                asset_path = asset_root / f"final_paint_{page.page_data.page_number}_{safe_id}.png"
+                image_def = doc.add_image_def(
+                    filename=_serialized_asset_filename(asset_path, asset_root.parent.parent),
+                    size_in_pixel=(16, 16))
+                image = msp.add_image(image_def, insert=(x0, y0+dy),
+                                      size_in_units=(x1-x0, y1-y0), dxfattribs={"layer": layer})
+                image.dxf.flags = int(image.dxf.flags or 0) | 8
+                if source_pdf_sha256 is None:
+                    source_pdf_sha256 = _file_sha256(source_pdf)
+                record = {"schema": "bcs.final-source-rectangle-paint/1",
+                          **final_paint, "source_pdf_sha256": source_pdf_sha256,
+                          "source_page_number": int(page.page_data.page_number),
+                          "export_page_offset_y": dy, "image_handle": str(image.dxf.handle),
+                          "asset_path": str(asset_path), "asset_sha256": hashlib.sha256(png).hexdigest(),
+                          "renderer_proof": renderer_proof,
+                          "representation": "non-text native IMAGE alpha paint; source stroke retained"}
+                metadata = bind_metadata(image, record)
+                final_paint_records.append(record)
+                final_paint_expectations.append({"image_handle": str(image.dxf.handle),
+                                                "metadata_json": metadata, "strokes": [],
+                                                "image_style": image_style_snapshot(image),
+                                                "primitive_id": primitive.id})
+                pending_raster_assets.append(_PendingRasterAsset(asset_path, png))
+                serialized_image_expectations.append(_SerializedImageExpectation(
+                    image_handle=str(image.dxf.handle), image_def_handle=str(image_def.dxf.handle),
+                    asset_path=asset_path, asset_sha256=record["asset_sha256"],
+                    insert=(x0, y0+dy), u_pixel=((x1-x0)/16, 0), v_pixel=(0, (y1-y0)/16),
+                    size_in_pixel=(16, 16)))
+                image_count += 1
+                entity_count += 1
+                fill_rgb = None  # The qualified fill is represented by the IMAGE above.
+
             page_background_fill = _is_redundant_white_page_fill(
                 primitive,
                 page_width=page_w,
@@ -4231,7 +4245,7 @@ def _export_to_dxf_impl(
                     _track_xy(float(px), float(py))
                 entity_count += 1
 
-        record_primitive_entities(primitive_entity_start, previous_primitive_key)
+        record_primitive_entities(primitive_entity_start, previous_primitive_key, previous_primitive_id)
 
         if opts.include_text and opts.text_mode != "none":
             text_cfg = ImportConfig.auto()
@@ -4297,6 +4311,8 @@ def _export_to_dxf_impl(
                         ),
                         source_pdf_sha256=source_pdf_sha256,
                         raster_session=raster_session,
+                        display_to_model=page.display_to_model,
+                        page_offset_y=dy,
                     )
                     if pending_asset is not None:
                         pending_raster_assets.append(pending_asset)
@@ -4357,6 +4373,14 @@ def _export_to_dxf_impl(
                 entity_count += created
                 if delivery.final_representation == "raster":
                     image_count += created
+                    if created:
+                        final_evidence = delivery.attempts[-1].evidence
+                        if not (final_evidence.get("source_pixel_lattice_verified") is True
+                                and final_evidence.get("host_safe_opaque_image_verified") is True
+                                and final_evidence.get("source_pdf_sha256") == source_pdf_sha256
+                                and final_evidence.get("source_page_number") == page.page_data.page_number):
+                            raise RuntimeError("Final source crop has no exact opaque pixel-lattice proof")
+                        page_raster_handles.extend(delivery.entity_handles)
                 if created > 0:
                     delivered_bucket = _delivered_text_entity_bucket(delivered_kind)
                     delivered_text_entity_counts[delivered_bucket] = (
@@ -4378,6 +4402,8 @@ def _export_to_dxf_impl(
 
                     source_bbox = getattr(ti, "source_bbox_pdf", None)
                     target_bbox = getattr(ti, "bbox", None)
+                    if delivery.final_representation == "raster":
+                        target_bbox = delivery.attempts[-1].evidence.get("target_bbox_model")
                     span_id = getattr(ti, "id", None)
                     try:
                         span_id = int(span_id)
@@ -4566,6 +4592,26 @@ def _export_to_dxf_impl(
         if paint_order is None:
             for entity in msp.entity_space.entities[page_entity_start:]:
                 source_paint_keys[str(entity.dxf.handle)] = (page_position, 0)
+        if final_paints:
+            from .final_rect_paint import stroke_snapshot
+            if set(final_entities) != set(final_by_id):
+                raise RuntimeError("Final source paints were not completely delivered")
+            max_key = max(key[1] for key in source_paint_keys.values() if key[0] == page_position)
+            for index, paint in enumerate(final_paints, 1):
+                entities = final_entities[paint["primitive_id"]]
+                if [entity.dxftype() for entity in entities] != ["IMAGE", "LWPOLYLINE"]:
+                    raise RuntimeError("Final source paint has unexpected native entities")
+                expected = next(e for e in final_paint_expectations
+                                if e["image_handle"] == str(entities[0].dxf.handle))
+                expected["strokes"] = [stroke_snapshot(entities[1])]
+                final_paint_stroke_handles.add(str(entities[1].dxf.handle))
+                for entity in entities:
+                    source_paint_keys[str(entity.dxf.handle)] = (page_position, max_key+index)
+            # These opaque crops are already the final PDF pixel stack. The
+            # exact page-pixel placement proof above prevents double tinting.
+            for handle in page_raster_handles:
+                source_paint_keys[str(handle)] = (page_position, max_key+len(final_paints)+1)
+            has_source_image_order = True
         _stack_offset_y -= page_step
 
     # Persist extents + initial modelspace viewport so hosts open focused on geometry.
@@ -4684,7 +4730,7 @@ def _export_to_dxf_impl(
             temp_output,
             keep_handles=_verification_keep_handles(
                 text_deliveries, serialized_image_expectations
-            ),
+            ) | final_paint_stroke_handles,
             modelspace_owner_handle=str(msp.block_record.dxf.handle),
             entities_written=entities_written,
         )
@@ -4699,6 +4745,8 @@ def _export_to_dxf_impl(
         )
         _verify_serialized_image_assets(candidate, serialized_image_expectations)
         _verify_serialized_source_dash_blocks(candidate, source_dash_expectations)
+        from .final_rect_paint import verify_metadata_and_strokes
+        verify_metadata_and_strokes(candidate, final_paint_expectations)
         temp_output.replace(output)
     except Exception:
         for temp_asset in temp_assets:
@@ -4726,6 +4774,7 @@ def _export_to_dxf_impl(
         # ImportRun owns the config during CLI export; importer.py reads these
         # actual delivery facts immediately afterward to build import_report.
         opts.provenance_opts._delivered_image_count = int(image_count)  # noqa: B010
+        opts.provenance_opts._final_rect_paint_deliveries = final_paint_records  # noqa: B010
         opts.provenance_opts._result_status = "success"  # noqa: B010
         _sync_text_evidence()
 
@@ -4749,6 +4798,7 @@ def _export_to_dxf_impl(
         text_fallbacks=[dict(item) for item in text_fallbacks],
         delivered_text_entity_counts=dict(delivered_text_entity_counts),
         text_deliveries=[dict(item) for item in text_deliveries],
+        final_rect_paints=[dict(item) for item in final_paint_records],
     )
 
 

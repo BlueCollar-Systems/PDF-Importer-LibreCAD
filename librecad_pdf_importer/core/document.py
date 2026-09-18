@@ -92,6 +92,8 @@ class ExtractedPage:
     raster_fallback_failed: bool = False       # raster delivery failed; vector/text was retained
     image_paint_order: object = None  # exact source intervals around individual images
     source_line_dashes: dict = field(default_factory=dict)
+    final_rect_paints: list = field(default_factory=list)
+    display_to_model: Optional[Tuple[float, float, float, float, float, float]] = None
 
 
 @dataclass
@@ -673,6 +675,29 @@ def _extract_document_impl(
 
             image_paint_order = bind_image_paint_order(page, page_data, images)
             source_line_dashes = bind_source_line_dashes(page, page_data, opts.scale, opts.flip_y)
+            from librecad_pdf_importer.raster_geometry import display_to_model_matrix
+            from .final_rect_paint import bind_final_rect_paints
+            display_to_model = display_to_model_matrix(page.rect, opts.scale, opts.flip_y)
+            final_rect_paints = bind_final_rect_paints(page, page_data)
+            rotation = _page_rotation_transform(page.rect, getattr(page, "rotation_matrix", None))
+            a, b, c, d, e, f = display_to_model
+            for paint in final_rect_paints:
+                x0, y0, x1, y1 = paint["source_bbox_pdf"]
+                display = [_transform_pdf_point(x, y, rotation) for x, y in
+                           ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
+                model = [(a*x+c*y+e, b*x+d*y+f) for x, y in display]
+                expected_bounds = (min(p[0] for p in model), min(p[1] for p in model),
+                                   max(p[0] for p in model), max(p[1] for p in model))
+                tolerance = max(1e-6, max(page.rect.width, page.rect.height)*a*1e-7)
+                if not all(math.isclose(x, y, abs_tol=tolerance, rel_tol=0.0)
+                           for x, y in zip(expected_bounds, paint["model_bounds"], strict=True)):
+                    raise RuntimeError("Final source paint rectangle does not match its page transform")
+                if not math.isclose(paint["stroke_width_model"], paint["stroke_width_pdf"]*a,
+                                    abs_tol=tolerance, rel_tol=0.0):
+                    raise RuntimeError("Final source paint stroke width does not match its page scale")
+                paint["proof"] = {**paint["proof"], "display_to_model": list(display_to_model),
+                                  "source_to_display_rotation": list(rotation),
+                                  "source_model_bounds_verified": True}
             extracted.append(ExtractedPage(
                 page_data=page_data,
                 profile=profile,
@@ -682,6 +707,8 @@ def _extract_document_impl(
                 raster_fallback_failed=raster_fallback_failed,
                 image_paint_order=image_paint_order,
                 source_line_dashes=source_line_dashes,
+                display_to_model=display_to_model,
+                final_rect_paints=final_rect_paints,
             ))
             report_progress(
                 opts.progress_callback,

@@ -337,6 +337,13 @@ Auto page classification cannot replace extractable text with Raster while a
 non-raster text representation is requested. Explicit Raster import mode still
 does exactly what it says.
 
+Text Raster images retain the source renderer's exact pixel origin, resolution,
+and page-to-model transform. Their saved DXF axes and corners are verified against
+that pixel lattice. Qualified final translucent rectangle annotations use alpha
+PNG images with the original editable opaque strokes, preserving the requested
+text representation below them. This bounded repair requires original source
+paint and Normal-blend proof; it does not provide general PDF compositing.
+
 ## DXF Compatibility
 
 - **R12**: Maximum compatibility. No true-color, limited linetypes.
@@ -369,6 +376,8 @@ pdfcadcore/           Shared PDF extraction core
 | Encrypted PDFs | Password-protected PDFs must be unlocked before import |
 | Compression filters | Decoding is delegated to PyMuPDF. Malformed or non-standard compressed object streams may fail to parse |
 | Raster-only scans | Pure raster PDFs produce no vector geometry |
+| Transparency | LibreCAD does not generally composite DXF fill transparency. The final rectangle repair requires a proven source suffix, solid opaque strokes, Normal blending and no masks or transparency groups; other cases retain their existing display limitations. R12 does not use this repair. |
+| LibreCAD preview process | The installed LibreCAD 2.2.1.5 Windows CLI can write a valid image-bearing preview and then crash during Qt shutdown. Native exit status remains a failure and is recorded separately from saved DXF and rendered-image checks. |
 | Clipped/XObject-heavy PDFs | Complex clip stacks and deeply nested form XObjects can produce partial geometry |
 | Native LibreCAD fonts and Labels | Editable Text uses LibreCAD's Unicode LFF face. The report records that font substitution separately from representation fallback; source content and transforms remain verified, but glyph shapes can differ from the embedded PDF font. DXF has no native Label entity, so Labels falls loudly to Text. Choose Glyphs or Geometry when exact source-font outlines matter more than editability. |
 | Damaged or unusable source fonts | Exact-font structural representations fail closed; a different representation is attempted only with item-specific impossibility evidence |

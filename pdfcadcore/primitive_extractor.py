@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-# primitive_extractor.py â€” PyMuPDF -> normalized Primitives
-# BlueCollar Systems â€” BUILT. NOT BOUGHT.
+# primitive_extractor.py — PyMuPDF -> normalized Primitives
+# BlueCollar Systems — BUILT. NOT BOUGHT.
 """
 THE SEAM: converts PyMuPDF page data into host-neutral Primitives.
 Rule 1: Parser modules must not know about domain-specific logic.
@@ -262,8 +262,8 @@ def _page_mediabox_height(page) -> float:
     """Media-box height for Y-flip accounting for PDF /Rotate.
 
     PDF user-space coordinates are defined in the *unrotated* mediabox, but
-    PyMuPDF applies /Rotate when building ``page.rect``.  For 90Â°/270Â° pages
-    the viewer swaps widthâ†”height, so we must use the rotated dimension as the
+    PyMuPDF applies /Rotate when building ``page.rect``.  For 90°/270° pages
+    the viewer swaps width↔height, so we must use the rotated dimension as the
     Y-flip baseline to match what ``get_drawings`` / ``get_text`` actually
     returns (which is already in the *rotated* display space).
     """
@@ -567,7 +567,7 @@ def _span_baseline_pdf(span: dict, line: dict) -> Tuple[float, float]:
     """Return PDF user-space (x, baseline_y) for one span.
 
     PyMuPDF ``origin`` is usually the baseline anchor.  When it is missing or
-    an outlier, fall back to bbox bottom minus descender â€” same approach as the
+    an outlier, fall back to bbox bottom minus descender — same approach as the
     FreeCAD host importer so DXF/CAD text does not sit on dimension geometry.
     """
     origin = span.get("origin")
@@ -997,7 +997,7 @@ def _extract_text(
     # dimension value 7/16 on fabrication drawings; extraction owns this
     # semantic merge (RB-16 cross-host golden, stacked-fraction-extract).
     # Representation modes govern HOW a delivered value renders, never WHAT
-    # the value is â€” the render stage must not alter it further.
+    # the value is — the render stage must not alter it further.
     items = _merge_stacked_fractions(items)
     # Text identity is page-local source order (see the id note above). The
     # merger allocates replacement ids from the global counter, so re-index
@@ -1008,7 +1008,7 @@ def _extract_text(
     return items
 
 
-# â”€â”€ Stacked-fraction merger â”€â”€
+# ── Stacked-fraction merger ──
 # Some CAD PDFs encode fractions like "15/16" as three separate text spans
 # stacked vertically: numerator, slash, denominator.  This post-processor
 # detects unambiguous stacked-fraction groups and merges them into a single
@@ -1733,7 +1733,7 @@ def _classify_generic(text: str) -> list:
     return tags
 
 
-# â”€â”€ Coordinate helpers â”€â”€
+# ── Coordinate helpers ──
 
 
 def _matrix_components(matrix) -> Tuple[float, float, float, float, float, float]:

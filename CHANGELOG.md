@@ -4,6 +4,15 @@ All notable release changes are recorded here.
 
 ## 1.0.100 - 2026-09-18
 
+- Place text Raster images using the source renderer's exact pixel origin and
+  pixel lattice, including page rotation, crop boxes, user scale and page stacking.
+  Verify the saved image axes and all four corners instead of fitting the image
+  into a font-metric text box.
+- Preserve translucent final rectangle annotations as source-rendered alpha
+  images beneath their original editable opaque strokes. This applies only when
+  original PDF paint order, rectangle geometry and Normal blending are proven;
+  requested text representations remain unchanged. Final-PDF text Raster crops
+  retain their existing composited pixels without receiving the tint twice.
 - Retain the PDF drawing order around qualified opaque images, so image
   backgrounds no longer cover later title-block text and drawing lines. Verify
   both the saved DXF entity order and its redraw table. Masked/composite images
