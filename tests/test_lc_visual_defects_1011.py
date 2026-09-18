@@ -294,7 +294,7 @@ def test_invalid_positioned_fraction_refuses_without_pdf_or_raster_work(
     assert source_crop.call_count == 0
 
 
-def test_non_fraction_requested_raster_keeps_source_clip_aspect(tmp_path) -> None:
+def test_non_fraction_requested_raster_keeps_source_pixel_lattice(tmp_path) -> None:
     pdf_path = tmp_path / "ordinary-raster-text.pdf"
     pdf = fitz.open()
     page = pdf.new_page(width=200, height=120)
@@ -317,8 +317,17 @@ def test_non_fraction_requested_raster_keeps_source_clip_aspect(tmp_path) -> Non
         ev = delivery["attempts"][-1]["evidence"]
         u = math.hypot(image.dxf.u_pixel.x, image.dxf.u_pixel.y)
         v = math.hypot(image.dxf.v_pixel.x, image.dxf.v_pixel.y)
-        assert u == pytest.approx(v, rel=0.03), (delivery["source_id"], u, v)
-        assert _footprint_aspect(image) == pytest.approx(ev["source_clip_aspect"], rel=0.03)
+        pixel_mm = 25.4 / ev["raster_dpi"]
+        assert u == pytest.approx(pixel_mm, abs=1e-12)
+        assert v == pytest.approx(pixel_mm, abs=1e-12)
+        width, height = ev["pixel_size"]
+        origin_x, origin_y = ev["pixel_origin"]
+        assert _footprint_aspect(image) == pytest.approx(width / height, abs=1e-12)
+        assert tuple(image.dxf.insert) == pytest.approx(
+            (origin_x * pixel_mm, 120 * MM_PER_PT - (origin_y + height) * pixel_mm, 0),
+            abs=1e-10,
+        )
+        assert ev["source_pixel_lattice_verified"] is True
 
 
 def test_nearest_supported_lineweight_survives_dxf_serialization(tmp_path):

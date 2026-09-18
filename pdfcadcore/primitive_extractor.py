@@ -755,6 +755,10 @@ def _character_layout(line, span, font, to_model, glyph_queues):
             target_quad=target_quad,
             advance_width=_dist(target_quad[0], target_quad[1]),
             glyph_height=_dist(target_quad[0], target_quad[3]),
+            source_font_size_pdf=char.get("source_font_size_pdf"),
+            source_font_ascender=char.get("source_font_ascender"),
+            source_font_descender=char.get("source_font_descender"),
+            source_writing_mode=char.get("source_writing_mode"),
         ))
     return tuple(layouts)
 
@@ -790,7 +794,19 @@ def _raw_text_with_source_quads(page):
                     ):
                         continue
                     key = (chr(char.c), *origin)
-                    queues.setdefault(key, deque()).append(quad)
+                    try:
+                        metrics = {
+                            "source_font_size_pdf": float(char.size),
+                            "source_font_ascender": float(fitz.mupdf.ll_fz_font_ascender(char.font)),
+                            "source_font_descender": float(fitz.mupdf.ll_fz_font_descender(char.font)),
+                            "source_writing_mode": int(line.m_internal.wmode),
+                        }
+                    except (AttributeError, RuntimeError, TypeError, ValueError):
+                        # Optional older-wrapper metric APIs must not discard an
+                        # already obtained genuine source quad. Consumers that
+                        # need the full affine frame still require all metrics.
+                        metrics = {}
+                    queues.setdefault(key, deque()).append((quad, metrics))
     except (AttributeError, ImportError, RuntimeError, TypeError, ValueError):
         return page.get_text("rawdict")
 
@@ -806,7 +822,8 @@ def _raw_text_with_source_quads(page):
                         continue
                     candidates = queues.get((char.get("c", ""), *origin))
                     if candidates:
-                        char["quad"] = candidates.popleft()
+                        char["quad"], metrics = candidates.popleft()
+                        char.update(metrics)
                 # A uniform span's outer corners are original source corners,
                 # not recovered font-metric estimates. Keep the old span box
                 # path for mixed-height or non-collinear positioned text.

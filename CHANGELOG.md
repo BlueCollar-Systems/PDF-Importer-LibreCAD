@@ -2,6 +2,33 @@
 
 All notable release changes are recorded here.
 
+## 1.0.100 - 2026-09-18
+
+- Place text Raster images using the source renderer's exact pixel origin and
+  pixel lattice, including page rotation, crop boxes, user scale and page stacking.
+  Verify the saved image axes and all four corners instead of fitting the image
+  into a font-metric text box.
+- Preserve translucent final rectangle annotations as source-rendered alpha
+  images beneath their original editable opaque strokes. This applies only when
+  original PDF paint order, rectangle geometry and Normal blending are proven;
+  requested text representations remain unchanged. Final-PDF text Raster crops
+  retain their existing composited pixels without receiving the tint twice.
+- Retain the PDF drawing order around qualified opaque images, so image
+  backgrounds no longer cover later title-block text and drawing lines. Verify
+  both the saved DXF entity order and its redraw table. Masked/composite images
+  retain their separate display rules; this is not a general transparency compositor.
+- Preserve original character origins and both font-matrix axes for staggered,
+  anisotropic, and sheared source outlines, including rotated fractions and
+  adjacent dimension text. Bind the matrix to the original PDF font metrics
+  rather than fitting visible ink to a text box.
+- Keep missing or unreadable staged font assets as runtime failures instead of
+  using them to authorize a text representation fallback.
+- Export proven single straight-path dash patterns as editable native line
+  segments, preserving original phase through clipping, rotation, and scaling.
+  Curves, multiple subpaths, zero-length dot patterns, and unproven cases retain
+  the native linetype approximation and are listed in the extraction summary.
+  Native line caps and supported lineweight steps remain host-dependent.
+
 ## 1.0.99 - 2026-09-17
 
 - Match annotation images by exact decoded pixels and placement when PDF

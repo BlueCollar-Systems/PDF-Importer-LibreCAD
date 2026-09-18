@@ -1452,6 +1452,140 @@ def _positioned_fraction_layout(
     return layout
 
 
+def _source_affine_layout(text_item: NormalizedText) -> Optional[Tuple[TextCharLayout, ...]]:
+    """Use source frames where one aggregate glyph run loses physical geometry.
+
+    Raw spans can retain genuine baseline shifts, shear and unequal font-X/Y
+    scale. Font em axes, not advance cells or aggregate ink boxes, define shapes.
+    Plain isotropic collinear strings retain the established native route.
+    """
+    if (text_item.source_quad_pdf is None
+            or not text_item.requires_individual_positioning):
+        return None
+    layout = tuple(text_item.source_char_layout)
+    is_fraction = bool(_POSITIONED_FRACTION_RE.fullmatch(str(text_item.text)))
+    has_metrics = any(getattr(char, "source_font_size_pdf", None) is not None for char in layout)
+    if not is_fraction and not has_metrics:
+        return None  # Legacy/adapted inputs carry no original source metric claim.
+    if (not layout or len(layout) != len(text_item.text)
+            or len({id(char) for char in layout}) != len(layout)
+            or any(not isinstance(char, TextCharLayout) for char in layout)
+            or "".join(char.text for char in layout) != text_item.text):
+        raise ValueError("raw source character inventory is incomplete")
+    if not str(text_item.text).strip():
+        return None  # The existing zero-ink ladder handles a wholly blank item.
+    needs_affine = is_fraction
+    for char in layout:
+        source, target = char.source_quad_pdf, char.target_quad
+        # A zero-advance space has no baseline direction. Its exact font program
+        # must independently prove empty ink before the outline writer omits it.
+        zero_space = char.text.isspace() and char.advance_width == 0.0
+        if zero_space:
+            if (char.source_font_size_pdf is None or char.source_writing_mode != 0):
+                raise ValueError("zero-advance source space has no bound font metrics")
+            continue
+        x_axis, y_axis = _source_character_affine_axes(char)
+        def area(quad):
+            bx, by = quad[1][0]-quad[0][0], quad[1][1]-quad[0][1]
+            ux, uy = quad[0][0]-quad[3][0], quad[0][1]-quad[3][1]
+            return abs(bx*uy-by*ux)
+        model_scale = math.sqrt(area(target)/area(source))
+        if not math.isclose(char.source_font_size_pdf*model_scale, text_item.font_size,
+                            rel_tol=1e-5, abs_tol=1e-7):
+            raise ValueError("source character size is not bound to the raw span")
+        nominal = float(text_item.font_size)
+        nx, ny = math.hypot(*x_axis), math.hypot(*y_axis)
+        dot = x_axis[0]*y_axis[0]+x_axis[1]*y_axis[1]
+        needs_affine |= (not math.isclose(nx, nominal, rel_tol=2e-5, abs_tol=1e-7)
+                         or not math.isclose(ny, nominal, rel_tol=2e-5, abs_tol=1e-7)
+                         or abs(dot)/(nx*ny) > 2e-5)
+    needs_affine |= _raw_layout_has_multiple_baselines(layout)
+    return layout if needs_affine else None
+
+
+def _source_character_affine_axes(character: TextCharLayout) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    """Recover exact model-space font em axes without fitting glyph ink to cells."""
+    def finite_point(point):
+        try:
+            values = tuple(float(value) for value in point)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("source character affine point is invalid") from exc
+        if len(values) != 2 or not all(math.isfinite(value) for value in values):
+            raise ValueError("source character affine point is not finite")
+        return values
+
+    source = tuple(finite_point(point) for point in character.source_quad_pdf)
+    target = tuple(finite_point(point) for point in character.target_quad)
+    if len(source) != 4 or len(target) != 4:
+        raise ValueError("source character affine frame needs four corners")
+    size = _positive_finite(character.source_font_size_pdf)
+    asc = character.source_font_ascender
+    desc = character.source_font_descender
+    if (size is None or type(character.source_writing_mode) is not int
+            or character.source_writing_mode != 0
+            or type(asc) not in (int, float) or type(desc) not in (int, float)
+            or not math.isfinite(asc) or not math.isfinite(desc) or asc <= desc):
+        raise ValueError("original source font metrics unavailable or invalid")
+
+    def tolerance(quad):
+        magnitude = max(abs(v) for point in quad for v in point)
+        return max(1e-7, 4.0 * math.ldexp(1.0, math.frexp(magnitude)[1] - 24))
+
+    # Target coordinates retain the original float32 PDF uncertainty after
+    # page rotation/translation/scale. A page Y flip can bring a large source
+    # coordinate near model zero; recomputing only target ULPs loses that budget.
+    sb = tuple(source[1][i]-source[0][i] for i in range(2))
+    su = tuple(source[0][i]-source[3][i] for i in range(2))
+    tb = tuple(target[1][i]-target[0][i] for i in range(2))
+    tu = tuple(target[0][i]-target[3][i] for i in range(2))
+    determinant = sb[0]*su[1]-sb[1]*su[0]
+    if not math.isfinite(determinant) or determinant == 0:
+        raise ValueError("source character affine axes are degenerate")
+    linear_rows = tuple(((tb[i]*su[1]-tu[i]*sb[1])/determinant,
+                         (tu[i]*sb[0]-tb[i]*su[0])/determinant) for i in range(2))
+    propagated_tolerance = tolerance(source)*max(sum(abs(v) for v in row) for row in linear_rows)
+    if not math.isfinite(propagated_tolerance):
+        raise ValueError("source-to-model affine roundoff budget is invalid")
+    for quad, origin, tol in (
+        (source, character.source_origin_pdf, tolerance(source)),
+        (target, character.target_origin, max(tolerance(target), propagated_tolerance)),
+    ):
+        origin = finite_point(origin)
+        if any(abs(quad[0][i]+quad[2][i]-quad[1][i]-quad[3][i]) > tol for i in range(2)):
+            raise ValueError("source character frame is not affine")
+        if any(abs(quad[0][i] - asc/(asc-desc)*(quad[0][i]-quad[3][i]) - origin[i]) > tol
+               for i in range(2)):
+            raise ValueError("source font metrics do not reconstruct the character baseline")
+    bx, by = source[1][0]-source[0][0], source[1][1]-source[0][1]
+    ux, uy = (source[0][0]-source[3][0])/(asc-desc), (source[0][1]-source[3][1])/(asc-desc)
+    advance, y_length = math.hypot(bx, by), math.hypot(ux, uy)
+    if advance <= 0 or y_length <= 0:
+        raise ValueError("source character affine axes are degenerate")
+    determinant = abs((bx*uy-by*ux)/(advance*y_length))
+    if not math.isfinite(determinant) or determinant <= 1e-12:
+        raise ValueError("source character affine axes are collinear")
+    # MuPDF char.size is sqrt(abs(det(text matrix))). The source declared
+    # advance is independent of actual glyph ink and is never a width-fit target.
+    x_length = size*size/(y_length*determinant)
+    x_axis = tuple((target[1][i]-target[0][i])*x_length/advance for i in range(2))
+    y_axis = tuple((target[0][i]-target[3][i])/(asc-desc) for i in range(2))
+    if not all(math.isfinite(v) for v in (*x_axis, *y_axis)):
+        raise ValueError("source character font em transform is not finite")
+    return x_axis, y_axis
+
+
+def _raw_layout_has_multiple_baselines(layout: Sequence[TextCharLayout]) -> bool:
+    first = next(char for char in layout if char.advance_width > 0)
+    start = first.source_origin_pdf
+    quad = first.source_quad_pdf
+    bx, by = quad[1][0]-quad[0][0], quad[1][1]-quad[0][1]
+    length = math.hypot(bx, by)
+    magnitude = max(abs(v) for char in layout for v in char.source_origin_pdf)
+    tolerance = max(1e-7, 4.0 * math.ldexp(1.0, math.frexp(magnitude)[1] - 24))
+    return any(abs(bx*(char.source_origin_pdf[1]-start[1]) - by*(char.source_origin_pdf[0]-start[0]))/length > tolerance
+               for char in layout)
+
+
 def _target_advance_width(text_item: NormalizedText) -> Tuple[Optional[float], str]:
     explicit = _positive_finite(getattr(text_item, "advance_width", None))
     if explicit is not None:
@@ -2124,6 +2258,9 @@ def _attempt_labels(
     try:
         parent = str(target_app or "generic").strip().lower()
         positioned_layout = _positioned_fraction_layout(text_item)
+        raw_layout = _source_affine_layout(text_item)
+        if raw_layout is not None and _raw_layout_has_multiple_baselines(raw_layout):
+            positioned_layout = raw_layout
         if positioned_layout is not None:
             attempt.reason = (
                 "_RepresentationImpossible: native DXF text cannot preserve "
@@ -2511,7 +2648,7 @@ def _to_solid_fill_entities(
         paths,
         max_sagitta=0.01,
         # The sagitta bound is the visual-accuracy oracle. Requiring sixteen
-        # segments for every Bézier inflated real drawings by hundreds of MB
+        # segments for every BÃƒÆ’Ã‚Â©zier inflated real drawings by hundreds of MB
         # without improving that bound; two prevents pathological under-sampling
         # while adaptive flattening adds segments wherever curvature requires.
         min_segments=2,
@@ -2909,7 +3046,7 @@ def _positioned_geometry_fingerprint(
     *,
     character_solid_counts: Sequence[int],
     character_text: Sequence[str],
-    source_glyph_ids: Sequence[int],
+    source_glyph_ids: Sequence[Optional[int]],
 ) -> str:
     """Hash ordered per-character SOLID identity, placement, and styling."""
 
@@ -2917,14 +3054,17 @@ def _positioned_geometry_fingerprint(
     try:
         counts = tuple(int(value) for value in character_solid_counts)
         texts = tuple(str(value) for value in character_text)
-        glyph_ids = tuple(int(value) for value in source_glyph_ids)
+        glyph_ids = tuple(None if value is None else int(value) for value in source_glyph_ids)
     except (TypeError, ValueError):
         return ""
     if (
         not counts
         or len(counts) != len(texts)
         or len(counts) != len(glyph_ids)
-        or any(count <= 0 for count in counts)
+        or any(count < 0 or (count == 0 and not text.isspace())
+               for count, text in zip(counts, texts, strict=True))
+        or any(gid is None and (count != 0 or not text.isspace())
+               for gid, count, text in zip(glyph_ids, counts, texts, strict=True))
         or sum(counts) != len(entities)
     ):
         return ""
@@ -3117,6 +3257,8 @@ def _positioned_font_identity(
 def _positioned_source_glyph_names(
     layout: Sequence[TextCharLayout],
     resolution: _ExactFontResolution,
+    *,
+    empty_glyph_names: Optional[set] = None,
 ) -> List[str]:
     """Bind every observed PDF glyph id to the exact outline font program."""
 
@@ -3124,13 +3266,13 @@ def _positioned_source_glyph_names(
 
     filename = str(resolution.filename or "")
     if not filename:
-        raise _RepresentationImpossible(
+        raise ValueError(
             "positioned fraction exact font program has no readable asset"
         )
     try:
         font_program = TTFont(filename, lazy=True, recalcTimestamp=False)
     except Exception as exc:
-        raise _RepresentationImpossible(
+        raise ValueError(
             "positioned fraction exact font program cannot be inspected"
         ) from exc
     try:
@@ -3138,6 +3280,25 @@ def _positioned_source_glyph_names(
         glyph_names: List[str] = []
         for character in layout:
             glyph_id = character.glyph_id
+            glyph_name = str(cmap.get(ord(character.text)) or "")
+            if character.text.isspace() and glyph_name:
+                # Check the original exact font, not an outline-engine sentinel:
+                # a valid-ID space can also have unusual visible glyph ink.
+                from fontTools.pens.boundsPen import BoundsPen
+                glyph_set = font_program.getGlyphSet()
+                pen = BoundsPen(glyph_set)
+                glyph_set[glyph_name].draw(pen)
+                if pen.bounds is None and empty_glyph_names is not None:
+                    empty_glyph_names.add(glyph_name)
+                if glyph_id is None:
+                    # MuPDF may insert a spacing character absent from texttrace.
+                    # Preserve its missing source id instead of inventing one.
+                    if pen.bounds is None:
+                        glyph_names.append(glyph_name)
+                        continue
+                    raise _RepresentationImpossible(
+                        "source space without a glyph id has visible exact-font ink"
+                    )
             if (
                 not isinstance(glyph_id, int)
                 or isinstance(glyph_id, bool)
@@ -3154,7 +3315,7 @@ def _positioned_source_glyph_names(
             try:
                 resolved_glyph_id = int(font_program.getGlyphID(glyph_name))
             except Exception as exc:
-                raise _RepresentationImpossible(
+                raise ValueError(
                     "positioned fraction glyph program cannot be resolved"
                 ) from exc
             if resolved_glyph_id != glyph_id:
@@ -3219,7 +3380,10 @@ def _positioned_fraction_glyph_run(
         )
     font = text2path.get_font(face)
     font_identity = _positioned_font_identity(resolution)
-    glyph_names = _positioned_source_glyph_names(layout, resolution)
+    empty_glyph_names = set()
+    glyph_names = _positioned_source_glyph_names(
+        layout, resolution, empty_glyph_names=empty_glyph_names,
+    )
     item_insert = tuple(float(value) for value in text_item.insertion[:2])
     attribute_record = tuple(
         (str(key), repr(value)) for key, value in sorted(attribs.items())
@@ -3230,20 +3394,37 @@ def _positioned_fraction_glyph_run(
     canonical_reused_count = 0
     local_bboxes: List[List[float]] = []
     rotations: List[float] = []
-    for character in layout:
+    source_affine_metrics = []
+    for character, glyph_name in zip(layout, glyph_names, strict=True):
         canonical_key = (font_identity, character.text)
         if canonical_key not in _canonical_glyph_path_cache:
             character_paths = font.text_glyph_paths(character.text, 1.0, 1.0)
+            if len(character_paths) > 1:
+                raise ValueError("outline engine returned multiple paths for one source character")
             _canonical_glyph_path_cache[canonical_key] = (
-                character_paths[0] if len(character_paths) == 1 else None
+                character_paths[0] if character_paths else None
             )
             canonical_created_count += 1
         else:
             canonical_reused_count += 1
         canonical_path = _canonical_glyph_path_cache[canonical_key]
         if canonical_path is None:
+            if character.text.isspace() and glyph_name in empty_glyph_names:
+                # The original exact glyph program independently proved zero
+                # ink. Retain its source occurrence and zero SOLID count.
+                world_path_groups.append([])
+                local_bboxes.append([0.0, 0.0, 0.0, 0.0])
+                rotations.append(0.0)
+                source_affine_metrics.append((
+                    character.source_font_size_pdf, character.source_font_ascender,
+                    character.source_font_descender, character.source_writing_mode,
+                    "exact_font_zero_ink_space",
+                ))
+                continue
+            if character.text.isspace():
+                raise ValueError("outline engine omitted a visible exact-font space glyph")
             raise _RepresentationImpossible(
-                "positioned fraction character has no single exact source-glyph path"
+                "positioned character has no single exact source-glyph path"
             )
         canonical_bbox = _path_bbox_tuple([canonical_path.to_path()])
         if canonical_bbox is None:
@@ -3256,23 +3437,44 @@ def _positioned_fraction_glyph_run(
             raise _RepresentationImpossible(
                 "positioned fraction source glyph outline has zero area"
             )
-        left, bottom, right, top, rotation = _positioned_character_local_bbox(
-            character
-        )
+        if character.source_font_size_pdf is not None:
+            left, bottom, right, top, rotation = (*canonical_bbox, 0.0)
+        else:
+            left, bottom, right, top, rotation = _positioned_character_local_bbox(character)
         target_width = right - left
         target_height = top - bottom
         definition_path = canonical_path.clone()
-        definition_path.transform_inplace(
-            Matrix44.translate(-canonical_bbox[0], -canonical_bbox[1], 0.0)
-        )
-        definition_path.transform_inplace(
-            Matrix44.scale(
-                target_width / source_width,
-                target_height / source_height,
-                1.0,
+        if character.source_font_size_pdf is not None:
+            x_axis, y_axis = _source_character_affine_axes(character)
+            source_affine_metrics.append((
+                character.source_font_size_pdf, character.source_font_ascender,
+                character.source_font_descender, character.source_writing_mode,
+                x_axis, y_axis,
+            ))
+            _height, cap_ratio = _delivery_cap_height(1.0, resolution)
+            # The canonical outline engine uses cap-height=1. Convert to true
+            # font em geometry, then bake the original complete source affine.
+            # Preserve shear/reflection as geometry instead of pretending a DXF
+            # INSERT rotation plus X/Y scales can encode either one.
+            definition_path.transform_inplace(Matrix44((
+                x_axis[0]*cap_ratio, x_axis[1]*cap_ratio, 0.0, 0.0,
+                y_axis[0]*cap_ratio, y_axis[1]*cap_ratio, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 1.0,
+            )))
+            affine_bbox = _path_bbox_tuple([definition_path.to_path()])
+            if affine_bbox is None:
+                raise ValueError("source character affine produced no glyph outline")
+            left, bottom, right, top = affine_bbox
+            rotation = 0.0
+        else:
+            definition_path.transform_inplace(
+                Matrix44.translate(-canonical_bbox[0], -canonical_bbox[1], 0.0)
             )
-        )
-        definition_path.transform_inplace(Matrix44.translate(left, bottom, 0.0))
+            definition_path.transform_inplace(
+                Matrix44.scale(target_width / source_width, target_height / source_height, 1.0)
+            )
+            definition_path.transform_inplace(Matrix44.translate(left, bottom, 0.0))
         paths = list(definition_path.to_path().sub_paths())
         if not paths:
             raise _RepresentationImpossible(
@@ -3334,17 +3536,18 @@ def _positioned_fraction_glyph_run(
     layout_payload = (
         str(text_item.text),
         tuple(character.text for character in layout),
-        tuple(int(character.glyph_id) for character in layout),
+        tuple(character.glyph_id for character in layout),
         tuple(tuple(origin) for origin in origins),
         tuple(tuple(tuple(point) for point in quad) for quad in quads),
         tuple(tuple(bbox) for bbox in local_bboxes),
         tuple(rotations),
         font_identity,
+        tuple(source_affine_metrics),
     )
     evidence = {
         "positioned_character_text": [character.text for character in layout],
         "positioned_source_glyph_ids": [
-            int(character.glyph_id) for character in layout
+            character.glyph_id for character in layout
         ],
         "positioned_source_glyph_names": glyph_names,
         "positioned_character_origins": origins,
@@ -3364,6 +3567,8 @@ def _positioned_fraction_glyph_run(
         "positioned_contour_entities_omitted": True,
         "outline_engine_font_name": engine_name,
         "outline_engine_font_verified": True,
+        "source_character_affine_metrics": source_affine_metrics,
+        "source_character_ink_fit_to_advance": False if source_affine_metrics else None,
     }
     return (
         _NestedGlyphRun(
@@ -4078,7 +4283,8 @@ def _attempt_outline_entity(
         insertion = tuple(float(value) for value in text_item.insertion[:2])
         source_insert = (0.0, 0.0) if representation == "glyphs" else insertion
         font_resolution = _require_exact_item_font(text_item, config, attempt)
-        positioned_layout = _positioned_fraction_layout(text_item)
+        positioned_layout = (_source_affine_layout(text_item)
+                             or _positioned_fraction_layout(text_item))
         if positioned_layout is not None:
             attempt.strategy = "positioned_source_glyph_outlines"
             positioned_base_attribs = _base_attributes(
@@ -4116,10 +4322,9 @@ def _attempt_outline_entity(
                     ),
                 }
             )
-            if len(glyph_run.geometries) != len(positioned_layout):
-                raise _RepresentationImpossible(
-                    "positioned fraction source-glyph decomposition is incomplete"
-                )
+            if (len(world_path_groups) != len(positioned_layout)
+                    or len(glyph_run.geometries) != sum(bool(paths) for paths in world_path_groups)):
+                raise ValueError("positioned source-glyph decomposition is incomplete")
             world_paths = [
                 path for path_group in world_path_groups for path in path_group
             ]
@@ -4149,7 +4354,10 @@ def _attempt_outline_entity(
                 outlines = []
                 fills = []
                 character_solid_counts: List[int] = []
-                for path_group in world_path_groups:
+                for character, path_group in zip(positioned_layout, world_path_groups, strict=True):
+                    if not path_group and character.text.isspace():
+                        character_solid_counts.append(0)
+                        continue
                     character_fills = _to_solid_fill_entities(
                         path_group,
                         is_r12=is_r12,
@@ -4392,7 +4600,8 @@ def _attempt_outline_string(
     )
     doc = msp.doc
     try:
-        positioned_layout = _positioned_fraction_layout(text_item)
+        positioned_layout = (_source_affine_layout(text_item)
+                             or _positioned_fraction_layout(text_item))
         if positioned_layout is not None:
             attempt.evidence.update(
                 {

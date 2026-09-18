@@ -3680,7 +3680,10 @@ def test_terminal_raster_clips_page_edge_and_preserves_visible_placement(tmp_pat
         * (original_target[2] - expanded_target_x0)
     )
     assert evidence["target_bbox_model"][0] == pytest.approx(expected_visible_x0)
-    assert evidence["target_bbox_model"][2] == pytest.approx(original_target[2])
+    # The renderer rounds the right device edge outward to a complete pixel.
+    expected_right = (evidence["pixel_origin"][0] + evidence["pixel_size"][0])
+    expected_right *= 72.0 / evidence["raster_dpi"] * MM_PER_PT
+    assert evidence["target_bbox_model"][2] == pytest.approx(expected_right)
 
 
 def test_requested_raster_preserves_verified_nonpainted_text_as_zero_ink(
