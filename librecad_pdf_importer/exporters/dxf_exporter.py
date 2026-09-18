@@ -3434,12 +3434,21 @@ def _attempt_terminal_text_raster(
                 (sx0, sy1),
             )
         ]
-        requested_clip = fitz.Rect(
+        original_clip = fitz.Rect(
             min(point[0] for point in source_corners),
             min(point[1] for point in source_corners),
             max(point[0] for point in source_corners),
             max(point[1] for point in source_corners),
         )
+        from librecad_pdf_importer.raster_geometry import source_raster_bounds
+        coverage_bbox = source_raster_bounds(source_text)
+        cx0, cy0, cx1, cy1 = coverage_bbox
+        coverage_corners = [_transform_pdf_point(x, y, rotation_matrix)
+            for x, y in ((cx0, cy0), (cx1, cy0), (cx1, cy1), (cx0, cy1))]
+        requested_clip = fitz.Rect(min(p[0] for p in coverage_corners),
+                                  min(p[1] for p in coverage_corners),
+                                  max(p[0] for p in coverage_corners),
+                                  max(p[1] for p in coverage_corners))
         clip = requested_clip & page.rect
         if clip.is_empty or clip.is_infinite:
             raise ValueError("terminal raster clip is outside the source page")
@@ -3466,14 +3475,14 @@ def _attempt_terminal_text_raster(
         # map it to the corresponding (not stretched) portion of the model
         # bbox.  The source-to-display transform is axis-aligned for PDF
         # page rotations; the model transform only reverses display Y.
-        requested_width = float(requested_clip.width)
-        requested_height = float(requested_clip.height)
+        requested_width = float(original_clip.width)
+        requested_height = float(original_clip.height)
         if requested_width <= 0.0 or requested_height <= 0.0:
             raise ValueError("terminal raster requested clip is empty")
-        x_fraction_0 = (float(clip.x0) - float(requested_clip.x0)) / requested_width
-        x_fraction_1 = (float(clip.x1) - float(requested_clip.x0)) / requested_width
-        y_fraction_0 = (float(clip.y0) - float(requested_clip.y0)) / requested_height
-        y_fraction_1 = (float(clip.y1) - float(requested_clip.y0)) / requested_height
+        x_fraction_0 = (float(clip.x0) - float(original_clip.x0)) / requested_width
+        x_fraction_1 = (float(clip.x1) - float(original_clip.x0)) / requested_width
+        y_fraction_0 = (float(clip.y0) - float(original_clip.y0)) / requested_height
+        y_fraction_1 = (float(clip.y1) - float(original_clip.y0)) / requested_height
         target_x0 = min(px0, px1) + x_fraction_0 * placed_width
         target_x1 = min(px0, px1) + x_fraction_1 * placed_width
         target_y0 = max(py0, py1) - y_fraction_1 * placed_height
@@ -3595,6 +3604,7 @@ def _attempt_terminal_text_raster(
                     float(clip.y1),
                 ],
                 "source_bbox_pdf": [sx0, sy0, sx1, sy1],
+                "source_raster_coverage_bbox_pdf": list(coverage_bbox),
                 "source_bbox_clipped_to_page": bool(source_bbox_clipped),
                 "source_to_display_rotation": [float(value) for value in rotation_matrix],
                 "target_bbox_model": [target_x0, target_y0, target_x1, target_y1],
@@ -3686,6 +3696,7 @@ def _attempt_terminal_text_raster(
                 float(clip.y1),
             ],
             "source_bbox_pdf": [sx0, sy0, sx1, sy1],
+                "source_raster_coverage_bbox_pdf": list(coverage_bbox),
             "source_bbox_clipped_to_page": bool(source_bbox_clipped),
             "source_to_display_rotation": [float(value) for value in rotation_matrix],
             "target_bbox_model": [

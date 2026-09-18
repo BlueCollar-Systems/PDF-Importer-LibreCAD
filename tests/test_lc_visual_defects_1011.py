@@ -333,3 +333,35 @@ def test_nearest_supported_lineweight_survives_dxf_serialization(tmp_path):
     doc.saveas(path)
     reopened = ezdxf.readfile(path)
     assert next(iter(reopened.modelspace())).dxf.lineweight == 9
+
+
+def test_requested_raster_keeps_ink_beyond_short_font_bbox(tmp_path):
+    source = tmp_path / "short-font-bbox.pdf"
+    with fitz.open() as doc:
+        page = doc.new_page(width=300, height=240)
+        page.insert_text((100, 150), "H", fontsize=12)
+        doc.save(source)
+    run = run_import(str(source), mode="vector", overrides={"pages": "1"})
+    page_data = run.extraction.pages[0].page_data
+    original = page_data.text_items[0]
+    b = original.source_bbox_pdf
+    short_bbox = (b[0], 145., b[2], b[3])
+    page_data.text_items[0] = replace(original, source_bbox_pdf=short_bbox,
+        bbox=(b[0]*MM_PER_PT, (240-b[3])*MM_PER_PT,
+              b[2]*MM_PER_PT, (240-145.)*MM_PER_PT))
+    output = tmp_path / "short-font-bbox.dxf"
+    result = export_to_dxf(run.extraction, str(output),
+                          DxfExportOptions(include_images=False, text_mode="raster"))
+    evidence = result.text_deliveries[0]["attempts"][-1]["evidence"]
+    assert evidence["source_bbox_pdf"] == list(short_bbox)
+    assert evidence["source_raster_coverage_bbox_pdf"][1] < 145.
+    native = ezdxf.readfile(output)
+    image = next(iter(native.modelspace().query("IMAGE")))
+    asset = tmp_path / native.entitydb[image.dxf.image_def_handle].dxf.filename
+    pix = fitz.Pixmap(str(asset))
+    # Above the artificial font bbox the delivered image retains H's stem.
+    coverage = evidence["source_raster_coverage_bbox_pdf"]
+    rows_above = int((145. - coverage[1]) / (coverage[3] - coverage[1]) * pix.height)
+    assert any(value < 128 for value in pix.samples[:pix.stride*rows_above])
+    top = image.dxf.insert.y + image.dxf.v_pixel.y*image.dxf.image_size.y
+    assert top > (240-145.)*MM_PER_PT

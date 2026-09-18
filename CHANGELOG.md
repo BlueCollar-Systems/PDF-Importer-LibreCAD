@@ -4,6 +4,8 @@ All notable release changes are recorded here.
 
 ## 1.0.99 - 2026-09-17
 
+- Raster crops include original source character quads beyond short font boxes while preserving source identity and page placement.
+
 - Choose the nearest supported DXF stroke weight before saving, preventing
   invalid intermediate weights from being silently rounded up and thickening
   fine gray drawing details.
