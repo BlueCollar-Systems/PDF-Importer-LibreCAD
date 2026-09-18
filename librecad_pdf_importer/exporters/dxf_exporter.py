@@ -18,6 +18,7 @@ import ezdxf
 import numpy as np
 from ezdxf import path as ezdxf_path
 from ezdxf.colors import RGB, aci2rgb, rgb2int
+from ezdxf.lldxf.const import VALID_DXF_LINEWEIGHTS
 from ezdxf.math import Vec2, is_point_in_polygon_2d
 from ezdxf.math.triangulation import mapbox_earcut_2d
 from ezdxf.units import MM
@@ -4951,8 +4952,14 @@ def _apply_lineweight(attribs: dict, width_mm) -> None:
         return
     if not math.isfinite(width_mm):
         return
-    lw = int(max(5, min(211, round(width_mm * 100))))  # hundredths of mm
-    attribs["lineweight"] = lw
+    # Arbitrary integers are not supported DXF weights. ezdxf rounds an invalid
+    # value upward: a 0.0998mm source became 10 and then 13 (30% too thick).
+    # Choose the nearest supported positive weight before serialization.
+    target = max(5.0, min(211.0, width_mm * 100.0))
+    attribs["lineweight"] = min(
+        (weight for weight in VALID_DXF_LINEWEIGHTS if weight > 0),
+        key=lambda weight: (abs(weight - target), weight),
+    )
 
 
 # LibreCAD does not interpret LTYPE table definitions: it recognizes a fixed set of

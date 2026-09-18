@@ -135,12 +135,11 @@ def test_same_pdf_dash_reuses_one_linetype_and_distinct_dashes_do_not_collide() 
 from pdfcadcore.primitive_extractor import MM_PER_PT  # noqa: E402
 
 
-@pytest.mark.parametrize("width_pt", [0.24, 0.60, 0.84, 1.32])
-def test_lineweight_treats_primitive_line_width_as_millimetres(width_pt: float) -> None:
+@pytest.mark.parametrize(("width_pt", "expected"), [(0.24, 9), (0.60, 20), (0.84, 30), (1.32, 50)])
+def test_lineweight_treats_primitive_line_width_as_millimetres(width_pt: float, expected: int) -> None:
     width_mm = width_pt * MM_PER_PT          # what pdfcadcore stores on Primitive.line_width
     attribs: dict = {}
     dxf_exporter_module._apply_lineweight(attribs, width_mm)
-    expected = int(max(5, min(211, round(width_mm * 100))))
     assert attribs["lineweight"] == expected
     # The old double conversion produced width_mm * MM_PER_PT -> 2.83x too thin.
     wrong = int(max(5, min(211, round(width_mm * MM_PER_PT * 100))))
@@ -320,3 +319,17 @@ def test_non_fraction_requested_raster_keeps_source_clip_aspect(tmp_path) -> Non
         v = math.hypot(image.dxf.v_pixel.x, image.dxf.v_pixel.y)
         assert u == pytest.approx(v, rel=0.03), (delivery["source_id"], u, v)
         assert _footprint_aspect(image) == pytest.approx(ev["source_clip_aspect"], rel=0.03)
+
+
+def test_nearest_supported_lineweight_survives_dxf_serialization(tmp_path):
+    # Renderer-measured thin source stroke. Invalid DXF weight10 silently
+    # becomes13 in ezdxf; the nearest supported physical weight is9.
+    attrs = {}
+    dxf_exporter_module._apply_lineweight(attrs, 0.283 * MM_PER_PT)
+    assert attrs["lineweight"] == 9
+    doc = ezdxf.new("R2010")
+    doc.modelspace().add_line((0, 0), (10, 0), dxfattribs=attrs)
+    path = tmp_path / "nearest-stroke.dxf"
+    doc.saveas(path)
+    reopened = ezdxf.readfile(path)
+    assert next(iter(reopened.modelspace())).dxf.lineweight == 9

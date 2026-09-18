@@ -4,6 +4,10 @@ All notable release changes are recorded here.
 
 ## 1.0.99 - 2026-09-17
 
+- Choose the nearest supported DXF stroke weight before saving, preventing
+  invalid intermediate weights from being silently rounded up and thickening
+  fine gray drawing details.
+
 - Preserve original PDF character quads instead of reconstructing glyph frames
   from rounded font metrics, avoiding false shear in source outlines.
 - Omit geometry only when renderer paint bounds prove that it lies entirely
