@@ -28,6 +28,11 @@ try:
 except ImportError:
     import fitz  # Legacy fallback
 
+from ..core.image_paint_order import (
+    apply_image_paint_order,
+    verify_serialized_image_paint_order,
+)
+
 from ..core.document import (
     DocumentExtraction,
     ImagePlacement,
@@ -115,6 +120,63 @@ _POSITIONED_GEOMETRY_PROOF_FIELDS = frozenset(
         "positioned_geometry_sha256",
     }
 )
+
+
+_SOURCE_DASH_APPID = "BCS_SOURCE_DASH"
+
+
+def _add_source_dash_block(doc, layout, primitive, proof, attribs, dy):
+    name = f"BCS_DASH_{primitive.page_number}_{primitive.id}"
+    if name in doc.blocks:
+        raise RuntimeError("duplicate source dash block identity")
+    block = doc.blocks.new(name)
+    segment_attrs = dict(attribs)
+    segment_attrs["linetype"] = "Continuous"
+    segment_attrs.setdefault("invisible", 0)
+    segments = []
+    for start, end in proof.segments_model:
+        a, b = (start[0], start[1]+dy, 0.0), (end[0], end[1]+dy, 0.0)
+        entity = block.add_line(a, b, dxfattribs=segment_attrs)
+        segments.append((str(entity.dxf.handle), a, b))
+    parent = layout.add_blockref(name, (0, 0, 0), dxfattribs=segment_attrs)
+    if _SOURCE_DASH_APPID not in doc.appids:
+        doc.appids.add(_SOURCE_DASH_APPID)
+    source = json.dumps({
+        "schema": "bcs.source-straight-dashes/1", "source_id": primitive.id,
+        "source_seqno": proof.source_seqno, "source_start_pdf": proof.source_start_pdf,
+        "source_end_pdf": proof.source_end_pdf, "pattern_pdf": proof.pattern_pdf,
+        "phase_pdf": proof.phase_pdf, "visible_source_interval": proof.visible_source_interval,
+        "source_line_cap": proof.line_cap,
+        "display_limit": "Native LINE cap and lineweight display remain host-dependent.",
+    }, sort_keys=True, separators=(",", ":"))
+    tags = [(1000, source[index:index+240]) for index in range(0, len(source), 240)]
+    parent.set_xdata(_SOURCE_DASH_APPID, tags)
+    return {"handle": str(parent.dxf.handle), "name": name, "segments": segments,
+            "source_json": source, "attrs": segment_attrs}
+
+
+def _verify_serialized_source_dash_blocks(doc, expectations):
+    for expected in expectations:
+        parent = doc.entitydb.get(expected["handle"])
+        if (parent is None or parent.dxftype() != "INSERT" or parent.dxf.name != expected["name"]
+                or tuple(parent.dxf.insert) != (0, 0, 0) or parent.dxf.rotation != 0
+                or (parent.dxf.xscale, parent.dxf.yscale, parent.dxf.zscale) != (1, 1, 1)
+                or tuple(parent.dxf.extrusion) != (0, 0, 1)):
+            raise RuntimeError("serialized source dash parent transform changed")
+        if any(getattr(parent.dxf, key) != value for key, value in expected["attrs"].items()):
+            raise RuntimeError("serialized source dash parent style or visibility changed")
+        metadata = "".join(tag.value for tag in parent.get_xdata(_SOURCE_DASH_APPID))
+        if metadata != expected["source_json"]:
+            raise RuntimeError("serialized source dash identity changed")
+        lines = list(doc.blocks[expected["name"]])
+        if len(lines) != len(expected["segments"]):
+            raise RuntimeError("serialized source dash count changed")
+        for line, (handle, start, end) in zip(lines, expected["segments"], strict=True):
+            if (line.dxftype() != "LINE" or str(line.dxf.handle) != handle
+                    or any(not math.isclose(a, b, abs_tol=1e-10, rel_tol=0)
+                           for a, b in zip(tuple(line.dxf.start)+tuple(line.dxf.end), start+end, strict=True))
+                    or any(getattr(line.dxf, key) != value for key, value in expected["attrs"].items())):
+                raise RuntimeError("serialized source dash geometry or style changed")
 
 
 @dataclass
@@ -3978,6 +4040,9 @@ def _export_to_dxf_impl(
 
     cancel_requested = getattr(opts.provenance_opts, "_cancel_requested", None)
     progress_callback = getattr(opts.provenance_opts, "_progress_callback", None)
+    source_dash_expectations = []
+    source_paint_keys = {}
+    has_source_image_order = False
     for page_position, page in enumerate(extraction.pages, start=1):
         check_cancel(cancel_requested, f"before exporting page {page.page_data.page_number}")
         report_progress(
@@ -3994,6 +4059,21 @@ def _export_to_dxf_impl(
         _track_xy(0.0, 0.0 + dy)
         _track_xy(page_w, page_h + dy)
 
+        page_entity_start = len(msp.entity_space.entities)
+        paint_order = getattr(page, "image_paint_order", None)
+        if not opts.include_images:
+            paint_order = None
+        if int(page.page_data.page_number) in compositing_pages:
+            paint_order = None  # Existing exact page-fidelity surface contract.
+        has_source_image_order = has_source_image_order or paint_order is not None
+        primitive_entity_start = page_entity_start
+        previous_primitive_key = None
+
+        def record_primitive_entities(start, key, _order=paint_order, _page=page_position):
+            if _order is not None and key is not None:
+                for entity in msp.entity_space.entities[start:]:
+                    source_paint_keys[str(entity.dxf.handle)] = (_page, key)
+
         clip_fill_groups = {}
         for primitive in page.page_data.primitives:
             group_id = getattr(primitive, "clip_fill_group_id", None)
@@ -4001,6 +4081,11 @@ def _export_to_dxf_impl(
                 clip_fill_groups.setdefault(group_id, []).append(primitive)
         emitted_clip_fills = set()
         for primitive_index, primitive in enumerate(page.page_data.primitives, start=1):
+            record_primitive_entities(primitive_entity_start, previous_primitive_key)
+            primitive_entity_start = len(msp.entity_space.entities)
+            previous_primitive_key = (
+                paint_order.primitive_keys[primitive.id] if paint_order is not None else None
+            )
             if primitive_index % 64 == 0:
                 check_cancel(cancel_requested, "active page vector build")
                 report_progress(
@@ -4023,6 +4108,14 @@ def _export_to_dxf_impl(
                 _apply_color(fill_attribs, fill_rgb)
                 _apply_lineweight(attribs, primitive.line_width)
 
+            source_dash = getattr(page, "source_line_dashes", {}).get(primitive.id)
+            if opts.map_dashes and source_dash is not None:
+                expected = _add_source_dash_block(doc, msp, primitive, source_dash, attribs, dy)
+                source_dash_expectations.append(expected)
+                for point in primitive.points:
+                    _track_xy(float(point[0]), float(point[1])+dy)
+                entity_count += 1
+                continue
             if opts.map_dashes:
                 ltype = _linetype_from_dash(doc, primitive.dash_pattern, dash_cache)
                 if ltype:
@@ -4049,6 +4142,11 @@ def _export_to_dxf_impl(
                     for member in members
                 ):
                     raise RuntimeError(f"clipped fill {clip_group_id} has inconsistent paint metadata")
+                if paint_order is not None and any(
+                    paint_order.primitive_keys[member.id] != previous_primitive_key
+                    for member in members
+                ):
+                    raise RuntimeError(f"clipped fill {clip_group_id} crosses an image paint boundary")
                 contours = [[_ofs(point) for point in member.points] for member in members]
                 fills = _add_compound_filled_paths(
                     msp, contours, fill_rgb, fill_attribs,
@@ -4132,6 +4230,8 @@ def _export_to_dxf_impl(
                 for px, py in offset_pts:
                     _track_xy(float(px), float(py))
                 entity_count += 1
+
+        record_primitive_entities(primitive_entity_start, previous_primitive_key)
 
         if opts.include_text and opts.text_mode != "none":
             text_cfg = ImportConfig.auto()
@@ -4237,6 +4337,16 @@ def _export_to_dxf_impl(
                     positioned_translation_anchors[delivery.source_id] = positioned_anchor
                 text_deliveries.append(delivery.to_dict())
 
+                if paint_order is not None:
+                    # Verified item raster pixels already contain the final PDF
+                    # appearance at that footprint, including later paints.
+                    paint_key = (
+                        len(paint_order.image_seqnos) * 2 + 2
+                        if delivery.final_representation == "raster"
+                        else paint_order.text_keys[text.id]
+                    )
+                    for handle in delivery.entity_handles:
+                        source_paint_keys[str(handle)] = (page_position, paint_key)
                 delivered_kind = delivery.delivered_kind
                 created = int(delivery.count)
                 _track_xy(float(ti.insertion[0]), float(ti.insertion[1]))
@@ -4350,6 +4460,10 @@ def _export_to_dxf_impl(
                 image.dxf.u_pixel = (u_pixel[0], u_pixel[1], 0.0)
                 image.dxf.v_pixel = (v_pixel[0], v_pixel[1], 0.0)
                 image.dxf.flags = int(image.dxf.flags or 0) | 8
+                if paint_order is not None:
+                    source_paint_keys[str(image.dxf.handle)] = (
+                        page_position, paint_order.image_keys[image_index - 1],
+                    )
                 if staged_asset.draw_below_editable:
                     background_image_handles.append(str(image.dxf.handle or ""))
                 elif placement.source_kind == "page_raster_alpha_fidelity_fallback":
@@ -4449,6 +4563,9 @@ def _export_to_dxf_impl(
 
         # Advance page placement offset for the next page.
         page_step = _page_stack_step(page.page_data.height, arrangement, gap_ratio)
+        if paint_order is None:
+            for entity in msp.entity_space.entities[page_entity_start:]:
+                source_paint_keys[str(entity.dxf.handle)] = (page_position, 0)
         _stack_offset_y -= page_step
 
     # Persist extents + initial modelspace viewport so hosts open focused on geometry.
@@ -4473,7 +4590,18 @@ def _export_to_dxf_impl(
             vp.dxf.center = center
             vp.dxf.height = height * 1.1
 
-    if background_image_handles or foreground_image_handles:
+    if has_source_image_order:
+        background_set = set(background_image_handles)
+        foreground_set = set(foreground_image_handles)
+        # Non-bound pages retain their pre-existing alpha/composite ordering.
+        for handle in background_set:
+            page_key, _key = source_paint_keys[handle]
+            source_paint_keys[handle] = (page_key, -1)
+        for handle in foreground_set:
+            page_key, _key = source_paint_keys[handle]
+            source_paint_keys[handle] = (page_key, float("inf"))
+        apply_image_paint_order(msp, source_paint_keys)
+    elif background_image_handles or foreground_image_handles:
         background_set = set(background_image_handles)
         foreground_set = set(foreground_image_handles)
         explicitly_ordered = background_set | foreground_set
@@ -4544,6 +4672,10 @@ def _export_to_dxf_impl(
         )
         entities_written = len(msp)
         doc.saveas(str(temp_output))
+        if has_source_image_order:
+            verify_serialized_image_paint_order(
+                temp_output, [str(entity.dxf.handle) for entity in msp],
+            )
         # Re-open the exact candidate before it can replace a prior good DXF.
         # Every record the verification inspects is re-read from the written
         # bytes; bulk geometry it never inspects is syntax-checked in a
@@ -4566,6 +4698,7 @@ def _export_to_dxf_impl(
             trusted_positioned_session=trusted_positioned_session,
         )
         _verify_serialized_image_assets(candidate, serialized_image_expectations)
+        _verify_serialized_source_dash_blocks(candidate, source_dash_expectations)
         temp_output.replace(output)
     except Exception:
         for temp_asset in temp_assets:

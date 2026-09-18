@@ -90,6 +90,8 @@ class ExtractedPage:
     resolved_mode: Optional[str] = None       # "vector" | "raster" | "hybrid"
     resolved_reason: Optional[str] = None     # human-readable
     raster_fallback_failed: bool = False       # raster delivery failed; vector/text was retained
+    image_paint_order: object = None  # exact source intervals around individual images
+    source_line_dashes: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -174,6 +176,18 @@ class DocumentExtraction:
             "primitives": self.primitive_count,
             "text_items": self.text_count,
             "images": self.image_count,
+            "source_dash_delivery": {
+                "scope": "Renderer-bound single straight strokes use exact editable dash intervals. Other strokes retain native linetype approximations; native lineweight/cap display is separate.",
+                "per_page": [
+                    {"page": p.page_data.page_number,
+                     "exact_straight_source_ids": sorted(p.source_line_dashes),
+                     "native_linetype_source_ids": [
+                         item.id for item in p.page_data.primitives
+                         if item.dash_pattern and item.id not in p.source_line_dashes
+                     ]}
+                    for p in self.pages
+                ],
+            },
             "image_delivery": {
                 "placements": self.image_count,
                 "source_instances": image_source_instances,
@@ -654,6 +668,11 @@ def _extract_document_impl(
                 )
                 raster_fallback_failed = True
 
+            from .image_paint_order import bind_image_paint_order
+            from .source_line_dashes import bind_source_line_dashes
+
+            image_paint_order = bind_image_paint_order(page, page_data, images)
+            source_line_dashes = bind_source_line_dashes(page, page_data, opts.scale, opts.flip_y)
             extracted.append(ExtractedPage(
                 page_data=page_data,
                 profile=profile,
@@ -661,6 +680,8 @@ def _extract_document_impl(
                 resolved_mode=effective_mode,
                 resolved_reason=resolved_reason,
                 raster_fallback_failed=raster_fallback_failed,
+                image_paint_order=image_paint_order,
+                source_line_dashes=source_line_dashes,
             ))
             report_progress(
                 opts.progress_callback,

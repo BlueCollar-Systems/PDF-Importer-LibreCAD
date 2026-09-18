@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-# primitive_extractor.py — PyMuPDF -> normalized Primitives
-# BlueCollar Systems — BUILT. NOT BOUGHT.
+# primitive_extractor.py â€” PyMuPDF -> normalized Primitives
+# BlueCollar Systems â€” BUILT. NOT BOUGHT.
 """
 THE SEAM: converts PyMuPDF page data into host-neutral Primitives.
 Rule 1: Parser modules must not know about domain-specific logic.
@@ -262,8 +262,8 @@ def _page_mediabox_height(page) -> float:
     """Media-box height for Y-flip accounting for PDF /Rotate.
 
     PDF user-space coordinates are defined in the *unrotated* mediabox, but
-    PyMuPDF applies /Rotate when building ``page.rect``.  For 90°/270° pages
-    the viewer swaps width↔height, so we must use the rotated dimension as the
+    PyMuPDF applies /Rotate when building ``page.rect``.  For 90Â°/270Â° pages
+    the viewer swaps widthâ†”height, so we must use the rotated dimension as the
     Y-flip baseline to match what ``get_drawings`` / ``get_text`` actually
     returns (which is already in the *rotated* display space).
     """
@@ -567,7 +567,7 @@ def _span_baseline_pdf(span: dict, line: dict) -> Tuple[float, float]:
     """Return PDF user-space (x, baseline_y) for one span.
 
     PyMuPDF ``origin`` is usually the baseline anchor.  When it is missing or
-    an outlier, fall back to bbox bottom minus descender — same approach as the
+    an outlier, fall back to bbox bottom minus descender â€” same approach as the
     FreeCAD host importer so DXF/CAD text does not sit on dimension geometry.
     """
     origin = span.get("origin")
@@ -755,6 +755,10 @@ def _character_layout(line, span, font, to_model, glyph_queues):
             target_quad=target_quad,
             advance_width=_dist(target_quad[0], target_quad[1]),
             glyph_height=_dist(target_quad[0], target_quad[3]),
+            source_font_size_pdf=char.get("source_font_size_pdf"),
+            source_font_ascender=char.get("source_font_ascender"),
+            source_font_descender=char.get("source_font_descender"),
+            source_writing_mode=char.get("source_writing_mode"),
         ))
     return tuple(layouts)
 
@@ -790,7 +794,19 @@ def _raw_text_with_source_quads(page):
                     ):
                         continue
                     key = (chr(char.c), *origin)
-                    queues.setdefault(key, deque()).append(quad)
+                    try:
+                        metrics = {
+                            "source_font_size_pdf": float(char.size),
+                            "source_font_ascender": float(fitz.mupdf.ll_fz_font_ascender(char.font)),
+                            "source_font_descender": float(fitz.mupdf.ll_fz_font_descender(char.font)),
+                            "source_writing_mode": int(line.m_internal.wmode),
+                        }
+                    except (AttributeError, RuntimeError, TypeError, ValueError):
+                        # Optional older-wrapper metric APIs must not discard an
+                        # already obtained genuine source quad. Consumers that
+                        # need the full affine frame still require all metrics.
+                        metrics = {}
+                    queues.setdefault(key, deque()).append((quad, metrics))
     except (AttributeError, ImportError, RuntimeError, TypeError, ValueError):
         return page.get_text("rawdict")
 
@@ -806,7 +822,8 @@ def _raw_text_with_source_quads(page):
                         continue
                     candidates = queues.get((char.get("c", ""), *origin))
                     if candidates:
-                        char["quad"] = candidates.popleft()
+                        char["quad"], metrics = candidates.popleft()
+                        char.update(metrics)
                 # A uniform span's outer corners are original source corners,
                 # not recovered font-metric estimates. Keep the old span box
                 # path for mixed-height or non-collinear positioned text.
@@ -980,7 +997,7 @@ def _extract_text(
     # dimension value 7/16 on fabrication drawings; extraction owns this
     # semantic merge (RB-16 cross-host golden, stacked-fraction-extract).
     # Representation modes govern HOW a delivered value renders, never WHAT
-    # the value is — the render stage must not alter it further.
+    # the value is â€” the render stage must not alter it further.
     items = _merge_stacked_fractions(items)
     # Text identity is page-local source order (see the id note above). The
     # merger allocates replacement ids from the global counter, so re-index
@@ -991,7 +1008,7 @@ def _extract_text(
     return items
 
 
-# ── Stacked-fraction merger ──
+# â”€â”€ Stacked-fraction merger â”€â”€
 # Some CAD PDFs encode fractions like "15/16" as three separate text spans
 # stacked vertically: numerator, slash, denominator.  This post-processor
 # detects unambiguous stacked-fraction groups and merges them into a single
@@ -1716,7 +1733,7 @@ def _classify_generic(text: str) -> list:
     return tags
 
 
-# ── Coordinate helpers ──
+# â”€â”€ Coordinate helpers â”€â”€
 
 
 def _matrix_components(matrix) -> Tuple[float, float, float, float, float, float]:
