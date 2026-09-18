@@ -948,20 +948,42 @@ def _inline_image_blocks(page: fitz.Page) -> list[tuple[dict, dict]]:
         raise _InlineImageDecodeIncomplete(
             f"inline image byte extraction failed: {exc}", inline_info
         ) from exc
-    blocks_by_number = {
-        int(block.get("number")): block
-        for block in (text_dictionary.get("blocks") or [])
-        if int(block.get("type", -1)) == 1 and block.get("number") is not None
-    }
+    # The image-info and structured-text devices do not share block numbers.
+    # In particular, an image inside an annotation appearance can be numbered
+    # differently. Bind each occurrence to its exact decoded pixels and affine.
+    blocks_by_paint = {}
+    def paint_key(row, digest):
+        transform = tuple(float(value) for value in row.get("transform", ()))
+        if len(transform) != 6 or not all(math.isfinite(value) for value in transform):
+            raise ValueError("inline image has no finite affine transform")
+        return (int(row.get("width", 0)), int(row.get("height", 0)), transform, bytes(digest))
+    try:
+        for block in text_dictionary.get("blocks", ()):
+            if int(block.get("type", -1)) != 1:
+                continue
+            pixels = fitz.Pixmap(bytes(block["image"]))
+            if (pixels.width, pixels.height) != (block.get("width"), block.get("height")):
+                raise ValueError("decoded image dimensions disagree with the source block")
+            blocks_by_paint.setdefault(paint_key(block, pixels.digest), []).append(block)
+    except Exception as exc:
+        # MuPDF's FzErrorFormat is not a RuntimeError in all supported engines.
+        # A decoding failure must retain the existing page-fidelity route.
+        raise _InlineImageDecodeIncomplete(f"inline image pixels cannot be bound: {exc}", inline_info) from exc
     paired: list[tuple[dict, dict]] = []
-    for info in inline_info:
+    for info in image_info:
         number = int(info.get("number", -1))
-        block = blocks_by_number.get(number)
-        if block is None:
+        try:
+            matches = blocks_by_paint.get(paint_key(info, info.get("digest")), [])
+        except (RuntimeError, TypeError, ValueError) as exc:
+            raise _InlineImageDecodeIncomplete(f"inline image identity is invalid: {exc}", inline_info) from exc
+        if not matches:
             raise _InlineImageDecodeIncomplete(
-                f"inline image instance {number} has no decoded image block",
+                f"inline image instance {number} has no pixel-and-transform matched block",
                 inline_info,
             )
+        block = matches.pop(0)
+        if int(info.get("xref") or 0) != 0:
+            continue  # Consume earlier XObject occurrences before inline peers.
         image_bytes = block.get("image")
         transform = block.get("transform")
         if not isinstance(image_bytes, (bytes, bytearray)) or not image_bytes:

@@ -135,12 +135,11 @@ def test_same_pdf_dash_reuses_one_linetype_and_distinct_dashes_do_not_collide() 
 from pdfcadcore.primitive_extractor import MM_PER_PT  # noqa: E402
 
 
-@pytest.mark.parametrize("width_pt", [0.24, 0.60, 0.84, 1.32])
-def test_lineweight_treats_primitive_line_width_as_millimetres(width_pt: float) -> None:
+@pytest.mark.parametrize(("width_pt", "expected"), [(0.24, 9), (0.60, 20), (0.84, 30), (1.32, 50)])
+def test_lineweight_treats_primitive_line_width_as_millimetres(width_pt: float, expected: int) -> None:
     width_mm = width_pt * MM_PER_PT          # what pdfcadcore stores on Primitive.line_width
     attribs: dict = {}
     dxf_exporter_module._apply_lineweight(attribs, width_mm)
-    expected = int(max(5, min(211, round(width_mm * 100))))
     assert attribs["lineweight"] == expected
     # The old double conversion produced width_mm * MM_PER_PT -> 2.83x too thin.
     wrong = int(max(5, min(211, round(width_mm * MM_PER_PT * 100))))
@@ -246,21 +245,14 @@ def test_invalid_positioned_fraction_refuses_without_pdf_or_raster_work(
     if fault == "partial_layout":
         fraction.source_char_layout = fraction.source_char_layout[:-1]
     elif fault == "unsupported_shear":
-        first = fraction.source_char_layout[0]
-        q0, q1, q2, q3 = first.target_quad
-        shear = 0.5
-        q0 = (q0[0] + shear, q0[1])
-        q1 = (q1[0] + shear, q1[1])
-        top = (q1[0] - q0[0], q1[1] - q0[1])
-        right = (q2[0] - q1[0], q2[1] - q1[1])
+        character = fraction.source_char_layout[0]
+        q0, q1, q2, q3 = character.target_quad
+        shear = 0.2 * character.glyph_height
+        sheared = (q0, q1, (q2[0] + shear, q2[1]), (q3[0] + shear, q3[1]))
         fraction.source_char_layout = (
-            replace(
-                first,
-                target_quad=(q0, q1, q2, q3),
-                advance_width=math.hypot(*top),
-                glyph_height=math.hypot(*right),
-            ),
-        ) + tuple(fraction.source_char_layout[1:])
+            replace(character, target_quad=sheared),
+            *fraction.source_char_layout[1:],
+        )
 
     output = tmp_path / f"prior-{fault}.dxf"
     prior = b"prior native artifact\n"
@@ -327,3 +319,49 @@ def test_non_fraction_requested_raster_keeps_source_clip_aspect(tmp_path) -> Non
         v = math.hypot(image.dxf.v_pixel.x, image.dxf.v_pixel.y)
         assert u == pytest.approx(v, rel=0.03), (delivery["source_id"], u, v)
         assert _footprint_aspect(image) == pytest.approx(ev["source_clip_aspect"], rel=0.03)
+
+
+def test_nearest_supported_lineweight_survives_dxf_serialization(tmp_path):
+    # Renderer-measured thin source stroke. Invalid DXF weight10 silently
+    # becomes13 in ezdxf; the nearest supported physical weight is9.
+    attrs = {}
+    dxf_exporter_module._apply_lineweight(attrs, 0.283 * MM_PER_PT)
+    assert attrs["lineweight"] == 9
+    doc = ezdxf.new("R2010")
+    doc.modelspace().add_line((0, 0), (10, 0), dxfattribs=attrs)
+    path = tmp_path / "nearest-stroke.dxf"
+    doc.saveas(path)
+    reopened = ezdxf.readfile(path)
+    assert next(iter(reopened.modelspace())).dxf.lineweight == 9
+
+
+def test_requested_raster_keeps_ink_beyond_short_font_bbox(tmp_path):
+    source = tmp_path / "short-font-bbox.pdf"
+    with fitz.open() as doc:
+        page = doc.new_page(width=300, height=240)
+        page.insert_text((100, 150), "H", fontsize=12)
+        doc.save(source)
+    run = run_import(str(source), mode="vector", overrides={"pages": "1"})
+    page_data = run.extraction.pages[0].page_data
+    original = page_data.text_items[0]
+    b = original.source_bbox_pdf
+    short_bbox = (b[0], 145., b[2], b[3])
+    page_data.text_items[0] = replace(original, source_bbox_pdf=short_bbox,
+        bbox=(b[0]*MM_PER_PT, (240-b[3])*MM_PER_PT,
+              b[2]*MM_PER_PT, (240-145.)*MM_PER_PT))
+    output = tmp_path / "short-font-bbox.dxf"
+    result = export_to_dxf(run.extraction, str(output),
+                          DxfExportOptions(include_images=False, text_mode="raster"))
+    evidence = result.text_deliveries[0]["attempts"][-1]["evidence"]
+    assert evidence["source_bbox_pdf"] == list(short_bbox)
+    assert evidence["source_raster_coverage_bbox_pdf"][1] < 145.
+    native = ezdxf.readfile(output)
+    image = next(iter(native.modelspace().query("IMAGE")))
+    asset = tmp_path / native.entitydb[image.dxf.image_def_handle].dxf.filename
+    pix = fitz.Pixmap(str(asset))
+    # Above the artificial font bbox the delivered image retains H's stem.
+    coverage = evidence["source_raster_coverage_bbox_pdf"]
+    rows_above = int((145. - coverage[1]) / (coverage[3] - coverage[1]) * pix.height)
+    assert any(value < 128 for value in pix.samples[:pix.stride*rows_above])
+    top = image.dxf.insert.y + image.dxf.v_pixel.y*image.dxf.image_size.y
+    assert top > (240-145.)*MM_PER_PT

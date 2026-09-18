@@ -2009,18 +2009,18 @@ def test_invalid_positioned_fraction_export_never_reads_pdf_or_attempts_raster(
 
 
 def test_empty_embedded_stream_positioned_fraction_authorizes_item_raster() -> None:
-    """E2 markup 1/4: empty Arial stream is item-proof, not a layout fault.
+    """An empty font program must be bound to the synthetic item page.
 
     Glyphs/geometry cannot bind outlines without a font program, and native TEXT
     cannot keep per-character transforms. Item Raster is the remaining rung.
     """
     item = replace(
         _positioned_fraction("vertical"),
-        font_name="Arial",
+        font_name="BCS Deterministic Test",
         font_asset=None,
         font_failure=EmbeddedFontFailure(
-            page_number=1,
-            span_font_name="Arial",
+            page_number=3,
+            span_font_name="BCS Deterministic Test",
             reason="embedded_font_asset_build_failed",
             source_xref=61,
             error_type="ExactFontSourceImpossible",

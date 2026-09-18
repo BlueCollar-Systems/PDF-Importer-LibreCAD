@@ -157,4 +157,5 @@ def get_clip_aware_drawings(page):
         if "unexpected keyword argument 'extended'" not in str(error):
             raise
         rows = page.get_drawings()
-    return resolve_covered_clip_fills(rows)
+    from .page_paint_bounds import page_visible_drawings
+    return resolve_covered_clip_fills(page_visible_drawings(page, rows))

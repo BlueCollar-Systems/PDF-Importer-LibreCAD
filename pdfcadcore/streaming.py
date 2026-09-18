@@ -132,7 +132,7 @@ def iter_pages(
                     min_arc_angle_deg=min_arc_angle_deg,
                     arc_min_pts=arc_min_pts,
                 )
-            elapsed = timer.get("extract_ms") - (total_elapsed * 1000.0)
+            elapsed = timer.get("extract_ms") / 1000.0 - total_elapsed
             total_elapsed = timer.get("extract_ms") / 1000.0
 
             host_build_start = time.perf_counter()

@@ -60,6 +60,13 @@ class Primitive:
     # counters. They are never independent faces or circle-fit candidates.
     clip_fill_group_id: Optional[str] = None
     clip_fill_even_odd: bool = False
+    # Original PDF paint survives separately from legacy RGB composited on white.
+    # Native compositors need these values when later paint overlaps earlier ink.
+    source_stroke_color: Optional[Tuple[float, float, float]] = None
+    source_fill_color: Optional[Tuple[float, float, float]] = None
+    stroke_opacity: float = 1.0
+    fill_opacity: float = 1.0
+    source_draw_order: Optional[int] = None
 
 
 @dataclass
