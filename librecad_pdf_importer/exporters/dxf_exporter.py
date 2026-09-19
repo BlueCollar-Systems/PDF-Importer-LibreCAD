@@ -138,6 +138,19 @@ def _add_source_dash_block(doc, layout, primitive, proof, attribs, dy):
         a, b = (start[0], start[1]+dy, 0.0), (end[0], end[1]+dy, 0.0)
         entity = block.add_line(a, b, dxfattribs=segment_attrs)
         segments.append((str(entity.dxf.handle), a, b))
+    dots = []
+    if proof.dots_model:
+        from .stroke_footprint import _geometry
+        radius = proof.dot_radius_model
+        if not math.isfinite(radius) or radius <= 0 or proof.line_cap != 1:
+            raise RuntimeError("source round dash dot has invalid radius or cap")
+        for x, y in proof.dots_model:
+            center = (x, y+dy)
+            hatch = block.add_hatch(color=segment_attrs.get('color', 256), dxfattribs=segment_attrs)
+            boundary = hatch.paths.add_edge_path(flags=1)
+            boundary.add_arc(center, radius, 0, 180, ccw=True)
+            boundary.add_arc(center, radius, 180, 360, ccw=True)
+            dots.append({'handle': str(hatch.dxf.handle), 'geometry': _geometry(hatch)})
     parent = layout.add_blockref(name, (0, 0, 0), dxfattribs=segment_attrs)
     if _SOURCE_DASH_APPID not in doc.appids:
         doc.appids.add(_SOURCE_DASH_APPID)
@@ -147,11 +160,13 @@ def _add_source_dash_block(doc, layout, primitive, proof, attribs, dy):
         "source_end_pdf": proof.source_end_pdf, "pattern_pdf": proof.pattern_pdf,
         "phase_pdf": proof.phase_pdf, "visible_source_interval": proof.visible_source_interval,
         "source_line_cap": proof.line_cap,
+        "round_dot_centers_model": proof.dots_model,
+        "round_dot_radius_model": proof.dot_radius_model,
         "display_limit": "Native LINE cap and lineweight display remain host-dependent.",
     }, sort_keys=True, separators=(",", ":"))
     tags = [(1000, source[index:index+240]) for index in range(0, len(source), 240)]
     parent.set_xdata(_SOURCE_DASH_APPID, tags)
-    return {"handle": str(parent.dxf.handle), "name": name, "segments": segments,
+    return {"handle": str(parent.dxf.handle), "name": name, "segments": segments, "dots": dots,
             "source_json": source, "attrs": segment_attrs}
 
 
@@ -165,18 +180,34 @@ def _verify_serialized_source_dash_blocks(doc, expectations):
             raise RuntimeError("serialized source dash parent transform changed")
         if any(getattr(parent.dxf, key) != value for key, value in expected["attrs"].items()):
             raise RuntimeError("serialized source dash parent style or visibility changed")
+        layer = doc.layers.get(parent.dxf.layer)
+        if parent.dxf.transparency or layer.is_off() or layer.is_frozen():
+            raise RuntimeError("serialized source dash parent or layer is hidden")
         metadata = "".join(tag.value for tag in parent.get_xdata(_SOURCE_DASH_APPID))
         if metadata != expected["source_json"]:
             raise RuntimeError("serialized source dash identity changed")
         lines = list(doc.blocks[expected["name"]])
-        if len(lines) != len(expected["segments"]):
+        if len(lines) != len(expected["segments"]) + len(expected.get('dots', ())):
             raise RuntimeError("serialized source dash count changed")
-        for line, (handle, start, end) in zip(lines, expected["segments"], strict=True):
+        for line, (handle, start, end) in zip(lines[:len(expected['segments'])], expected["segments"], strict=True):
             if (line.dxftype() != "LINE" or str(line.dxf.handle) != handle
                     or any(not math.isclose(a, b, abs_tol=1e-10, rel_tol=0)
                            for a, b in zip(tuple(line.dxf.start)+tuple(line.dxf.end), start+end, strict=True))
                     or any(getattr(line.dxf, key) != value for key, value in expected["attrs"].items())):
                 raise RuntimeError("serialized source dash geometry or style changed")
+        if expected.get('dots'):
+            from .stroke_footprint import _geometry
+            for dot, wanted in zip(lines[len(expected['segments']):], expected['dots'], strict=True):
+                actual = _geometry(dot)
+                if (str(dot.dxf.handle) != wanted['handle'] or len(actual) != len(wanted['geometry'])
+                        or any(getattr(dot.dxf, key) != value for key, value in expected['attrs'].items())
+                        or dot.dxf.transparency):
+                    raise RuntimeError("serialized source dash dot identity or visibility changed")
+                for edge, reference in zip(actual, wanted['geometry'], strict=True):
+                    if (edge[0] != reference[0] or len(edge) != len(reference)
+                            or any(not math.isclose(a, b, rel_tol=0, abs_tol=1e-10)
+                                   for a, b in zip(edge[1:], reference[1:], strict=True))):
+                        raise RuntimeError("serialized source dash dot geometry changed")
 
 
 @dataclass
@@ -4110,7 +4141,7 @@ def _export_to_dxf_impl(
                 _apply_lineweight(attribs, primitive.line_width)
 
             source_dash = getattr(page, "source_line_dashes", {}).get(primitive.id)
-            if opts.map_dashes and source_dash is not None:
+            if opts.map_dashes and source_dash is not None and (not source_dash.dots_model or not is_r12):
                 expected = _add_source_dash_block(doc, msp, primitive, source_dash, attribs, dy)
                 source_dash_expectations.append(expected)
                 for point in primitive.points:

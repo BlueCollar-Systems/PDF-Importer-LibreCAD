@@ -24,6 +24,8 @@ class SourceLineDashes:
     visible_source_interval: tuple[float, float]
     segments_model: tuple[tuple[tuple[float, float], tuple[float, float]], ...]
     line_cap: int
+    dots_model: tuple[tuple[float, float], ...] = ()
+    dot_radius_model: float = 0.0
 
 
 def _numbers(text):
@@ -105,7 +107,7 @@ def _renderer_lines(page):
                     color = attrs.get("stroke", "")
                     cap = {"butt": 0, "round": 1, "square": 2}.get(attrs.get("stroke-linecap", "butt"))
                     if (expansion <= 0 or local_length <= 0 or length <= 0
-                            or not pattern or any(value <= 0 for value in pattern)
+                            or not pattern or any(value < 0 for value in pattern) or not any(pattern)
                             or not math.isfinite(phase) or not math.isfinite(width)
                             or not re.fullmatch(r"#[0-9a-fA-F]{6}", color) or cap is None):
                         raise ValueError("unsupported straight stroke paint")
@@ -113,7 +115,10 @@ def _renderer_lines(page):
                     rows.append({"start": start, "end": end, "pattern": pattern,
                                  "phase": phase, "expansion": expansion,
                                  "along_scale": length/local_length, "width": width,
-                                 "color": rgb, "cap": cap})
+                                 "color": rgb, "cap": cap,
+                                 "similarity": math.isclose(math.hypot(matrix[0], matrix[1]),
+                                                            math.hypot(matrix[2], matrix[3]), rel_tol=1e-9, abs_tol=0)
+                                 and abs(matrix[0]*matrix[2]+matrix[1]*matrix[3]) <= 1e-9*abs(determinant)})
                 except (ValueError, TypeError, ZeroDivisionError):
                     pass  # Not certified; existing native linetype remains.
         for child in node:
@@ -157,6 +162,88 @@ def dash_intervals(length, pattern, phase, visible=(0.0, 1.0), limit=_MAX_DASHES
     return tuple(intervals)
 
 
+def round_dot_dash_intervals(length, pattern, phase, limit=_MAX_DASHES):
+    """Literal round-cap painted dots; zero gaps/empty patterns stay unsupported.
+
+    A zero painted length has circular ink under a round cap. It must never be
+    discarded, enlarged to a short LINE, or confused with a zero-length gap.
+    This deliberately requires an unclipped complete source segment.
+    """
+    values = tuple(float(value) for value in pattern)
+    if len(values) % 2:
+        values += values
+    if (not values or not all(math.isfinite(v) and v >= 0 for v in values)
+            or any(v <= 0 for v in values[1::2]) or not any(v == 0 for v in values[::2])
+            or not math.isfinite(length) or length <= 0 or not math.isfinite(phase)):
+        raise ValueError("unsupported round-dot dash pattern")
+    position, index, steps = -(phase % sum(values)), 0, 0
+    segments, dots = [], []
+    while position <= length:
+        end = position + values[index]
+        if index % 2 == 0:
+            if values[index] == 0 and 0 <= position <= length:
+                dots.append(position)
+            elif end > 0 and position < length:
+                segments.append((max(0., position), min(length, end)))
+        position = end
+        index = (index + 1) % len(values)
+        steps += 1
+        if len(segments) + len(dots) > limit or steps > limit*len(values)*2:
+            raise ValueError("source round-dot dash budget exceeded")
+    return tuple(segments), tuple(dots)
+
+
+def _unclipped_round_dot_strokes(page, page_bounds):
+    """Full round ink must fit actual rectangular clips; no blend approximation."""
+    from .nontext_composite import _source_group_declarations
+    try:
+        _source_group_declarations(page)
+    except (ValueError, RuntimeError):
+        return {}  # Flattened group flags alone do not prove knockout absence.
+    clips, groups, result, seen = [], [], {}, set()
+    for row in page.get_drawings(extended=True):
+        level = row.get('level', 0)
+        clips = [entry for entry in clips if entry.get('level', 0) < level]
+        groups = [entry for entry in groups if entry.get('level', 0) < level]
+        if row.get('type') == 'clip':
+            clips.append(row)
+            continue
+        if row.get('type') == 'group':
+            groups.append(row)
+            continue
+        seq = row.get('seqno')
+        if type(seq) is not int:
+            continue
+        if seq in seen:
+            result.pop(seq, None)
+            continue
+        seen.add(seq)
+        items = row.get('items') or ()
+        if (row.get('type') != 's' or row.get('fill') is not None or row.get('stroke_opacity') != 1
+                or len(items) != 1 or items[0][0] != 'l' or row.get('closePath')
+                or set(row.get('lineCap', ())) != {1}
+                or any(group.get('opacity', 1) != 1 or group.get('blendmode', 'Normal') != 'Normal'
+                       or group.get('knockout', False) for group in groups)):
+            continue
+        radius = float(row.get('width', 0))/2
+        start, end = items[0][1:]
+        bounds = (min(start[0], end[0])-radius, min(start[1], end[1])-radius,
+                  max(start[0], end[0])+radius, max(start[1], end[1])+radius)
+        if radius <= 0 or not all(math.isfinite(v) for v in (*bounds, radius)):
+            continue
+        masks = [page_bounds]
+        for clip in clips:
+            paths = clip.get('items') or ()
+            if len(paths) != 1 or paths[0][0] != 're':
+                break
+            masks.append(tuple(paths[0][1]))
+        if len(masks) != len(clips)+1 or any(len(box) != 4 or not all(math.isfinite(v) for v in box)
+                or box[0] > bounds[0] or box[1] > bounds[1] or box[2] < bounds[2] or box[3] < bounds[3] for box in masks):
+            continue
+        result[seq] = row
+    return result
+
+
 def bind_source_line_dashes(page, page_data, scale, flip_y):
     candidates = [p for p in page_data.primitives if p.type == "line"
                   and len(p.points or ()) == 2 and p.stroke_color is not None
@@ -174,6 +261,7 @@ def bind_source_line_dashes(page, page_data, scale, flip_y):
     matrix = _page_rotation_transform(page.rect, page.rotation_matrix)
     page_height = float(page.rect.height)
     factor = float(scale)*25.4/72
+    dot_strokes = None
 
     def model(point):
         x, y = _transform_pdf_point(point[0], point[1], matrix)
@@ -229,8 +317,27 @@ def bind_source_line_dashes(page, page_data, scale, flip_y):
         visible = tuple(sorted(parameters))
         exact_pattern = tuple(value*row["along_scale"] for value in row["pattern"])
         exact_phase = row["phase"]*row["along_scale"]
+        dots, dot_radius = (), 0.0
         try:
-            intervals = dash_intervals(length, exact_pattern, exact_phase, visible)
+            if 0 in exact_pattern:
+                if row['cap'] != 1 or not row['similarity'] or visible != (0.0, 1.0):
+                    continue
+                if dot_strokes is None:
+                    a, b, c, d, e, f = matrix
+                    determinant = a*d-b*c
+                    inverse = (d/determinant, -b/determinant, -c/determinant, a/determinant,
+                               (c*f-d*e)/determinant, (b*e-a*f)/determinant)
+                    corners = [_point(point, inverse) for point in
+                               ((0, 0), (page.rect.width, 0), (page.rect.width, page.rect.height), (0, page.rect.height))]
+                    page_bounds = (min(p[0] for p in corners), min(p[1] for p in corners),
+                                   max(p[0] for p in corners), max(p[1] for p in corners))
+                    dot_strokes = _unclipped_round_dot_strokes(page, page_bounds)
+                if source['seqno'] not in dot_strokes:
+                    continue
+                intervals, dots = round_dot_dash_intervals(length, exact_pattern, exact_phase)
+                dot_radius = float(source['width'])*abs(factor)/2
+            else:
+                intervals = dash_intervals(length, exact_pattern, exact_phase, visible)
         except ValueError:
             continue
         segments = tuple(((target_start[0]+a/length*dx, target_start[1]+a/length*dy),
@@ -239,5 +346,7 @@ def bind_source_line_dashes(page, page_data, scale, flip_y):
         qualified[primitive.id] = SourceLineDashes(
             int(source["seqno"]), start, end, exact_pattern, exact_phase,
             visible, segments, row["cap"],
+            tuple((target_start[0]+position/length*dx, target_start[1]+position/length*dy) for position in dots),
+            dot_radius,
         )
     return qualified

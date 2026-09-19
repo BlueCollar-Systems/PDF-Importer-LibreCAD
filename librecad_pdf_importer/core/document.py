@@ -195,10 +195,11 @@ class DocumentExtraction:
                     for p in self.pages],
             },
             "source_dash_delivery": {
-                "scope": "Renderer-bound single straight strokes use exact editable dash intervals. Other strokes retain native linetype approximations; native lineweight/cap display is separate.",
+                "scope": "Source qualification for dash mapping: renderer-bound single straight strokes use exact editable dash intervals. Qualified full round-dot strokes add analytic circles in modern DXF; legacy R12 retains their native linetype approximation. Other strokes also retain native linetype approximations; native LINE weight/cap display is separate.",
                 "per_page": [
                     {"page": p.page_data.page_number,
                      "exact_straight_source_ids": sorted(p.source_line_dashes),
+                     "modern_dxf_round_dot_source_ids": sorted(key for key, proof in p.source_line_dashes.items() if proof.dots_model),
                      "native_linetype_source_ids": [
                          item.id for item in p.page_data.primitives
                          if item.dash_pattern and item.id not in p.source_line_dashes
