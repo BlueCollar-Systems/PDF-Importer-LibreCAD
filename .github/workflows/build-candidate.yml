@@ -61,15 +61,16 @@ jobs:
           python - <<'PY'
           import os
           import subprocess
+          from collections import ChainMap
           from pathlib import Path
           from scripts.verify_release_artifacts import write_candidate_provenance
 
           # PR events name a merge commit; the package uses the checked-out head.
           # Preserve the actual workflow identity and the existing release gate.
-          metadata = dict(os.environ)
-          metadata["GITHUB_SHA"] = subprocess.check_output(
+          # Keep Windows' case-insensitive environment lookup for ImageOS.
+          metadata = ChainMap({"GITHUB_SHA": subprocess.check_output(
               ["git", "rev-parse", "HEAD"], text=True
-          ).strip()
+          ).strip()}, os.environ)
           write_candidate_provenance(
               output_path=Path("dist/release-candidate-provenance.json"),
               environment=metadata,
