@@ -71,6 +71,15 @@ fitz = import_fitz()
 _EMPTY_POSITIONED_SESSION: object | None = None
 
 
+def _visible(drawing) -> list:
+    """Modelspace without the hidden search-text companions (frozen P###_TEXT_SEARCH)."""
+    return [
+        entity
+        for entity in drawing.modelspace()
+        if not entity.dxf.layer.endswith("TEXT_SEARCH")
+    ]
+
+
 def _production_empty_positioned_session() -> object:
     global _EMPTY_POSITIONED_SESSION
     if _EMPTY_POSITIONED_SESSION is not None:
@@ -582,7 +591,7 @@ def test_librecad_visible_text_descends_to_glyphs_and_survives_parent_reopen(
         attempt["attempted_representation"] for attempt in delivery["attempts"]
     ] == expected_attempts
     drawing = ezdxf.readfile(output)
-    assert {entity.dxftype() for entity in drawing.modelspace()} == {"INSERT"}
+    assert {entity.dxftype() for entity in _visible(drawing)} == {"INSERT"}
 
     native_attempt = next(
         attempt
@@ -1152,7 +1161,7 @@ def test_librecad_native_text_attempt_preserves_source_cap_height_invariant(
 
     delivery = result.text_deliveries[0]
     assert delivery["final_representation"] == "glyphs"
-    assert {entity.dxftype() for entity in ezdxf.readfile(output).modelspace()} == {
+    assert {entity.dxftype() for entity in _visible(ezdxf.readfile(output))} == {
         "INSERT"
     }
     native = next(
@@ -2573,7 +2582,7 @@ def test_render_stage_must_not_alter_delivered_text_representation(tmp_path) -> 
         delivery["final_representation"] == "glyphs"
         for delivery in result.text_deliveries
     )
-    assert {entity.dxftype() for entity in drawing.modelspace()} == {"INSERT"}
+    assert {entity.dxftype() for entity in _visible(drawing)} == {"INSERT"}
     assert [entry["source_id"] for entry in result.text_deliveries] == [
         "text_span:3:1",
         "text_span:3:2",
@@ -2978,7 +2987,7 @@ def test_explicit_item_raster_is_verified_without_being_reported_as_fallback(
     ]
     assert result.text_fallbacks == []
     drawing = ezdxf.readfile(output)
-    assert [entity.dxftype() for entity in drawing.modelspace()] == ["IMAGE"]
+    assert [entity.dxftype() for entity in _visible(drawing)] == ["IMAGE"]
     image = next(iter(drawing.modelspace()))
     evidence = delivery["attempts"][0]["evidence"]
     assert evidence["host_safe_opaque_image_required"] is True
@@ -3278,8 +3287,8 @@ def test_exporter_reaches_verified_item_raster_terminal_attempt(tmp_path) -> Non
     assert asset_path.is_file()
     assert asset_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
     drawing = ezdxf.readfile(output)
-    assert {entity.dxftype() for entity in drawing.modelspace()} == {"IMAGE"}
-    assert {entity.dxf.handle for entity in drawing.modelspace()} == set(
+    assert {entity.dxftype() for entity in _visible(drawing)} == {"IMAGE"}
+    assert {entity.dxf.handle for entity in _visible(drawing)} == set(
         delivery["entity_handles"]
     )
     report_path = tmp_path / "raster_terminal_import_report.json"
@@ -3512,7 +3521,7 @@ def test_unproven_structural_failure_is_rescued_as_an_uncertified_raster(
             "count": 1,
         }
     ]
-    assert {entity.dxftype() for entity in ezdxf.readfile(output).modelspace()} == {"IMAGE"}
+    assert {entity.dxftype() for entity in _visible(ezdxf.readfile(output))} == {"IMAGE"}
 
 
 def test_duplicate_source_identity_aborts_without_replacing_prior_output(
@@ -4093,7 +4102,7 @@ def test_real_welding_chart_requested_item_raster_is_source_bound(
     assert evidence["source_id"] == delivery["source_id"]
     assert evidence["visible_ink_verified"] is True
     drawing = ezdxf.readfile(output)
-    assert [entity.dxftype() for entity in drawing.modelspace()] == ["IMAGE"]
+    assert [entity.dxftype() for entity in _visible(drawing)] == ["IMAGE"]
     run.close()
     assert Path(evidence["asset_path"]).is_file()
 

@@ -35,7 +35,8 @@ from librecad_pdf_importer.importer import run_import, write_import_report
 
 _TARGET = "EX101"
 # TextDeliveryResult.to_dict() as it was before this change: an item that does
-# not degrade must not grow a single key.
+# not degrade must not grow a single key (search_text, the hidden companion's own
+# record, is the searchable-text change and is pinned in its own test file).
 _PRE_CHANGE_DELIVERY_KEYS = {
     "source_id",
     "requested_representation",
@@ -155,7 +156,12 @@ def _export(tmp_path: Path, name: str, pdf_path: Path, *, text_mode="glyphs",
 
 
 def _census(drawing) -> Counter:
-    return Counter((entity.dxftype(), entity.dxf.layer) for entity in drawing.modelspace())
+    # What is visible: the hidden search-text companions are on a frozen layer.
+    return Counter(
+        (entity.dxftype(), entity.dxf.layer)
+        for entity in drawing.modelspace()
+        if not entity.dxf.layer.endswith("TEXT_SEARCH")
+    )
 
 
 def _shape(delivery: dict) -> tuple:
@@ -630,7 +636,7 @@ def test_sheet_without_a_failing_item_is_unchanged(tmp_path, text_mode) -> None:
 
     assert len(result.text_deliveries) == 3
     for delivery in result.text_deliveries:
-        assert set(delivery) == _PRE_CHANGE_DELIVERY_KEYS
+        assert set(delivery) - {"search_text"} == _PRE_CHANGE_DELIVERY_KEYS
         assert delivery["verified"] is True
         assert all(attempt["outcome"] != "degraded" for attempt in delivery["attempts"])
     expected_type = {"text": "INSERT", "glyphs": "INSERT", "raster": "IMAGE"}.get(text_mode)

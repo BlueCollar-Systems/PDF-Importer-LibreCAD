@@ -380,6 +380,10 @@ class Pdf2DxfApp(tk.Tk):
             clip_fill_warning = str(stats.get("clip_fill_warning") or "")
             if clip_fill_warning:
                 self._log(clip_fill_warning)
+            # A lost hidden search-text companion is a warning; the drawing is unaffected.
+            search_text_warning = str(stats.get("searchable_text_warning") or "")
+            if search_text_warning:
+                self._log(search_text_warning)
             # A degraded text item never costs the sheet, so it must be loud.
             degraded_count = int(text_delivery.get("degraded_item_count") or 0)
             if degraded_count:
@@ -427,6 +431,7 @@ class Pdf2DxfApp(tk.Tk):
                  f"Complete report: {text_delivery.get('report_path', '')}\n"
                  f"Output: {output_path}"
                 + (f"\n\n{clip_fill_warning}" if clip_fill_warning else "")
+                + (f"\n\n{search_text_warning}" if search_text_warning else "")
                 + (f"\n\n{launch_message}" if launch_message else ""),
             ))
 

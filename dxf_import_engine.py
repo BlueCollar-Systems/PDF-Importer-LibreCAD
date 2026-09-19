@@ -127,6 +127,7 @@ def _resume_options_identity(
     config: ImportConfig,
     dxf_version: str,
     librecad_executable: Optional[str] = None,
+    searchable_text: bool = True,
 ) -> tuple[str, dict]:
     from pdf2dxf import __version__
 
@@ -135,6 +136,7 @@ def _resume_options_identity(
         "importer_version": str(__version__),
         "engine_sha256": _engine_sha256(),
         "dxf_version": str(dxf_version),
+        "searchable_text": bool(searchable_text),
         "librecad_runtime_binding": librecad_binding.identity_payload(),
         "config": asdict(config),
     }
@@ -193,7 +195,22 @@ def _assemble_checkpoints(checkpoints: list[Path], output_path: str) -> None:
                 output.parent,
             ).replace("\\", "/")
         before = {entity.dxf.handle for entity in target_msp}
-        source_extents = ezdxf_bbox.extents(source.modelspace(), fast=False)
+        # The hidden search-text companions certify nothing visual, so they must
+        # not size a page either: ezdxf measures a frozen TEXT like any entity,
+        # and every later page would be stacked somewhere else because of them.
+        hidden_layers = {
+            str(layer.dxf.name)
+            for layer in source.layers
+            if str(layer.dxf.name).endswith("TEXT_SEARCH") and layer.is_frozen()
+        }
+        source_extents = ezdxf_bbox.extents(
+            (
+                entity
+                for entity in source.modelspace()
+                if str(entity.dxf.layer) not in hidden_layers
+            ),
+            fast=False,
+        )
         load_modelspace(
             source,
             target,
@@ -239,6 +256,23 @@ def _degraded_text_block(page_records: list[Dict[str, Any]]) -> Dict[str, Any]:
     return {"items": items, "total": total, "truncated": total > len(items)}
 
 
+def _search_text_block(page_records: list[Dict[str, Any]]) -> Dict[str, Any]:
+    """The pages' hidden search-text companion blocks, merged into one block.
+
+    ``layers`` are the page reports' names; the assembled drawing prefixes each
+    with its ``page_NNNN$0$``.
+    """
+    blocks = [record.get("searchable_text_companions") or {} for record in page_records]
+    return {
+        "enabled": any(bool(block.get("enabled")) for block in blocks),
+        **{
+            key: sum(int(block.get(key) or 0) for block in blocks)
+            for key in ("written", "not_representable", "failed", "mismatch")
+        },
+        "layers": sorted({str(name) for block in blocks for name in block.get("layers") or []}),
+    }
+
+
 def _page_progress(position: int, total: int, record: Dict[str, Any]) -> str:
     """A checkpointed page is announced as certified only when all its text is."""
     degraded = _page_degraded_text_items(record)
@@ -270,6 +304,8 @@ def _write_resumable_summary(
     # and the report the operator is pointed at says so as loudly as its page report.
     degraded_text = _degraded_text_block(page_records)
     text_degrade_warnings = int(degraded_text["total"])
+    search_text = _search_text_block(page_records)
+    search_text_warnings = search_text["failed"] + search_text["mismatch"]
     payload = {
         "schema": "bcs.resumable_import_report/1.0",
         "result": "complete" if len(page_records) == len(selected_pages) else "cancelled",
@@ -290,9 +326,12 @@ def _write_resumable_summary(
         "text_items_degraded_total": degraded_text["total"],
         "text_items_degraded_truncated": degraded_text["truncated"],
         "page_reports": [record.get("import_report_path", "") for record in page_records],
-        # Left-out / approximate clipped fills plus degraded / dropped text items.
-        "warnings": clip_fill_warnings + text_degrade_warnings,
+        # Left-out / approximate clipped fills, degraded / dropped text items and
+        # lost search-text companions.
+        "warnings": clip_fill_warnings + text_degrade_warnings + search_text_warnings,
         "clip_fill_delivery": clip_fill_delivery,
+        # What a search-text warning is about; the page reports name the items.
+        "searchable_text_companions": search_text,
         "output": str(output),
     }
     _atomic_json(summary_path, payload)
@@ -346,8 +385,10 @@ def _convert_resumable(
     cancel_requested: Optional[Callable[[], bool]],
     restart_on_resume_mismatch: bool,
     librecad_executable: Optional[str],
+    searchable_text: bool = True,
 ) -> Dict[str, Any]:
     from librecad_pdf_importer.core.document import clip_fill_warning_line
+    from librecad_pdf_importer.exporters.dxf_exporter import searchable_text_warning_line
 
     source = Path(input_path).expanduser().resolve()
     output = Path(output_path).expanduser().resolve()
@@ -358,6 +399,7 @@ def _convert_resumable(
         config,
         dxf_version,
         librecad_executable,
+        searchable_text,
     )
     selected_pages = _selected_page_indices(str(source), config)
     manifest: Dict[str, Any] = {
@@ -425,6 +467,7 @@ def _convert_resumable(
                 progress_callback,
                 cancel_requested=cancel_requested,
                 librecad_executable=librecad_executable,
+                searchable_text=searchable_text,
             )
         except ActivePageCancelled as exc:
             checkpoint.unlink(missing_ok=True)
@@ -445,6 +488,9 @@ def _convert_resumable(
             "import_report_path": str(page_stats.get("import_report_path", "")),
             "text_delivery": dict(page_stats.get("text_delivery") or {}),
             "clip_fill_delivery": dict(page_stats.get("clip_fill_delivery") or {}),
+            "searchable_text_companions": dict(
+                page_stats.get("searchable_text_companions") or {}
+            ),
             "assets": _dxf_asset_inventory(checkpoint, session_dir),
         }
         _atomic_json(manifest_path, manifest)
@@ -482,6 +528,7 @@ def _convert_resumable(
         "clip_fill_warning": clip_fill_warning_line(
             record.get("clip_fill_delivery") or {} for record in records
         ),
+        "searchable_text_warning": searchable_text_warning_line(_search_text_block(records)),
     }
 
 
@@ -498,12 +545,14 @@ def _convert_via_package(
     progress_callback: Optional[Callable[[str], None]] = None,
     cancel_requested: Optional[Callable[[], bool]] = None,
     librecad_executable: Optional[str] = None,
+    searchable_text: bool = True,
 ) -> Dict[str, Any]:
     """Full BCS-ARCH-001 pipeline (auto/raster/hybrid + raster pages)."""
     from librecad_pdf_importer.exporters.dxf_exporter import (
         DxfExportOptions,
         degraded_text_items,
         export_to_dxf,
+        searchable_text_warning_line,
         summarize_text_delivery,
     )
     from librecad_pdf_importer.importer import (
@@ -557,6 +606,7 @@ def _convert_via_package(
                     map_dashes=bool(config.map_dashes),
                     librecad_executable=librecad_executable,
                     provenance_opts=run.config,
+                    searchable_text=bool(searchable_text),
                 ),
             )
         except ActivePageCancelled:
@@ -636,6 +686,11 @@ def _convert_via_package(
             # clipped fill was lost); a resumable run merges the blocks of its pages.
             "clip_fill_delivery": run.extraction.clip_fill_delivery(),
             "clip_fill_warning": run.extraction.clip_fill_warning(),
+            # Hidden search-text companions: counts, and one line when any was lost.
+            "searchable_text_companions": export.searchable_text_companions,
+            "searchable_text_warning": searchable_text_warning_line(
+                export.searchable_text_companions
+            ),
         }
     finally:
         run.close()
@@ -652,6 +707,7 @@ def convert(
     cancel_requested: Optional[Callable[[], bool]] = None,
     restart_on_resume_mismatch: bool = False,
     librecad_executable: Optional[str] = None,
+    searchable_text: bool = True,
 ) -> Dict[str, Any]:
     """Convert a PDF file to DXF.
 
@@ -692,6 +748,7 @@ def convert(
             cancel_requested,
             restart_on_resume_mismatch,
             librecad_executable,
+            searchable_text,
         )
     return _convert_via_package(
         input_path,
@@ -701,4 +758,5 @@ def convert(
         progress_callback,
         cancel_requested=cancel_requested,
         librecad_executable=librecad_executable,
+        searchable_text=searchable_text,
     )

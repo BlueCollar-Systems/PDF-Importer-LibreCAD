@@ -12,6 +12,7 @@ from .exporters.dxf_exporter import (
     degraded_text_item_lines,
     degraded_text_items,
     export_to_dxf,
+    searchable_text_warning_line,
 )
 from .importer import run_import
 
@@ -125,7 +126,19 @@ def main() -> int:
             degraded = degraded_text_items(export.text_deliveries)
             for line in degraded_text_item_lines(degraded["items"], degraded["total"]):
                 _print_stderr(f"{rel}: {line}")
-            warnings = clip_fill_warnings + int(degraded["total"])
+            # A lost hidden search-text companion is a warning; the sheet still passes.
+            search_text = export.searchable_text_companions
+            search_text_warning = searchable_text_warning_line(
+                search_text,
+                see="See searchable_text_companions in the batch report." if args.json
+                else "Run the batch with --json for the searchable_text_companions records.",
+            )
+            if search_text_warning:
+                _print_stderr(f"{rel}: {search_text_warning}")
+            warnings = (
+                clip_fill_warnings + int(degraded["total"])
+                + int(search_text["failed"]) + int(search_text["mismatch"])
+            )
             aggregate["degraded" if degraded["total"] else "passed"] += 1
             aggregate["warnings"] += warnings
             aggregate["results"].append({
@@ -139,6 +152,7 @@ def main() -> int:
                 "images": export.image_count,
                 "warnings": warnings,
                 "clip_fill_delivery": clip_fill_delivery,
+                "searchable_text_companions": search_text,
             })
         except Exception as exc:  # noqa: BLE001
             aggregate["failed"] += 1

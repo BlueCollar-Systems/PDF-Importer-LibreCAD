@@ -258,7 +258,11 @@ def test_real_empty_arial_program_fraction_exports_and_reopens(tmp_path):
     reopened = ezdxf.readfile(output)
     images = list(reopened.modelspace().query("IMAGE"))
     assert len(images) == 1
-    assert not list(reopened.modelspace().query("TEXT MTEXT INSERT"))
+    # Visible text: the hidden search-text companion is on its own frozen layer.
+    assert not [
+        entity for entity in reopened.modelspace().query("TEXT MTEXT INSERT")
+        if not entity.dxf.layer.endswith("TEXT_SEARCH")
+    ]
     image = images[0]
     assert math.hypot(image.dxf.u_pixel.x, image.dxf.u_pixel.y) > 0
     assert math.hypot(image.dxf.v_pixel.x, image.dxf.v_pixel.y) > 0

@@ -20,6 +20,7 @@ import numpy as np
 from ezdxf import path as ezdxf_path
 from ezdxf.colors import RGB, aci2rgb, rgb2int
 from ezdxf.lldxf.const import VALID_DXF_LINEWEIGHTS
+from ezdxf.lldxf.encoding import decode_dxf_unicode
 from ezdxf.math import Vec2, is_point_in_polygon_2d
 from ezdxf.math.triangulation import mapbox_earcut_2d
 from ezdxf.units import MM
@@ -62,6 +63,7 @@ from dxf_text_builder import (
     _nested_outline_tolerance,
     _solid_fill_verified,
     _source_id,
+    _write_search_text_companion,
     build_text,
     iter_glyph_outline_entities,
     reset_text_styles,
@@ -207,6 +209,10 @@ class DxfExportOptions:
     page_gap_ratio: float = 0.02
     provenance_opts: Optional[Any] = None
     librecad_executable: Optional[str] = None
+    # Hidden, non-certifying companion: the exact source string of every
+    # outlined / rastered / dropped span as native TEXT on the frozen layer
+    # P###_TEXT_SEARCH, so the drawing is searchable. Outlines stay the truth.
+    searchable_text: bool = True
 
 
 class TextRepresentationDeliveryError(ImportStopped):
@@ -258,6 +264,7 @@ class DxfExportResult:
     delivered_text_entity_counts: Dict[str, int] = field(default_factory=dict)
     text_deliveries: List[Dict[str, Any]] = field(default_factory=list)
     final_rect_paints: List[Dict[str, Any]] = field(default_factory=list)
+    searchable_text_companions: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1135,6 +1142,57 @@ def degraded_text_items(
     }
 
 
+def searchable_text_companions(
+    deliveries: Sequence[Any],
+    *,
+    enabled: bool,
+) -> Dict[str, Any]:
+    """Count the hidden search-text companions. They certify nothing visual.
+
+    ``failed`` and ``mismatch`` are warnings; ``not_representable`` is a string
+    native TEXT cannot carry literally, so no companion was attempted.
+    """
+
+    records = [
+        item["search_text"]
+        for item in deliveries or []
+        if isinstance(item, dict) and isinstance(item.get("search_text"), dict)
+    ]
+    counts = {
+        status: sum(1 for record in records if record.get("status") == status)
+        for status in ("written", "not_representable", "failed", "mismatch")
+    }
+    return {
+        "enabled": bool(enabled),
+        **counts,
+        "layers": sorted(
+            {
+                str(record.get("layer") or "")
+                for record in records
+                if record.get("status") == "written"
+            }
+        ),
+    }
+
+
+SEARCH_TEXT_SEE_IMPORT_REPORT = "See searchable_text_companions in the import report."
+
+
+def searchable_text_warning_line(
+    companions: Mapping[str, Any],
+    see: str = SEARCH_TEXT_SEE_IMPORT_REPORT,
+) -> str:
+    """One warning line when a companion failed or mismatched, else ``''``."""
+
+    lost = int(companions.get("failed") or 0) + int(companions.get("mismatch") or 0)
+    if not lost:
+        return ""
+    return (
+        f"Warning: {lost} hidden search-text companion(s) could not be written or "
+        f"verified; the drawing itself is unaffected. {see}"
+    )
+
+
 def bounded_traceback(
     exc: BaseException,
     *,
@@ -1308,6 +1366,115 @@ def _verification_keep_handles(
         handles.add(str(expected.image_handle))
         handles.add(str(expected.image_def_handle))
     return handles
+
+
+def _known_cap_height_ratio(delivery: TextDeliveryResult) -> Optional[float]:
+    """The source font's cap-height ratio, when a builder rung resolved it."""
+
+    for attempt in delivery.attempts:
+        ratio = attempt.evidence.get("source_cap_height_ratio")
+        if isinstance(ratio, (int, float)) and math.isfinite(ratio) and ratio > 0.0:
+            return float(ratio)
+    return None
+
+
+def _write_search_text_companions(
+    doc: Any,
+    msp: Any,
+    pending: Sequence[Tuple[Any, ...]],
+    *,
+    opts: "DxfExportOptions",
+    is_r12: bool,
+    source_paint_keys: Dict[str, Any],
+) -> None:
+    """Write one hidden TEXT per settled item whose string is not in the file.
+
+    Owner decision 2026-09-19: LibreCAD output is searchable. The v1.0.81
+    guarantee stands -- a substituted LFF font is never certified as delivered
+    Text -- so the companion certifies nothing: it lives on the FROZEN,
+    non-plotting layer ``P###_TEXT_SEARCH`` and touches no delivery field, count
+    or bucket. It never raises; a failure costs that one companion, reported.
+    """
+
+    written_per_layer: Dict[str, int] = {}
+    for record, text_item, cap_height_ratio, page_number, paint_key in pending:
+        content = str(getattr(text_item, "text", "") or "")
+        if not content.strip() or record.get("final_representation") in {
+            "text", "labels", "3d_text",
+        }:
+            # Whitespace, or a visible TEXT: the string is already in the file.
+            record["search_text"] = {
+                "status": "not_needed", "handle": None, "layer": None, "content": content,
+            }
+            continue
+        layer = _layer_name(page_number, "TEXT_SEARCH", None, opts)
+        if not layer.endswith("TEXT_SEARCH"):
+            layer = f"{layer}_TEXT_SEARCH"  # never freeze a layer that is shared
+        try:
+            if layer not in written_per_layer:
+                if doc.layers.has_entry(layer):
+                    raise ValueError(f"layer {layer} already belongs to the drawing")
+                _ensure_layer(doc, layer, None)
+                entry = doc.layers.get(layer)
+                entry.freeze()
+                if not is_r12:
+                    entry.dxf.plot = 0  # R12 has no plot flag
+                written_per_layer[layer] = 0
+            search = dict(
+                _write_search_text_companion(
+                    text_item, msp, layer, is_r12=is_r12, cap_height_ratio=cap_height_ratio
+                )
+            )
+            if search.get("status") == "written":
+                # Mandatory: apply_image_paint_order refuses a modelspace entity
+                # without a paint key, and that would cost the whole sheet.
+                source_paint_keys[str(search["handle"])] = paint_key
+                written_per_layer[layer] += 1
+        except Exception as exc:  # noqa: BLE001 - a companion never costs the sheet
+            search = {
+                "status": "failed", "handle": None, "layer": layer, "content": content,
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+        record["search_text"] = search
+    for layer, written in written_per_layer.items():
+        if not written:
+            try:
+                doc.layers.remove(layer)
+            except Exception:  # noqa: BLE001 - an empty frozen layer is harmless
+                pass
+
+
+def _verify_serialized_search_text(doc: Any, deliveries: List[Dict[str, Any]]) -> None:
+    """Soft post-write check of the hidden companions: never raises, never retries.
+
+    A companion certifies nothing, so one that did not reach the file as written
+    becomes ``mismatch`` (a warning) and the item keeps its own verified flag.
+    """
+
+    pre_r2007 = str(getattr(doc, "dxfversion", "") or "") < "AC1021"
+    for delivery in deliveries:
+        search = delivery.get("search_text")
+        if not isinstance(search, dict) or search.get("status") != "written":
+            continue
+        try:
+            native = doc.entitydb.get(str(search.get("handle") or ""))
+            if native is None or not getattr(native, "is_alive", True):
+                raise ValueError("companion TEXT is missing from the written file")
+            layer = doc.layers.get(str(search.get("layer") or ""))
+            actual = str(native.dxf.text)
+            if pre_r2007:
+                # cp1252 files carry other characters as \U+XXXX escapes.
+                actual = decode_dxf_unicode(actual)
+            if (
+                native.dxftype() != "TEXT"
+                or actual != str(search.get("content") or "")
+                or str(native.dxf.layer) != str(search.get("layer") or "")
+                or not layer.is_frozen()
+            ):
+                raise ValueError("companion TEXT content, layer or type changed")
+        except Exception as exc:  # noqa: BLE001 - a companion never costs the sheet
+            search["status"] = "mismatch"
+            search["reason"] = f"{type(exc).__name__}: {exc}"
 
 
 def _serialized_entity(doc: Any, handle: str, source_id: str) -> Any:
@@ -4448,6 +4615,11 @@ def _export_to_dxf_impl(
     positioned_translation_anchors: Dict[str, _PositionedTranslationAnchor] = {}
     seen_text_source_ids: set[str] = set()
     seen_text_entity_handles: set[str] = set()
+    search_text_enabled = bool(
+        opts.searchable_text and opts.include_text and opts.text_mode != "none"
+    )
+    # (delivery record, placed item, known cap-height ratio, page number, paint key)
+    pending_search_text: List[Tuple[Any, ...]] = []
     serialized_image_expectations: List[_SerializedImageExpectation] = []
     background_image_handles: List[str] = []
     foreground_image_handles: List[str] = []
@@ -4457,6 +4629,7 @@ def _export_to_dxf_impl(
         opts.provenance_opts._text_mode_fallbacks = []  # noqa: B010
         opts.provenance_opts._delivered_text_entity_counts = {}  # noqa: B010
         opts.provenance_opts._text_representation_deliveries = []  # noqa: B010
+        opts.provenance_opts._searchable_text_companions = {}  # noqa: B010
         opts.provenance_opts._source_provenance_objects = []  # noqa: B010
         opts.provenance_opts._delivered_image_count = 0  # noqa: B010
         opts.provenance_opts._result_status = "pending_export"  # noqa: B010
@@ -4473,6 +4646,9 @@ def _export_to_dxf_impl(
         opts.provenance_opts._text_representation_deliveries = [  # noqa: B010
             dict(item) for item in text_deliveries
         ]
+        opts.provenance_opts._searchable_text_companions = (  # noqa: B010
+            searchable_text_companions(text_deliveries, enabled=search_text_enabled)
+        )
         opts.provenance_opts._export_requested_text_mode = (  # noqa: B010
             _normalized_text_mode(opts.text_mode)
         )
@@ -4957,6 +5133,19 @@ def _export_to_dxf_impl(
                     )
                     for handle in delivery.entity_handles:
                         source_paint_keys[str(handle)] = (page_position, paint_key)
+                if search_text_enabled:
+                    # The delivery is settled. Its hidden companion is written
+                    # after every page, so no certified handle moves and no
+                    # builder rung ever meets the companion's style or layer.
+                    pending_search_text.append(
+                        (
+                            text_deliveries[-1],
+                            ti,
+                            _known_cap_height_ratio(delivery),
+                            int(page.page_data.page_number),
+                            (page_position, paint_key if paint_order is not None else 0),
+                        )
+                    )
                 delivered_kind = delivery.delivered_kind
                 created = int(delivery.count)
                 _track_xy(float(ti.insertion[0]), float(ti.insertion[1]))
@@ -5207,6 +5396,11 @@ def _export_to_dxf_impl(
             has_source_image_order = True
         _stack_offset_y -= page_step
 
+    _write_search_text_companions(
+        doc, msp, pending_search_text, opts=opts, is_r12=is_r12,
+        source_paint_keys=source_paint_keys,
+    )
+
     # Persist extents + initial modelspace viewport so hosts open focused on geometry.
     if min_x <= max_x and min_y <= max_y:
         extmin = (float(min_x), float(min_y), 0.0)
@@ -5343,6 +5537,7 @@ def _export_to_dxf_impl(
                 # Structural: no single item can take the blame, so the sheet stops.
                 raise ImportStopped(str(exc)) from exc
             raise _SerializedTextItemMismatch(str(exc), mismatch_rungs) from exc
+        _verify_serialized_search_text(candidate, text_deliveries)
         _verify_serialized_image_assets(candidate, serialized_image_expectations)
         _verify_serialized_source_dash_blocks(candidate, source_dash_expectations)
         from .final_rect_paint import verify_metadata_and_strokes
@@ -5400,6 +5595,9 @@ def _export_to_dxf_impl(
         delivered_text_entity_counts=dict(delivered_text_entity_counts),
         text_deliveries=[dict(item) for item in text_deliveries],
         final_rect_paints=[dict(item) for item in final_paint_records],
+        searchable_text_companions=searchable_text_companions(
+            text_deliveries, enabled=search_text_enabled
+        ),
     )
 
 

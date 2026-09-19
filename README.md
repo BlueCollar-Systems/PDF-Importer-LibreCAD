@@ -176,6 +176,9 @@ Options:
   --text-mode MODE       text | labels | 3d_text | glyphs | geometry | raster
                          (default: text)
   --import-text / --no-import-text  Whether to import text at all (default: on)
+  --searchable-text / --no-searchable-text
+                         Hidden exact-string TEXT on the frozen layer
+                         P###_TEXT_SEARCH (default: on)
   --scale 1.0            Scale factor
   --dxf-version VER      R12 | R2000 | R2004 | R2007 | R2010 | R2013 | R2018
   --gui                  Launch GUI instead of CLI
@@ -285,20 +288,75 @@ capabilities. Modes differ only in extraction *strategy*, not quality tier.
 
 The six requests remain structurally distinct. A DXF declaration is not enough
 to claim success: the requested semantics and item transform must also survive
-serialization. LibreCAD uses LFF stroke fonts for editable native text, so Text
-and Text uses its broad Unicode LFF face while retaining source content, anchor,
-height, rotation, and advance. That parent-font substitution is reported
-explicitly; it is not misreported as a representation fallback. DXF has no
-native Label entity, so a Labels request records that item-scoped impossibility
-and then reports the closest verified editable Text fallback. Likewise,
-`TEXT` thickness alone does not prove visible/editable 3D text in LibreCAD's 2D
-parent.
+serialization. LibreCAD draws native text with its own LFF stroke fonts, which
+do not reproduce the source font. Since 1.0.81 a visibly substituted LFF font is
+therefore **never certified as delivered Text: glyph outlines are the visual
+truth.** A Text, Labels, or 3D Text request still builds the item-specific native
+`TEXT` candidate first (source content, anchor, cap height, rotation, FIT
+advance, `unicode` LFF binding), refuses to certify it for a visible span, removes
+it, and descends to exact Glyphs; only a whitespace-only span, which paints no
+ink, ends on native `TEXT`. DXF has no native Label entity, so a Labels request
+records that item-scoped impossibility first. Likewise, `TEXT` thickness alone
+does not prove visible/editable 3D text in LibreCAD's 2D parent.
+
+**The strings are still in the file: searchable text** (owner decision
+2026-09-19). Every span that ends as Glyphs, Geometry, or a Raster patch, and
+every dropped item, also gets ONE hidden native `TEXT` entity carrying the exact
+source string (not Unicode-normalized) at the item's insertion and rotation,
+with the source font's cap height when it is known (otherwise about 0.72 em),
+style `unicode`, FIT-aligned to the source advance. These companions live on the
+dedicated layer `P###_TEXT_SEARCH`, which is created **frozen** (a frozen layer
+is hidden and is not printed) and, from R2000 on, also flagged non-plotting, so
+the outlines stay what you see. They make the drawing searchable in the DXF file
+itself: a text search of the file finds every string. In a CAD host, thaw
+`P###_TEXT_SEARCH` before using its find command, which may skip a frozen layer
+(no host find command was tried on these files).
+
+- **To work with editable LFF text** instead of outlines, thaw `P###_TEXT_SEARCH`
+  and freeze `P###_TEXT` in the layer list. The thawed text is drawn with
+  LibreCAD's substituted `unicode` LFF font: same string, anchor, rotation and
+  width, not the source glyph shapes. From R2000 on the layer is also
+  non-plotting, and LibreCAD honours that flag on a thawed layer: to print the
+  editable text, also switch the layer's print flag on in the layer list,
+  otherwise the print carries no text at all. A resumable conversion (`--resume`, and
+  every GUI conversion) assembles its pages with a `page_NNNN$0$` prefix on
+  every layer name, so the layer is `page_0001$0$P001_TEXT_SEARCH` there; it
+  stays frozen and non-plotting.
+- The companion **certifies nothing**. `final_representation`, `verified`, entity
+  counts, `delivered_text_entity_counts`, and the TEXTMODE-1 buckets are exactly
+  what they are without it. Each delivery record gains `search_text`
+  (`status`, `handle`, `layer`, `content`), and the report gains
+  `extra.searchable_text_companions` (`enabled`, `written`, `not_representable`,
+  `failed`, `mismatch`, `layers`).
+- A span already delivered as visible `TEXT` (a whitespace span, or the degraded
+  `TEXT` on `P###_TEXT_DEGRADED`) gets no companion (`status: not_needed`): its
+  string is in the file already.
+- A string native `TEXT` cannot carry literally (a caret or `%%` control
+  sequence, a literal `\U+XXXX`, a `\P` or `\~`, which LibreCAD turns into a line
+  break and a space when it loads `TEXT` - a Windows path such as `C:\PROJ` is
+  one - a control character or lone surrogate; in a pre-R2007 file also a
+  character beyond U+FFFF) is skipped and reported as `not_representable`.
+- A companion can never cost the item or the sheet. One that cannot be written
+  is `failed`; one whose exact content, layer, type, or frozen layer is not
+  confirmed after the file is written is `mismatch`. Both are counted in
+  `result.warnings` (also by `lcpdf-batch`, `qa_smoke`, and the resumable
+  summary, which carries its own `searchable_text_companions` block) and answered
+  with one warning line on stderr or in the GUI log; the item keeps its own
+  `verified` flag and the sheet is never re-exported for it.
+- `--no-searchable-text` (`lcpdf-import` and `pdf2dxf.py`) writes no companion
+  and creates no layer. `--no-import-text` imports no text, so none either.
+- R2007 and later files are UTF-8, so a plain text search of the DXF finds every
+  string. R12, R2000, and R2004 files are cp1252: a character in that code page
+  (degree, plus-minus, diameter) is one cp1252 byte, and characters outside it
+  are stored as `\U+XXXX` escapes (LibreCAD, AutoCAD, and
+  `ezdxf.decode_dxf_unicode` decode them), so **a UTF-8 text search of a
+  pre-R2007 file does not find non-ASCII strings**.
 
 | Option | GUI | Verified DXF representation |
 |--------|-----|-----------------------------|
-| **text** | ✅ Text | Native editable DXF `TEXT`, verified as the requested Text semantic with source text (or an explicitly reported Unicode compatibility normalization), placement, dimensions, rotation, source identity, parent-native LFF binding, and source-width FIT alignment. |
-| **labels** | ✅ Labels | DXF exposes no native Label entity. The item-scoped Labels attempt fails loudly without creating a wrong-type alias, then the closest editable Text fallback is verified and reported. |
-| **3d_text** | ✅ 3D Text | Attempts DXF `TEXT` with positive thickness and +Z extrusion first. Success additionally requires the parent to verify it as visible/editable 3D text. LibreCAD is 2D, so the exact failed item advances first to verified flat editable Text and reports that transition. |
+| **text** | ✅ Text | The native DXF `TEXT` candidate is built and checked (source text or an explicitly reported Unicode compatibility normalization, placement, cap height, rotation, source identity, `unicode` LFF binding, source-width FIT alignment), but LibreCAD's substituted LFF font does not reproduce the source glyphs, so a visible span is never certified as Text: it is delivered as verified Glyphs and reported as that fallback. Only a whitespace-only span ends as native `TEXT`. The exact string is on the frozen `P###_TEXT_SEARCH` layer. |
+| **labels** | ✅ Labels | DXF exposes no native Label entity. The item-scoped Labels attempt fails loudly without creating a wrong-type alias, the Text rung then refuses the substituted LFF font as above, and the span is delivered as verified Glyphs and reported. The exact string is on the frozen `P###_TEXT_SEARCH` layer. |
+| **3d_text** | ✅ 3D Text | Attempts DXF `TEXT` with positive thickness and +Z extrusion first. Success additionally requires the parent to verify it as visible/editable 3D text. LibreCAD is 2D, so the exact failed item advances to the flat Text rung, which refuses the substituted LFF font as above, and is delivered as verified Glyphs with that transition reported. The exact string is on the frozen `P###_TEXT_SEARCH` layer. |
 | **glyphs** | ✅ Glyphs | One grouped DXF `INSERT` per source text span with outline entities in its owned block definition. This remains structurally distinct from raw Geometry. |
 | **geometry** | ✅ Geometry | Raw modelspace `LWPOLYLINE`/`POLYLINE` glyph edges. No `TEXT`, `MTEXT`, or `INSERT` is accepted as Geometry. |
 | **raster** | ✅ Raster | A source-PDF-bound PNG of only the exact text item, delivered as a verified DXF `IMAGE`; it is a direct result when requested, not a fallback. |
@@ -314,11 +372,11 @@ type fail verification and clean their exact owned DXF handles.
 
 | Requested | Ordered, representation-distinct ladder | Transition proof and verification |
 |-----------|------------------------------------------|-----------------------------------|
-| **text** | Text → Glyphs → Geometry → item Raster | Native `TEXT` must read back source content or its disclosed compatibility normalization, anchor, nominal height, rotation, source advance, parent-native LFF binding, FIT endpoint, and a live unique handle. Labels is not inserted as a peer alias rung. |
-| **labels** | Labels → Text → Glyphs → Geometry → item Raster | The requested Label capability is evaluated for the exact source item. DXF's missing Label entity is recorded before verified editable Text is attempted; a report-only TEXT/MTEXT relabel is rejected. |
+| **text** | Text → Glyphs → Geometry → item Raster | Native `TEXT` must read back source content or its disclosed compatibility normalization, anchor, cap height, rotation, source advance, parent-native LFF binding, FIT endpoint, and a live unique handle, **and** prove source-equivalent appearance. A substituted LFF font cannot prove the last one, so only a whitespace-only span terminates here; a visible span removes its candidate and descends to Glyphs. Labels is not inserted as a peer alias rung. |
+| **labels** | Labels → Text → Glyphs → Geometry → item Raster | The requested Label capability is evaluated for the exact source item. DXF's missing Label entity is recorded before the Text rung is attempted (and, for a visible span, refused as above); a report-only TEXT/MTEXT relabel is rejected. |
 | **glyphs** | Glyphs → Geometry → Text → item Raster | Glyphs try entity-based and independent string-based outline generation before impossibility. Success requires an `INSERT`, nonempty owned outline block, matching bounds, and exact parent/child handles. |
 | **geometry** | Geometry → Glyphs → Text → item Raster | Geometry uses the same two outline-generation strategies but success requires raw modelspace edges and matching bounds; an `INSERT` is not Geometry. |
-| **3d_text** | 3D Text → Text → Glyphs → Geometry → item Raster | The first rung creates the item-specific DXF `TEXT`, applies and reads back thickness/+Z extrusion, then verifies parent font rendering and 3D display semantics. Flat Text is the closest fallback, and a different rung is legal only after the prior attempt is removed with recorded impossibility evidence. |
+| **3d_text** | 3D Text → Text → Glyphs → Geometry → item Raster | The first rung creates the item-specific DXF `TEXT`, applies and reads back thickness/+Z extrusion, then verifies parent font rendering and 3D display semantics. Flat Text is the next rung (refused for a visible span as above), and a different rung is legal only after the prior attempt is removed with recorded impossibility evidence. |
 | **raster** | item Raster | PyMuPDF renders the exact source bbox. Success requires visible pixels, PNG byte verification, exact model placement/size, a live `IMAGE` handle, and an atomically written uniquely owned asset. |
 
 `text2path_failed` means both independent same-representation outline
@@ -459,7 +517,7 @@ pdfcadcore/           Shared PDF extraction core
 | Transparency | LibreCAD does not generally composite DXF fill transparency. The final rectangle repair requires a proven source suffix, solid opaque strokes, Normal blending and no masks or transparency groups; other cases retain their existing display limitations. R12 does not use this repair. |
 | LibreCAD preview process | The installed LibreCAD 2.2.1.5 Windows CLI can write a valid image-bearing preview and then crash during Qt shutdown. Native exit status remains a failure and is recorded separately from saved DXF and rendered-image checks. |
 | Clipped/XObject-heavy PDFs | Complex clip stacks and deeply nested form XObjects can produce partial geometry |
-| Native LibreCAD fonts and Labels | Editable Text uses LibreCAD's Unicode LFF face. The report records that font substitution separately from representation fallback; source content and transforms remain verified, but glyph shapes can differ from the embedded PDF font. DXF has no native Label entity, so Labels falls loudly to Text. Choose Glyphs or Geometry when exact source-font outlines matter more than editability. |
+| Native LibreCAD fonts and Labels | LibreCAD draws native text with its own LFF stroke fonts, so visible text is never certified as native Text: Text, Labels, and 3D Text requests deliver exact Glyph outlines (the visual truth) and report that fallback. The exact strings are hidden native `TEXT` on the frozen `P###_TEXT_SEARCH` layer; thaw it and freeze `P###_TEXT` to work with editable LFF text, whose glyph shapes differ from the PDF font (the layer is also non-plotting: switch its print flag on to print that text). LibreCAD 2.2 itself has no find-text command, so "searchable" means a text search of the DXF file; thaw the layer before using another host's find command. A UTF-8 text search of a pre-R2007 (cp1252) file does not find non-ASCII strings: a character in that code page is one cp1252 byte, any other a `\U+XXXX` escape. |
 | Damaged or unusable source fonts | Exact-font structural representations are never certified without item-specific impossibility evidence. Without that evidence the item is still delivered (item Raster patch, then visible `TEXT` on `P###_TEXT_DEGRADED`, then a reported drop), but it stays `verified: false`, is listed in `extra.text_items_degraded`, and keeps the sheet out of certification |
 | DXF version | R2010 is the recommended default; R12 has no serialized `BLOCK_RECORD`, which is explicitly excluded from durable support identity |
 | Legacy hosts | LibreCAD/DXF consumer behavior outside the tested matrix is expected-only until verified |

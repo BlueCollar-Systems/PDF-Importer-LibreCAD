@@ -64,6 +64,12 @@ def test_batch_cli_delivers_requested_item_raster_and_reports_request(
     assert report["text_mode"] == "raster"
     assert report["results"][0]["text_mode"] == "raster"
     drawing = ezdxf.readfile(output_dir / "sample.dxf")
-    entity_types = [entity.dxftype() for entity in drawing.modelspace()]
+    # Visible entities: the hidden search-text companions live on a frozen layer.
+    entity_types = [
+        entity.dxftype()
+        for entity in drawing.modelspace()
+        if not entity.dxf.layer.endswith("TEXT_SEARCH")
+    ]
     assert entity_types.count("IMAGE") == 1
     assert "TEXT" not in entity_types
+    assert drawing.layers.get("P001_TEXT_SEARCH").is_frozen()

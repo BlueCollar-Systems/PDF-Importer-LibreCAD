@@ -123,8 +123,14 @@ class TestLibreCADTextModeFidelity(unittest.TestCase):
             )
 
         drawing = ezdxf.readfile(output)
+        # Visible entities: the hidden search-text companion is on a frozen layer.
         self.assertEqual(
-            [entity.dxftype() for entity in drawing.modelspace()], ["IMAGE"]
+            [
+                entity.dxftype()
+                for entity in drawing.modelspace()
+                if not entity.dxf.layer.endswith("TEXT_SEARCH")
+            ],
+            ["IMAGE"],
         )
         delivery = result.text_deliveries[0]
         self.assertIs(delivery["verified"], False)
