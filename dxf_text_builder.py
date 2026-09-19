@@ -50,6 +50,11 @@ _POSITIONED_FRACTION_RE = re.compile(r"^[0-9]+/[0-9]+$")
 _POSITIONED_FRAME_NOISE = 2e-5
 _created_styles: Dict[str, str] = {}
 _embedded_cap_height_cache: Dict[str, float] = {}
+# ezdxf retains loaded fonts across documents. Keep their original file binding
+# for the same lifetime so a later import cannot pair stale glyphs with new bytes.
+_installed_font_metric_cache: weakref.WeakKeyDictionary[
+    Any, Tuple[Any, ...]
+] = weakref.WeakKeyDictionary()
 _staged_font_verification_cache: Dict[Tuple[str, str, int, int], bool] = {}
 _glyph_block_cache: weakref.WeakKeyDictionary[
     Any,
@@ -663,6 +668,9 @@ def _resolve_exact_font(font_name: str) -> _ExactFontResolution:
     italic_ok = bool("italic" in str(face.style or "").lower() or "oblique" in str(face.style or "").lower()) == italic
     filename = str(face.filename or "")
     exact = bool(family_ok and weight_ok and italic_ok and filename)
+    ratio, font_sha256 = (
+        _installed_font_metrics(filename) if exact else (None, "")
+    )
     return _ExactFontResolution(
         source_name=source,
         family=str(face.family or family),
@@ -670,7 +678,54 @@ def _resolve_exact_font(font_name: str) -> _ExactFontResolution:
         filename=filename if exact else "",
         exact=exact,
         reason=("exact installed source-font match" if exact else "font cache match was not source-equivalent"),
+        source_cap_height_ratio=ratio,
+        asset_sha256=font_sha256,
     )
+
+
+def _installed_font_metrics(filename: str) -> Tuple[float, str]:
+    """Convert PDF em size to the exact outline engine's cap-height units.
+
+    Installed fonts need the same conversion as embedded programs. A default
+    ratio of one stretches Arial capitals by about forty percent. Use the
+    renderer actually consumed by text2path: its A/x outline measurement can
+    differ from the font's OS/2 cap-height field.
+    """
+    try:
+        name = _outline_engine_font_name(filename)
+        face = ezdxf_fonts.font_manager.get_font_face(name)
+        renderer = text2path.get_font(face).glyph_cache
+        font = ezdxf_fonts.font_manager.get_ttf_font(name)
+        if renderer.font is not font:
+            raise ValueError("outline engine substituted the installed font")
+        path = Path(font.reader.file.name).resolve(strict=True)
+        if path.name.casefold() != Path(name).name.casefold():
+            raise ValueError("loaded installed-font file differs from selected face")
+        stat = path.stat()
+        signature = (id(font), str(path), stat.st_size, stat.st_mtime_ns)
+        cached = _installed_font_metric_cache.get(font)
+        if cached is not None:
+            if cached[:4] != signature:
+                raise ValueError("installed font changed during this import")
+            return float(cached[4]), str(cached[5])
+        payload = path.read_bytes()
+        after = path.stat()
+        if (after.st_size, after.st_mtime_ns) != signature[2:]:
+            raise ValueError("installed font changed while reading metrics")
+        units = float(font["head"].unitsPerEm)
+        cap = float(renderer.font_measurements.cap_height)
+        if not all(math.isfinite(v) and v > 0 for v in (units, cap)):
+            raise ValueError("installed font has invalid cap-height metrics")
+        ratio = cap / units
+        digest = hashlib.sha256(payload).hexdigest()
+        _installed_font_metric_cache[font] = (*signature, ratio, digest)
+        return ratio, digest
+    except Exception as exc:
+        # A load/measurement failure does not establish source impossibility.
+        # Keep it terminal rather than authorizing a representation fallback.
+        raise ValueError(
+            f"exact installed-font metrics could not be verified: {exc}"
+        ) from exc
 
 
 def _staged_font_matches_source(
