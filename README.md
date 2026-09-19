@@ -329,9 +329,89 @@ the next distinct rung was attempted.
 `extra.text_representation_delivery` (`bcs.text_representation_delivery/1.0`)
 with every source ID, attempted type/strategy, reason/evidence, created and
 removed handle, cleanup result, final handle, and supersession. The legacy
-`fallback.text` summary remains for UI compatibility. If the terminal Raster
-attempt cannot be verified, no DXF replaces an existing output and the import
-fails explicitly. Raster is never assumed successful.
+`fallback.text` summary remains for UI compatibility. Raster is never assumed
+successful.
+
+**One unverifiable text item never costs the sheet** (owner decision
+2026-09-19: "these tools are meant to help, not hinder"). Earlier versions
+stopped the whole import and wrote no DXF when a single text item could not be
+verified. The failure is still classified exactly as before, because a failure
+not proven to come from the source may be our bug, but it now costs only that
+item, which degrades down this ladder while the sheet exports:
+
+1. the requested rungs above, as always;
+2. an item Raster patch, tried whether or not the failure was proven
+   (`proof_class` is `proven_impossible`, `unproven_failure`, or
+   `invalid_layout`; it repeats the builder's own verdict, so a font failure
+   the builder refused to call proven stays `unproven_failure` even when every
+   rung ended "impossible");
+3. if the patch cannot be made or proven, a **visible** native `TEXT` entity
+   carrying the exact source string at the item's insertion, rotation, and
+   approximate height on layer `P###_TEXT_DEGRADED`, so a dimension value is
+   never silently lost;
+4. if even that is impossible, the item is dropped and reported.
+
+The degrade is loud instead of fatal. Every such item stays `verified: false`,
+so `text_representation_delivery.verified`, `import_contract_ready`, and the
+release smoke gates still fail for that sheet: operators get their drawing,
+certification stays strict. `extra.text_items_degraded` lists each item
+(`source_id`, `page`, `text`, `reason`, `reason_code`, `proof_class`,
+`delivered`; at most 200, with `text_items_degraded_total` and
+`text_items_degraded_truncated`), and `result.warnings` counts them together
+with any clipped fills that were left out or are approximate. The rescue reason
+code is `item_degraded_after_unproven_failure` (or
+`item_degraded_after_proven_impossibility`). It is on each item's delivery
+record (`fallback_reason_code`), on each `text_items_degraded` entry
+(`reason_code`), and grouped in `fallback.text_items_degraded`; the legacy
+`fallback.text` summary names one substitution and prefers the sheet's verified
+fallbacks, so in the default Text mode it does not carry that code. The
+one-sentence `fallback.reason` and the human summary do: the degraded rows
+(`text_items_degraded: 1 x text -> raster (...)`, then `N dropped from the
+drawing` when any item was dropped) are appended to whatever they already said.
+A dropped item sets `fallback.used` and is not counted in
+`result.text_entities`, in `pdf2dxf.py`'s `Text items` line, or in the GUI log's
+`Text` line. An item whose Raster rung found that the source paints no visible
+ink gets no patch; its entry carries `no_visible_ink: true` and its warning says
+that nothing was drawn. A rescued text-builder crash keeps a bounded traceback
+in its attempt's evidence (`traceback_tail`; the frames and the message are
+bounded separately, so a very long message cannot push the raise site out). The
+CLI prints one bounded, single-line warning per item on stderr (control
+characters removed) for the first 20 items, then one `... and N more degraded
+text item(s); see the import report.` line, and still exits 0, and the GUI shows
+a warning rather than an error.
+The batch CLI writes the sheet but reports it as `DEGRADED`, never `PASS`, and
+exits 1 when any sheet is `DEGRADED` or `FAIL`, as it did when such a sheet
+failed; a sheet that only had clipped fills left out stays `PASS` with a
+warning. The QA smoke harness still fails a degraded sheet.
+A resumable conversion (`--resume`, and every GUI conversion) checkpoints such a
+page like any other, but announces it as `exported with N degraded text
+item(s) - NOT certified`, leaves it out of `pages_certified`, and lists it in
+`pages_degraded`; the resumable report carries the same `warnings` and
+`text_items_degraded` fields as the page reports.
+Post-write verification mismatches confined to identifiable items trigger one
+re-export with all of those items forced down the ladder. Structural failures
+(duplicate source IDs or handles, no stable source identity, a mismatch that
+survives the re-export) still stop the import: the prior DXF is preserved and a
+failure report is written whose `extra.terminal_failure` records the error
+text, the exception type, whether the stop was deliberate, and a bounded
+traceback.
+
+For the import itself, `lcpdf-import` and `pdf2dxf.py` answer with the same exit
+codes: `0` means a DXF was written (degraded text items and left-out clipped
+fills are warnings on stderr, never a failure); `2` with `Import stopped: ...`
+means the import was stopped deliberately, says why, and names the failure
+report it left; `3` means any other unexpected failure, answered in one readable
+line that names the failure report when the export left one (`--verbose` adds
+the traceback). Exit `2` alone does not prove a deliberate stop: `pdf2dxf.py`
+keeps its two older exit-`2` answers, which print no `Import stopped` and leave
+no failure report, for an unparsable `--pages` value (`Invalid --pages value:
+...`) and for a file that turns out not to be a readable PDF once the conversion
+has started (a command line that argparse rejects exits `2` as well, with a
+usage message). Other argument and open-time rejections keep their existing
+codes (`1`, and `130` for an interrupted or cancelled run). If the failure
+report itself cannot be written (read-only folder, full disk), the original
+error and its exit code are kept and stderr says that the failure report could
+not be written. The GUI error box names the failure report as well.
 
 Auto page classification cannot replace extractable text with Raster while a
 non-raster text representation is requested. Explicit Raster import mode still
@@ -380,7 +460,7 @@ pdfcadcore/           Shared PDF extraction core
 | LibreCAD preview process | The installed LibreCAD 2.2.1.5 Windows CLI can write a valid image-bearing preview and then crash during Qt shutdown. Native exit status remains a failure and is recorded separately from saved DXF and rendered-image checks. |
 | Clipped/XObject-heavy PDFs | Complex clip stacks and deeply nested form XObjects can produce partial geometry |
 | Native LibreCAD fonts and Labels | Editable Text uses LibreCAD's Unicode LFF face. The report records that font substitution separately from representation fallback; source content and transforms remain verified, but glyph shapes can differ from the embedded PDF font. DXF has no native Label entity, so Labels falls loudly to Text. Choose Glyphs or Geometry when exact source-font outlines matter more than editability. |
-| Damaged or unusable source fonts | Exact-font structural representations fail closed; a different representation is attempted only with item-specific impossibility evidence |
+| Damaged or unusable source fonts | Exact-font structural representations are never certified without item-specific impossibility evidence. Without that evidence the item is still delivered (item Raster patch, then visible `TEXT` on `P###_TEXT_DEGRADED`, then a reported drop), but it stays `verified: false`, is listed in `extra.text_items_degraded`, and keeps the sheet out of certification |
 | DXF version | R2010 is the recommended default; R12 has no serialized `BLOCK_RECORD`, which is explicitly excluded from durable support identity |
 | Legacy hosts | LibreCAD/DXF consumer behavior outside the tested matrix is expected-only until verified |
 

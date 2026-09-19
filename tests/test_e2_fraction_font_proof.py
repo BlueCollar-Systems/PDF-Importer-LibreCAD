@@ -138,34 +138,49 @@ def test_staging_error_is_diagnostic_not_impossibility(tmp_path, positioned, res
 
 
 @pytest.mark.parametrize("positioned", [False, True])
-def test_runtime_failure_export_preserves_prior_output_without_raster(tmp_path, positioned):
+def test_runtime_failure_degrades_to_visible_text_and_still_exports(tmp_path, positioned):
+    # Owner decision 2026-09-19: an unproven (runtime) failure on one item no
+    # longer costs the sheet. With no readable source PDF the item raster is
+    # impossible too, so the exact string lands as visible TEXT on the degraded
+    # layer -- recorded unverified, never certified.
     item = _empty_program_item(positioned=positioned)
     item.font_failure = replace(
         item.font_failure, error_type="RuntimeError", detail="trace unavailable",
         proof_category="runtime_inventory_unavailable_for_item",
     )
     extraction = DocumentExtraction(
-        pdf_path=str(tmp_path / "must-not-be-read.pdf"),
+        pdf_path=str(tmp_path / "unreadable-source.pdf"),
         pages=[ExtractedPage(page_data=PageData(
             page_number=3, width=300.0, height=200.0, text_items=[item],
         ), profile=SimpleNamespace())],
     )
-    output = tmp_path / "prior.dxf"
+    output = tmp_path / "degraded.dxf"
     output.write_bytes(b"prior output")
-    assets = tmp_path / "prior_assets"
-    assets.mkdir()
-    asset = assets / "prior.png"
-    asset.write_bytes(b"prior asset")
-    with (
-        patch.object(exporter, "_file_sha256", side_effect=AssertionError("no source read")),
-        patch.object(exporter, "_attempt_terminal_text_raster", side_effect=AssertionError("no Raster")),
-        pytest.raises(exporter.TextRepresentationDeliveryError),
-    ):
-        exporter.export_to_dxf(extraction, str(output), exporter.DxfExportOptions(
-            include_images=False, text_mode="glyphs",
-        ))
-    assert output.read_bytes() == b"prior output"
-    assert asset.read_bytes() == b"prior asset"
+    result = exporter.export_to_dxf(extraction, str(output), exporter.DxfExportOptions(
+        include_images=False, text_mode="glyphs",
+    ))
+    reopened = ezdxf.readfile(output)
+    texts = list(reopened.modelspace().query("TEXT"))
+    assert [entity.dxf.text for entity in texts] == [item.text]
+    assert [entity.dxf.layer for entity in texts] == ["P003_TEXT_DEGRADED"]
+    assert tuple(texts[0].dxf.insert)[:2] == pytest.approx(item.insertion)
+    assert texts[0].dxf.rotation == pytest.approx(item.rotation)
+    assert not list(reopened.modelspace().query("IMAGE INSERT"))
+    delivery = result.text_deliveries[0]
+    assert delivery["verified"] is False and delivery["degraded"] is True
+    assert delivery["dropped"] is False
+    assert delivery["final_representation"] == "text"
+    assert delivery["proof_class"] == "unproven_failure"
+    assert delivery["degrade_policy"] == "item_failure_never_costs_sheet"
+    assert delivery["entity_handles"] == [texts[0].dxf.handle]
+    assert [attempt["outcome"] for attempt in delivery["attempts"][-2:]] == [
+        "failed", "degraded",
+    ]
+    assert delivery["attempts"][-2]["attempted_representation"] == "raster"
+    assert result.text_fallbacks == [{
+        "requested": "glyphs", "delivered": "text",
+        "reason": "item_degraded_after_unproven_failure", "count": 1,
+    }]
 
 
 @pytest.mark.parametrize("scale", [0.001, 1.0, 1000.0])
@@ -189,12 +204,27 @@ def test_e2_quad_rounding_is_accepted_at_every_scale(scale, width, height, dy):
 
 
 @pytest.mark.parametrize("scale", [0.001, 1.0, 1000.0])
-@pytest.mark.parametrize("shear", [1e-4, 0.2, 0.5])
+@pytest.mark.parametrize("shear", [1e-3, 0.2, 0.5])
 def test_real_shear_is_rejected_at_every_scale(scale, shear):
     quad = tuple((x * scale, y * scale) for x, y in
                  ((0., 0.), (1., 0.), (1. + shear, -1.), (shear, -1.)))
     with pytest.raises(builder._RepresentationImpossible, match="shear"):
         builder._quad_frame(quad)
+
+
+@pytest.mark.parametrize("scale", [0.001, 1.0, 1000.0])
+@pytest.mark.parametrize("shear", [1.7768e-5, 5e-5, 9.9e-5])
+def test_recovered_quad_float32_shear_noise_is_accepted_at_every_scale(scale, shear):
+    # recover_char_quad reaches 1.7768e-5 of float32 shear noise (measured),
+    # only 11% under the former 2e-5 bound. The dimensionless bound is 1e-4
+    # (0.006 degrees): noise passes, and the edge/orientation bounds are unchanged.
+    quad = tuple((x * scale, y * scale) for x, y in
+                 ((0., 0.), (1., 0.), (1. + shear, -1.), (shear, -1.)))
+    width, height, rotation = builder._quad_frame(quad)
+    assert width == pytest.approx(scale) and rotation == 0.0
+    assert height == pytest.approx(scale * math.hypot(1.0, shear))
+    assert builder._POSITIONED_SHEAR_NOISE == 1e-4
+    assert builder._POSITIONED_FRAME_NOISE == 2e-5
 
 
 def test_incompatible_character_rotation_still_rejected():

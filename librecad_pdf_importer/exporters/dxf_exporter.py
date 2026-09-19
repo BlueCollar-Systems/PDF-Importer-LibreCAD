@@ -9,6 +9,7 @@ import math
 from pathlib import Path
 import re
 import shutil
+import traceback
 from types import MappingProxyType
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import uuid
@@ -51,6 +52,7 @@ from pdfcadcore.primitives import TextCharLayout
 from dxf_text_builder import (
     TextDeliveryAttempt,
     TextDeliveryResult,
+    _attempt_degraded_text,
     _bbox_tuple,
     _glyph_definition_geometry_fingerprint,
     _glyph_instance_transform_fingerprint,
@@ -59,11 +61,17 @@ from dxf_text_builder import (
     _resolve_librecad_unicode_lff,
     _nested_outline_tolerance,
     _solid_fill_verified,
+    _source_id,
     build_text,
     iter_glyph_outline_entities,
     reset_text_styles,
 )
-from conversion_control import ActivePageCancelled, check_cancel, report_progress
+from conversion_control import (
+    ActivePageCancelled,
+    ImportStopped,
+    check_cancel,
+    report_progress,
+)
 from librecad_runtime import local_path_for_io, resolve_librecad_installation
 
 
@@ -201,13 +209,43 @@ class DxfExportOptions:
     librecad_executable: Optional[str] = None
 
 
-class TextRepresentationDeliveryError(RuntimeError):
-    """A requested text item could not be verified or safely substituted."""
+class TextRepresentationDeliveryError(ImportStopped):
+    """A text item has no stable source identity, so it cannot even be reported.
+
+    An unverifiable item no longer raises this: it degrades (item raster patch,
+    visible degraded TEXT, reported drop) and the sheet still exports.
+    """
 
     def __init__(self, message: str, delivery: TextDeliveryResult):
         super().__init__(message)
         self.delivery = delivery
-        self.failure_report_path = ""
+
+
+class _SerializedTextDeliveryMismatches(RuntimeError):
+    """Several deliveries failed post-write verification; each keeps its message."""
+
+    def __init__(self, messages: List[str]):
+        super().__init__(
+            f"{messages[0]} (and {len(messages) - 1} more mismatching text item(s))"
+        )
+        self.messages = list(messages)
+
+
+class _SerializedTextItemMismatch(RuntimeError):
+    """Post-write verification failed for identifiable text items only."""
+
+    def __init__(self, message: str, forced_text_rungs: Dict[str, Tuple[int, str]]):
+        super().__init__(message)
+        self.forced_text_rungs = forced_text_rungs
+
+
+# Owner decision 2026-09-19: one text item whose delivery cannot be verified
+# degrades (raster patch -> visible degraded TEXT -> reported drop); it never
+# costs the sheet. The builder's failure classification is kept as evidence and
+# the item stays verified=False, so certification gates still fail for the sheet.
+_TEXT_DEGRADE_POLICY = "item_failure_never_costs_sheet"
+_TEXT_DEGRADE_RUNG_RASTER, _TEXT_DEGRADE_RUNG_TEXT, _TEXT_DEGRADE_RUNG_DROP = 0, 1, 2
+TEXT_ITEMS_DEGRADED_REPORT_LIMIT = 200
 
 
 @dataclass
@@ -1016,6 +1054,7 @@ def summarize_text_delivery(
         for item in items
         if item.get("verified") is not True or not item.get("final_representation")
     ]
+    degraded = degraded_text_items(items)
     return {
         "requested": requested_mode,
         "delivered": delivered,
@@ -1025,11 +1064,188 @@ def summarize_text_delivery(
         "item_count": len(items),
         "entity_count": entity_count,
         "failed_source_ids": failures,
+        "degraded_item_count": degraded["total"],
+        "degraded_items": degraded["items"],
+        "degraded_items_truncated": degraded["truncated"],
         "report_path": str(report_path),
     }
 
 
-def _fallback_reason_code(delivery: TextDeliveryResult) -> str:
+def degraded_text_items(
+    deliveries: Sequence[Any],
+    *,
+    limit: int = TEXT_ITEMS_DEGRADED_REPORT_LIMIT,
+) -> Dict[str, Any]:
+    """List every degraded or dropped text item, loudly and bounded.
+
+    ``delivered`` is ``raster``, ``text`` (the visible degraded TEXT) or
+    ``none`` (dropped). ``total`` counts all of them; ``items`` is capped.
+    ``fallbacks`` groups ALL of them by requested/delivered/reason code and
+    ``dropped`` counts the items that are not in the drawing at all. An entry
+    carries ``no_visible_ink`` only when its raster rung found that the source
+    item paints nothing, so no patch was made and nothing visible is missing.
+    """
+
+    records = [
+        item
+        for item in deliveries or []
+        if isinstance(item, dict) and item.get("degraded") is True
+    ]
+
+    def delivered(item: Dict[str, Any]) -> str:
+        if item.get("dropped") is True:
+            return "none"
+        return str(item.get("final_representation") or "none")
+
+    def no_visible_ink(item: Dict[str, Any]) -> Dict[str, bool]:
+        last = (item.get("attempts") or [{}])[-1]
+        omitted = (
+            isinstance(last, dict)
+            and last.get("strategy") == "verified_source_zero_ink_omission"
+        )
+        return {"no_visible_ink": True} if omitted else {}
+
+    fallbacks: List[Dict[str, Any]] = []
+    for item in records:
+        _append_text_fallback(
+            fallbacks,
+            requested=str(item.get("requested_representation") or ""),
+            delivered=delivered(item),
+            reason=str(item.get("fallback_reason_code") or ""),
+            count=1,
+        )
+    return {
+        "items": [
+            {
+                "source_id": str(item.get("source_id") or ""),
+                "page": int(item.get("source_page_number") or 0),
+                "text": str(item.get("source_text") or ""),
+                "reason": str(item.get("degrade_reason") or ""),
+                "reason_code": str(item.get("fallback_reason_code") or ""),
+                "proof_class": str(item.get("proof_class") or ""),
+                "delivered": delivered(item),
+                **no_visible_ink(item),
+            }
+            for item in records[: max(0, int(limit))]
+        ],
+        "total": len(records),
+        "truncated": len(records) > max(0, int(limit)),
+        "dropped": sum(1 for item in records if item.get("dropped") is True),
+        "fallbacks": fallbacks,
+    }
+
+
+def bounded_traceback(
+    exc: BaseException,
+    *,
+    frames: int = 8,
+    max_chars: int = 4000,
+    max_message_chars: int = 500,
+) -> List[str]:
+    """The innermost frames of a failure, bounded: the raise site stays recoverable.
+
+    Each part (one frame, or the exception message) is bounded by itself. The
+    message is the LAST part, so a tail cut alone would spend the whole budget on
+    a very long message and lose every frame.
+    """
+
+    part_limit = max(4, int(max_message_chars))
+    text = "".join(
+        part if len(part) <= part_limit else f"{part[: part_limit - 3]}...\n"
+        for part in traceback.format_exception(
+            type(exc), exc, exc.__traceback__, limit=-abs(int(frames))
+        )
+    )
+    return text[-max(0, int(max_chars)):].splitlines()
+
+
+def _one_line(value: Any, limit: int) -> str:
+    """One bounded console line: control characters (ESC, BEL, NUL, BS ...) and
+    whitespace runs (newlines included) become one space; long values are cut."""
+
+    text = "".join(
+        " " if ord(char) < 32 or ord(char) == 127 else char
+        for char in str(value if value is not None else "")
+    )
+    text = " ".join(text.split())
+    return text if len(text) <= limit else f"{text[: limit - 3]}..."
+
+
+def degraded_text_item_lines(
+    items: Sequence[Dict[str, Any]],
+    total: int,
+    *,
+    limit: int = 20,
+) -> List[str]:
+    """One readable warning line per degraded item, then ``... and N more``.
+
+    Exactly one bounded physical line each: the source text and the reason may
+    be long or span lines, and the report keeps them in full.
+    """
+
+    outcomes = {
+        "raster": "delivered as an unverified raster patch",
+        "text": "delivered as visible degraded TEXT",
+        "none": "DROPPED from the drawing",
+    }
+    # ASCII-escaped so a console codepage can never turn the warning into a crash.
+    lines = [
+        "Warning: text item {source_id} (page {page}, {text!r}) could not be "
+        "verified [{proof_class}: {reason}]; {outcome}.".format(
+            source_id=_one_line(item.get("source_id"), 80),
+            page=item.get("page"),
+            text=_one_line(item.get("text"), 80),
+            proof_class=_one_line(item.get("proof_class"), 40),
+            reason=_one_line(item.get("reason"), 200),
+            outcome=(
+                # The raster rung made no patch: never call that a delivered patch.
+                "the source item has no visible ink, so nothing was drawn"
+                if item.get("no_visible_ink") is True
+                else outcomes.get(str(item.get("delivered")), "not delivered")
+            ),
+        )
+        .encode("ascii", "backslashreplace")
+        .decode("ascii")
+        for item in list(items)[: max(0, int(limit))]
+    ]
+    remaining = int(total) - len(lines)
+    if remaining > 0:
+        lines.append(f"... and {remaining} more degraded text item(s); see the import report.")
+    return lines
+
+
+def _text_proof_class(delivery: TextDeliveryResult) -> str:
+    """Name the builder's own, unchanged failure classification for the report."""
+
+    attempts = list(delivery.attempts)
+    strategies = {attempt.strategy for attempt in attempts}
+    if "positioned_fraction_layout_validation" in strategies:
+        return "invalid_layout"
+    # Every rung ending "impossible" is not proof by itself: the builder refuses
+    # to call a font failure proven when it may be our runtime's (helper
+    # unavailable, proof not bound to the item). Only its own authorization, or
+    # its R12 colour proof, makes the item proven impossible.
+    if (
+        attempts
+        and all(attempt.outcome == "impossible" for attempt in attempts)
+        and (
+            delivery.terminal_fallback_authorized
+            or "positioned_fraction_r12_color_validation" in strategies
+        )
+    ):
+        return "proven_impossible"
+    return "unproven_failure"
+
+
+def _fallback_reason_code(
+    delivery: TextDeliveryResult,
+    degraded_proof_class: str = "",
+) -> str:
+    # A rescued item must never score like a proven, verified hop.
+    if degraded_proof_class == "proven_impossible":
+        return "item_degraded_after_proven_impossibility"
+    if degraded_proof_class:
+        return "item_degraded_after_unproven_failure"
     requested = _normalized_text_mode(delivery.requested_representation)
     if delivery.final_representation == "raster":
         return "structural_representations_failed_verification"
@@ -1167,7 +1383,8 @@ def _verify_serialized_text_deliveries(
     expected_modelspace_owner = str(
         getattr(getattr(modelspace_record, "dxf", None), "handle", "") or ""
     )
-    for delivery in deliveries:
+
+    def verify_delivery(delivery: Dict[str, Any]) -> None:
         source_id = str(delivery.get("source_id") or "")
         representation = str(delivery.get("final_representation") or "")
         if not source_id or source_id in source_ids:
@@ -1175,7 +1392,62 @@ def _verify_serialized_text_deliveries(
                 f"serialized text delivery has invalid or duplicate source id: {source_id!r}"
             )
         source_ids.add(source_id)
-        if delivery.get("verified") is not True or representation not in expected_types:
+        degraded = delivery.get("degraded") is True
+        if degraded and delivery.get("dropped") is True:
+            # A dropped item is reported, not delivered: it must own nothing.
+            attempts = [
+                attempt
+                for attempt in delivery.get("attempts") or []
+                if isinstance(attempt, dict)
+            ]
+            if (
+                representation
+                or any(
+                    owner.get(key)
+                    for owner in (delivery, *attempts)
+                    for key in (
+                        "entity_handles",
+                        "support_entity_handles",
+                        "referenced_entity_handles",
+                    )
+                )
+                or any(
+                    modelspace_handle_counts.get(str(handle), 0)
+                    for attempt in attempts
+                    for handle in attempt.get("created_entity_handles") or []
+                )
+            ):
+                raise RuntimeError(
+                    f"serialized text delivery {source_id}: dropped item owns live handles"
+                )
+            return
+        if degraded and representation == "text":
+            # The visible degraded TEXT certifies nothing visual; what must hold
+            # is that the exact source string reached the file where it was put.
+            entity_handles = [str(value) for value in delivery.get("entity_handles") or []]
+            if len(entity_handles) != 1 or main_handles.intersection(entity_handles):
+                raise RuntimeError(
+                    f"serialized text delivery {source_id}: missing or duplicate main handles"
+                )
+            main_handles.update(entity_handles)
+            native = _serialized_entity(doc, entity_handles[0], source_id)
+            evidence = dict(
+                ((delivery.get("attempts") or [{}])[-1] or {}).get("evidence") or {}
+            )
+            if (
+                native.dxftype() != "TEXT"
+                or modelspace_handle_counts.get(entity_handles[0], 0) != 1
+                or str(native.dxf.text) != str(delivery.get("source_text") or "")
+                or str(native.dxf.text) != str(evidence.get("delivered_content") or "")
+                or str(native.dxf.layer) != str(evidence.get("layer") or "")
+            ):
+                raise RuntimeError(
+                    f"serialized text delivery {source_id}: degraded text changed"
+                )
+            return
+        if (
+            delivery.get("verified") is not True and not degraded
+        ) or representation not in expected_types:
             raise RuntimeError(
                 f"serialized text delivery {source_id}: unverified final representation"
             )
@@ -1232,7 +1504,7 @@ def _verify_serialized_text_deliveries(
                 raise RuntimeError(
                     f"serialized text delivery {source_id}: zero-ink attempt owns entities"
                 )
-            continue
+            return
         if not entity_handles or main_handles.intersection(entity_handles):
             raise RuntimeError(
                 f"serialized text delivery {source_id}: missing or duplicate main handles"
@@ -2080,6 +2352,30 @@ def _verify_serialized_text_deliveries(
                         f"serialized text delivery {source_id}: embedded font hash mismatch"
                     )
 
+    # One mismatching item must not hide the next: every mismatch confined to
+    # one delivery is collected, so ONE forced-degrade re-export covers them
+    # all. Structural failures (duplicate source IDs, a dropped item that owns
+    # handles) name no retryable delivery and stay fatal at once.
+    mismatches: List[RuntimeError] = []
+    for delivery in deliveries:
+        try:
+            verify_delivery(delivery)
+        except RuntimeError as exc:
+            if _serialized_mismatch_item(str(exc), [delivery]) is None:
+                raise
+            mismatches.append(exc)
+        except Exception as exc:  # noqa: BLE001 - a fault while checking one item is that item's mismatch
+            mismatches.append(
+                RuntimeError(
+                    f"serialized text delivery {delivery.get('source_id')}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            )
+    if len(mismatches) == 1:
+        raise mismatches[0]
+    if mismatches:
+        raise _SerializedTextDeliveryMismatches([str(exc) for exc in mismatches])
+
 
 @dataclass
 class _PendingRasterAsset:
@@ -2219,7 +2515,8 @@ def _record_font_staging_fault(
     The reason is carried through to the per-item resolver, which treats a
     recorded fault as affirmative proof that the exact rung is impossible here
     and descends. Without the record the same absence is indistinguishable from
-    a bug, and correctly aborts instead.
+    a bug: it stays an unproven failure, so the item is degraded as unverified
+    and reported instead of being certified.
     """
     key = str(asset_id or "")
     if not key:
@@ -2512,7 +2809,9 @@ def _reopen_candidate_for_verification(
         reduced, dropped = _reduced_verification_copy(
             temp_output, keep_handles, modelspace_owner_handle
         )
-    except _ReducedCopyUnavailable:
+    except (UnicodeDecodeError, _ReducedCopyUnavailable):
+        # A pre-R2007 candidate is cp1252, not UTF-8: one degraded TEXT carrying
+        # a degree sign is enough. The complete load below reads its codepage.
         reduced = None
     if reduced is not None:
         try:
@@ -3799,10 +4098,213 @@ def _attempt_terminal_text_raster(
         )
 
 
+def _failed_text_item_attempt(
+    delivery: TextDeliveryResult,
+    attempted_representation: str,
+    strategy: str,
+    reason: str,
+    evidence: Optional[Dict[str, Any]] = None,
+) -> TextDeliveryResult:
+    """Record one failed, entity-free attempt and keep the item unverified."""
+
+    attempts = list(delivery.attempts)
+    attempts.append(
+        TextDeliveryAttempt(
+            source_id=delivery.source_id,
+            requested_representation=delivery.requested_representation,
+            attempted_representation=attempted_representation,
+            strategy=strategy,
+            outcome="failed",
+            reason=reason,
+            cleanup_verified=True,
+            evidence=dict(evidence or {}),
+        )
+    )
+    return TextDeliveryResult(
+        source_id=delivery.source_id,
+        requested_representation=delivery.requested_representation,
+        final_representation=None,
+        verified=False,
+        attempts=attempts,
+        failure_reason=reason,
+    )
+
+
+def _build_text_item(
+    text_item: Any,
+    msp: Any,
+    layer_name: str,
+    config: Any,
+    *,
+    forced_reason: Optional[str] = None,
+    **builder_options: Any,
+) -> TextDeliveryResult:
+    """Run the text builder for one item without ever raising for that item.
+
+    A builder crash is an unproven failure of this item, and a forced re-export
+    (the item failed post-write verification) skips the builder; either way the
+    caller receives one failed attempt and degrades the item.
+    """
+
+    evidence: Dict[str, Any] = {}
+    if forced_reason is None:
+        item_entity_start = len(msp.entity_space.entities)
+        try:
+            return build_text(text_item, msp, layer_name, config, **builder_options)
+        except Exception as exc:  # noqa: BLE001 - one item never costs the sheet
+            for stray in list(msp.entity_space.entities[item_entity_start:]):
+                msp.delete_entity(stray)
+            strategy, reason = "text_builder_exception", f"{type(exc).__name__}: {exc}"
+            # This may be OUR bug: keep where it was raised, not only what it said.
+            evidence = {
+                "exception_type": type(exc).__name__,
+                "traceback_tail": bounded_traceback(exc),
+            }
+    else:
+        strategy, reason = "serialized_delivery_verification", forced_reason
+    requested = _normalized_text_mode(getattr(config, "text_mode", "text"))
+    return _failed_text_item_attempt(
+        TextDeliveryResult(
+            source_id=_source_id(text_item),
+            requested_representation=requested,
+            final_representation=None,
+            verified=False,
+        ),
+        requested,
+        strategy,
+        reason,
+        evidence,
+    )
+
+
+def _item_raster_proof_complete(
+    delivery: TextDeliveryResult,
+    *,
+    source_pdf_sha256: Optional[str],
+    page_number: int,
+) -> bool:
+    """A kept item IMAGE must carry the exact opaque pixel-lattice proof."""
+
+    if not delivery.entity_handles:
+        return True
+    evidence = delivery.attempts[-1].evidence
+    return bool(
+        evidence.get("source_pixel_lattice_verified") is True
+        and evidence.get("host_safe_opaque_image_verified") is True
+        and evidence.get("source_pdf_sha256") == source_pdf_sha256
+        and evidence.get("source_page_number") == page_number
+    )
+
+
+def _discard_item_raster(msp: Any, delivery: TextDeliveryResult) -> TextDeliveryResult:
+    """Remove an item IMAGE that lacks its proof so the next rung can run."""
+
+    doc = msp.doc
+    attempt = delivery.attempts[-1]
+    for handle in [*delivery.entity_handles, *delivery.support_entity_handles]:
+        entity = doc.entitydb.get(str(handle))
+        if entity is None or not getattr(entity, "is_alive", True):
+            continue
+        try:
+            if str(handle) in delivery.entity_handles:
+                msp.delete_entity(entity)
+            else:
+                doc.objects.delete_entity(entity)
+        except Exception:
+            continue
+    attempt.removed_entity_handles = [
+        handle
+        for handle in attempt.created_entity_handles
+        if doc.entitydb.get(handle) is None
+        or not getattr(doc.entitydb.get(handle), "is_alive", True)
+    ]
+    attempt.entity_handles = []
+    attempt.support_entity_handles = []
+    attempt.delivery_verified = False
+    attempt.outcome = "failed"
+    attempt.reason = "ValueError: item raster has no exact opaque pixel-lattice proof"
+    attempt.cleanup_verified = set(attempt.removed_entity_handles) == set(
+        attempt.created_entity_handles
+    )
+    return TextDeliveryResult(
+        source_id=delivery.source_id,
+        requested_representation=delivery.requested_representation,
+        final_representation=None,
+        verified=False,
+        attempts=list(delivery.attempts),
+        failure_reason=attempt.reason,
+    )
+
+
+def _serialized_mismatch_item(
+    message: str,
+    deliveries: List[Dict[str, Any]],
+) -> Optional[Tuple[str, int]]:
+    """Name the one delivery a post-write failure is confined to, and its next rung.
+
+    Structural failures (duplicate source IDs, session authority) name no single
+    delivery and stay fatal.
+    """
+
+    matches = [
+        item
+        for item in deliveries
+        if str(item.get("source_id") or "")
+        and message.startswith(f"serialized text delivery {item.get('source_id')}: ")
+    ]
+    if len(matches) != 1:
+        return None
+    failed = matches[0]
+    if failed.get("dropped") is True:
+        return None
+    if failed.get("degraded") is True and failed.get("final_representation") == "text":
+        next_rung = _TEXT_DEGRADE_RUNG_DROP
+    elif failed.get("final_representation") == "raster":
+        next_rung = _TEXT_DEGRADE_RUNG_TEXT
+    else:
+        next_rung = _TEXT_DEGRADE_RUNG_RASTER
+    return str(failed.get("source_id")), next_rung
+
+
+def _serialized_mismatch_rungs(
+    exc: RuntimeError,
+    deliveries: List[Dict[str, Any]],
+) -> Optional[Dict[str, Tuple[int, str]]]:
+    """Every mismatching delivery's forced rung, or None when any one is structural."""
+
+    forced: Dict[str, Tuple[int, str]] = {}
+    for message in getattr(exc, "messages", None) or [str(exc)]:
+        named = _serialized_mismatch_item(message, deliveries)
+        if named is None:
+            return None
+        forced[named[0]] = (named[1], message)
+    return forced
+
+
 def export_to_dxf(
     extraction: DocumentExtraction,
     output_path: str,
     options: Optional[DxfExportOptions] = None,
+) -> DxfExportResult:
+    try:
+        return _export_to_dxf_once(extraction, output_path, options)
+    except _SerializedTextItemMismatch as exc:
+        # Identifiable items failed their post-write check. Re-export ONCE with
+        # all of them forced down the degrade ladder instead of losing the sheet.
+        forced_text_rungs = exc.forced_text_rungs
+    try:
+        return _export_to_dxf_once(extraction, output_path, options, forced_text_rungs)
+    except _SerializedTextItemMismatch as exc:
+        raise ImportStopped(
+            f"{exc} (still failing after one forced-degrade re-export; no DXF was written)"
+        ) from exc
+
+
+def _export_to_dxf_once(
+    extraction: DocumentExtraction,
+    output_path: str,
+    options: Optional[DxfExportOptions] = None,
+    forced_text_rungs: Optional[Mapping[str, Tuple[int, str]]] = None,
 ) -> DxfExportResult:
     transaction = _AssetTransaction()
     with _RasterRenderSession() as raster_session:
@@ -3813,6 +4315,7 @@ def export_to_dxf(
                 options,
                 asset_transaction=transaction,
                 raster_session=raster_session,
+                forced_text_rungs=forced_text_rungs,
             )
         except Exception:
             transaction.rollback()
@@ -3831,8 +4334,10 @@ def _export_to_dxf_impl(
     *,
     asset_transaction: _AssetTransaction,
     raster_session: _RasterRenderSession,
+    forced_text_rungs: Optional[Mapping[str, Tuple[int, str]]] = None,
 ) -> DxfExportResult:
     opts = options or DxfExportOptions()
+    forced_text_rungs = forced_text_rungs or {}
     installation = resolve_librecad_installation(opts.librecad_executable)
     librecad_contract_executable = (
         installation.executable_path
@@ -3922,9 +4427,10 @@ def _export_to_dxf_impl(
                     f"(requested {requested_raster_dpi} DPI)"
                 )
             extracted_page.resolved_mode = "hybrid"
-            extracted_page.resolved_reason = (
-                f"{prior_reason}; {fallback_reason}" if prior_reason else fallback_reason
-            )
+            if not forced_text_rungs:  # the forced re-export's first pass already said it
+                extracted_page.resolved_reason = (
+                    f"{prior_reason}; {fallback_reason}" if prior_reason else fallback_reason
+                )
     dxf_ver = _normalize_dxf_version(opts.dxf_version)
     is_r12 = dxf_ver == "R12"
     reset_text_styles()
@@ -4302,7 +4808,8 @@ def _export_to_dxf_impl(
                 ti = text
                 if dy != 0.0:
                     ti = _translate_positioned_text_for_page(text, dy)
-                delivery = build_text(
+                forced_rung = forced_text_rungs.get(_source_id(ti))
+                delivery = _build_text_item(
                     ti,
                     msp,
                     layer,
@@ -4312,14 +4819,58 @@ def _export_to_dxf_impl(
                     librecad_executable=librecad_contract_executable,
                     dxf_version=dxf_ver,
                     return_delivery_result=True,
+                    forced_reason=forced_rung[1] if forced_rung else None,
                 )
                 if not isinstance(delivery, TextDeliveryResult):
                     raise RuntimeError("text builder returned no delivery evidence")
+                # The builder's classification is kept as evidence; only its
+                # consequence changed. One unverified item degrades down the ladder
+                # (item raster -> visible degraded TEXT -> reported drop) and the
+                # sheet still exports. Only the old authorized, proven hop to a
+                # verified item raster is still certified.
+                unverified = not delivery.verified or not delivery.final_representation
+                if unverified and not delivery.source_id:
+                    text_deliveries.append(delivery.to_dict())
+                    _sync_text_evidence()
+                    raise TextRepresentationDeliveryError(
+                        f"unknown text item: {delivery.failure_reason}",
+                        delivery,
+                    )
+                degrade: Optional[Dict[str, Any]] = None
+                certified_hop = bool(delivery.terminal_fallback_authorized)
+                raster_requested = certified_hop and not delivery.attempts
+                degrade_rung = forced_rung[0] if forced_rung else _TEXT_DEGRADE_RUNG_RASTER
+                if unverified:
+                    degrade = {
+                        "degraded": True,
+                        "dropped": False,
+                        "degrade_policy": _TEXT_DEGRADE_POLICY,
+                        "proof_class": _text_proof_class(delivery),
+                        "degrade_reason": delivery.failure_reason
+                        or "all representation attempts failed",
+                        "source_text": str(getattr(text, "text", "") or ""),
+                        "source_page_number": int(page.page_data.page_number),
+                    }
+                    # On the record itself: the report's fallback block may be
+                    # describing the sheet's verified fallbacks instead.
+                    degrade["fallback_reason_code"] = _fallback_reason_code(
+                        delivery, degrade["proof_class"]
+                    )
+                    if degrade_rung == _TEXT_DEGRADE_RUNG_RASTER and source_pdf_sha256 is None:
+                        try:
+                            source_pdf_sha256 = _file_sha256(source_pdf)
+                        except OSError as exc:
+                            delivery = _failed_text_item_attempt(
+                                delivery,
+                                "raster",
+                                "pymupdf_opaque_source_item_clip",
+                                f"{type(exc).__name__}: {exc}",
+                            )
                 if (
-                    not delivery.verified or not delivery.final_representation
-                ) and delivery.terminal_fallback_authorized:
-                    if source_pdf_sha256 is None:
-                        source_pdf_sha256 = _file_sha256(source_pdf)
+                    unverified
+                    and degrade_rung == _TEXT_DEGRADE_RUNG_RASTER
+                    and source_pdf_sha256 is not None
+                ):
                     delivery, pending_asset = _attempt_terminal_text_raster(
                         delivery,
                         extraction=extraction,
@@ -4339,19 +4890,34 @@ def _export_to_dxf_impl(
                         display_to_model=page.display_to_model,
                         page_offset_y=dy,
                     )
+                    if delivery.verified and not _item_raster_proof_complete(
+                        delivery,
+                        source_pdf_sha256=source_pdf_sha256,
+                        page_number=page.page_data.page_number,
+                    ):
+                        # Missing raster proof costs this rung, not the sheet.
+                        delivery, pending_asset = _discard_item_raster(msp, delivery), None
                     if pending_asset is not None:
                         pending_raster_assets.append(pending_asset)
+                if delivery.verified and delivery.final_representation and certified_hop:
+                    degrade = None
                 if not delivery.verified or not delivery.final_representation:
-                    text_deliveries.append(delivery.to_dict())
-                    _sync_text_evidence()
-                    raise TextRepresentationDeliveryError(
-                        (
-                            f"{delivery.source_id or 'unknown text item'}: "
-                            f"{delivery.failure_reason or 'all representation attempts failed'}"
-                        ),
-                        delivery,
-                    )
-                positioned_anchor = _bind_positioned_page_translation(
+                    if raster_requested and delivery.failure_reason:
+                        # Requested Raster has no builder failure: the render failed.
+                        degrade["degrade_reason"] = delivery.failure_reason
+                    if degrade_rung <= _TEXT_DEGRADE_RUNG_TEXT:
+                        degraded_layer = _layer_name(
+                            page.page_data.page_number, "TEXT_DEGRADED", None, opts
+                        )
+                        new_layer = not doc.layers.has_entry(degraded_layer)
+                        _ensure_layer(doc, degraded_layer, None)
+                        delivery = _attempt_degraded_text(
+                            delivery, ti, msp, degraded_layer, is_r12=is_r12
+                        )
+                        if new_layer and not delivery.final_representation:
+                            doc.layers.remove(degraded_layer)
+                    degrade["dropped"] = not delivery.final_representation
+                positioned_anchor = None if degrade else _bind_positioned_page_translation(
                     delivery,
                     text,
                     ti,
@@ -4359,12 +4925,12 @@ def _export_to_dxf_impl(
                     doc=doc,
                 )
                 if delivery.source_id in seen_text_source_ids:
-                    raise RuntimeError(
+                    raise ImportStopped(
                         f"{delivery.source_id}: duplicate stable text source identity"
                     )
                 duplicate_handles = seen_text_entity_handles.intersection(delivery.entity_handles)
                 if duplicate_handles:
-                    raise RuntimeError(
+                    raise ImportStopped(
                         f"{delivery.source_id}: duplicate delivered DXF handles "
                         f"{sorted(duplicate_handles)}"
                     )
@@ -4372,11 +4938,14 @@ def _export_to_dxf_impl(
                 seen_text_entity_handles.update(delivery.entity_handles)
                 if positioned_anchor is not None:
                     if delivery.source_id in positioned_translation_anchors:
-                        raise RuntimeError(
+                        raise ImportStopped(
                             f"{delivery.source_id}: duplicate positioned anchor"
                         )
                     positioned_translation_anchors[delivery.source_id] = positioned_anchor
                 text_deliveries.append(delivery.to_dict())
+                if degrade is not None:
+                    # Loud by construction: never verified, always a fallback.
+                    text_deliveries[-1].update(degrade, verified=False, fallback_used=True)
 
                 if paint_order is not None:
                     # Verified item raster pixels already contain the final PDF
@@ -4398,27 +4967,24 @@ def _export_to_dxf_impl(
                 entity_count += created
                 if delivery.final_representation == "raster":
                     image_count += created
-                    if created:
-                        final_evidence = delivery.attempts[-1].evidence
-                        if not (final_evidence.get("source_pixel_lattice_verified") is True
-                                and final_evidence.get("host_safe_opaque_image_verified") is True
-                                and final_evidence.get("source_pdf_sha256") == source_pdf_sha256
-                                and final_evidence.get("source_page_number") == page.page_data.page_number):
-                            raise RuntimeError("Final source crop has no exact opaque pixel-lattice proof")
-                        page_raster_handles.extend(delivery.entity_handles)
+                    # The exact opaque pixel-lattice proof was required above,
+                    # where a crop without it cost that rung instead of the sheet.
+                    page_raster_handles.extend(delivery.entity_handles)
+                degraded_proof_class = str(degrade["proof_class"]) if degrade else ""
                 if created > 0:
                     delivered_bucket = _delivered_text_entity_bucket(delivered_kind)
                     delivered_text_entity_counts[delivered_bucket] = (
                         int(delivered_text_entity_counts.get(delivered_bucket, 0) or 0) + created
                     )
-                    if delivery.fallback_used:
-                        _append_text_fallback(
-                            text_fallbacks,
-                            requested=delivery.requested_representation,
-                            delivered=str(delivery.final_representation),
-                            reason=_fallback_reason_code(delivery),
-                            count=1,
-                        )
+                # A dropped item created nothing, and is a fallback all the same.
+                if (created > 0 and delivery.fallback_used) or degrade is not None:
+                    _append_text_fallback(
+                        text_fallbacks,
+                        requested=delivery.requested_representation,
+                        delivered=str(delivery.final_representation or "none"),
+                        reason=_fallback_reason_code(delivery, degraded_proof_class),
+                        count=1,
+                    )
                 if created > 0 and opts.provenance_opts is not None:
                     from pdfcadcore.source_provenance import (
                         SourceProvenanceObject,
@@ -4436,7 +5002,9 @@ def _export_to_dxf_impl(
                         span_id = None
                     bucket = ensure_provenance_bucket(opts.provenance_opts)
                     fallback_reason = (
-                        _fallback_reason_code(delivery) if delivery.fallback_used else ""
+                        _fallback_reason_code(delivery, degraded_proof_class)
+                        if delivery.fallback_used or degrade is not None
+                        else ""
                     )
                     for handle in delivery.entity_handles:
                         bucket.append(
@@ -4763,17 +5331,25 @@ def _export_to_dxf_impl(
             raise RuntimeError(
                 f"serialized DXF candidate failed audit with {len(auditor.errors)} error(s)"
             )
-        _verify_serialized_text_deliveries(
-            candidate,
-            text_deliveries,
-            trusted_positioned_session=trusted_positioned_session,
-        )
+        try:
+            _verify_serialized_text_deliveries(
+                candidate,
+                text_deliveries,
+                trusted_positioned_session=trusted_positioned_session,
+            )
+        except RuntimeError as exc:
+            mismatch_rungs = _serialized_mismatch_rungs(exc, text_deliveries)
+            if mismatch_rungs is None:
+                # Structural: no single item can take the blame, so the sheet stops.
+                raise ImportStopped(str(exc)) from exc
+            raise _SerializedTextItemMismatch(str(exc), mismatch_rungs) from exc
         _verify_serialized_image_assets(candidate, serialized_image_expectations)
         _verify_serialized_source_dash_blocks(candidate, source_dash_expectations)
         from .final_rect_paint import verify_metadata_and_strokes
         verify_metadata_and_strokes(candidate, final_paint_expectations)
         temp_output.replace(output)
     except Exception:
+        _sync_text_evidence()  # the failure report names every item's evidence
         for temp_asset in temp_assets:
             try:
                 temp_asset.unlink(missing_ok=True)

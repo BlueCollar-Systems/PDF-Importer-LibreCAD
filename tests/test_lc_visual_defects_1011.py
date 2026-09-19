@@ -8,8 +8,9 @@ with the PDF page. Three import defects surfaced that no report field showed:
    circle. `_promote_arcs` emitted (first, last) regardless of traversal direction, but a
    DXF ARC always sweeps counter-clockwise, so a clockwise polyline became its complement.
 2. The historical 0.6-width stacked-fraction rewrite was retired: exact observed union
-   geometry is retained, and an invalid positioned fraction cannot read the source PDF or
-   descend to Raster. Ordinary requested-Raster items still retain square pixels.
+   geometry is retained. An invalid positioned fraction is still never certified, but since
+   the 2026-09-19 owner decision it costs only that item (an unverified, reported raster
+   patch), not the sheet. Ordinary requested-Raster items still retain square pixels.
 3. Custom PDF_DASH linetypes render continuous in LibreCAD (tracked separately).
 """
 from __future__ import annotations
@@ -155,11 +156,10 @@ def test_lineweight_ignores_missing_or_non_finite_widths() -> None:
 
 # ---------------------------------------------------------------------------
 # 2. Exact stacked-fraction truth does not use the retired 0.6-width rewrite.
-#    Invalid positioned evidence fails atomically; ordinary Raster remains square-pixel.
+#    Invalid positioned evidence degrades that one item; ordinary Raster remains square-pixel.
 # ---------------------------------------------------------------------------
 from librecad_pdf_importer.exporters.dxf_exporter import (  # noqa: E402
     DxfExportOptions,
-    TextRepresentationDeliveryError,
     export_to_dxf,
 )
 from librecad_pdf_importer.importer import run_import  # noqa: E402
@@ -229,14 +229,23 @@ def test_stacked_fraction_merge_preserves_full_observed_union(tmp_path) -> None:
     assert "".join(char.text for char in merged.source_char_layout) == "13/16"
 
 
+@pytest.mark.parametrize(
+    "text_mode", ["text", "labels", "3d_text", "glyphs", "geometry", "raster"]
+)
 @pytest.mark.parametrize("fault", ["unsupported_shear", "partial_layout"])
-def test_invalid_positioned_fraction_refuses_without_pdf_or_raster_work(
+def test_invalid_positioned_fraction_costs_one_item_in_every_text_mode(
     tmp_path,
     fault: str,
+    text_mode: str,
 ) -> None:
+    # Owner decision 2026-09-19. The builder still vetoes an invalid positioned
+    # layout before any rung in every mode (its classification is unchanged); the
+    # exporter no longer turns that one item into a dead sheet.
     pdf_path = tmp_path / f"stacked-fraction-{fault}.pdf"
-    _write_stacked_fraction_pdf(pdf_path, include_plate=False)
-    run = run_import(str(pdf_path), mode="vector", overrides={"pages": "1"})
+    _write_stacked_fraction_pdf(pdf_path)
+    run = run_import(
+        str(pdf_path), mode="vector", overrides={"pages": "1", "text_mode": text_mode}
+    )
     fraction = next(
         item
         for item in run.extraction.pages[0].page_data.text_items
@@ -254,44 +263,46 @@ def test_invalid_positioned_fraction_refuses_without_pdf_or_raster_work(
             *fraction.source_char_layout[1:],
         )
 
-    output = tmp_path / f"prior-{fault}.dxf"
-    prior = b"prior native artifact\n"
-    output.write_bytes(prior)
-    asset_root = output.with_name(f"{output.stem}_assets")
+    output = tmp_path / f"degraded-{fault}-{text_mode}.dxf"
+    output.write_bytes(b"prior native artifact\n")
 
-    with (
-        patch.object(
-            dxf_exporter_module,
-            "_file_sha256",
-            side_effect=AssertionError("source PDF hash must not be read"),
-        ) as source_hash,
-        patch.object(
-            dxf_exporter_module,
-            "_attempt_terminal_text_raster",
-            side_effect=AssertionError("terminal Raster must not be attempted"),
-        ) as raster_attempt,
-        patch.object(
-            dxf_exporter_module,
-            "_rectangular_opaque_crop",
-            side_effect=AssertionError("source crop must not be attempted"),
-        ) as source_crop,
-        pytest.raises(TextRepresentationDeliveryError) as raised,
-    ):
-        export_to_dxf(
-            run.extraction,
-            str(output),
-            DxfExportOptions(include_images=False, text_mode="raster"),
+    result = export_to_dxf(
+        run.extraction,
+        str(output),
+        DxfExportOptions(include_images=False, text_mode=text_mode),
+    )
+
+    ezdxf.readfile(output)  # the sheet exported and reopens
+    by_text = {
+        item.text: next(
+            delivery
+            for delivery in result.text_deliveries
+            if delivery["source_id"] == f"text_span:1:{item.id}"
         )
-
-    assert output.read_bytes() == prior
-    assert not asset_root.exists()
-    assert raised.value.delivery.verified is False
-    assert raised.value.delivery.final_representation is None
-    assert raised.value.delivery.terminal_fallback_authorized is False
-    assert all(attempt.cleanup_verified is True for attempt in raised.value.delivery.attempts)
-    assert source_hash.call_count == 0
-    assert raster_attempt.call_count == 0
-    assert source_crop.call_count == 0
+        for item in run.extraction.pages[0].page_data.text_items
+    }
+    plate = by_text["PLATE"]
+    assert plate["verified"] is True and "degraded" not in plate
+    degraded = by_text["13/16"]
+    assert degraded["verified"] is False and degraded["degraded"] is True
+    assert degraded["dropped"] is False
+    assert degraded["proof_class"] == "invalid_layout"
+    assert degraded["terminal_fallback_authorized"] is False
+    assert degraded["final_representation"] == "raster"
+    assert len(degraded["entity_handles"]) == 1
+    assert [attempt["strategy"] for attempt in degraded["attempts"]] == [
+        "positioned_fraction_layout_validation",
+        "pymupdf_opaque_source_item_clip",
+    ]
+    assert [attempt["outcome"] for attempt in degraded["attempts"]] == [
+        "impossible",
+        "verified",
+    ]
+    assert all(attempt["cleanup_verified"] is True for attempt in degraded["attempts"])
+    assert [
+        (item["source_id"], item["text"], item["proof_class"], item["delivered"])
+        for item in dxf_exporter_module.degraded_text_items(result.text_deliveries)["items"]
+    ] == [(degraded["source_id"], "13/16", "invalid_layout", "raster")]
 
 
 def test_non_fraction_requested_raster_keeps_source_pixel_lattice(tmp_path) -> None:

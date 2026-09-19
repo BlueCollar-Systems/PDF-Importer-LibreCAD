@@ -32,7 +32,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from pdfcadcore.import_config import ImportConfig
-from conversion_control import ActivePageCancelled, check_cancel
+from conversion_control import ActivePageCancelled, ImportStopped, check_cancel
 from librecad_runtime import resolve_librecad_runtime_binding
 
 
@@ -219,6 +219,37 @@ def _assemble_checkpoints(checkpoints: list[Path], output_path: str) -> None:
     os.replace(temporary, output)
 
 
+def _page_degraded_text_items(record: Dict[str, Any]) -> int:
+    """Degraded or dropped text items on one checkpointed page."""
+    return int((record.get("text_delivery") or {}).get("degraded_item_count") or 0)
+
+
+def _degraded_text_block(page_records: list[Dict[str, Any]]) -> Dict[str, Any]:
+    """Merge the pages' bounded degraded-item listings into one bounded listing."""
+    from librecad_pdf_importer.exporters.dxf_exporter import (
+        TEXT_ITEMS_DEGRADED_REPORT_LIMIT,
+    )
+
+    items = [
+        entry
+        for record in page_records
+        for entry in (record.get("text_delivery") or {}).get("degraded_items") or []
+    ][:TEXT_ITEMS_DEGRADED_REPORT_LIMIT]
+    total = sum(_page_degraded_text_items(record) for record in page_records)
+    return {"items": items, "total": total, "truncated": total > len(items)}
+
+
+def _page_progress(position: int, total: int, record: Dict[str, Any]) -> str:
+    """A checkpointed page is announced as certified only when all its text is."""
+    degraded = _page_degraded_text_items(record)
+    if not degraded:
+        return f"Page {position}/{total} certified"
+    return (
+        f"Page {position}/{total} exported with {degraded} degraded text item(s) "
+        "- NOT certified"
+    )
+
+
 def _write_resumable_summary(
     output_path: str,
     manifest: Dict[str, Any],
@@ -234,15 +265,33 @@ def _write_resumable_summary(
     clip_fill_delivery = merge_clip_fill_deliveries(
         record.get("clip_fill_delivery") or {} for record in page_records
     )
+    clip_fill_warnings = clip_fill_delivery["dropped"] + clip_fill_delivery["approximated"]
+    # A page with a degraded or dropped text item is exported, never certified,
+    # and the report the operator is pointed at says so as loudly as its page report.
+    degraded_text = _degraded_text_block(page_records)
+    text_degrade_warnings = int(degraded_text["total"])
     payload = {
         "schema": "bcs.resumable_import_report/1.0",
         "result": "complete" if len(page_records) == len(selected_pages) else "cancelled",
         "input_sha256": manifest["source_sha256"],
         "options_sha256": manifest["options_sha256"],
         "pages_requested": [page + 1 for page in selected_pages],
-        "pages_certified": [record["page_number"] for record in page_records],
+        "pages_certified": [
+            record["page_number"]
+            for record in page_records
+            if not _page_degraded_text_items(record)
+        ],
+        "pages_degraded": [
+            record["page_number"]
+            for record in page_records
+            if _page_degraded_text_items(record)
+        ],
+        "text_items_degraded": degraded_text["items"],
+        "text_items_degraded_total": degraded_text["total"],
+        "text_items_degraded_truncated": degraded_text["truncated"],
         "page_reports": [record.get("import_report_path", "") for record in page_records],
-        "warnings": clip_fill_delivery["dropped"] + clip_fill_delivery["approximated"],
+        # Left-out / approximate clipped fills plus degraded / dropped text items.
+        "warnings": clip_fill_warnings + text_degrade_warnings,
         "clip_fill_delivery": clip_fill_delivery,
         "output": str(output),
     }
@@ -356,7 +405,7 @@ def _convert_resumable(
         ):
             resumed_pages += 1
             if progress_callback:
-                progress_callback(f"Page {position}/{total} certified (resumed)")
+                progress_callback(f"{_page_progress(position, total, record)} (resumed)")
             continue
         completed.pop(key, None)
         if cancel_requested and cancel_requested():
@@ -401,12 +450,13 @@ def _convert_resumable(
         _atomic_json(manifest_path, manifest)
         converted_pages += 1
         if progress_callback:
-            progress_callback(f"Page {position}/{total} certified")
+            progress_callback(_page_progress(position, total, completed[key]))
 
     certified_paths = [session_dir / completed[str(page)]["file"] for page in selected_pages]
     _ensure_assembled(certified_paths, str(output), manifest, manifest_path)
     report_path = _write_resumable_summary(str(output), manifest, selected_pages)
     records = [completed[str(page)] for page in selected_pages]
+    degraded_text = _degraded_text_block(records)
     deliveries = [record.get("text_delivery") or {} for record in records]
     delivered = {str(item.get("delivered") or "none") for item in deliveries}
     requested = {str(item.get("requested") or "none") for item in deliveries}
@@ -422,6 +472,10 @@ def _convert_resumable(
             "delivered": next(iter(delivered)) if len(delivered) == 1 else "mixed",
             "fallback_used": any(bool(item.get("fallback_used")) for item in deliveries),
             "item_count": sum(int(item.get("item_count", 0)) for item in deliveries),
+            "verified": all(item.get("verified", True) is True for item in deliveries),
+            "degraded_item_count": degraded_text["total"],
+            "degraded_items": degraded_text["items"],
+            "degraded_items_truncated": degraded_text["truncated"],
             "report_path": report_path,
         },
         # One line for the conversion, pages certified by an earlier run included.
@@ -448,13 +502,14 @@ def _convert_via_package(
     """Full BCS-ARCH-001 pipeline (auto/raster/hybrid + raster pages)."""
     from librecad_pdf_importer.exporters.dxf_exporter import (
         DxfExportOptions,
-        TextRepresentationDeliveryError,
+        degraded_text_items,
         export_to_dxf,
         summarize_text_delivery,
     )
     from librecad_pdf_importer.importer import (
         failure_import_report_path,
         run_import,
+        terminal_failure_record,
         write_import_report,
     )
 
@@ -504,23 +559,41 @@ def _convert_via_package(
                     provenance_opts=run.config,
                 ),
             )
-        except TextRepresentationDeliveryError as exc:
-            failure_path = failure_import_report_path(output_path, run)
+        except ActivePageCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - every failed export leaves a report
+            # One unverifiable text item no longer lands here: it degrades and
+            # the sheet exports. A deliberate stop (ImportStopped) and an unexpected
+            # failure both re-raise; the entry points tell them apart by type.
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
-            write_import_report(
-                run,
-                failure_path,
-                elapsed_ms=elapsed_ms,
-                performance_phases={
-                    "run_import_ms": run_import_ms,
-                    "export_dxf_ms": (time.perf_counter() - t_phase) * 1000.0,
-                    "total_ms": elapsed_ms,
-                },
-            )
-            run.import_report_path = failure_path
-            exc.failure_report_path = failure_path
-            exc.args = (f"{exc}\nComplete failure report: {failure_path}",)
-            _log(f"Import stopped; complete failure report: {failure_path}")
+            try:
+                failure_path = failure_import_report_path(output_path, run)
+                write_import_report(
+                    run,
+                    failure_path,
+                    elapsed_ms=elapsed_ms,
+                    performance_phases={
+                        "run_import_ms": run_import_ms,
+                        "export_dxf_ms": (time.perf_counter() - t_phase) * 1000.0,
+                        "total_ms": elapsed_ms,
+                    },
+                    terminal_failure=terminal_failure_record(exc),
+                )
+            except Exception as report_exc:  # noqa: BLE001 - the ORIGINAL failure survives
+                # Read-only folder, disk full: exactly when an export fails. Say so,
+                # and keep the real cause and its exit code (2 deliberate, 3 otherwise).
+                report_error = f"{type(report_exc).__name__}: {report_exc}"
+                exc.failure_report_error = report_error
+                report_note = f"the failure report could not be written: {report_error}"
+            else:
+                run.import_report_path = failure_path
+                exc.failure_report_path = failure_path
+                report_note = f"complete failure report: {failure_path}"
+            stopped = isinstance(exc, ImportStopped)
+            if stopped:
+                # Only this family: str() of an unexpected type may ignore args.
+                exc.args = (f"{exc}\n{report_note[0].upper()}{report_note[1:]}",)
+            _log(f"Import {'stopped' if stopped else 'failed'}; {report_note}")
             raise
         export_dxf_ms = (time.perf_counter() - t_phase) * 1000.0
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
@@ -534,7 +607,10 @@ def _convert_via_package(
                 "total_ms": elapsed_ms,
             },
         )
-        text_count = run.extraction.text_count if config.import_text else 0
+        # A dropped item is in the report, not in the drawing: never a text item on
+        # stdout or in the GUI log. The resumable page record sums this same count.
+        dropped = int(degraded_text_items(export.text_deliveries)["dropped"])
+        text_count = max(0, run.extraction.text_count - dropped) if config.import_text else 0
         text_delivery = summarize_text_delivery(
             str(config.text_mode or "none") if config.import_text else "none",
             export.text_deliveries,

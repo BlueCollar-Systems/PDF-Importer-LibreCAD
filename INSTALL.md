@@ -174,7 +174,11 @@ Standalone app self-test after install:
 **Missing text?** Treat that as a failed delivery. Open the complete import
 report, compare `text_source_spans` with `text_representation_delivery`, and
 inspect the exact source-item attempt. Keep the requested representation while
-correcting the source-specific failure.
+correcting the source-specific failure. One text item that cannot be verified
+no longer stops its sheet: it is warned about on stderr (or in the GUI), listed
+in `extra.text_items_degraded`, and delivered as an unverified Raster patch, as
+visible `TEXT` on layer `P###_TEXT_DEGRADED`, or dropped. Such a sheet is
+never certified, so review every listed item before using the drawing.
 
 **Garbled, shifted, rotated, or scaled text?** Do not manually switch the
 request to hide it. Attach the complete report and correct placement, rotation,

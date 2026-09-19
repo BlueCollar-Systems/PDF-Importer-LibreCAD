@@ -22,6 +22,7 @@ For each representative shop drawing you import:
 | **Geometry** → raw outline edges faithful to the PDF | ☐ |
 | **Raster** → exact item pixels in a verified source-bound DXF IMAGE, with no neighboring text borrowed | ☐ |
 | Requested/delivered/fallback/result shown in the complete report | ☐ |
+| No degraded or dropped text: `extra.text_items_degraded_total` is 0, no `P###_TEXT_DEGRADED` layer, and no "Warning: text item ..." line (a sheet with one is delivered but never certified) | ☐ |
 | LibreCAD Text and the Text fallback from Labels bind a real parent-native LFF style, preserve source-width FIT alignment after save/reopen, and report that glyph shapes can differ from the embedded PDF font | ☐ |
 | Scale plausible vs the source drawing | ☐ |
 | Multi-page import behaves as expected | ☐ |

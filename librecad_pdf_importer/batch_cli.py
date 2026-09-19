@@ -7,7 +7,12 @@ from pathlib import Path
 import sys
 
 from .cli import _print_stderr
-from .exporters.dxf_exporter import DxfExportOptions, export_to_dxf
+from .exporters.dxf_exporter import (
+    DxfExportOptions,
+    degraded_text_item_lines,
+    degraded_text_items,
+    export_to_dxf,
+)
 from .importer import run_import
 
 
@@ -73,6 +78,7 @@ def main() -> int:
         "text_mode": args.text_mode,
         "total": len(pdfs),
         "passed": 0,
+        "degraded": 0,
         "failed": 0,
         "warnings": 0,
         "results": [],
@@ -111,15 +117,22 @@ def main() -> int:
                 see="See clip_fill_delivery in the batch report." if args.json
                 else "Run the batch with --json for the clip_fill_delivery records."
             )
-            warnings = clip_fill_delivery["dropped"] + clip_fill_delivery["approximated"]
+            clip_fill_warnings = clip_fill_delivery["dropped"] + clip_fill_delivery["approximated"]
             if clip_fill_warning:
                 _print_stderr(f"{rel}: {clip_fill_warning}")
-            aggregate["passed"] += 1
+            # A degraded text item never costs the sheet (the DXF is written), but
+            # such a sheet is DEGRADED, never passed, and the batch exits non-zero.
+            degraded = degraded_text_items(export.text_deliveries)
+            for line in degraded_text_item_lines(degraded["items"], degraded["total"]):
+                _print_stderr(f"{rel}: {line}")
+            warnings = clip_fill_warnings + int(degraded["total"])
+            aggregate["degraded" if degraded["total"] else "passed"] += 1
             aggregate["warnings"] += warnings
             aggregate["results"].append({
                 "pdf": str(pdf),
                 "dxf": export.output_path,
-                "status": "PASS",
+                "status": "DEGRADED" if degraded["total"] else "PASS",
+                "text_items_degraded": degraded["total"],
                 "mode": args.mode,
                 "text_mode": args.text_mode,
                 "entities": export.entity_count,
@@ -156,7 +169,9 @@ def main() -> int:
         )
         print(f"Wrote report: {out}")
 
-    return 0 if aggregate["failed"] == 0 else 1
+    # A DEGRADED sheet is uncertified exactly as a FAIL sheet is: scripts that spot
+    # uncertified sheets by a non-zero exit code keep working.
+    return 0 if aggregate["failed"] == 0 and aggregate["degraded"] == 0 else 1
 
 
 if __name__ == "__main__":
