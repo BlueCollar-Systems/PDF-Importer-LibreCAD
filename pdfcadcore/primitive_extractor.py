@@ -471,11 +471,17 @@ def extract_page(
             # PDF fills implicitly close every subpath. Preserve the exact
             # clip contour vertices, including short segments and counters.
             is_closed = is_closed or bool(clip_fill_group)
+            # A literal stroke can be shorter than the old cleanup tolerance,
+            # or even have coincident endpoints, while its round caps contain
+            # substantial visible ink. Preserve its exact source centerline.
+            literal_stroke = (stroke is not None and fill is None and not is_closed
+                              and len(items) == 1 and items[0][0] == "l" and len(pts) == 2)
             point_tolerance = 0.0 if clip_fill_group else 0.01
-            cleaned = [pts[0]]
-            for p in pts[1:]:
-                if _dist(p, cleaned[-1]) > point_tolerance:
-                    cleaned.append(p)
+            cleaned = list(pts) if literal_stroke else [pts[0]]
+            if not literal_stroke:
+                for p in pts[1:]:
+                    if _dist(p, cleaned[-1]) > point_tolerance:
+                        cleaned.append(p)
             if len(cleaned) < 2:
                 continue
 

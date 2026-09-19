@@ -1,4 +1,4 @@
-"""Bind editable content to the source intervals separated by image paints.
+"""Bind editable content to source intervals separated by image or cap paints.
 
 This is intentionally not a general PDF compositor. It preserves the existing
 vector/text order within each interval, but cannot move an opaque image across
@@ -6,10 +6,14 @@ source content. All coordinates used for identity are original PDF coordinates.
 """
 from __future__ import annotations
 
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from dataclasses import dataclass, field
 import math
+
+# MuPDF records float32 paint bounds. Enlarge the absence-test rectangle only;
+# actual source/model geometry remains unchanged and is verified separately.
+CAP_BOUND_MARGIN_PDF = 0.001
 
 
 @dataclass
@@ -18,6 +22,11 @@ class ImagePaintOrder:
     primitive_keys: dict[int, int] = field(default_factory=dict)
     text_keys: dict[int, int] = field(default_factory=dict)
     image_keys: dict[int, int] = field(default_factory=dict)
+    extra_paint_seqnos: tuple[int, ...] = ()
+
+    @property
+    def paint_seqnos(self):
+        return tuple(sorted(self.image_seqnos + self.extra_paint_seqnos))
 
 
 def _finite_tuple(value, count):
@@ -27,31 +36,44 @@ def _finite_tuple(value, count):
     return result
 
 
-def bind_image_paint_order(page, page_data, placements):
+def bind_image_paint_order(page, page_data, placements, extra_paint_seqnos=()):
     """Return a fully bound order for individual images, or no composite order.
 
     Composite/page rasters have their own explicit display contract. A genuine
     binding failure for individual images raises instead of guessing an order.
     """
-    if not placements or any(
+    extra_paint_seqnos = tuple(extra_paint_seqnos)
+    if (not placements and not extra_paint_seqnos) or any(
         image.source_kind not in {"xobject_image", "inline_image"}
         or image.alpha_kind not in {"opaque", "rectangular_opaque"}
         for image in placements
     ):
         return None
-    image_info = list(page.get_image_info(hashes=True, xrefs=True))
+    image_info = list(page.get_image_info(hashes=True, xrefs=True)) if placements else []
     bboxlog = list(page.get_bboxlog())
     events = [
         (seqno, _finite_tuple(row[1], 4))
         for seqno, row in enumerate(bboxlog)
-        if row[0] == "fill-image"
+        if placements and row[0] == "fill-image"
     ]
     if len(image_info) != len(events):
         raise ValueError("source image paint and occurrence inventories disagree")
     for info, (_seqno, bbox) in zip(image_info, events, strict=True):
         if _finite_tuple(info["bbox"], 4) != bbox:
             raise ValueError("source image paint bbox disagrees with its occurrence")
-    order = ImagePaintOrder(image_seqnos=tuple(event[0] for event in events))
+    image_seqnos = tuple(event[0] for event in events)
+    seen_extra = set()
+    for seqno in extra_paint_seqnos:
+        if (type(seqno) is not int or not 0 <= seqno < len(bboxlog)
+                or seqno in seen_extra or seqno in image_seqnos
+                or bboxlog[seqno][0] != "stroke-path"):
+            raise ValueError("capsule paint sequence is invalid, duplicate, or collides with an image")
+        if sum(primitive.source_draw_order == seqno for primitive in page_data.primitives) != 1:
+            raise ValueError("capsule paint has no unique source primitive")
+        seen_extra.add(seqno)
+    order = ImagePaintOrder(image_seqnos=image_seqnos,
+                            extra_paint_seqnos=tuple(sorted(seen_extra)))
+    barriers = order.paint_seqnos
     available = list(range(len(image_info)))
     for placement_index, image in enumerate(placements):
         matches = []
@@ -75,7 +97,7 @@ def bind_image_paint_order(page, page_data, placements):
         # order. They have identical pixels/geometry; none is merged or dropped.
         ordinal = matches[0]
         available.remove(ordinal)
-        order.image_keys[placement_index] = ordinal * 2 + 1
+        order.image_keys[placement_index] = bisect_left(barriers, events[ordinal][0]) * 2 + 1
     if available:
         raise ValueError("source image occurrence has no delivered image placement")
 
@@ -85,7 +107,9 @@ def bind_image_paint_order(page, page_data, placements):
             raise ValueError("editable content has no valid source paint sequence")
         if seqno in order.image_seqnos:
             raise ValueError("editable source paint sequence identifies an image")
-        return 2 * bisect_right(order.image_seqnos, seqno)
+        if seqno in seen_extra:
+            return 2 * bisect_left(barriers, seqno) + 1
+        return 2 * bisect_right(barriers, seqno)
 
     for primitive in page_data.primitives:
         order.primitive_keys[primitive.id] = content_key(primitive.source_draw_order)
@@ -93,11 +117,14 @@ def bind_image_paint_order(page, page_data, placements):
     traced = defaultdict(set)
     for span in page.get_texttrace():
         seqno = span["seqno"]
-        key = content_key(seqno)
+        content_key(seqno)  # Validate the original paint identity before binding characters.
+        if seqno in seen_extra:
+            raise ValueError("text paint sequence identifies a capsule stroke")
         for char in span["chars"]:
-            traced[(chr(char[0]), _finite_tuple(char[2], 2))].add(key)
+            traced[(chr(char[0]), _finite_tuple(char[2], 2))].add(seqno)
     for item in page_data.text_items:
         keys = set()
+        source_seqnos = set()
         if not item.source_char_layout and item.text.strip():
             raise ValueError("text has no original character paint identity")
         for char in item.source_char_layout:
@@ -106,13 +133,53 @@ def bind_image_paint_order(page, page_data, placements):
             matches = traced.get((char.text, _finite_tuple(char.source_origin_pdf, 2)))
             if not matches:
                 raise ValueError(f"text item {item.id} character {char.text!r} has no source paint occurrence")
-            if len(matches) != 1:
+            image_keys = {2 * bisect_right(image_seqnos, seqno) for seqno in matches}
+            if len(image_keys) != 1:
                 raise ValueError(f"text item {item.id} character paint order is ambiguous across an image")
-            keys.update(matches)
+            keys.update(image_keys)
+            source_seqnos.update(matches)
         if len(keys) > 1:
             raise ValueError(f"grouped source text item {item.id} crosses an image paint boundary")
-        order.text_keys[item.id] = next(iter(keys), 0)
+        order.text_keys[item.id] = _text_interval_key(
+            item.id, source_seqnos, barriers, seen_extra, bboxlog)
     return order
+
+
+def _text_interval_key(item_id, source_seqnos, barriers, extra_seqnos, bboxlog):
+    """Find one safe interval without rejecting spatially unrelated cap paints.
+
+    bboxlog records renderer paint bounds, including glyph ink and stroke. The
+    raw text character bbox can omit genuine glyph ink, so it is not used for
+    this absence proof. A grouped item spanning relevant paints on both sides
+    cannot be ordered as one entity and remains an explicit failure.
+    """
+    if not source_seqnos:
+        return 0
+
+    def intersects(first, second):
+        a, b = _finite_tuple(first, 4), _finite_tuple(second, 4)
+        if a[0] > a[2] or a[1] > a[3] or b[0] > b[2] or b[1] > b[3]:
+            raise ValueError("source paint bounds are inverted")
+        return a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]
+
+    lower, upper = 0, 2 * len(barriers)
+    for index, barrier in enumerate(barriers):
+        relevant = source_seqnos
+        if barrier in extra_seqnos:
+            x0, y0, x1, y1 = _finite_tuple(bboxlog[barrier][1], 4)
+            cap_bounds = (x0-CAP_BOUND_MARGIN_PDF, y0-CAP_BOUND_MARGIN_PDF,
+                          x1+CAP_BOUND_MARGIN_PDF, y1+CAP_BOUND_MARGIN_PDF)
+            relevant = {seqno for seqno in source_seqnos
+                        if intersects(bboxlog[seqno][1], cap_bounds)}
+        if any(seqno < barrier for seqno in relevant):
+            upper = min(upper, 2 * index)
+        if any(seqno > barrier for seqno in relevant):
+            lower = max(lower, 2 * index + 2)
+    if lower > upper:
+        raise ValueError(f"grouped source text item {item_id} crosses an overlapping capsule paint boundary")
+    # Keep the existing vectors-before-text behavior wherever no overlapping
+    # cap imposes an earlier interval. Disjoint new barriers need not move text.
+    return upper
 
 
 def apply_image_paint_order(layout, keys):

@@ -2,14 +2,16 @@
 
 **BlueCollar-Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.100](https://img.shields.io/badge/Version-1.0.100-blue.svg)
+![Version: 1.0.100](https://img.shields.io/badge/Version-1.0.101-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
 
-See [CHANGELOG.md](CHANGELOG.md) for release history. Version 1.0.82 preserves
-native zero-ink whitespace TEXT while visible source text whose font LibreCAD
-must substitute descends automatically to visually verified glyph outlines.
+See [CHANGELOG.md](CHANGELOG.md) for release history. Version 1.0.101 preserves
+source-proven short round-cap markup as editable arcs and lines. Qualified
+Multiply regions also receive a local 600 DPI display image with verified pixel
+placement; hide the `SOURCE_BLEND_DISPLAY` layer to edit the underlying geometry.
+Unsupported blend cases remain identified in the import report.
 
 ## Features
 
