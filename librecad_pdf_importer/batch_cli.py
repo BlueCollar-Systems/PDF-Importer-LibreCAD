@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 
+from .cli import _print_stderr
 from .exporters.dxf_exporter import DxfExportOptions, export_to_dxf
 from .importer import run_import
 
@@ -73,6 +74,7 @@ def main() -> int:
         "total": len(pdfs),
         "passed": 0,
         "failed": 0,
+        "warnings": 0,
         "results": [],
     }
 
@@ -102,7 +104,18 @@ def main() -> int:
                     provenance_opts=run.config,
                 ),
             )
+            # A batch writes no import report per PDF, so a visible clipped fill
+            # that was left out is said here: in the record and on stderr.
+            clip_fill_delivery = run.extraction.clip_fill_delivery()
+            clip_fill_warning = run.extraction.clip_fill_warning(
+                see="See clip_fill_delivery in the batch report." if args.json
+                else "Run the batch with --json for the clip_fill_delivery records."
+            )
+            warnings = clip_fill_delivery["dropped"] + clip_fill_delivery["approximated"]
+            if clip_fill_warning:
+                _print_stderr(f"{rel}: {clip_fill_warning}")
             aggregate["passed"] += 1
+            aggregate["warnings"] += warnings
             aggregate["results"].append({
                 "pdf": str(pdf),
                 "dxf": export.output_path,
@@ -111,6 +124,8 @@ def main() -> int:
                 "text_mode": args.text_mode,
                 "entities": export.entity_count,
                 "images": export.image_count,
+                "warnings": warnings,
+                "clip_fill_delivery": clip_fill_delivery,
             })
         except Exception as exc:  # noqa: BLE001
             aggregate["failed"] += 1

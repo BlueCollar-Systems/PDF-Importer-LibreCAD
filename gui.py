@@ -375,6 +375,10 @@ class Pdf2DxfApp(tk.Tk):
             self._log(
                 f"  Complete report: {text_delivery.get('report_path', '')}"
             )
+            # Said once, at completion, pages certified by an earlier run included.
+            clip_fill_warning = str(stats.get("clip_fill_warning") or "")
+            if clip_fill_warning:
+                self._log(clip_fill_warning)
 
             launch_message = ""
             if self._var_launch_librecad.get():
@@ -402,6 +406,7 @@ class Pdf2DxfApp(tk.Tk):
                  f"{'yes' if text_delivery.get('fallback_used') else 'no'}\n"
                  f"Complete report: {text_delivery.get('report_path', '')}\n"
                  f"Output: {output_path}"
+                + (f"\n\n{clip_fill_warning}" if clip_fill_warning else "")
                 + (f"\n\n{launch_message}" if launch_message else ""),
             ))
 

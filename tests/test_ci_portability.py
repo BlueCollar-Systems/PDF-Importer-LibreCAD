@@ -6,6 +6,7 @@ import ast
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tomllib
 import zipfile
 
@@ -268,6 +269,25 @@ def test_ci_checks_every_shipped_runtime_and_qa_script() -> None:
     assert "conversion_control.py" in workflow
     assert "page_selection.py" in workflow
     assert "librecad_pdf_importer scripts" in workflow
+
+
+def test_ci_lint_gate_passes_on_the_tree_as_it_stands() -> None:
+    # The step runs before the tests with no continue-on-error, and it covers the shared
+    # core too: run the workflow's own command, not a copy of it.
+    pytest.importorskip("ruff")
+    workflow = (ROOT / ".github" / "workflows" / "lc-pdfimporter-ci.yml").read_text(
+        encoding="utf-8"
+    )
+    [command] = re.findall(r"^\s*run: ruff (check .+)$", workflow, flags=re.MULTILINE)
+    result = subprocess.run(
+        [sys.executable, "-m", "ruff", *command.split(), "--no-cache"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout
 
 
 def test_ci_python_jobs_match_the_declared_supported_floor() -> None:

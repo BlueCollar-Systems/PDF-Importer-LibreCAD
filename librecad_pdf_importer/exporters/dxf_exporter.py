@@ -37,6 +37,7 @@ from ..core.document import (
     DocumentExtraction,
     ImagePlacement,
     _classify_pixmap_alpha,
+    host_clip_fill_issue,
 )
 
 from pdfcadcore.import_config import ImportConfig
@@ -62,7 +63,7 @@ from dxf_text_builder import (
     iter_glyph_outline_entities,
     reset_text_styles,
 )
-from conversion_control import check_cancel, report_progress
+from conversion_control import ActivePageCancelled, check_cancel, report_progress
 from librecad_runtime import local_path_for_io, resolve_librecad_installation
 
 
@@ -4052,6 +4053,8 @@ def _export_to_dxf_impl(
             if group_id:
                 clip_fill_groups.setdefault(group_id, []).append(primitive)
         emitted_clip_fills = set()
+        clip_fill_rows = None  # source rows by group id, built on the first failed fill
+        page.clip_fill_build_drops = []  # this export's own; an earlier export's are stale
         for primitive_index, primitive in enumerate(page.page_data.primitives, start=1):
             record_primitive_entities(primitive_entity_start, previous_primitive_key, previous_primitive_id)
             primitive_entity_start = len(msp.entity_space.entities)
@@ -4107,30 +4110,52 @@ def _export_to_dxf_impl(
             if clip_group_id:
                 if clip_group_id in emitted_clip_fills:
                     continue
+                emitted_clip_fills.add(clip_group_id)
                 members = clip_fill_groups[clip_group_id]
                 even_odd = bool(getattr(primitive, "clip_fill_even_odd", False))
-                if any(
-                    member.fill_color != fill_rgb
-                    or member.stroke_color is not None
-                    or bool(getattr(member, "clip_fill_even_odd", False)) != even_odd
-                    for member in members
-                ):
-                    raise RuntimeError(f"clipped fill {clip_group_id} has inconsistent paint metadata")
-                if paint_order is not None and any(
-                    paint_order.primitive_keys[member.id] != previous_primitive_key
-                    for member in members
-                ):
-                    raise RuntimeError(f"clipped fill {clip_group_id} crosses an image paint boundary")
-                contours = [[_ofs(point) for point in member.points] for member in members]
-                fills = _add_compound_filled_paths(
-                    msp, contours, fill_rgb, fill_attribs,
-                    is_r12=is_r12, even_odd=even_odd,
-                )
+                # One clipped fill that cannot be built is left out and reported;
+                # it never costs the page or the document.
+                try:
+                    if any(
+                        member.fill_color != fill_rgb
+                        or member.stroke_color is not None
+                        or bool(getattr(member, "clip_fill_even_odd", False)) != even_odd
+                        for member in members
+                    ):
+                        raise RuntimeError(f"clipped fill {clip_group_id} has inconsistent paint metadata")
+                    if paint_order is not None and any(
+                        paint_order.primitive_keys[member.id] != previous_primitive_key
+                        for member in members
+                    ):
+                        raise RuntimeError(f"clipped fill {clip_group_id} crosses an image paint boundary")
+                    contours = [[_ofs(point) for point in member.points] for member in members]
+                    fills = _add_compound_filled_paths(
+                        msp, contours, fill_rgb, fill_attribs,
+                        is_r12=is_r12, even_odd=even_odd,
+                    )
+                except ActivePageCancelled:
+                    raise
+                except Exception as exc:
+                    # Nothing of the failed fill stays behind in the drawing.
+                    stale = msp.entity_space.entities[primitive_entity_start:]
+                    del msp.entity_space.entities[primitive_entity_start:]
+                    for entity in stale:
+                        doc.entitydb.delete_entity(entity)
+                    if clip_fill_rows is None:
+                        clip_fill_rows = {
+                            row.get("bcs_clip_fill_group_id"): row
+                            for row in getattr(page.page_data, "_source_drawings", None) or ()
+                            if row.get("bcs_compound_clip_fill")
+                        }
+                    page.clip_fill_build_drops.append(host_clip_fill_issue(
+                        page.page_data.page_number, clip_fill_rows.get(clip_group_id), exc,
+                        seqno=primitive.source_draw_order,
+                    ))
+                    continue
                 entity_count += len(fills)
                 for contour in contours:
                     for px, py in contour:
                         _track_xy(float(px), float(py))
-                emitted_clip_fills.add(clip_group_id)
                 continue
             if final_paint is not None:
                 from .final_rect_paint import bind_metadata, image_style_snapshot, render_uniform_source_paint

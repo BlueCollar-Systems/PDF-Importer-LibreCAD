@@ -85,6 +85,29 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    try:
+        return _main()
+    except Exception as exc:  # noqa: BLE001
+        # A console exe answers a failed import with one readable line, not a
+        # Python traceback; --verbose keeps the traceback for a bug report.
+        from pdfcadcore.cli_error_copy import cli_error
+
+        if "--verbose" in sys.argv[1:]:
+            import traceback
+
+            traceback.print_exc()
+        _print_stderr(cli_error("import_failed", message=f"{type(exc).__name__}: {exc}"))
+        return 3
+
+
+def _print_stderr(line: str) -> None:
+    try:
+        print(line, file=sys.stderr)
+    except UnicodeEncodeError:  # a cp1252 console must not turn the message into a traceback
+        print(line.encode("ascii", "backslashreplace").decode("ascii"), file=sys.stderr)
+
+
+def _main() -> int:
     if sys.argv[1:] == ["--self-test"]:
         from .runtime_self_test import run_runtime_self_test
 
@@ -225,6 +248,9 @@ def main() -> int:
 
     summary_json = json.dumps(summary, indent=2, allow_nan=False)
     print(summary_json)
+    clip_fill_warning = run.extraction.clip_fill_warning()
+    if clip_fill_warning:
+        _print_stderr(clip_fill_warning)
 
     if args.json:
         report = Path(args.json).expanduser().resolve()
