@@ -251,6 +251,7 @@ def write_import_report(
     if elapsed_ms > 0 and "total_ms" not in phases:
         phases["total_ms"] = float(elapsed_ms)
 
+    clip_fill_delivery = extraction.clip_fill_delivery()
     extra = {
         "result_status": str(
             getattr(run.config, "_result_status", "pending_export")
@@ -263,6 +264,7 @@ def write_import_report(
         "auto_mode": extraction.summary().get("auto_mode"),
         "image_delivery": extraction.summary().get("image_delivery"),
         "final_rect_paint_delivery": list(getattr(run.config, "_final_rect_paint_deliveries", ()) or ()),
+        "clip_fill_delivery": clip_fill_delivery,
         "model_3d_intent": analyze_model3d_intent(
             text_items,
             host_supports_3d=False,
@@ -427,6 +429,8 @@ def write_import_report(
         text_source_spans=text_source_spans,
         text_glyph_estimate=text_glyph_estimate,
         text_fallback=text_fallback,
+        # Clipped fills left out while visible, or approximate.
+        warnings=clip_fill_delivery["dropped"] + clip_fill_delivery["approximated"],
         extra=extra,
     )
 

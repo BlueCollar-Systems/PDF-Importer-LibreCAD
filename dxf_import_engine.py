@@ -224,10 +224,16 @@ def _write_resumable_summary(
     manifest: Dict[str, Any],
     selected_pages: list[int],
 ) -> str:
+    from librecad_pdf_importer.core.document import merge_clip_fill_deliveries
+
     output = Path(output_path).expanduser().resolve()
     summary_path = output.with_name(f"{output.stem}_import_report.json")
     completed = manifest.get("completed", {})
     page_records = [completed[str(page)] for page in selected_pages if str(page) in completed]
+    # The report the operator is pointed at carries what the page reports carry.
+    clip_fill_delivery = merge_clip_fill_deliveries(
+        record.get("clip_fill_delivery") or {} for record in page_records
+    )
     payload = {
         "schema": "bcs.resumable_import_report/1.0",
         "result": "complete" if len(page_records) == len(selected_pages) else "cancelled",
@@ -236,6 +242,8 @@ def _write_resumable_summary(
         "pages_requested": [page + 1 for page in selected_pages],
         "pages_certified": [record["page_number"] for record in page_records],
         "page_reports": [record.get("import_report_path", "") for record in page_records],
+        "warnings": clip_fill_delivery["dropped"] + clip_fill_delivery["approximated"],
+        "clip_fill_delivery": clip_fill_delivery,
         "output": str(output),
     }
     _atomic_json(summary_path, payload)
@@ -290,6 +298,8 @@ def _convert_resumable(
     restart_on_resume_mismatch: bool,
     librecad_executable: Optional[str],
 ) -> Dict[str, Any]:
+    from librecad_pdf_importer.core.document import clip_fill_warning_line
+
     source = Path(input_path).expanduser().resolve()
     output = Path(output_path).expanduser().resolve()
     session_dir = output.with_name(f"{output.stem}_resume")
@@ -385,6 +395,7 @@ def _convert_resumable(
             "text_items": int(page_stats.get("text_items", 0)),
             "import_report_path": str(page_stats.get("import_report_path", "")),
             "text_delivery": dict(page_stats.get("text_delivery") or {}),
+            "clip_fill_delivery": dict(page_stats.get("clip_fill_delivery") or {}),
             "assets": _dxf_asset_inventory(checkpoint, session_dir),
         }
         _atomic_json(manifest_path, manifest)
@@ -413,6 +424,10 @@ def _convert_resumable(
             "item_count": sum(int(item.get("item_count", 0)) for item in deliveries),
             "report_path": report_path,
         },
+        # One line for the conversion, pages certified by an earlier run included.
+        "clip_fill_warning": clip_fill_warning_line(
+            record.get("clip_fill_delivery") or {} for record in records
+        ),
     }
 
 
@@ -541,6 +556,10 @@ def _convert_via_package(
             "text_items": text_count,
             "import_report_path": report_path,
             "text_delivery": text_delivery,
+            # The caller shows the line once, at completion ('' when no visible
+            # clipped fill was lost); a resumable run merges the blocks of its pages.
+            "clip_fill_delivery": run.extraction.clip_fill_delivery(),
+            "clip_fill_warning": run.extraction.clip_fill_warning(),
         }
     finally:
         run.close()

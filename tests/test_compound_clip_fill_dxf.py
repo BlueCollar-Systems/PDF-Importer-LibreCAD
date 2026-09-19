@@ -37,11 +37,38 @@ def test_r12_counter_is_empty_space_in_native_solid_geometry():
     assert all(vertex.z == 0 for entity in entities for vertex in entity.vertices())
 
 
-def test_multi_contour_nonzero_is_not_silently_treated_as_even_odd():
+def test_multi_contour_nonzero_is_never_drawn_as_even_odd_and_costs_only_that_fill(tmp_path):
+    # The builder still refuses to guess a winding rule...
     doc = ezdxf.new('R2010')
     with pytest.raises(RuntimeError, match='winding-aware'):
         _add_compound_filled_paths(doc.modelspace(), [OUTER, COUNTER], (0,0,0), {}, is_r12=False, even_odd=False)
     assert len(doc.modelspace()) == 0
+
+    # ...but the refusal is about one fill. It used to abort the whole document.
+    source = tmp_path/'nonzero-clip.pdf'
+    pdf = pymupdf.open()
+    page = pdf.new_page(width=100, height=100)
+    page.draw_rect(page.rect)
+    pdf.update_stream(page.get_contents()[0],
+        b'q 10 10 80 80 re 30 30 40 40 re W* n 0 g 0 0 100 100 re f Q 0 G 5 5 m 95 5 l S')
+    pdf.save(source); pdf.close()
+    run = run_import(str(source), mode='vector', overrides={'import_text':False})
+    members = [p for p in run.extraction.pages[0].page_data.primitives if p.clip_fill_group_id]
+    assert len(members) == 2
+    for member in members:
+        member.clip_fill_even_odd = False  # a nonzero multi-contour group reaching the builder
+    output = tmp_path/'nonzero-clip.dxf'
+    export_to_dxf(run.extraction, str(output), DxfExportOptions(include_text=False, include_images=False))
+    reopened = ezdxf.readfile(output)
+    assert not reopened.audit().errors
+    assert len(reopened.modelspace().query('LINE LWPOLYLINE')) == 1  # the rest of the page
+    assert not reopened.modelspace().query('SOLID HATCH')
+    [drop] = run.extraction.pages[0].clip_fill_build_drops
+    assert (drop['stage'], drop['reason'], drop['action']) == ('host-build', 'host-build-error', 'dropped-unsupported')
+    assert drop['detail'].startswith('RuntimeError: multi-contour nonzero') and 'winding-aware' in drop['detail']
+    assert (drop['page'], drop['seqno'], drop['severity'], drop['dropped'], drop['exact']) == (1, 0, 'warning', True, False)
+    assert drop['paint_rect'] == [10, 10, 90, 90] and drop['fill'] == [0, 0, 0]
+    run.close()
 
 
 @pytest.mark.parametrize('mode', ['auto', 'vector'])

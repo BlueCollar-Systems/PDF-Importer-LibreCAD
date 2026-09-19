@@ -244,6 +244,20 @@ def main(argv: list[str] | None = None) -> int:
 
         _safe_print(cli_error("not_a_pdf", message=str(exc)), file=sys.stderr)
         return 2
+    except Exception as exc:  # noqa: BLE001
+        # A console exe answers a failed import with one readable line, not a
+        # Python traceback; --verbose keeps the traceback for a bug report.
+        from pdfcadcore.cli_error_copy import cli_error
+
+        if args.verbose:
+            import traceback
+
+            _safe_print(traceback.format_exc(), file=sys.stderr)
+        _safe_print(
+            cli_error("import_failed", message=f"{type(exc).__name__}: {exc}"),
+            file=sys.stderr,
+        )
+        return 3
 
     elapsed = time.perf_counter() - t0
 
@@ -260,6 +274,8 @@ def main(argv: list[str] | None = None) -> int:
     report_path = stats.get("import_report_path")
     if report_path:
         _safe_print(f"  import_report:   {report_path}")
+    if stats.get("clip_fill_warning"):
+        _safe_print(str(stats["clip_fill_warning"]), file=sys.stderr)
     return 0
 
 

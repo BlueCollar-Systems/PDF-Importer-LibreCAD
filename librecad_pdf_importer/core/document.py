@@ -17,6 +17,11 @@ except ImportError:
     import fitz  # Legacy fallback
 
 from pdfcadcore.document_profiler import profile as profile_page
+from pdfcadcore.drawing_clips import (
+    clip_fill_issues,
+    get_clip_aware_drawings,
+    summarize_clip_fill_issues,
+)
 from pdfcadcore.fitz_loader import safe_open
 from pdfcadcore.geometry_cleanup import _dxf_arc_angles, circle_fit
 from pdfcadcore.auto_mode import drawings_need_text_counts
@@ -27,9 +32,15 @@ from pdfcadcore.primitive_extractor import (
     extract_page,
 )
 from pdfcadcore.primitives import PageData
-from conversion_control import check_cancel, report_progress
+from conversion_control import ActivePageCancelled, check_cancel, report_progress
 
 MM_PER_PT = 25.4 / 72.0
+
+# The import report lists only the clipped fills the operator has to hear about,
+# and only this many of them; every other outcome is a count.
+CLIP_FILL_REPORT_ISSUE_CAP = 200
+# Where the operator line sends the reader; a caller with another report names it.
+CLIP_FILL_SEE_IMPORT_REPORT = "See clip_fill_delivery in the import report."
 
 # Auto-mode visual-fidelity heuristics (ported from host importers).
 AUTO_GLYPH_DRAWING_THRESHOLD = 1500
@@ -94,6 +105,83 @@ class ExtractedPage:
     source_line_dashes: dict = field(default_factory=dict)
     final_rect_paints: list = field(default_factory=list)
     display_to_model: Optional[Tuple[float, float, float, float, float, float]] = None
+    # What happened to every clipped fill that needed care, tagged with its page:
+    # the resolver's records plus fills extraction could not read, then the fills
+    # the DXF exporter could not build (its own list, rewritten by every export).
+    clip_fill_issues: list = field(default_factory=list)
+    clip_fill_build_drops: list = field(default_factory=list)
+
+
+def host_clip_fill_issue(page_number: int, row: Optional[dict], error: BaseException,
+                         seqno: Optional[int] = None) -> dict:
+    """Record one clipped fill this host left out because it could not build it.
+
+    Same keys as the core resolver's records, plus ``stage`` and ``page``.
+    """
+    row = row or {}
+    try:
+        paint_rect = [float(value) for value in row.get("rect") or ()]
+    except (TypeError, ValueError):
+        paint_rect = []
+    fill = row.get("fill")
+    return {
+        "seqno": row.get("seqno", seqno),
+        "reason": "host-build-error",
+        "action": "dropped-unsupported",
+        "exact": False,
+        "severity": "warning",
+        "dropped": True,
+        "detail": f"{type(error).__name__}: {error}",
+        "paint_rect": paint_rect if len(paint_rect) == 4 and all(map(math.isfinite, paint_rect)) else [],
+        "fill": list(fill) if isinstance(fill, (tuple, list)) else None,
+        "fill_opacity": row.get("fill_opacity", 1.0),
+        "stage": "host-build",
+        "page": int(page_number),
+    }
+
+
+def merge_clip_fill_deliveries(deliveries: Iterable[dict]) -> dict:
+    """One clip_fill_delivery block for a document that was imported page by page."""
+    counts = {"resolved_exactly": 0, "dropped_invisible": 0, "approximated": 0, "dropped": 0}
+    by_action: dict[str, int] = {}
+    issues: list = []
+    truncated = False
+    for delivery in deliveries:
+        for key in counts:
+            counts[key] += int(delivery.get(key) or 0)
+        for action, count in (delivery.get("by_action") or {}).items():
+            by_action[action] = by_action.get(action, 0) + int(count)
+        issues += list(delivery.get("issues") or ())
+        truncated = truncated or bool(delivery.get("issues_truncated"))
+    return {
+        **counts,
+        "by_action": by_action,
+        "issues": issues[:CLIP_FILL_REPORT_ISSUE_CAP],
+        "issues_truncated": truncated or len(issues) > CLIP_FILL_REPORT_ISSUE_CAP,
+    }
+
+
+def clip_fill_warning_line(deliveries: Iterable[dict], see: str = CLIP_FILL_SEE_IMPORT_REPORT) -> str:
+    """One operator line over a document's clip_fill_delivery blocks (one block per
+    separately imported page); '' when no visible fill was lost."""
+    listed: list = []
+    only_counted: list = []
+    for delivery in deliveries:
+        issues = list(delivery.get("issues") or ())
+        listed += issues
+        # Past the report cap a fill is only a count; the sentence still counts it.
+        for dropped, key in ((True, "dropped"), (False, "approximated")):
+            shown = sum(1 for issue in issues if bool(issue.get("dropped")) is dropped)
+            only_counted += [{"seqno": "...", "severity": "warning", "dropped": dropped}] * (
+                int(delivery.get(key) or 0) - shown)
+    sentence = summarize_clip_fill_issues(listed + only_counted)
+    if not sentence:
+        return ""
+    pages = sorted({int(issue.get("page") or 0) for issue in listed})
+    named = ", ".join(str(number) for number in pages[:12])
+    if len(pages) > 12:
+        named += f" and {len(pages) - 12} more"
+    return f"WARNING: page(s) {named}: {sentence}. {see}"
 
 
 @dataclass
@@ -132,6 +220,48 @@ class DocumentExtraction:
     def image_count(self) -> int:
         return sum(len(p.images) for p in self.pages)
 
+    def _delivered_clip_fill_issues(self) -> Iterable[dict]:
+        for page in self.pages:
+            # A raster page discards its vectors: a fill missing from them is no
+            # loss. A fill the exporter dropped was being built, whatever the mode.
+            vectors_built = (page.resolved_mode or "vector") in {"vector", "hybrid"}
+            issues = (list(page.clip_fill_issues) if vectors_built else []) + list(page.clip_fill_build_drops)
+            lost_here = {issue.get("seqno") for issue in issues if issue.get("stage") == "host-build"}
+            for issue in issues:
+                # A fill the resolver delivered and this host then lost is a lost fill.
+                if issue.get("stage") == "host-build" or issue.get("seqno") not in lost_here:
+                    yield issue
+
+    def clip_fill_delivery(self) -> dict:
+        """Counts for every clipped fill that needed care; records only for the
+        ones the operator must hear about (left out while visible, or flattened)."""
+        counts = {"resolved_exactly": 0, "dropped_invisible": 0, "approximated": 0, "dropped": 0}
+        by_action: dict[str, int] = {}
+        reportable = []
+        for issue in self._delivered_clip_fill_issues():
+            action = str(issue.get("action"))
+            by_action[action] = by_action.get(action, 0) + 1
+            if issue.get("severity") == "warning":
+                counts["dropped" if issue.get("dropped") else "approximated"] += 1
+                reportable.append(issue)
+            elif issue.get("dropped"):
+                counts["dropped_invisible"] += 1
+            else:
+                counts["resolved_exactly"] += 1
+        return {
+            **counts,
+            "by_action": by_action,
+            "issues": reportable[:CLIP_FILL_REPORT_ISSUE_CAP],
+            "issues_truncated": len(reportable) > CLIP_FILL_REPORT_ISSUE_CAP,
+        }
+
+    def clip_fill_warning(self, see: str = CLIP_FILL_SEE_IMPORT_REPORT) -> str:
+        """One operator line for the whole import; '' when no visible fill was lost."""
+        # Every record, not the report's capped list: each page has to be named.
+        return clip_fill_warning_line([{"issues": [
+            issue for issue in self._delivered_clip_fill_issues()
+            if issue.get("severity") == "warning"
+        ]}], see)
 
     def summary(self) -> dict:
         per_page_auto = [
@@ -196,6 +326,7 @@ class DocumentExtraction:
                 "source_kinds": image_source_kinds,
                 "per_page": image_delivery_pages,
             },
+            "clip_fill_delivery": self.clip_fill_delivery(),
             "profiles": [
                 {
                     "page": p.page_data.page_number,
@@ -345,6 +476,57 @@ def _render_page_raster_safely(page, page_number: int, options: ExtractionOption
         return None, "renderer returned no placement"
     return rendered, ""
 
+
+def _give_clip_fill_segments_points(rows) -> None:
+    """Let the extractor read a compound clip fill cut from a re/qu-only clip path.
+
+    With no source point to copy, the resolver writes those segments as plain
+    ``(x, y)`` pairs, and extract_page reads an ``l`` item only through ``.x``
+    and ``.y``. The coordinates are not changed.
+    """
+    for row in rows:
+        if not row.get("bcs_compound_clip_fill"):
+            continue
+        items = row.get("items") or []
+        if any(item[0] == "l" and not hasattr(item[1], "x") for item in items):
+            row["items"] = [
+                ("l", fitz.Point(*item[1]), fitz.Point(*item[2]))
+                if item[0] == "l" and not hasattr(item[1], "x") else item
+                for item in items
+            ]
+
+
+def _extract_page_keeping_the_rest(page, page_number: int, opts: ExtractionOptions, drawings):
+    """extract_page that loses clipped fills, never the page, to a fill it cannot read.
+
+    Returns the page data and a host-side record for every fill left out.
+    """
+    def extract():
+        return extract_page(
+            page,
+            page_number,
+            scale=opts.scale,
+            flip_y=opts.flip_y,
+            arc_min_pts=max(3, int(opts.arc_sampling_pts)),
+            drawings=drawings,
+        )
+
+    try:
+        _give_clip_fill_segments_points(drawings)
+        return extract(), []
+    except ActivePageCancelled:
+        raise
+    except Exception as exc:
+        compound = [row for row in drawings if row.get("bcs_compound_clip_fill")]
+        if not compound:
+            raise
+        # The extractor does not say which row stopped it, so every compound clip
+        # fill of this page is left out and reported. In place: the resolver's
+        # own records ride on this list object.
+        drawings[:] = [row for row in drawings if not row.get("bcs_compound_clip_fill")]
+        return extract(), [host_clip_fill_issue(page_number, row, exc) for row in compound]
+
+
 def parse_pages_spec(spec: Optional[Iterable[int] | str], page_count: int) -> List[int]:
     if spec is None:
         return list(range(1, page_count + 1))
@@ -442,12 +624,13 @@ def _extract_document_impl(
             page = doc.load_page(page_number - 1)
             effective_mode = mode
             resolved_reason = ""
-            drawings = None
+            # Every mode fetches the rows here (still once per page), so a clipped
+            # fill the extractor cannot read costs that fill and not the page.
+            drawings = get_clip_aware_drawings(page)
+            # Read before anything rebuilds the list: the records ride on it.
+            page_clip_fill_issues = clip_fill_issues(drawings)
 
             if mode == "auto":
-                from pdfcadcore.drawing_clips import get_clip_aware_drawings
-
-                drawings = get_clip_aware_drawings(page)
                 if drawings_need_text_counts(drawings):
                     text_blocks = page.get_text("blocks") or []
                     text_words = page.get_text("words") or []
@@ -474,14 +657,10 @@ def _extract_document_impl(
             elif mode == "hybrid":
                 resolved_reason = "User forced hybrid mode"
 
-            page_data = extract_page(
-                page,
-                page_number,
-                scale=opts.scale,
-                flip_y=opts.flip_y,
-                arc_min_pts=max(3, int(opts.arc_sampling_pts)),
-                drawings=drawings,
+            page_data, unreadable_clip_fills = _extract_page_keeping_the_rest(
+                page, page_number, opts, drawings
             )
+            page_clip_fill_issues += unreadable_clip_fills
             check_cancel(opts.cancel_requested, f"after vectors on page {page_number}")
 
             requested_text_representation = str(
@@ -709,6 +888,9 @@ def _extract_document_impl(
                 source_line_dashes=source_line_dashes,
                 display_to_model=display_to_model,
                 final_rect_paints=final_rect_paints,
+                clip_fill_issues=[
+                    dict(issue, page=page_number) for issue in page_clip_fill_issues
+                ],
             ))
             report_progress(
                 opts.progress_callback,

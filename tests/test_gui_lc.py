@@ -61,6 +61,13 @@ class TestLcGuiProfessionalImport(unittest.TestCase):
         self.assertIn("restart_on_resume_mismatch=True", self.source)
         self.assertIn("Certified pages were kept", self.source)
 
+    def test_completion_says_which_clipped_fills_were_left_out(self) -> None:
+        # Resumed pages never pass through the progress log, so the line comes
+        # from the returned stats: once in the log, once in the Done dialog.
+        self.assertIn('clip_fill_warning = str(stats.get("clip_fill_warning") or "")', self.source)
+        self.assertIn("self._log(clip_fill_warning)", self.source)
+        self.assertIn('(f"\\n\\n{clip_fill_warning}" if clip_fill_warning else "")', self.source)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

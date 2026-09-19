@@ -48,6 +48,7 @@ def main() -> int:
                 out_dxf = td_path / f"{pdf.stem}.dxf"
                 export = export_to_dxf(run.extraction, str(out_dxf), DxfExportOptions())
                 ok = export.entity_count >= args.min_entities
+                clip_fill_delivery = run.extraction.clip_fill_delivery()
                 if ok:
                     report["passed"] += 1
                 else:
@@ -57,6 +58,8 @@ def main() -> int:
                     "status": "PASS" if ok else "FAIL",
                     "entities": export.entity_count,
                     "images": export.image_count,
+                    # Visible clipped fills left out, or approximate.
+                    "warnings": clip_fill_delivery["dropped"] + clip_fill_delivery["approximated"],
                 })
             except Exception as exc:  # noqa: BLE001
                 report["failed"] += 1
