@@ -1,0 +1,88 @@
+name: build-candidate
+
+# Native acceptance needs a real Windows package before any release is approved.
+# This workflow only builds artifacts. It cannot create tags, releases or deploy.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build-candidate.yml
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: build-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up pinned Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12.10'
+          architecture: x64
+
+      - name: Check source with locked dependencies
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r requirements-release-win-py312.lock
+          python -m pip install --require-hashes --only-binary=:all: -r requirements-ci-win-py312.lock
+          python pdfcadcore_sync_check.py --skip-cross-repo
+          python preflight_check.py
+          python -m pytest tests/ -q --basetemp "$RUNNER_TEMP/pytest-candidate"
+
+      - name: Build source and portable archives
+        run: |
+          python build_release.py
+          python build_windows_portable.py
+
+      - name: Smoke-test packaged entry points
+        run: python scripts/smoke_portable_zip.py "dist/LibreCAD-PDF-Importer-Windows-Portable_v*.zip" --source-zip "dist/LibreCAD-PDF-Importer_v*.zip"
+
+      - name: Record candidate provenance
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          from pathlib import Path
+          from scripts.verify_release_artifacts import write_candidate_provenance
+
+          # PR events name a merge commit; the package uses the checked-out head.
+          # Preserve the actual workflow identity and the existing release gate.
+          metadata = dict(os.environ)
+          metadata["GITHUB_SHA"] = subprocess.check_output(
+              ["git", "rev-parse", "HEAD"], text=True
+          ).strip()
+          write_candidate_provenance(
+              output_path=Path("dist/release-candidate-provenance.json"),
+              environment=metadata,
+          )
+          PY
+
+      - name: Retain candidate for native testing
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-test-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/LibreCAD-PDF-Importer_v*.zip
+            dist/LibreCAD-PDF-Importer-Windows-Portable_v*.zip
+            dist/release-candidate-provenance.json
+          if-no-files-found: error
+          retention-days: 14
