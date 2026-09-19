@@ -82,9 +82,9 @@ Portable users: run `lcpdf-gui.exe` from extracted ZIP — no terminal required.
 
 ### LibreCAD-specific behavior
 
-- **Text**: native editable DXF `TEXT`, with exact source-item binding and the Text semantic verified independently from Labels. Parent-font substitution and any Unicode compatibility normalization are reported and are not described as source-font exactness.
-- **Labels**: DXF exposes no native Label entity. The importer records that exact item-scoped capability failure, creates no report-only TEXT/MTEXT alias, then verifies the closest editable Text fallback. The fallback and LibreCAD Unicode LFF substitution are both reported distinctly.
-- **3D Text**: thickness/+Z extrusion is created and read back for the exact item, but native success additionally requires verified parent 3D display/edit semantics. LibreCAD's 2D parent therefore reports and delivers verified flat editable Text as the closest fallback.
+- **Text**: attempts editable DXF `TEXT`, with exact source-item binding, source appearance and transform checks. LibreCAD's Unicode LFF font cannot reproduce every PDF font or character placement. Failed items continue to Glyphs, Geometry or item Raster, so selecting Text does not guarantee editable text. Font substitution, Unicode compatibility normalization and representation changes are reported separately.
+- **Labels**: DXF exposes no native Label entity. The importer records that item-scoped failure without creating a report-only TEXT/MTEXT alias, then attempts Text and, if necessary, the remaining fallback representations. The actual result may be outlines or images.
+- **3D Text**: thickness/+Z extrusion is created and read back for the exact item, but native success additionally requires verified parent 3D display/edit semantics. LibreCAD's 2D parent does not establish those semantics; flat Text is attempted next, followed by outlines or item Raster when necessary. The report lists actual delivery rather than promising editable or 3D text.
 - **Glyphs**: grouped `INSERT` entities whose owned block definitions contain the outline curves.
 - **Geometry**: exploded raw modelspace outline edges, structurally distinct from Glyphs.
 - **Raster**: an exact source-PDF-bound item crop is a direct result when requested, or a terminal fallback only after every structural rung is proven impossible. Visible pixels, placement, source digest/page/item, `IMAGE` handle, and owned asset bytes must verify.
