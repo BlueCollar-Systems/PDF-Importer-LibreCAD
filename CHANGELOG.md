@@ -2,6 +2,22 @@
 
 All notable release changes are recorded here.
 
+## 1.0.101 - 2026-09-19
+
+- Preserve short and zero-length literal strokes instead of discarding their
+  centerlines during point cleanup. For source-proven solid round-cap strokes,
+  add editable HATCH boundaries with true semicircular arcs and retain the
+  original LINE. Verify both after saving, including source identity and placement.
+- Preserve qualified Multiply markup appearance using local source-rendered
+  display images at 600 DPI above the editable geometry. Only fully source-bound,
+  vector-only footprints with proven clipping and blend groups qualify. Exact
+  pixel placement, source bytes, and saved image depth are checked; no DPI reduction
+  occurs when the pixel budget is exceeded. Unqualified cases are reported.
+- Respect paint order around these strokes and existing opaque images, while
+  allowing text grouped across a spatially separate stroke to retain its requested
+  representation. Hide the SOURCE_BLEND_DISPLAY layer to edit underlying geometry;
+  this display aid does not provide general PDF blend support or unlimited zoom.
+
 ## 1.0.100 - 2026-09-18
 
 - Place text Raster images using the source renderer's exact pixel origin and

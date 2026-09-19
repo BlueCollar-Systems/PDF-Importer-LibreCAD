@@ -93,6 +93,10 @@ class ExtractedPage:
     image_paint_order: object = None  # exact source intervals around individual images
     source_line_dashes: dict = field(default_factory=dict)
     final_rect_paints: list = field(default_factory=list)
+    source_capsules: list = field(default_factory=list)
+    nontext_composites: list = field(default_factory=list)
+    capsule_paint_order: object = None
+    capsule_vector_paint_order: object = None
     display_to_model: Optional[Tuple[float, float, float, float, float, float]] = None
 
 
@@ -178,6 +182,18 @@ class DocumentExtraction:
             "primitives": self.primitive_count,
             "text_items": self.text_count,
             "images": self.image_count,
+            "source_stroke_ink_plan": {
+                "scope": "Only source-bound solid, short, round-cap strokes with complete clip and uniform-transform evidence qualify. Other strokes retain existing native lineweight behavior.",
+                "display_limit": "Local Multiply display uses exact original pixels at 600 DPI above retained editable geometry; hide SOURCE_BLEND_DISPLAY to edit underlying paint. It is not a general PDF compositor.",
+                "per_page": [
+                    {"page": p.page_data.page_number,
+                     "qualified_source_orders": [row['source_seqno'] for row in p.source_capsules],
+                     "composite_source_orders": [row['recipe']['source_paint_order'] for row in p.nontext_composites],
+                     "unsupported_blend_source_orders": [row['source_seqno'] for row in p.source_capsules
+                         if any(mode != 'Normal' for mode in row['source_proof']['source_blend_modes'])
+                         and row['source_seqno'] not in {item['recipe']['source_paint_order'] for item in p.nontext_composites}]}
+                    for p in self.pages],
+            },
             "source_dash_delivery": {
                 "scope": "Renderer-bound single straight strokes use exact editable dash intervals. Other strokes retain native linetype approximations; native lineweight/cap display is separate.",
                 "per_page": [
@@ -430,6 +446,7 @@ def _extract_document_impl(
     mode = _normalize_import_mode(opts.import_mode)
     extracted: list[ExtractedPage] = []
     page_raster_job_pixels = 0
+    local_composite_job_pixels = 0
 
     with safe_open(pdf_path) as doc:
         pages = parse_pages_spec(opts.pages, len(doc))
@@ -678,6 +695,32 @@ def _extract_document_impl(
             from librecad_pdf_importer.raster_geometry import display_to_model_matrix
             from .final_rect_paint import bind_final_rect_paints
             display_to_model = display_to_model_matrix(page.rect, opts.scale, opts.flip_y)
+            from .stroke_footprint import bind_source_capsules
+            source_capsules = bind_source_capsules(page, page_data, display_to_model)
+            nontext_composites = []
+            from .nontext_composite import multiply_modes, qualify_recipes, render_recipes, pixel_count
+            if any(multiply_modes(row['source_proof']['source_blend_modes']) for row in source_capsules):
+                capsule_proofs = {row['source_seqno']: row['source_proof'] for row in source_capsules}
+                capsule_source_hash = source_capsules[0]['source_pdf_sha256']
+                recipes = qualify_recipes(page, capsule_proofs, source_sha256=capsule_source_hash,
+                                          page_number=page_number, dpi=600)
+                recipe_pixels = sum(pixel_count(recipe) for recipe in recipes)
+                if local_composite_job_pixels + recipe_pixels > 64_000_000:
+                    recipes, recipe_pixels = [], 0
+                local_composite_job_pixels += recipe_pixels
+                rendered = render_recipes(page, recipes, fitz)
+                nontext_composites = [dict(recipe=recipe, png=png, pixels=evidence)
+                                      for recipe, (png, evidence) in zip(recipes, rendered, strict=True)]
+                with Path(pdf_path).open('rb') as source_stream:
+                    if hashlib.file_digest(source_stream, 'sha256').hexdigest() != capsule_source_hash:
+                        raise RuntimeError('Original PDF changed while preparing source blend display')
+            composite_seqnos = {row['recipe']['source_paint_order'] for row in nontext_composites}
+            capsule_seqnos = [row['source_seqno'] for row in source_capsules
+                             if row['source_seqno'] in composite_seqnos or
+                             all(mode == 'Normal' for mode in row['source_proof']['source_blend_modes'])]
+            capsule_vector_order = bind_image_paint_order(page, page_data, [], capsule_seqnos) if capsule_seqnos else None
+            capsule_order = (bind_image_paint_order(page, page_data, images, capsule_seqnos)
+                             if images and capsule_seqnos else capsule_vector_order)
             final_rect_paints = bind_final_rect_paints(page, page_data)
             rotation = _page_rotation_transform(page.rect, getattr(page, "rotation_matrix", None))
             a, b, c, d, e, f = display_to_model
@@ -709,6 +752,10 @@ def _extract_document_impl(
                 source_line_dashes=source_line_dashes,
                 display_to_model=display_to_model,
                 final_rect_paints=final_rect_paints,
+                source_capsules=source_capsules,
+                nontext_composites=nontext_composites,
+                capsule_paint_order=capsule_order,
+                capsule_vector_paint_order=capsule_vector_order,
             ))
             report_progress(
                 opts.progress_callback,

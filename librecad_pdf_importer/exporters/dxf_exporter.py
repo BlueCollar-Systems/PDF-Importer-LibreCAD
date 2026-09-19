@@ -219,6 +219,8 @@ class DxfExportResult:
     delivered_text_entity_counts: Dict[str, int] = field(default_factory=dict)
     text_deliveries: List[Dict[str, Any]] = field(default_factory=list)
     final_rect_paints: List[Dict[str, Any]] = field(default_factory=list)
+    source_capsules: List[Dict[str, Any]] = field(default_factory=list)
+    nontext_composites: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -3952,6 +3954,8 @@ def _export_to_dxf_impl(
         opts.provenance_opts._text_representation_deliveries = []  # noqa: B010
         opts.provenance_opts._source_provenance_objects = []  # noqa: B010
         opts.provenance_opts._delivered_image_count = 0  # noqa: B010
+        opts.provenance_opts._source_capsule_deliveries = []  # noqa: B010
+        opts.provenance_opts._nontext_composite_deliveries = []  # noqa: B010
         opts.provenance_opts._result_status = "pending_export"  # noqa: B010
 
     def _sync_text_evidence() -> None:
@@ -4000,6 +4004,10 @@ def _export_to_dxf_impl(
     cancel_requested = getattr(opts.provenance_opts, "_cancel_requested", None)
     progress_callback = getattr(opts.provenance_opts, "_progress_callback", None)
     source_dash_expectations = []
+    capsule_records = []
+    capsule_expectations = []
+    composite_records = []
+    composite_expectations = []
     final_paint_records = []
     final_paint_expectations = []
     final_paint_stroke_handles = set()
@@ -4025,6 +4033,10 @@ def _export_to_dxf_impl(
         paint_order = getattr(page, "image_paint_order", None)
         if not opts.include_images:
             paint_order = None
+        if not is_r12:
+            capsule_order = (page.capsule_paint_order if opts.include_images else page.capsule_vector_paint_order)
+            if capsule_order is not None:
+                paint_order = capsule_order
         if int(page.page_data.page_number) in compositing_pages:
             paint_order = None  # Existing exact page-fidelity surface contract.
         has_source_image_order = has_source_image_order or paint_order is not None
@@ -4033,6 +4045,21 @@ def _export_to_dxf_impl(
         if len(final_by_id) != len(final_paints):
             raise RuntimeError("Final paint source identity is not unique")
         final_entities = {}
+        capsules = [] if is_r12 or int(page.page_data.page_number) in compositing_pages else page.source_capsules
+        composites = [] if is_r12 or int(page.page_data.page_number) in compositing_pages else page.nontext_composites
+        if paint_order is None:
+            # Unsupported image compositing has no certified per-paint native
+            # order. Do not add newly opaque ink into an unbound stack.
+            capsules, composites = [], []
+        composite_seqnos = {row['recipe']['source_paint_order'] for row in composites}
+        # A Multiply footprint is delivered only with its source-proven local
+        # blending display; an opaque footprint alone would conceal gray ink.
+        capsules = [row for row in capsules if row['source_seqno'] in composite_seqnos or
+                    all(mode == 'Normal' for mode in row['source_proof']['source_blend_modes'])]
+        capsules_by_id = {row['primitive_id']: row for row in capsules}
+        if len(capsules_by_id) != len(capsules):
+            raise RuntimeError('Source stroke ink identity is not unique')
+        capsule_ids_delivered = set()
         page_raster_handles = []
         primitive_entity_start = page_entity_start
         previous_primitive_key = None
@@ -4103,6 +4130,23 @@ def _export_to_dxf_impl(
                 return (pt[0], pt[1] + _dy)
 
             offset_pts = [_ofs(point) for point in (primitive.points or [])]
+            capsule = capsules_by_id.get(primitive.id)
+            if capsule is not None:
+                from .stroke_footprint import add_capsule
+                from ..core.stroke_footprint import verify_model_capsule
+                if source_pdf_sha256 is None:
+                    source_pdf_sha256 = _file_sha256(source_pdf)
+                verify_model_capsule(capsule, primitive, source_pdf_sha256)
+                capsule_record, capsule_expectation = add_capsule(doc, msp, capsule, capsule['source_rgb'],
+                                                                  layer, dy, source_pdf_sha256)
+                capsule_records.append(capsule_record)
+                capsule_expectations.append(capsule_expectation)
+                capsule_ids_delivered.add(primitive.id)
+                entity_count += 1
+                radius = capsule['width_model']/2
+                for px, py in capsule['centerline_model']:
+                    _track_xy(px-radius, py+dy-radius)
+                    _track_xy(px+radius, py+dy+radius)
             clip_group_id = getattr(primitive, "clip_fill_group_id", None)
             if clip_group_id:
                 if clip_group_id in emitted_clip_fills:
@@ -4205,7 +4249,10 @@ def _export_to_dxf_impl(
             if primitive.type == "line" and primitive.points and len(primitive.points) == 2:
                 start = _ofs(primitive.points[0])
                 end = _ofs(primitive.points[1])
-                msp.add_line(start, end, dxfattribs=attribs)
+                native_line = msp.add_line(start, end, dxfattribs=attribs)
+                if capsule is not None:
+                    from .stroke_footprint import bind_centerline
+                    bind_centerline(doc, native_line, capsule_record, capsule_expectation)
                 _track_xy(float(start[0]), float(start[1]))
                 _track_xy(float(end[0]), float(end[1]))
                 entity_count += 1
@@ -4357,7 +4404,7 @@ def _export_to_dxf_impl(
                     # Verified item raster pixels already contain the final PDF
                     # appearance at that footprint, including later paints.
                     paint_key = (
-                        len(paint_order.image_seqnos) * 2 + 2
+                        len(paint_order.paint_seqnos) * 2 + 2
                         if delivery.final_representation == "raster"
                         else paint_order.text_keys[text.id]
                     )
@@ -4587,7 +4634,57 @@ def _export_to_dxf_impl(
                 entity_count += 1
                 image_count += 1
 
+        for composite in composites:
+            from ..raster_geometry import raster_pixel_geometry
+            from .nontext_composite import bind_metadata
+            recipe, pixels, png = composite['recipe'], composite['pixels'], composite['png']
+            seqno = recipe['source_paint_order']
+            canonical = [row for row in capsule_records if row['source_page'] == page.page_data.page_number
+                         and row['source_seqno'] == seqno]
+            if len(canonical) != 1 or recipe['source_sha256'] != source_pdf_sha256:
+                raise RuntimeError('Source blend display has no matching original editable capsule')
+            if tuple(page.display_to_model) != tuple(canonical[0]['display_to_model']):
+                raise RuntimeError('Source blend display page mapping changed from its editable capsule')
+            pix = fitz.Pixmap(png)
+            if (hashlib.sha256(png).hexdigest() != pixels['png_sha256']
+                    or hashlib.sha256(pix.samples).hexdigest() != pixels['rgb_sha256']
+                    or (pix.width, pix.height, pix.n, pix.alpha) !=
+                    (pixels['width'], pixels['height'], 3, 0)):
+                raise RuntimeError('Source blend display pixels changed before export')
+            geometry = raster_pixel_geometry(recipe['device_bounds'][:2],
+                [pixels['width'], pixels['height']], recipe['dpi'], page.display_to_model, dy)
+            layer = f'P{page.page_data.page_number:03d}_SOURCE_BLEND_DISPLAY'
+            _ensure_layer(doc, layer, None)
+            asset_path = asset_root / f'source_blend_{page.page_data.page_number}_{seqno}.png'
+            image_def = doc.add_image_def(
+                filename=_serialized_asset_filename(asset_path, asset_root.parent.parent),
+                size_in_pixel=(pixels['width'], pixels['height']))
+            image = msp.add_image(image_def, insert=geometry['image_insert'],
+                                  size_in_units=(1, 1), dxfattribs={'layer': layer})
+            image.dxf.u_pixel = (*geometry['image_u_pixel'], 0)
+            image.dxf.v_pixel = (*geometry['image_v_pixel'], 0)
+            image.dxf.flags = int(image.dxf.flags or 0) | 8
+            record = dict(recipe=recipe, pixel_evidence=pixels, pixel_geometry=geometry,
+                          image_handle=str(image.dxf.handle), asset_path=str(asset_path),
+                          canonical_hatch_handle=canonical[0]['hatch_handle'])
+            composite_records.append(record)
+            composite_expectations.append(bind_metadata(image, record))
+            pending_raster_assets.append(_PendingRasterAsset(asset_path, png))
+            serialized_image_expectations.append(_SerializedImageExpectation(
+                image_handle=str(image.dxf.handle), image_def_handle=str(image_def.dxf.handle),
+                asset_path=asset_path, asset_sha256=pixels['png_sha256'],
+                insert=tuple(geometry['image_insert']), u_pixel=tuple(geometry['image_u_pixel']),
+                v_pixel=tuple(geometry['image_v_pixel']), size_in_pixel=(pixels['width'], pixels['height'])))
+            foreground_image_handles.append(str(image.dxf.handle))
+            source_paint_keys[str(image.dxf.handle)] = (page_position, float('inf'))
+            for px, py in geometry['image_corners_model']:
+                _track_xy(px, py)
+            entity_count += 1
+            image_count += 1
+
         # Advance page placement offset for the next page.
+        if capsule_ids_delivered != set(capsules_by_id):
+            raise RuntimeError('Source stroke ink was not completely delivered')
         page_step = _page_stack_step(page.page_data.height, arrangement, gap_ratio)
         if paint_order is None:
             for entity in msp.entity_space.entities[page_entity_start:]:
@@ -4730,7 +4827,8 @@ def _export_to_dxf_impl(
             temp_output,
             keep_handles=_verification_keep_handles(
                 text_deliveries, serialized_image_expectations
-            ) | final_paint_stroke_handles,
+            ) | final_paint_stroke_handles | {row['handle'] for row in capsule_expectations}
+              | {row['centerline']['handle'] for row in capsule_expectations},
             modelspace_owner_handle=str(msp.block_record.dxf.handle),
             entities_written=entities_written,
         )
@@ -4747,6 +4845,12 @@ def _export_to_dxf_impl(
         _verify_serialized_source_dash_blocks(candidate, source_dash_expectations)
         from .final_rect_paint import verify_metadata_and_strokes
         verify_metadata_and_strokes(candidate, final_paint_expectations)
+        from .stroke_footprint import verify_capsules
+        verify_capsules(candidate, capsule_expectations)
+        from .nontext_composite import verify_display_metadata
+        verify_display_metadata(candidate, composite_expectations)
+        if capsule_records and _file_sha256(source_pdf) != source_pdf_sha256:
+            raise RuntimeError('Original PDF changed during source stroke export')
         temp_output.replace(output)
     except Exception:
         for temp_asset in temp_assets:
@@ -4775,6 +4879,8 @@ def _export_to_dxf_impl(
         # actual delivery facts immediately afterward to build import_report.
         opts.provenance_opts._delivered_image_count = int(image_count)  # noqa: B010
         opts.provenance_opts._final_rect_paint_deliveries = final_paint_records  # noqa: B010
+        opts.provenance_opts._source_capsule_deliveries = capsule_records  # noqa: B010
+        opts.provenance_opts._nontext_composite_deliveries = composite_records  # noqa: B010
         opts.provenance_opts._result_status = "success"  # noqa: B010
         _sync_text_evidence()
 
@@ -4799,6 +4905,8 @@ def _export_to_dxf_impl(
         delivered_text_entity_counts=dict(delivered_text_entity_counts),
         text_deliveries=[dict(item) for item in text_deliveries],
         final_rect_paints=[dict(item) for item in final_paint_records],
+        source_capsules=[dict(item) for item in capsule_records],
+        nontext_composites=[dict(item) for item in composite_records],
     )
 
 

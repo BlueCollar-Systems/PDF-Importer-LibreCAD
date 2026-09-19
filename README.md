@@ -2,14 +2,16 @@
 
 **BlueCollar-Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.100](https://img.shields.io/badge/Version-1.0.100-blue.svg)
+![Version: 1.0.100](https://img.shields.io/badge/Version-1.0.101-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
 
-See [CHANGELOG.md](CHANGELOG.md) for release history. Version 1.0.82 preserves
-native zero-ink whitespace TEXT while visible source text whose font LibreCAD
-must substitute descends automatically to visually verified glyph outlines.
+See [CHANGELOG.md](CHANGELOG.md) for release history. Version 1.0.101 preserves
+source-proven short round-cap markup as editable arcs and lines. Qualified
+Multiply regions also receive a local 600 DPI display image with verified pixel
+placement; hide the `SOURCE_BLEND_DISPLAY` layer to edit the underlying geometry.
+Unsupported blend cases remain identified in the import report.
 
 ## Features
 
@@ -285,20 +287,22 @@ capabilities. Modes differ only in extraction *strategy*, not quality tier.
 
 The six requests remain structurally distinct. A DXF declaration is not enough
 to claim success: the requested semantics and item transform must also survive
-serialization. LibreCAD uses LFF stroke fonts for editable native text, so Text
-and Text uses its broad Unicode LFF face while retaining source content, anchor,
-height, rotation, and advance. That parent-font substitution is reported
-explicitly; it is not misreported as a representation fallback. DXF has no
-native Label entity, so a Labels request records that item-scoped impossibility
-and then reports the closest verified editable Text fallback. Likewise,
-`TEXT` thickness alone does not prove visible/editable 3D text in LibreCAD's 2D
-parent.
+serialization. LibreCAD uses LFF stroke fonts for editable native text. The
+importer attempts its Unicode LFF face and checks each item's source appearance
+and transforms as well as its content and placement. If that font or the native
+Text transform cannot reproduce the item, the fallback continues to outlines
+or, when structurally necessary, an item image. Selecting Text therefore does
+not guarantee editable text in the result. The report distinguishes font
+substitution from a change of representation and lists the actual delivery.
+DXF has no native Label entity, and `TEXT` thickness alone does not prove
+visible/editable 3D text in LibreCAD's 2D parent. Those requests attempt Text
+next, but may continue farther down the same verified fallback ladder.
 
-| Option | GUI | Verified DXF representation |
+| Option | GUI | Delivery behavior |
 |--------|-----|-----------------------------|
-| **text** | ✅ Text | Native editable DXF `TEXT`, verified as the requested Text semantic with source text (or an explicitly reported Unicode compatibility normalization), placement, dimensions, rotation, source identity, parent-native LFF binding, and source-width FIT alignment. |
-| **labels** | ✅ Labels | DXF exposes no native Label entity. The item-scoped Labels attempt fails loudly without creating a wrong-type alias, then the closest editable Text fallback is verified and reported. |
-| **3d_text** | ✅ 3D Text | Attempts DXF `TEXT` with positive thickness and +Z extrusion first. Success additionally requires the parent to verify it as visible/editable 3D text. LibreCAD is 2D, so the exact failed item advances first to verified flat editable Text and reports that transition. |
+| **text** | ✅ Text | Attempts editable DXF `TEXT`. Delivery requires verified source appearance, content (or disclosed Unicode compatibility normalization), transforms, identity, parent-native LFF binding and FIT alignment. Failed items continue to Glyphs, Geometry or item Raster; inspect the report for editability. |
+| **labels** | ✅ Labels | DXF exposes no native Label entity. The item-scoped failure is reported before attempting Text, then further representations if Text cannot reproduce the source item. No native Label delivery is claimed. |
+| **3d_text** | ✅ 3D Text | Attempts DXF `TEXT` with positive thickness and +Z extrusion. LibreCAD's 2D parent does not establish native 3D display/edit semantics, so the fallback first attempts flat Text and may continue to outlines or item Raster. |
 | **glyphs** | ✅ Glyphs | One grouped DXF `INSERT` per source text span with outline entities in its owned block definition. This remains structurally distinct from raw Geometry. |
 | **geometry** | ✅ Geometry | Raw modelspace `LWPOLYLINE`/`POLYLINE` glyph edges. No `TEXT`, `MTEXT`, or `INSERT` is accepted as Geometry. |
 | **raster** | ✅ Raster | A source-PDF-bound PNG of only the exact text item, delivered as a verified DXF `IMAGE`; it is a direct result when requested, not a fallback. |
@@ -379,7 +383,7 @@ pdfcadcore/           Shared PDF extraction core
 | Transparency | LibreCAD does not generally composite DXF fill transparency. The final rectangle repair requires a proven source suffix, solid opaque strokes, Normal blending and no masks or transparency groups; other cases retain their existing display limitations. R12 does not use this repair. |
 | LibreCAD preview process | The installed LibreCAD 2.2.1.5 Windows CLI can write a valid image-bearing preview and then crash during Qt shutdown. Native exit status remains a failure and is recorded separately from saved DXF and rendered-image checks. |
 | Clipped/XObject-heavy PDFs | Complex clip stacks and deeply nested form XObjects can produce partial geometry |
-| Native LibreCAD fonts and Labels | Editable Text uses LibreCAD's Unicode LFF face. The report records that font substitution separately from representation fallback; source content and transforms remain verified, but glyph shapes can differ from the embedded PDF font. DXF has no native Label entity, so Labels falls loudly to Text. Choose Glyphs or Geometry when exact source-font outlines matter more than editability. |
+| Native LibreCAD fonts and Labels | The Unicode LFF face may not reproduce the PDF's embedded font or character transforms. A Text request can therefore deliver outlines or item images instead of editable text. Labels and 3D Text also attempt that fallback ladder. Check actual representation counts in the report; choose Glyphs or Geometry when source-font outlines matter more than text editing. |
 | Damaged or unusable source fonts | Exact-font structural representations fail closed; a different representation is attempted only with item-specific impossibility evidence |
 | DXF version | R2010 is the recommended default; R12 has no serialized `BLOCK_RECORD`, which is explicitly excluded from durable support identity |
 | Legacy hosts | LibreCAD/DXF consumer behavior outside the tested matrix is expected-only until verified |
