@@ -55,6 +55,12 @@ def _build_parser() -> argparse.ArgumentParser:
                    action=argparse.BooleanOptionalAction,
                    default=None,
                    help="Import text from the PDF (--no-import-text to skip)")
+    p.add_argument("--searchable-text",
+                   action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="Write each outlined/rastered string as hidden TEXT on the "
+                        "frozen layer P###_TEXT_SEARCH so the DXF is searchable "
+                        "(--no-searchable-text to skip)")
     p.add_argument("--dxf-version", default="R2010", choices=DXF_VERSIONS,
                    help="DXF version (default: R2010)")
     p.add_argument("--gui", action="store_true",
@@ -229,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
             dxf_version=args.dxf_version,
             progress_callback=_progress if args.verbose else None,
             resumable=bool(args.resume),
+            searchable_text=bool(args.searchable_text),
         )
     except KeyboardInterrupt:
         print(
@@ -296,6 +303,8 @@ def main(argv: list[str] | None = None) -> int:
             int(text_delivery["degraded_item_count"]),
         ):
             _safe_print(line, file=sys.stderr)
+    if stats.get("searchable_text_warning"):
+        _safe_print(str(stats["searchable_text_warning"]), file=sys.stderr)
     return 0
 
 

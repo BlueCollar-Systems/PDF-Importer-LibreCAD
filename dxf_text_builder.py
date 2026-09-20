@@ -40,6 +40,7 @@ from ezdxf import bbox as ezdxf_bbox
 from ezdxf import path as ezdxf_path
 from ezdxf.addons import text2path
 from ezdxf.fonts import fonts as ezdxf_fonts
+from ezdxf.lldxf.encoding import has_dxf_unicode
 from ezdxf.math import Matrix44
 from ezdxf.tools.text import plain_text
 from ezdxf.tools.text_size import text_size
@@ -2754,6 +2755,101 @@ def _attempt_degraded_text(
             attempts=attempts,
             failure_reason=delivery.failure_reason or attempt.reason,
         )
+
+
+def _write_search_text_companion(
+    text_item: NormalizedText,
+    msp: Any,
+    layer_name: str,
+    *,
+    is_r12: bool,
+    cap_height_ratio: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Hidden, non-certifying companion: the exact source string as native TEXT.
+
+    The exporter calls this AFTER an item's delivery is settled, for an item
+    whose string is not in the file (glyph outlines, raw geometry, raster patch,
+    reported drop), and puts it on a frozen layer. It certifies nothing visual
+    -- the outlines stay the visual truth -- and is no rung of the ladder. The
+    string is the exact source text, never NFKC-normalised. It never raises:
+    ``not_representable`` is a string native TEXT cannot carry literally, and
+    ``failed`` costs this one companion only.
+    """
+    content = str(getattr(text_item, "text", "") or "")
+    record: Dict[str, Any] = {
+        "status": "failed",
+        "handle": None,
+        "layer": layer_name,
+        "content": content,
+    }
+    entity = None
+    try:
+        pre_r2007 = str(msp.doc.dxfversion) < "AC1021"
+        if (
+            plain_text(content) != content
+            or has_dxf_unicode(content)
+            # LibreCAD's DXF filter rewrites these two inside TEXT (line break, space).
+            or "\\P" in content
+            or "\\~" in content
+            # Controls and lone surrogates: ezdxf writes \xNN / \U+dXXX text instead.
+            or any(unicodedata.category(character) in ("Cc", "Cs") for character in content)
+            # ezdxf writes \U+XXXXXXXX there, which no reader decodes back.
+            or (pre_r2007 and any(ord(character) > 0xFFFF for character in content))
+        ):
+            record["status"] = "not_representable"
+            record["reason"] = "DXF TEXT cannot carry this source string unchanged"
+            return record
+        source_em_height = _positive_finite(getattr(text_item, "font_size", None))
+        if source_em_height is None:
+            raise ValueError("source nominal text height is missing or invalid")
+        height = source_em_height * (
+            _positive_finite(cap_height_ratio) or _DEGRADED_TEXT_CAP_HEIGHT_RATIO
+        )
+        insert = tuple(float(value) for value in text_item.insertion[:2])
+        rotation = float(getattr(text_item, "rotation", 0.0) or 0.0)
+        if len(insert) != 2 or not all(
+            math.isfinite(value) for value in (*insert, rotation, height)
+        ):
+            raise ValueError("source text insertion, rotation or height is not finite")
+        style_name, _style_handle, _style_created = _ensure_text_style(
+            msp.doc,
+            _ExactFontResolution(
+                source_name=str(getattr(text_item, "font_name", "") or "")
+            ),
+            style_font="unicode",
+            preferred_style_name="unicode",
+        )
+        entity = msp.add_text(
+            content,
+            dxfattribs=_base_attributes(
+                text_item,
+                layer_name=layer_name,
+                height=height,
+                insert=insert,
+                is_r12=is_r12,
+                style_name=style_name,
+            ),
+        )
+        target_width, _width_source = _target_advance_width(text_item)
+        _fit_text_advance(entity, target_width, parent_fit_alignment=True)
+        if target_width is not None and tuple(entity.dxf.align_point)[:2] == insert:
+            # An advance below float resolution at this insertion: FIT between
+            # coincident points is degenerate, so the companion stays LEFT.
+            from ezdxf.enums import TextEntityAlignment
+
+            entity.set_placement(insert, align=TextEntityAlignment.LEFT)
+        if entity.dxftype() != "TEXT" or str(entity.dxf.text) != content:
+            raise ValueError("companion TEXT did not keep the exact source string")
+        record["handle"] = _handle(entity)
+        record["status"] = "written"
+        return record
+    except Exception as exc:
+        if entity is not None:
+            _delete_entity(msp, entity)
+        record["handle"] = None
+        record["status"] = "failed"
+        record["reason"] = f"{type(exc).__name__}: {exc}"
+        return record
 
 
 def _outline_attributes(attribs: Dict[str, Any]) -> Dict[str, Any]:

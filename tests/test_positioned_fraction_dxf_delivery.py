@@ -81,6 +81,15 @@ _POSITIONED_GEOMETRY_PROOF_FIELDS = (
 )
 
 
+def _visible(drawing) -> list:
+    """Modelspace without the hidden search-text companions (frozen P###_TEXT_SEARCH)."""
+    return [
+        entity
+        for entity in drawing.modelspace()
+        if not entity.dxf.layer.endswith("TEXT_SEARCH")
+    ]
+
+
 def _world_point(
     point: tuple[float, float],
     *,
@@ -388,7 +397,7 @@ def test_positioned_fraction_geometry_is_persisted_as_fill_only_raw_geometry(
     assert final.evidence["positioned_source_glyph_ids"] == list(_GLYPH_IDS)
     assert final.evidence["positioned_visible_geometry_fill_only"] is True
     assert final.evidence["positioned_contour_entities_omitted"] is True
-    entities = list(reopened.modelspace())
+    entities = _visible(reopened)
     character_solid_counts = final.evidence[
         "positioned_geometry_character_solid_counts"
     ]
@@ -1516,7 +1525,7 @@ def test_multi_page_stack_translates_positioned_fraction_layout_and_reopen_evide
             abs=1e-9,
         )
     else:
-        serialized_bbox = _bbox_tuple(list(reopened.modelspace()))
+        serialized_bbox = _bbox_tuple(_visible(reopened))
         assert serialized_bbox == pytest.approx(
             evidence["expected_outline_bbox"],
             abs=1e-7,
@@ -1885,7 +1894,7 @@ def test_positioned_fraction_fill_only_contract_survives_r12_reopen(
             for entity in reopened.blocks.get(nested_insert.dxf.name)
         ]
     else:
-        entities = list(reopened.modelspace())
+        entities = _visible(reopened)
     outlines = [
         entity for entity in entities if entity.dxftype() in {"LWPOLYLINE", "POLYLINE"}
     ]

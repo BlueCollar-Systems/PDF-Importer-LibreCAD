@@ -53,6 +53,9 @@ def main() -> int:
                 ok = export.entity_count >= args.min_entities and not degraded
                 clip_fill_delivery = run.extraction.clip_fill_delivery()
                 clip_fill_warnings = clip_fill_delivery["dropped"] + clip_fill_delivery["approximated"]
+                # A lost hidden search-text companion is a warning; the sheet still passes.
+                search_text = export.searchable_text_companions
+                search_text_warnings = int(search_text["failed"]) + int(search_text["mismatch"])
                 if ok:
                     report["passed"] += 1
                 else:
@@ -62,8 +65,9 @@ def main() -> int:
                     "status": "PASS" if ok else "FAIL",
                     "entities": export.entity_count,
                     "images": export.image_count,
-                    # Visible clipped fills left out or approximate, plus degraded text items.
-                    "warnings": clip_fill_warnings + degraded,
+                    # Visible clipped fills left out or approximate, degraded text
+                    # items and lost search-text companions.
+                    "warnings": clip_fill_warnings + degraded + search_text_warnings,
                     "text_items_degraded": degraded,
                 })
             except Exception as exc:  # noqa: BLE001

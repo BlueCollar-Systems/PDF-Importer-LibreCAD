@@ -305,10 +305,17 @@ def write_import_report(
     )
     # One unverifiable text item no longer costs the sheet, so it must be loud
     # here instead: listed (bounded), counted, and counted as a warning.
-    from .exporters.dxf_exporter import degraded_text_items
+    from .exporters.dxf_exporter import degraded_text_items, searchable_text_companions
 
     degraded_text = degraded_text_items(text_representation_deliveries)
     text_degrade_warnings = int(degraded_text["total"])
+    # Hidden search-text companions certify nothing; one that failed or did not
+    # reach the file as written is a warning, never the item's verified flag.
+    search_text = dict(
+        getattr(run.config, "_searchable_text_companions", None)
+        or searchable_text_companions(text_representation_deliveries, enabled=False)
+    )
+    search_text_warnings = int(search_text["failed"]) + int(search_text["mismatch"])
     # A dropped item is in the report, not in the drawing: never a text entity.
     delivered_text_count = max(0, extraction.text_count - int(degraded_text["dropped"]))
     expected_text_source_ids = {
@@ -424,6 +431,7 @@ def write_import_report(
     extra["text_items_degraded"] = degraded_text["items"]
     extra["text_items_degraded_total"] = degraded_text["total"]
     extra["text_items_degraded_truncated"] = degraded_text["truncated"]
+    extra["searchable_text_companions"] = search_text
     if terminal_failure:
         extra["terminal_failure"] = dict(terminal_failure)
 
@@ -454,9 +462,9 @@ def write_import_report(
         text_source_spans=text_source_spans,
         text_glyph_estimate=text_glyph_estimate,
         text_fallback=text_fallback,
-        # Clipped fills left out while visible or approximate, plus text items
-        # that were degraded or dropped.
-        warnings=clip_fill_warnings + text_degrade_warnings,
+        # Clipped fills left out while visible or approximate, text items that
+        # were degraded or dropped, and search-text companions that were lost.
+        warnings=clip_fill_warnings + text_degrade_warnings + search_text_warnings,
         extra=extra,
     )
     if degraded_text["total"]:

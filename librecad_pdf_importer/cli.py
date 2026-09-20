@@ -13,6 +13,7 @@ from .exporters.dxf_exporter import (
     DxfExportOptions,
     degraded_text_item_lines,
     export_to_dxf,
+    searchable_text_warning_line,
     summarize_text_delivery,
 )
 from .importer import (
@@ -33,7 +34,8 @@ def build_parser() -> argparse.ArgumentParser:
     """Argument parser for LC CLI (BCS-ARCH-001 Rule 5 sweep).
 
     User-facing flags only: --mode, --text-mode, --import-text/--no-import-text,
-    --pages, --scale, --dxf-version, --gui, --verbose, plus output/IO controls.
+    --searchable-text/--no-searchable-text, --pages, --scale, --dxf-version,
+    --gui, --verbose, plus output/IO controls.
     Quality-tier flags (--hatch-mode, --arc-mode, --cleanup-level,
     --lineweight-mode, --raster-dpi, --strict-text-fidelity, --no-arcs,
     --no-raster-fallback, --grouping-mode) have been removed — their
@@ -56,6 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
                         action=argparse.BooleanOptionalAction,
                         default=None,
                         help="Import text from the PDF (--no-import-text to skip)")
+    parser.add_argument("--searchable-text",
+                        action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Write each outlined/rastered string as hidden TEXT on the "
+                             "frozen layer P###_TEXT_SEARCH so the DXF is searchable "
+                             "(--no-searchable-text to skip)")
     parser.add_argument("--dxf-version", default="R2018",
                         choices=["R12", "R2000", "R2004", "R2007", "R2010", "R2013", "R2018"],
                         help="Target DXF version")
@@ -202,6 +210,7 @@ def _main() -> int:
                 page_arrangement=args.page_arrangement,
                 page_gap_ratio=max(0.0, float(args.page_gap_ratio or 0.0)),
                 provenance_opts=run.config,
+                searchable_text=bool(args.searchable_text),
             ),
         )
     except Exception as exc:  # noqa: BLE001 - every failed export leaves a report
@@ -266,6 +275,7 @@ def _main() -> int:
                 export.text_deliveries,
                 report_path=str(import_report_path),
             ),
+            "searchable_text_companions": export.searchable_text_companions,
         },
     }
 
@@ -280,6 +290,9 @@ def _main() -> int:
         text_delivery["degraded_items"], text_delivery["degraded_item_count"]
     ):
         _print_stderr(line)
+    search_text_warning = searchable_text_warning_line(export.searchable_text_companions)
+    if search_text_warning:
+        _print_stderr(search_text_warning)
 
     if args.json:
         report = Path(args.json).expanduser().resolve()

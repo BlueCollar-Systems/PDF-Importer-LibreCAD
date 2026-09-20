@@ -91,6 +91,54 @@ All notable release changes are recorded here.
   fraction character quads. Quads rebuilt by `recover_char_quad` measured
   1.8e-5 of float32 rounding, only 11% under the former 2e-5 bound. The bound
   now only chooses glyph outlines or a Raster patch for that span.
+- Make LibreCAD importer output searchable (owner decision 2026-09-19). Since
+  1.0.81 a visibly substituted LibreCAD LFF font is never certified as delivered
+  Text, so every visible span became glyph outlines or a raster patch and its
+  string was nowhere in the DXF (measured on one sheet: 427 of 427 spans, 0
+  `TEXT`). That guarantee stands and outlines stay the visual truth. In
+  addition, every span delivered as Glyphs, Geometry, or Raster (an item
+  degraded to a Raster patch included) and every dropped item now gets ONE
+  hidden native `TEXT` with the exact source string (not NFKC-normalized) at the
+  item's insertion and rotation, cap height from the source font when known
+  (else about 0.72 em), style `unicode`, FIT-aligned to the source advance, on
+  the dedicated layer `P###_TEXT_SEARCH`, created frozen and (not in R12)
+  non-plotting. Thaw `P###_TEXT_SEARCH` and freeze `P###_TEXT` to work with
+  editable LFF text (to print it, also switch the layer's print flag on). A span
+  already delivered as visible `TEXT` (whitespace, or the degraded `TEXT` on
+  `P###_TEXT_DEGRADED`) gets none.
+- The companion certifies nothing: `final_representation`, `verified`, entity
+  counts, `delivered_text_entity_counts`, the TEXTMODE-1 buckets, and every
+  certified handle are exactly what they are without it (the companions are
+  written after every page, and each gets its paint key, so a page with images
+  still exports). The resumable / GUI page assembly sizes each page without the
+  hidden layer, so the visible geometry of page 2 and later is where it is
+  without the companions. Each delivery record gains `search_text` (`status`,
+  `handle`, `layer`, `content`) and the report gains
+  `extra.searchable_text_companions` (`enabled`, `written`, `not_representable`,
+  `failed`, `mismatch`, `layers`); the resumable summary carries the merged
+  block. A string native `TEXT` cannot carry literally (caret or `%%` control
+  sequences, a literal `\U+XXXX`, a `\P` or `\~` that LibreCAD rewrites on
+  load, control characters and lone surrogates, and beyond U+FFFF in a pre-R2007
+  file) is skipped as `not_representable`. A companion that cannot be written is
+  `failed`, and one whose exact content, layer, type, or frozen layer is not
+  confirmed after the write is `mismatch`: both are warnings (`result.warnings`,
+  one stderr line, the batch, `qa_smoke` and resumable reports, the GUI log and
+  completion message), never a raise, never a re-export, and never the item's
+  own `verified` flag.
+- New switch `--searchable-text` / `--no-searchable-text` on `lcpdf-import` and
+  `pdf2dxf.py` (default on; `DxfExportOptions.searchable_text`). Switched off,
+  no companion is written and no layer is created. The resume identity includes
+  it. There is no GUI control yet, and the GUI's text-mode dropdown labels
+  ("Text (editable native TEXT)", "Labels (closest Text fallback)", "3D Text (2D
+  host: Text fallback)") are unchanged here, pending an owner decision.
+- The streaming paint-order check no longer decodes a pre-R2007 (cp1252) file as
+  strict UTF-8: with images on the page, one `TEXT` carrying a degree sign cost
+  the sheet there. R12/R2000/R2004 files are cp1252 (a character in that code
+  page is one byte, any other a `\U+XXXX` escape), so a UTF-8 text search of
+  such a file does not find non-ASCII strings; R2007 and later files are UTF-8.
+- Correct the README, INSTALL, COMPATIBILITY, and HUMAN_CONFIRMATION text that
+  still promised "native editable DXF `TEXT`" for Text mode and an "editable
+  Text fallback" for Labels and 3D Text, which has not been true since 1.0.81.
 
 ## 1.0.100 - 2026-09-18
 
