@@ -24,6 +24,11 @@ from pdfcadcore.drawing_clips import (
 )
 from pdfcadcore.fitz_loader import safe_open
 from pdfcadcore.geometry_cleanup import _dxf_arc_angles, circle_fit
+from pdfcadcore.glyph_code_recovery import (
+    glyph_code_delivery_block,
+    glyph_code_issues as core_glyph_code_issues,
+    summarize_glyph_code_issues,
+)
 from pdfcadcore.auto_mode import drawings_need_text_counts
 from pdfcadcore.primitive_extractor import (
     _page_rotation_transform,
@@ -41,6 +46,7 @@ MM_PER_PT = 25.4 / 72.0
 CLIP_FILL_REPORT_ISSUE_CAP = 200
 # Where the operator line sends the reader; a caller with another report names it.
 CLIP_FILL_SEE_IMPORT_REPORT = "See clip_fill_delivery in the import report."
+GLYPH_CODE_SEE_IMPORT_REPORT = "See text_glyph_codes in the import report."
 
 # Auto-mode visual-fidelity heuristics (ported from host importers).
 AUTO_GLYPH_DRAWING_THRESHOLD = 1500
@@ -110,6 +116,9 @@ class ExtractedPage:
     # the DXF exporter could not build (its own list, rewritten by every export).
     clip_fill_issues: list = field(default_factory=list)
     clip_fill_build_drops: list = field(default_factory=list)
+    # Text spans a font delivered as raw glyph codes: what the shared core
+    # proved and by which route, and what stayed exactly as the PDF gave it.
+    glyph_code_issues: list = field(default_factory=list)
 
 
 def host_clip_fill_issue(page_number: int, row: Optional[dict], error: BaseException,
@@ -254,6 +263,16 @@ class DocumentExtraction:
             "issues": reportable[:CLIP_FILL_REPORT_ISSUE_CAP],
             "issues_truncated": len(reportable) > CLIP_FILL_REPORT_ISSUE_CAP,
         }
+
+    def glyph_code_delivery(self) -> dict:
+        """Counts and records for every span a font delivered as glyph codes."""
+        issues = [issue for page in self.pages for issue in page.glyph_code_issues]
+        return glyph_code_delivery_block(issues)
+
+    def glyph_code_warning(self, see: str = GLYPH_CODE_SEE_IMPORT_REPORT) -> str:
+        """One operator line for the whole import; '' when no span was affected."""
+        issues = [issue for page in self.pages for issue in page.glyph_code_issues]
+        return summarize_glyph_code_issues(issues, see)
 
     def clip_fill_warning(self, see: str = CLIP_FILL_SEE_IMPORT_REPORT) -> str:
         """One operator line for the whole import; '' when no visible fill was lost."""
@@ -891,6 +910,7 @@ def _extract_document_impl(
                 clip_fill_issues=[
                     dict(issue, page=page_number) for issue in page_clip_fill_issues
                 ],
+                glyph_code_issues=core_glyph_code_issues(page),
             ))
             report_progress(
                 opts.progress_callback,

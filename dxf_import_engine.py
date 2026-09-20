@@ -686,6 +686,10 @@ def _convert_via_package(
             # clipped fill was lost); a resumable run merges the blocks of its pages.
             "clip_fill_delivery": run.extraction.clip_fill_delivery(),
             "clip_fill_warning": run.extraction.clip_fill_warning(),
+            # Text a font delivered as raw glyph codes: what was proven, by
+            # which route, and what stayed exactly as the PDF delivered it.
+            "text_glyph_codes": run.extraction.glyph_code_delivery(),
+            "text_glyph_code_warning": run.extraction.glyph_code_warning(),
             # Hidden search-text companions: counts, and one line when any was lost.
             "searchable_text_companions": export.searchable_text_companions,
             "searchable_text_warning": searchable_text_warning_line(

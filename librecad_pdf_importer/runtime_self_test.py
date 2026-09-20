@@ -11,6 +11,7 @@ def load_fonttools_dependencies() -> None:
     from fontTools.fontBuilder import FontBuilder  # noqa: F401
     from fontTools.pens.basePen import NullPen  # noqa: F401
     from fontTools.pens.boundsPen import BoundsPen, ControlBoundsPen  # noqa: F401
+    from fontTools.pens.recordingPen import RecordingPen  # noqa: F401
     from fontTools.pens.ttGlyphPen import TTGlyphPen  # noqa: F401
     from fontTools.ttLib import TTFont, newTable  # noqa: F401
     from fontTools.ttLib.tables._c_m_a_p import CmapSubtable  # noqa: F401
