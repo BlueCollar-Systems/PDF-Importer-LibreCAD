@@ -201,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     # Run conversion
+    from conversion_control import ImportStopped
     from dxf_import_engine import ConversionCancelled, convert
     from pdfcadcore.fitz_loader import PdfOpenError
 
@@ -244,6 +245,11 @@ def main(argv: list[str] | None = None) -> int:
 
         _safe_print(cli_error("not_a_pdf", message=str(exc)), file=sys.stderr)
         return 2
+    except ImportStopped as exc:
+        # Stopped deliberately, and it says why. The engine wrote the failure
+        # report and named it in the message (or says that it could not write it).
+        _safe_print(f"Import stopped: {exc}", file=sys.stderr)
+        return 2
     except Exception as exc:  # noqa: BLE001
         # A console exe answers a failed import with one readable line, not a
         # Python traceback; --verbose keeps the traceback for a bug report.
@@ -253,10 +259,14 @@ def main(argv: list[str] | None = None) -> int:
             import traceback
 
             _safe_print(traceback.format_exc(), file=sys.stderr)
-        _safe_print(
-            cli_error("import_failed", message=f"{type(exc).__name__}: {exc}"),
-            file=sys.stderr,
-        )
+        message = f"{type(exc).__name__}: {exc}"
+        failure_report = str(getattr(exc, "failure_report_path", "") or "")
+        report_error = str(getattr(exc, "failure_report_error", "") or "")
+        if failure_report:  # a failed export leaves one, whatever stopped it
+            message += f" (complete failure report: {failure_report})"
+        elif report_error:  # ... unless the report itself could not be written
+            message += f" (the failure report could not be written: {report_error})"
+        _safe_print(cli_error("import_failed", message=message), file=sys.stderr)
         return 3
 
     elapsed = time.perf_counter() - t0
@@ -276,6 +286,16 @@ def main(argv: list[str] | None = None) -> int:
         _safe_print(f"  import_report:   {report_path}")
     if stats.get("clip_fill_warning"):
         _safe_print(str(stats["clip_fill_warning"]), file=sys.stderr)
+    # The DXF was written (exit code 0), but a degraded text item must be loud.
+    text_delivery = dict(stats.get("text_delivery") or {})
+    if text_delivery.get("degraded_item_count"):
+        from librecad_pdf_importer.exporters.dxf_exporter import degraded_text_item_lines
+
+        for line in degraded_text_item_lines(
+            text_delivery.get("degraded_items") or [],
+            int(text_delivery["degraded_item_count"]),
+        ):
+            _safe_print(line, file=sys.stderr)
     return 0
 
 

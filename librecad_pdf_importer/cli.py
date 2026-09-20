@@ -7,9 +7,11 @@ import sys
 import time
 from pathlib import Path
 
+from conversion_control import ImportStopped
+
 from .exporters.dxf_exporter import (
     DxfExportOptions,
-    TextRepresentationDeliveryError,
+    degraded_text_item_lines,
     export_to_dxf,
     summarize_text_delivery,
 )
@@ -17,6 +19,7 @@ from .importer import (
     apply_uniform_scale,
     failure_import_report_path,
     run_import,
+    terminal_failure_record,
     write_import_report,
 )
 from .launchers.librecad_launcher import find_librecad_executable, launch_librecad
@@ -96,7 +99,14 @@ def main() -> int:
             import traceback
 
             traceback.print_exc()
-        _print_stderr(cli_error("import_failed", message=f"{type(exc).__name__}: {exc}"))
+        message = f"{type(exc).__name__}: {exc}"
+        failure_report = str(getattr(exc, "failure_report_path", "") or "")
+        report_error = str(getattr(exc, "failure_report_error", "") or "")
+        if failure_report:  # a failed export leaves one, whatever stopped it
+            message += f" (complete failure report: {failure_report})"
+        elif report_error:  # ... unless the report itself could not be written
+            message += f" (the failure report could not be written: {report_error})"
+        _print_stderr(cli_error("import_failed", message=message))
         return 3
 
 
@@ -194,25 +204,38 @@ def _main() -> int:
                 provenance_opts=run.config,
             ),
         )
-    except TextRepresentationDeliveryError as exc:
+    except Exception as exc:  # noqa: BLE001 - every failed export leaves a report
+        # One unverifiable text item no longer lands here (it degrades and the
+        # sheet exports); what does is a deliberate stop (ImportStopped: duplicate
+        # source IDs or handles, post-write verification still failing after its
+        # one retry) or an unexpected failure, which main() answers in one line.
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
-        failure_path = failure_import_report_path(str(out_path), run)
-        write_import_report(
-            run,
-            failure_path,
-            elapsed_ms=elapsed_ms,
-            performance_phases={
-                "run_import_ms": run_import_ms,
-                "export_dxf_ms": (time.perf_counter() - t_export) * 1000.0,
-                "total_ms": elapsed_ms,
-            },
-        )
-        exc.failure_report_path = failure_path
-        print(
-            f"Import stopped: {exc}\nComplete failure report: {failure_path}",
-            file=sys.stderr,
-        )
+        try:
+            failure_path = failure_import_report_path(str(out_path), run)
+            write_import_report(
+                run,
+                failure_path,
+                elapsed_ms=elapsed_ms,
+                performance_phases={
+                    "run_import_ms": run_import_ms,
+                    "export_dxf_ms": (time.perf_counter() - t_export) * 1000.0,
+                    "total_ms": elapsed_ms,
+                },
+                terminal_failure=terminal_failure_record(exc),
+            )
+        except Exception as report_exc:  # noqa: BLE001 - the ORIGINAL failure survives
+            # Read-only folder, disk full: exactly when an export fails. Say so, and
+            # keep the real cause and its exit code (2 deliberate, 3 otherwise).
+            report_error = f"{type(report_exc).__name__}: {report_exc}"
+            exc.failure_report_error = report_error
+            report_note = f"The failure report could not be written: {report_error}"
+        else:
+            exc.failure_report_path = failure_path
+            report_note = f"Complete failure report: {failure_path}"
         run.close()
+        if not isinstance(exc, ImportStopped):
+            raise
+        _print_stderr(f"Import stopped: {exc}\n{report_note}")
         return 2
     export_dxf_ms = (time.perf_counter() - t_export) * 1000.0
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
@@ -251,6 +274,12 @@ def _main() -> int:
     clip_fill_warning = run.extraction.clip_fill_warning()
     if clip_fill_warning:
         _print_stderr(clip_fill_warning)
+    # The DXF was written (exit code 0), but a degraded text item must be loud.
+    text_delivery = summary["export"]["text_delivery"]
+    for line in degraded_text_item_lines(
+        text_delivery["degraded_items"], text_delivery["degraded_item_count"]
+    ):
+        _print_stderr(line)
 
     if args.json:
         report = Path(args.json).expanduser().resolve()

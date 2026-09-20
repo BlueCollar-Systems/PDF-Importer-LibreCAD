@@ -87,7 +87,7 @@ Portable users: run `lcpdf-gui.exe` from extracted ZIP — no terminal required.
 - **3D Text**: thickness/+Z extrusion is created and read back for the exact item, but native success additionally requires verified parent 3D display/edit semantics. LibreCAD's 2D parent therefore reports and delivers verified flat editable Text as the closest fallback.
 - **Glyphs**: grouped `INSERT` entities whose owned block definitions contain the outline curves.
 - **Geometry**: exploded raw modelspace outline edges, structurally distinct from Glyphs.
-- **Raster**: an exact source-PDF-bound item crop is a direct result when requested, or a terminal fallback only after every structural rung is proven impossible. Visible pixels, placement, source digest/page/item, `IMAGE` handle, and owned asset bytes must verify.
+- **Raster**: an exact source-PDF-bound item crop is a direct result when requested, and a certified (`verified: true`) terminal fallback only after every structural rung is proven impossible. Visible pixels, placement, source digest/page/item, `IMAGE` handle, and owned asset bytes must verify. An item whose failure is not proven also receives an item Raster patch instead of stopping the sheet, but that patch is recorded `verified: false` / `degraded: true`, listed in `extra.text_items_degraded`, and keeps the sheet out of certification; if the patch cannot be made or proven the item becomes visible `TEXT` on `P###_TEXT_DEGRADED`, then a reported drop.
 - **GUI text options**: Text, Labels, 3D Text, Glyphs, Geometry, and Raster—the same choices as the CLI.
 - **R12 identity**: R12 does not serialize `BLOCK_RECORD`; that single synthetic parser record is excluded from durable support IDs while every serialized glyph entity remains handle-reconciled.
 

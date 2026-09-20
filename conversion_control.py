@@ -8,6 +8,19 @@ class ActivePageCancelled(RuntimeError):
     """Control-flow signal: discard only the currently active page."""
 
 
+class ImportStopped(RuntimeError):
+    """The import was stopped deliberately and says why; no DXF was written.
+
+    The console entry points answer this family with "Import stopped: ..." and
+    exit code 2, naming ``failure_report_path`` once that report was written.
+    Any other exception is an unexpected failure (one line, exit code 3).
+    """
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.failure_report_path = ""
+
+
 def check_cancel(
     cancel_requested: Optional[Callable[[], bool]],
     boundary: str,

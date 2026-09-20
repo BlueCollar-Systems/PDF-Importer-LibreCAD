@@ -2,6 +2,96 @@
 
 All notable release changes are recorded here.
 
+## Unreleased
+
+- One text item whose delivery cannot be verified no longer stops the export of
+  its sheet (owner decision 2026-09-19: "these tools are meant to help, not
+  hinder"). Before, a single such item wrote no DXF at all. The failure
+  classification is unchanged and kept in the evidence (`proof_class`:
+  `proven_impossible`, `unproven_failure`, or `invalid_layout`); only the
+  consequence changed. The item now degrades: requested rungs, then an item
+  Raster patch tried whether or not the failure was proven, then a visible
+  native `TEXT` with the exact source string on layer `P###_TEXT_DEGRADED`, then
+  a reported drop. This also covers an invalid positioned-fraction layout, the
+  R12 positioned-colour problem, a text-builder exception, and a Raster crop
+  without its pixel-lattice proof. `proven_impossible` repeats the builder's own
+  verdict (it authorized the item, or proved the R12 colour); a font failure the
+  builder refused to call proven is reported as `unproven_failure` even when
+  every rung ended "impossible".
+- Read a pre-R2007 candidate back in its own codepage. R12 to R2004 files are
+  cp1252, so one degraded `TEXT` carrying a degree, plus-minus, or fraction
+  character made the strict UTF-8 post-write reader raise and cost the sheet.
+- Keep that degrade loud instead of fatal, because a failure not proven to come
+  from the source may be our bug. The item stays `verified: false`, so
+  `import_contract_ready`, certification, and the release smoke gates still fail
+  for that sheet. `extra.text_items_degraded` lists every degraded or dropped
+  item (at most 200, with a total and a truncated flag), `result.warnings`
+  counts them together with left-out or approximate clipped fills, the CLI
+  prints one bounded single-line stderr warning per item (control characters
+  removed) for the first 20 items, then one `... and N more degraded text
+  item(s); see the import report.` line, and exits 0, and the GUI shows a
+  warning instead of an error (one completion message carries both the
+  clipped-fill sentence and the degraded-text warning). The rescue reason
+  code `item_degraded_after_unproven_failure` or
+  `item_degraded_after_proven_impossibility` is on each item's delivery record
+  (`fallback_reason_code`), on each `text_items_degraded` entry (`reason_code`),
+  and grouped in the new `fallback.text_items_degraded`; `fallback.text` still
+  names one substitution and prefers the sheet's verified fallbacks, so in the
+  default Text mode it does not carry that code. `fallback.reason` and the human
+  summary append the degraded rows (and `N dropped from the drawing`) to
+  whatever they already said, so the default Text mode names a rescue or a drop
+  there too. A dropped item sets `fallback.used` and is no longer counted in
+  `result.text_entities`, the human summary, `pdf2dxf.py`'s `Text items` line,
+  or the GUI log's `Text` line. An item whose Raster rung found that the source
+  paints no visible ink gets no patch: its entry carries `no_visible_ink: true`
+  and its warning says that nothing was drawn, not that a raster patch was
+  delivered. A rescued text-builder crash keeps a bounded traceback in its
+  attempt's evidence; frames and message are bounded separately, so a very long
+  message cannot push the raise site out.
+- The batch CLI reports a sheet with a degraded or dropped text item as
+  `DEGRADED`, never `PASS`, writes its DXF, and exits 1 when any sheet is
+  `DEGRADED` or `FAIL`: before this change such a sheet was `FAIL` with exit 1,
+  and scripts that spot uncertified sheets by the exit code keep working. A
+  sheet that only had clipped fills left out stays `PASS` with a warning. The
+  QA smoke harness still fails a degraded sheet.
+- The same exit codes for the import itself in `lcpdf-import` and `pdf2dxf.py`:
+  `0` a DXF was written (degraded text items and left-out clipped fills are
+  stderr warnings); `2` with `Import stopped: ...` is a deliberate stop that
+  says why and names the failure report it left: no stable source identity,
+  duplicate source IDs or handles, or post-write verification that is
+  structural or survives its one re-export, all raised as `ImportStopped`; `3`
+  any other unexpected failure, in one readable line that names the failure
+  report when the export left one. Exit `2` alone does not prove a deliberate
+  stop: `pdf2dxf.py` keeps its existing exit-`2` answers, with no `Import
+  stopped` and no failure report, for an unparsable `--pages` value and for a
+  file that turns out not to be a readable PDF once the conversion has started
+  (and argparse rejects a bad command line with `2`). Every failure report now
+  records what stopped the export in `extra.terminal_failure` (error text,
+  exception type, deliberate or not, bounded traceback); before, it said
+  `failed` and never why. If the failure report itself cannot be written
+  (read-only folder, full disk), the original error and its exit code are kept
+  and stderr says that the failure report could not be written. The GUI error
+  box names the failure report for an unexpected failure as well.
+- Keep "certified" true in resumable (`--resume`, GUI) conversions. A page with
+  a degraded or dropped text item is still checkpointed and resumable, but it is
+  announced as `exported with N degraded text item(s) - NOT certified`, left out
+  of `pages_certified`, and listed in the new `pages_degraded`. The resumable
+  report now carries `warnings`, `text_items_degraded`,
+  `text_items_degraded_total`, and `text_items_degraded_truncated` like the page
+  reports it points to.
+- Re-export once, with those items forced down the degrade ladder, when
+  post-write verification fails for identifiable text items. The verifier now
+  collects every per-item mismatch (and any fault raised while checking one
+  item) instead of stopping at the first, so the one re-export covers all of
+  them. Structural failures (duplicate source IDs or handles, or a mismatch
+  that survives the re-export) still stop the import, but end in a readable
+  message, a failure report, the prior DXF preserved, and exit code 2 instead
+  of a traceback.
+- Accept up to 1e-4 (0.006 degrees) of dimensionless shear in positioned
+  fraction character quads. Quads rebuilt by `recover_char_quad` measured
+  1.8e-5 of float32 rounding, only 11% under the former 2e-5 bound. The bound
+  now only chooses glyph outlines or a Raster patch for that span.
+
 ## 1.0.100 - 2026-09-18
 
 - Place text Raster images using the source renderer's exact pixel origin and

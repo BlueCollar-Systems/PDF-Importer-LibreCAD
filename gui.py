@@ -235,7 +235,8 @@ class Pdf2DxfApp(tk.Tk):
     def _log(self, msg: str) -> None:
         """Append a message to the log widget (thread-safe via after())."""
         def _append():
-            progress = re.search(r"Page\s+(\d+)/(\d+)\s+certified", msg)
+            # A page with a degraded text item is "exported ... NOT certified".
+            progress = re.search(r"Page\s+(\d+)/(\d+)\s+(?:certified|exported)", msg)
             if progress:
                 current, total = int(progress.group(1)), int(progress.group(2))
                 self._progress.configure(maximum=max(1, total), value=current)
@@ -329,8 +330,8 @@ class Pdf2DxfApp(tk.Tk):
                 else "all pages in the PDF"
             )
             self._log(
-                f"Work estimate: {selection}. Each completed page is certified "
-                "and resumable."
+                f"Work estimate: {selection}. Each completed page is checkpointed "
+                "and resumable; a page with a degraded text item is never certified."
             )
 
             from pdf_open_guard import precheck_pdf
@@ -379,6 +380,17 @@ class Pdf2DxfApp(tk.Tk):
             clip_fill_warning = str(stats.get("clip_fill_warning") or "")
             if clip_fill_warning:
                 self._log(clip_fill_warning)
+            # A degraded text item never costs the sheet, so it must be loud.
+            degraded_count = int(text_delivery.get("degraded_item_count") or 0)
+            if degraded_count:
+                from librecad_pdf_importer.exporters.dxf_exporter import (
+                    degraded_text_item_lines,
+                )
+
+                for line in degraded_text_item_lines(
+                    text_delivery.get("degraded_items") or [], degraded_count
+                ):
+                    self._log(f"  {line}")
 
             launch_message = ""
             if self._var_launch_librecad.get():
@@ -395,10 +407,18 @@ class Pdf2DxfApp(tk.Tk):
                         "librecad_pdf_importer.launchers.librecad_launcher.",
                     )
 
-            self.after(0, lambda: messagebox.showinfo(
-                "Done",
-                f"Conversion complete.\n\n"
-                 f"Pages: {stats.get('pages', '?')}\n"
+            # The sheet exported, so this is a warning, never an error box.
+            show_done = messagebox.showwarning if degraded_count else messagebox.showinfo
+            self.after(0, lambda: show_done(
+                "Done with warnings" if degraded_count else "Done",
+                (
+                    f"Conversion complete, but {degraded_count} text item(s) could not "
+                    "be verified and were degraded or dropped. Review them in the log "
+                    "and the report before using this drawing.\n\n"
+                    if degraded_count
+                    else "Conversion complete.\n\n"
+                )
+                + f"Pages: {stats.get('pages', '?')}\n"
                  f"Entities: {stats.get('entities', '?')}\n"
                  f"Text requested: {text_delivery.get('requested', 'none')}\n"
                  f"Text delivered: {text_delivery.get('delivered', 'none')}\n"
@@ -426,8 +446,14 @@ class Pdf2DxfApp(tk.Tk):
                 self.after(0, lambda e=exc: messagebox.showerror("Conversion failed", str(e)))
             else:
                 self._log(f"\nERROR: {exc}")
-                self.after(0, lambda e=exc: messagebox.showerror(
-                    "Conversion failed", str(e),
+                # Like the console entry points: name the failure report the export
+                # left. A deliberate stop already carries it in its message.
+                detail = str(exc)
+                failure_report = str(getattr(exc, "failure_report_path", "") or "")
+                if failure_report and failure_report not in detail:
+                    detail += f"\n\nComplete failure report: {failure_report}"
+                self.after(0, lambda m=detail: messagebox.showerror(
+                    "Conversion failed", m,
                 ))
 
         finally:

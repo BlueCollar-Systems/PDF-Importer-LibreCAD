@@ -9,7 +9,11 @@ from typing import Any, Dict, Optional
 
 from pdfcadcore.import_bounds import compute_import_bounds
 from pdfcadcore.import_config import ImportConfig
-from pdfcadcore.import_report import build_actual_text_entity_types, build_import_report
+from pdfcadcore.import_report import (
+    build_actual_text_entity_types,
+    build_human_summary,
+    build_import_report,
+)
 from pdfcadcore.model3d_intent import analyze_model3d_intent
 
 from .core.document import DocumentExtraction, ExtractionOptions, extract_document
@@ -177,8 +181,13 @@ def write_import_report(
     elapsed_ms: float = 0.0,
     performance_phases: Optional[Dict[str, float]] = None,
     helper_timings_ms: Optional[Dict[str, float]] = None,
+    terminal_failure: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Emit bcs.import_report/1.1 JSON for one import run."""
+    """Emit bcs.import_report/1.1 JSON for one import run.
+
+    ``terminal_failure`` (see :func:`terminal_failure_record`) is what stopped a
+    failed export; a failure report without it says "failed" and never why.
+    """
     extraction = run.extraction
     report_path = Path(output_path)
     artifact_stem = report_path.stem
@@ -252,6 +261,7 @@ def write_import_report(
         phases["total_ms"] = float(elapsed_ms)
 
     clip_fill_delivery = extraction.clip_fill_delivery()
+    clip_fill_warnings = clip_fill_delivery["dropped"] + clip_fill_delivery["approximated"]
     extra = {
         "result_status": str(
             getattr(run.config, "_result_status", "pending_export")
@@ -293,6 +303,14 @@ def write_import_report(
     text_representation_deliveries = list(
         getattr(run.config, "_text_representation_deliveries", []) or []
     )
+    # One unverifiable text item no longer costs the sheet, so it must be loud
+    # here instead: listed (bounded), counted, and counted as a warning.
+    from .exporters.dxf_exporter import degraded_text_items
+
+    degraded_text = degraded_text_items(text_representation_deliveries)
+    text_degrade_warnings = int(degraded_text["total"])
+    # A dropped item is in the report, not in the drawing: never a text entity.
+    delivered_text_count = max(0, extraction.text_count - int(degraded_text["dropped"]))
     expected_text_source_ids = {
         f"text_span:{int(getattr(item, 'page_number', 0) or 0)}:"
         f"{getattr(item, 'id', '')}"
@@ -340,7 +358,7 @@ def write_import_report(
         extra["actual_text_entity_types"] = build_actual_text_entity_types(
             host_app="librecad",
             text_mode=requested_text_mode,
-            count=extraction.text_count,
+            count=delivered_text_count,
             font_rendered=delivered_font_rendered,
             examples=[
                 str(getattr(txt, "text", "") or "")[:20]
@@ -403,6 +421,12 @@ def write_import_report(
 
     text_fallback = _text_mode_fallback_for_report(run.config, text_source_spans)
 
+    extra["text_items_degraded"] = degraded_text["items"]
+    extra["text_items_degraded_total"] = degraded_text["total"]
+    extra["text_items_degraded_truncated"] = degraded_text["truncated"]
+    if terminal_failure:
+        extra["terminal_failure"] = dict(terminal_failure)
+
     report = build_import_report(
         host_app="librecad",
         host_version=host_version,
@@ -413,7 +437,7 @@ def write_import_report(
         mode=run.config.import_mode,
         pages=len(pages),
         primitive_count=extraction.primitive_count,
-        text_count=extraction.text_count,
+        text_count=delivered_text_count,
         image_count=delivered_image_count,
         layer_count=len(layer_names),
         bbox=bounds,
@@ -421,7 +445,8 @@ def write_import_report(
         performance_phases=phases or None,
         helper_timings_ms=helper_timings_ms,
         peak_mb=sample_process_mb(),
-        fallback_used=fallback_used,
+        # A degraded or dropped text item is a fallback even when nothing else is.
+        fallback_used=fallback_used or bool(degraded_text["total"]),
         fallback_reason=fallback_reason,
         pdf_engine_version=_pymupdf_version(),
         import_text=bool(run.config.import_text),
@@ -429,10 +454,29 @@ def write_import_report(
         text_source_spans=text_source_spans,
         text_glyph_estimate=text_glyph_estimate,
         text_fallback=text_fallback,
-        # Clipped fills left out while visible, or approximate.
-        warnings=clip_fill_delivery["dropped"] + clip_fill_delivery["approximated"],
+        # Clipped fills left out while visible or approximate, plus text items
+        # that were degraded or dropped.
+        warnings=clip_fill_warnings + text_degrade_warnings,
         extra=extra,
     )
+    if degraded_text["total"]:
+        # fallback.text names ONE substitution and prefers the verified ones, so
+        # the rescue reason codes get a block of their own beside it.
+        report.fallback["text_items_degraded"] = degraded_text["fallbacks"]
+        # The one-sentence reason and the human summary say it too. APPENDED: in
+        # this host's default Text mode the sheet always has verified fallbacks as
+        # well, and their wording alone would never mention a rescue or a drop.
+        degraded_reason = "text_items_degraded: " + ", ".join(
+            f"{row['count']} x {row['requested']} -> {row['delivered']} ({row['reason']})"
+            for row in degraded_text["fallbacks"]
+        )
+        if degraded_text["dropped"]:
+            degraded_reason += f"; {degraded_text['dropped']} dropped from the drawing"
+        prior_reason = str(report.fallback.get("reason") or "")
+        report.fallback["reason"] = (
+            f"{prior_reason}; {degraded_reason}" if prior_reason else degraded_reason
+        )
+        report.extra["human_summary"] = build_human_summary(report)
 
     provenance_objects = list(getattr(run.config, "_source_provenance_objects", []) or [])
     if provenance_objects:
@@ -577,6 +621,26 @@ def run_import(pdf_path: str, mode: str = "auto",
         run.import_report_path = str(report_path)
 
     return run
+
+
+def terminal_failure_record(exc: BaseException) -> Dict[str, Any]:
+    """What stopped a failed export, for its failure report.
+
+    The error text, its type and a bounded traceback: a deliberate stop
+    (``ImportStopped``) says why it stopped, and an unexpected failure may be
+    our bug, whose raise site must stay recoverable without a console.
+    """
+
+    from conversion_control import ImportStopped
+
+    from .exporters.dxf_exporter import bounded_traceback
+
+    return {
+        "type": type(exc).__name__,
+        "message": str(exc)[:2000],
+        "deliberate_stop": isinstance(exc, ImportStopped),
+        "traceback": bounded_traceback(exc),
+    }
 
 
 def failure_import_report_path(output_path: str, run: ImportRun) -> str:

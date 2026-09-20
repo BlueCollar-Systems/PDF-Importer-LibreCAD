@@ -15,14 +15,13 @@ except ImportError:  # pragma: no cover
 
 from librecad_pdf_importer.exporters.dxf_exporter import (
     DxfExportOptions,
-    TextRepresentationDeliveryError,
     export_to_dxf,
 )
 from librecad_pdf_importer.importer import run_import, write_import_report
 
 
 class TestLibreCADTextModeFidelity(unittest.TestCase):
-    """Requested types succeed with disclosed substitutions or fail closed."""
+    """Requested types succeed with disclosed substitutions or degrade one item loudly."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="lc_text_mode_fidelity_")
@@ -87,15 +86,21 @@ class TestLibreCADTextModeFidelity(unittest.TestCase):
                 else:
                     self.assertIsNone(report["fallback"].get("text"))
 
-    def _assert_unproven_outline_failure_stops(self, mode: str, empty: bool) -> None:
+    def _assert_unproven_outline_failure_degrades_item(self, mode: str, empty: bool) -> None:
+        """Owner decision 2026-09-19: the classification stays, the abort goes.
+
+        An unproven outline failure still never authorizes a certified
+        cross-type fallback -- the builder's attempts stay ``failed`` and the
+        item stays ``verified=False`` -- but it costs only that item: the sheet
+        exports with the item as a reported, unverified raster patch.
+        """
         run = run_import(
             str(self.pdf_path),
             mode="vector",
             overrides={"pages": "1", "import_text": True, "text_mode": mode},
         )
         output = self.tmp_path / f"{mode}_{'empty' if empty else 'raises'}.dxf"
-        prior = b"prior accepted output\r\n"
-        output.write_bytes(prior)
+        output.write_bytes(b"prior accepted output\r\n")
         side_effect = None if empty else RuntimeError("outline helper failed")
         return_value = [] if empty else None
         kwargs = (
@@ -107,39 +112,61 @@ class TestLibreCADTextModeFidelity(unittest.TestCase):
             patch("dxf_text_builder.text2path.make_paths_from_entity", **kwargs),
             patch("dxf_text_builder.text2path.make_paths_from_str", **kwargs),
         ):
-            with self.assertRaises(TextRepresentationDeliveryError) as raised:
-                export_to_dxf(
-                    run.extraction,
-                    str(output),
-                    DxfExportOptions(
-                        include_images=False,
-                        text_mode=mode,
-                        provenance_opts=run.config,
-                    ),
-                )
+            result = export_to_dxf(
+                run.extraction,
+                str(output),
+                DxfExportOptions(
+                    include_images=False,
+                    text_mode=mode,
+                    provenance_opts=run.config,
+                ),
+            )
 
-        self.assertEqual(output.read_bytes(), prior)
-        delivery = raised.exception.delivery
-        self.assertFalse(delivery.verified)
-        self.assertIsNone(delivery.final_representation)
-        self.assertFalse(delivery.terminal_fallback_authorized)
+        drawing = ezdxf.readfile(output)
         self.assertEqual(
-            [attempt.attempted_representation for attempt in delivery.attempts],
-            [mode, mode],
+            [entity.dxftype() for entity in drawing.modelspace()], ["IMAGE"]
         )
-        self.assertTrue(all(attempt.outcome == "failed" for attempt in delivery.attempts))
-        self.assertTrue(all(attempt.cleanup_verified for attempt in delivery.attempts))
-        self.assertFalse(any(attempt.entity_handles for attempt in delivery.attempts))
+        delivery = result.text_deliveries[0]
+        self.assertIs(delivery["verified"], False)
+        self.assertIs(delivery["degraded"], True)
+        self.assertIs(delivery["dropped"], False)
+        self.assertEqual(delivery["final_representation"], "raster")
+        self.assertEqual(delivery["proof_class"], "unproven_failure")
+        self.assertIs(delivery["terminal_fallback_authorized"], False)
+        attempts = delivery["attempts"]
+        self.assertEqual(
+            [attempt["attempted_representation"] for attempt in attempts],
+            [mode, mode, "raster"],
+        )
+        self.assertEqual(
+            [attempt["outcome"] for attempt in attempts],
+            ["failed", "failed", "verified"],
+        )
+        self.assertTrue(all(attempt["cleanup_verified"] for attempt in attempts))
+        self.assertFalse(any(attempt["entity_handles"] for attempt in attempts[:-1]))
+        self.assertEqual(
+            result.text_fallbacks[0]["reason"], "item_degraded_after_unproven_failure"
+        )
+        report_path = self.tmp_path / f"{mode}_degraded_import_report.json"
+        write_import_report(run, str(report_path), elapsed_ms=1.0)
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertEqual(report["result"]["warnings"], 1)
+        self.assertEqual(
+            [item["source_id"] for item in report["extra"]["text_items_degraded"]],
+            [delivery["source_id"]],
+        )
+        self.assertIs(report["extra"]["text_representation_delivery"]["verified"], False)
+        self.assertIs(report["extra"]["import_contract_ready"]["ready"], False)
 
-    def test_outline_exceptions_do_not_authorize_cross_type_fallback(self) -> None:
+    def test_outline_exceptions_degrade_one_item_without_certifying_it(self) -> None:
         for mode in ("glyphs", "geometry"):
             with self.subTest(mode=mode):
-                self._assert_unproven_outline_failure_stops(mode, empty=False)
+                self._assert_unproven_outline_failure_degrades_item(mode, empty=False)
 
-    def test_empty_outline_artifacts_do_not_authorize_cross_type_fallback(self) -> None:
+    def test_empty_outline_artifacts_degrade_one_item_without_certifying_it(self) -> None:
         for mode in ("glyphs", "geometry"):
             with self.subTest(mode=mode):
-                self._assert_unproven_outline_failure_stops(mode, empty=True)
+                self._assert_unproven_outline_failure_degrades_item(mode, empty=True)
 
 
 if __name__ == "__main__":

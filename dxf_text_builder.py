@@ -4,7 +4,14 @@
 # Licensed under the MIT License. See LICENSE for details.
 """Build requested text representations without silently changing their type.
 
-    LibreCAD delivery is item-scoped and fail-closed. Because DXF exposes no
+    LibreCAD delivery is item-scoped. This builder classifies every failure
+    (proven impossible for the item, failed without proof, invalid positioned
+    layout) and never certifies an unverified representation. What an
+    unverified item costs is the exporter's decision: since the 2026-09-19
+    owner decision it degrades that one item (item raster patch, then the
+    visible ``_attempt_degraded_text`` rung below, then a reported drop) and
+    the sheet still exports; the item stays ``verified=False`` in the evidence
+    so certification gates keep failing. Because DXF exposes no
     native Label entity, Labels record item-scoped impossibility before the
     closest editable Text fallback; a report-only TEXT/MTEXT alias is rejected.
     3D Text first attempts ``TEXT`` with non-zero thickness and +Z extrusion but
@@ -48,6 +55,13 @@ _POSITIONED_FRACTION_RE = re.compile(r"^[0-9]+/[0-9]+$")
 # E2's recovered float32 quads reach 1.45e-5 angular noise. Bound that
 # dimensionless error independently of drawing units; retain original quads.
 _POSITIONED_FRAME_NOISE = 2e-5
+# Shear alone gets a wider dimensionless bound (0.006 degrees): quads rebuilt
+# by recover_char_quad reach 1.8e-5 of float32 noise, 11% under the bound above.
+# It only picks glyph outlines versus the item raster patch for one span.
+_POSITIONED_SHEAR_NOISE = 1e-4
+# DXF TEXT height is a cap height; without a verified font program the last
+# visible rung approximates it from the source em size.
+_DEGRADED_TEXT_CAP_HEIGHT_RATIO = 0.72
 _created_styles: Dict[str, str] = {}
 _embedded_cap_height_cache: Dict[str, float] = {}
 _staged_font_verification_cache: Dict[Tuple[str, str, int, int], bool] = {}
@@ -947,8 +961,12 @@ def _raise_for_unusable_font(
     """Convert a non-exact resolution into the right kind of failure.
 
     _RepresentationImpossible is item-scoped and lets the ladder descend; a
-    plain ValueError is a generic failure and stops the import. The difference
-    is whether the impossibility was actually proven for this item.
+    plain ValueError is a generic failure that ends this item's ladder without
+    proof. The difference is whether the impossibility was actually proven for
+    this item. Neither one stops the import any more: the exporter degrades an
+    unproven item too (raster patch, visible degraded TEXT, reported drop) and
+    reports it as ``unproven_failure`` with ``verified=False``, because a
+    failure we cannot pin on the source may be our bug and must stay loud.
     """
     if resolution.item_impossibility_proven:
         raise _RepresentationImpossible(resolution.reason)
@@ -1306,7 +1324,7 @@ def _quad_frame(
     dot = top[0] * right[0] + top[1] * right[1]
     # PDF quads can carry small rounding noise. A dimensionless bound keeps
     # the same shear rejected at tiny and large model scales.
-    if abs(dot) / (width * height) > _POSITIONED_FRAME_NOISE:
+    if abs(dot) / (width * height) > _POSITIONED_SHEAR_NOISE:
         raise _RepresentationImpossible(
             "positioned fraction target quad contains unsupported shear"
         )
@@ -2570,7 +2588,8 @@ def _attempt_labels(
         label = "native 3D text" if is_3d_text else "native DXF text"
         if not type_ok:
             # Wrong entity kind is our defect, not a property of the source
-            # item. Keep aborting so it cannot hide behind a silent descent.
+            # item. Keep it an unproven failure so it cannot hide behind a
+            # certified descent: the exporter degrades the item as unverified.
             raise ValueError(f"{label} failed type verification")
         if not delivery_ok:
             # The entity was built correctly and still does not reproduce the
@@ -2607,6 +2626,134 @@ def _attempt_labels(
         )
         attempt.cleanup_verified = _verify_owned_state(doc, attempt)
         return attempt
+
+
+def _attempt_degraded_text(
+    delivery: TextDeliveryResult,
+    text_item: NormalizedText,
+    msp: Any,
+    layer_name: str,
+    *,
+    is_r12: bool,
+) -> TextDeliveryResult:
+    """Last visible rung: the exact source string as native TEXT, never certified.
+
+    The exporter reaches this only after the requested rungs and the item
+    raster patch both failed, so a dimension value is never silently lost. It
+    promises the exact string at the item's insertion, rotation and approximate
+    height -- not the source appearance -- and therefore always returns
+    ``verified=False`` with the attempt outcome ``degraded``.
+    """
+    attempts = list(delivery.attempts)
+    for prior in attempts:
+        prior.superseded = True
+    attempt = TextDeliveryAttempt(
+        source_id=delivery.source_id,
+        requested_representation=delivery.requested_representation,
+        attempted_representation="text",
+        strategy="degraded_visible_source_text",
+    )
+    attempts.append(attempt)
+    doc = msp.doc
+    entity = None
+    style_name = ""
+    style_handle = ""
+    style_created = False
+    try:
+        if not delivery.source_id:
+            raise ValueError("degraded TEXT has no stable source identity")
+        content = str(getattr(text_item, "text", "") or "")
+        if (
+            not content
+            or plain_text(content) != content
+            or any(ord(character) < 32 for character in content)
+        ):
+            raise ValueError("DXF TEXT cannot carry this source string unchanged")
+        source_em_height = _positive_finite(getattr(text_item, "font_size", None))
+        if source_em_height is None:
+            raise ValueError("source nominal text height is missing or invalid")
+        height = source_em_height * _DEGRADED_TEXT_CAP_HEIGHT_RATIO
+        insert = tuple(float(value) for value in text_item.insertion[:2])
+        rotation = float(getattr(text_item, "rotation", 0.0) or 0.0)
+        if len(insert) != 2 or not all(
+            math.isfinite(value) for value in (*insert, rotation)
+        ):
+            raise ValueError("source text insertion or rotation is not finite")
+        style_name, style_handle, style_created = _ensure_text_style(
+            doc,
+            _ExactFontResolution(
+                source_name=str(getattr(text_item, "font_name", "") or "")
+            ),
+            style_font="unicode",
+            preferred_style_name="unicode",
+        )
+        if style_created:
+            attempt.created_entity_handles.append(style_handle)
+            attempt.support_entity_handles.append(style_handle)
+        else:
+            attempt.referenced_entity_handles.append(style_handle)
+        entity = msp.add_text(
+            content,
+            dxfattribs=_base_attributes(
+                text_item,
+                layer_name=layer_name,
+                height=height,
+                insert=insert,
+                is_r12=is_r12,
+                style_name=style_name,
+            ),
+        )
+        handle = _handle(entity)
+        attempt.created_entity_handles.append(handle)
+        attempt.type_verified = entity.dxftype() == "TEXT"
+        if not attempt.type_verified or str(entity.dxf.text) != content:
+            raise ValueError("degraded TEXT did not keep the exact source string")
+        attempt.entity_handles = [handle]
+        attempt.evidence = {
+            "delivered_content": content,
+            "expected_insert": [float(insert[0]), float(insert[1])],
+            "expected_height": height,
+            "expected_rotation": rotation,
+            "native_text_height_basis": "source_em_height_times_nominal_cap_ratio",
+            "layer": layer_name,
+            "source_appearance_verified": False,
+        }
+        attempt.outcome = "degraded"
+        attempt.cleanup_verified = _verify_owned_state(doc, attempt)
+        if not attempt.cleanup_verified:
+            raise ValueError("degraded TEXT ownership verification failed")
+        return TextDeliveryResult(
+            source_id=delivery.source_id,
+            requested_representation=delivery.requested_representation,
+            final_representation="text",
+            verified=False,
+            entity_handles=[handle],
+            support_entity_handles=list(attempt.support_entity_handles),
+            referenced_entity_handles=list(attempt.referenced_entity_handles),
+            attempts=attempts,
+            failure_reason=delivery.failure_reason,
+        )
+    except Exception as exc:
+        attempt.reason = f"{type(exc).__name__}: {exc}"
+        if entity is not None:
+            handle = _handle(entity)
+            if _delete_entity(msp, entity):
+                attempt.removed_entity_handles.append(handle)
+        if style_created:
+            _delete_owned_style(doc, style_name, style_handle, attempt)
+        attempt.entity_handles = []
+        attempt.support_entity_handles = []
+        attempt.referenced_entity_handles = []
+        attempt.outcome = "failed"
+        attempt.cleanup_verified = _verify_owned_state(doc, attempt)
+        return TextDeliveryResult(
+            source_id=delivery.source_id,
+            requested_representation=delivery.requested_representation,
+            final_representation=None,
+            verified=False,
+            attempts=attempts,
+            failure_reason=delivery.failure_reason or attempt.reason,
+        )
 
 
 def _outline_attributes(attribs: Dict[str, Any]) -> Dict[str, Any]:
