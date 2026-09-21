@@ -178,3 +178,100 @@ def test_the_engine_hands_the_caller_one_line_and_the_block(tmp_path, monkeypatc
 
     assert stats["text_glyph_codes"]["spans_examined"] == 1
     assert ("could not be proven" in stats["text_glyph_code_warning"]) == (status == "unproven")
+
+
+# ── every entry point says the same thing ──
+
+
+def test_the_cli_summary_publishes_the_block_beside_clip_fill_delivery():
+    # A caller driving LibreCAD through the CLI must not have to read a
+    # free-text stderr line to learn that text was recovered rather than read.
+    extraction = extraction_with([recovered(), unproven()])
+
+    summary = extraction.summary()
+
+    assert "clip_fill_delivery" in summary
+    assert summary["text_glyph_codes"] == extraction.glyph_code_delivery()
+
+
+def test_a_batch_run_prints_one_line_and_counts_only_the_unproven_span(tmp_path, monkeypatch):
+    import librecad_pdf_importer.batch_cli as batch_cli
+    from librecad_pdf_importer.core import document as document_module
+
+    monkeypatch.setattr(document_module, "core_glyph_code_issues",
+                        lambda _page: [recovered(), unproven()])
+    source_dir = tmp_path / "in"
+    source_dir.mkdir()
+    make_pdf(source_dir / "D042.pdf")
+    report = tmp_path / "batch.json"
+    errors = []
+    monkeypatch.setattr(batch_cli, "_print_stderr", lambda line: errors.append(line))
+    monkeypatch.setattr(sys, "argv", [
+        "batch_cli", str(source_dir), str(tmp_path / "out"),
+        "--json", str(report), "--mode", "vector", "--text-mode", "geometry",
+    ])
+
+    batch_cli.main()
+
+    aggregate = json.loads(report.read_text(encoding="utf-8"))
+    record = aggregate["results"][0]
+    assert record["text_glyph_codes"]["spans_examined"] == 2
+    # The recovered span is a clean delivery; only the unproven one warns.
+    assert record["warnings"] == 1
+    assert aggregate["warnings"] == 1
+    assert any("could not be proven" in line for line in errors)
+    assert any("text_glyph_codes" in line for line in errors)
+
+
+def test_a_resumed_conversion_publishes_the_block_and_the_warning_term(tmp_path):
+    # A cancelled-and-resumed run writes bcs.resumable_import_report/1.0, and
+    # that is the report the operator is pointed at. It must say what a
+    # single-shot run says, about the same document.
+    import dxf_import_engine
+    from pdfcadcore.glyph_code_recovery import glyph_code_delivery_block
+
+    output = tmp_path / "D042.dxf"
+    output.write_text("", encoding="utf-8")
+    manifest = {
+        "source_sha256": "0" * 64,
+        "options_sha256": "1" * 64,
+        "completed": {
+            "0": {"page_number": 1, "text_delivery": {},
+                  "clip_fill_delivery": {}, "searchable_text_companions": {},
+                  "text_glyph_codes": glyph_code_delivery_block([recovered()])},
+            "1": {"page_number": 2, "text_delivery": {},
+                  "clip_fill_delivery": {}, "searchable_text_companions": {},
+                  "text_glyph_codes": glyph_code_delivery_block([unproven(page=2)])},
+        },
+    }
+
+    summary_path = dxf_import_engine._write_resumable_summary(str(output), manifest, [0, 1])
+    payload = json.loads(Path(summary_path).read_text(encoding="utf-8"))
+
+    block = payload["text_glyph_codes"]
+    assert (block["spans_examined"], block["recovered"], block["unproven"]) == (2, 1, 1)
+    assert block["pages"] == [1, 2]
+    assert block["spans_by_route"] == {"outline_identity": 1}
+    # Only the unproven span warns; the recovered one is a clean delivery.
+    assert payload["warnings"] == 1
+
+
+def test_the_resumable_stats_carry_the_operator_line_like_a_single_shot_run():
+    from librecad_pdf_importer.core.document import glyph_code_warning_line
+    from pdfcadcore.glyph_code_recovery import glyph_code_delivery_block
+
+    line = glyph_code_warning_line([glyph_code_delivery_block([recovered(), unproven()])])
+
+    assert "1 text span(s) use an embedded font" in line
+    assert "were recovered (outline_identity x1)" in line
+    assert "\n" not in line
+
+
+def test_the_gui_shows_the_operator_the_line_the_engine_produced():
+    # The window is checked the way this repo checks it: it logs the line the
+    # engine produced and repeats it in the completion box, beside every
+    # sibling warning it already surfaces.
+    source = (REPO_ROOT / "gui.py").read_text(encoding="utf-8")
+
+    assert 'stats.get("text_glyph_code_warning")' in source
+    assert 'f"\\n\\n{glyph_code_warning}" if glyph_code_warning else ""' in source

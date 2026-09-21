@@ -4,6 +4,30 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
+- Text a PDF delivers as raw glyph codes is now recovered where this tool can
+  prove the characters, and reported either way. The trigger is narrow and
+  structural: `/Subtype /Type0` with an Identity CMap and no `/ToUnicode`, over
+  a subset font program that carries no usable mapping of its own. A font with
+  any real encoding, including the many that simply lack a `/ToUnicode`, is not
+  touched. Substitution is all-or-nothing per span: one unproven character
+  leaves the whole span byte for byte as the PDF delivered it, because a
+  half-read dimension reads as a measurement. Every recovered span names the
+  route that proved it (`embedded_cmap`, `post_glyph_name`, `outline_identity`
+  or `blank_glyph_advance`) and is never presented as the PDF's own mapping; a
+  character the engine already resolved, or a space its layout inserted, is
+  counted apart under `characters_left_as_delivered`. The last two routes match
+  a glyph's contours against an installed reference face of the same family,
+  width and weight, with the PDF's own `/W` advance required to agree, so the
+  characters come from that face rather than from the file - a reason to read
+  the new checklist row. New report block `extra.text_glyph_codes`
+  (`bcs.text_glyph_codes/1.0`), published by the CLI summary, the batch
+  `--json` record and the resumable summary alike; `result.warnings` gains a
+  term for unproven spans only, and a span this run could not examine is
+  reported as a limitation of the import rather than a failure of the sheet.
+  On an affected sheet the DXF also gains native `TEXT` entities on the frozen
+  `P###_TEXT_SEARCH` layer that the companion previously refused, because the
+  recovered strings no longer contain control characters; the counts in
+  `extra.searchable_text_companions` move with them.
 - One text item whose delivery cannot be verified no longer stops the export of
   its sheet (owner decision 2026-09-19: "these tools are meant to help, not
   hinder"). Before, a single such item wrote no DXF at all. The failure

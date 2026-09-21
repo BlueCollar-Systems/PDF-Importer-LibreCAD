@@ -54,8 +54,19 @@ def _glyph(points):
     return pen.glyph()
 
 
+def _composite(components, glyph_names):
+    """A glyph built from references to other glyphs, the way an accent is."""
+    from fontTools.pens.ttGlyphPen import TTGlyphPen
+
+    pen = TTGlyphPen({name: None for name in glyph_names})
+    for component_name, dx, dy in components:
+        pen.addComponent(component_name, (1, 0, 0, 1, dx, dy))
+    return pen.glyph()
+
+
 def _build_font(path, order, shape_for, *, cmap=None, family="Sample Gothic",
-                style="Regular", post_names=False, upem=1000, warp=None):
+                style="Regular", post_names=False, upem=1000, warp=None,
+                composites=None):
     """Write one TrueType face. ``order`` is the glyph order, index by index."""
     from fontTools.fontBuilder import FontBuilder
 
@@ -67,7 +78,11 @@ def _build_font(path, order, shape_for, *, cmap=None, family="Sample Gothic",
     for name in order:
         character = shape_for(name)
         points = SHAPES[character]
-        glyphs[name] = _glyph(warp(points) if (warp and points) else points)
+        parts = (composites or {}).get(name)
+        if parts:
+            glyphs[name] = _composite(parts, names)
+        else:
+            glyphs[name] = _glyph(warp(points) if (warp and points) else points)
         metrics[name] = (ADVANCES[character], 0)
     builder.setupGlyf(glyphs)
     builder.setupHorizontalMetrics(metrics)
@@ -91,7 +106,8 @@ def _build_font(path, order, shape_for, *, cmap=None, family="Sample Gothic",
 
 
 def reference_face(directory, *, family="Sample Gothic", style="Regular",
-                   characters=" D042MSX-1", distort=False, name="sample.ttf"):
+                   characters=" D042MSX-1", distort=False, name="sample.ttf",
+                   composite_index=None):
     """A reference face with a real cmap, the way an installed font has one.
 
     ``distort`` gives every glyph a different outline while keeping the name
@@ -106,8 +122,11 @@ def reference_face(directory, *, family="Sample Gothic", style="Regular",
     def shape_for(glyph_name):
         return characters[order.index(glyph_name)]
 
+    composites = None
+    if composite_index is not None:
+        composites = {order[composite_index]: [(order[0], 0, 0), (order[1], 60, 210)]}
     _build_font(directory / name, order, shape_for, cmap=mapping,
-                family=family, style=style,
+                family=family, style=style, composites=composites,
                 warp=(lambda points: [(x + 13, y + 7) for x, y in points])
                 if distort else None)
     return directory / name
@@ -116,7 +135,8 @@ def reference_face(directory, *, family="Sample Gothic", style="Regular",
 # ── the subset program the PDF embeds ──
 
 
-def subset_program(path, layout, *, cmap=None, post_names=False, names=None):
+def subset_program(path, layout, *, cmap=None, post_names=False, names=None,
+                   composite_index=None):
     """``layout`` maps glyph index -> character. Index 0 is .notdef."""
     highest = max(layout)
     order = []
@@ -125,8 +145,13 @@ def subset_program(path, layout, *, cmap=None, post_names=False, names=None):
         name = (names or {}).get(index, "g%05d" % index)
         order.append(name)
         characters[name] = layout.get(index, " ")
+    composites = None
+    if composite_index is not None:
+        composites = {
+            order[composite_index - 1]: [(order[0], 0, 0), (order[1], 60, 210)]
+        }
     return _build_font(path, order, lambda name: characters[name],
-                       cmap=cmap, post_names=post_names)
+                       cmap=cmap, post_names=post_names, composites=composites)
 
 
 # ── the page and document duck types ──
@@ -403,13 +428,12 @@ def test_a_cmap_into_the_private_use_area_is_refused(tmp_path, monkeypatch):
     assert block["spans_by_route"] == {"outline_identity": 1}
 
 
-def test_a_real_post_table_proves_characters_without_any_reference(tmp_path, monkeypatch):
-    # No reference face at all: only the font's own post names can answer.
+def test_a_real_post_table_proves_characters_when_the_advances_agree(tmp_path, monkeypatch):
     layout = {1: "D", 2: "0", 3: "4", 4: "2"}
     names = {1: "uni0044", 2: "uni0030", 3: "uni0034", 4: "uni0032"}
     document, page, entries = build_case(tmp_path, monkeypatch, layout,
                                          [1, 2, 3, 4], post_names=True,
-                                         reference=False, glyph_names=names)
+                                         glyph_names=names)
     tdict = tdict_of(raw_span("SampleGothic", entries))
 
     gcr.recover_glyph_codes_in_place(page, tdict)
@@ -417,6 +441,60 @@ def test_a_real_post_table_proves_characters_without_any_reference(tmp_path, mon
     assert span_text(tdict) == ["D042"]
     block = gcr.glyph_code_delivery_block(gcr.glyph_code_issues(document))
     assert block["spans_by_route"] == {"post_glyph_name": 1}
+
+
+def test_post_names_that_contradict_the_drawn_outlines_prove_nothing(tmp_path, monkeypatch):
+    # A subsetter that reorders glyf without rewriting post leaves names for
+    # glyphs the file no longer draws. The names read as perfectly plausible
+    # characters, so only the outline can catch them - and where the two
+    # disagree, nothing is proven.
+    layout = {1: "D", 2: "0", 3: "4", 4: "2"}
+    names = {1: "uni0053", 2: "uni0031", 3: "uni0058", 4: "uni004D"}   # S 1 X M
+    document, page, entries = build_case(tmp_path, monkeypatch, layout,
+                                         [1, 2, 3, 4], post_names=True,
+                                         glyph_names=names)
+    tdict = tdict_of(raw_span("SampleGothic", entries))
+    before = span_text(tdict)
+
+    gcr.recover_glyph_codes_in_place(page, tdict)
+
+    assert span_text(tdict) == before
+    block = gcr.glyph_code_delivery_block(gcr.glyph_code_issues(document))
+    assert block["recovered"] == 0
+    assert block["by_reason"] == {"glyph_outline_not_proven": 1}
+
+
+def test_a_cmap_that_contradicts_the_drawn_outlines_proves_nothing(tmp_path, monkeypatch):
+    # Same rule for the font's own cmap: a declaration is not a drawing.
+    layout = {1: "D", 2: "0", 3: "4", 4: "2"}
+    lying = {ord("S"): "g00001", ord("1"): "g00002", ord("X"): "g00003", ord("M"): "g00004"}
+    document, page, entries = build_case(tmp_path, monkeypatch, layout,
+                                         [1, 2, 3, 4], cmap=lying)
+    tdict = tdict_of(raw_span("SampleGothic", entries))
+    before = span_text(tdict)
+
+    gcr.recover_glyph_codes_in_place(page, tdict)
+
+    assert span_text(tdict) == before
+    assert gcr.glyph_code_delivery_block(gcr.glyph_code_issues(document))["recovered"] == 0
+
+
+def test_a_font_name_proves_nothing_with_no_reference_face_to_corroborate_it(tmp_path, monkeypatch):
+    # With no reference face there is no advance to check the name against and
+    # no outline table to contradict it, so a name alone never substitutes.
+    layout = {1: "D", 2: "0", 3: "4", 4: "2"}
+    names = {1: "uni0044", 2: "uni0030", 3: "uni0034", 4: "uni0032"}
+    document, page, entries = build_case(tmp_path, monkeypatch, layout,
+                                         [1, 2, 3, 4], post_names=True,
+                                         reference=False, glyph_names=names)
+    tdict = tdict_of(raw_span("SampleGothic", entries))
+    before = span_text(tdict)
+
+    gcr.recover_glyph_codes_in_place(page, tdict)
+
+    assert span_text(tdict) == before
+    block = gcr.glyph_code_delivery_block(gcr.glyph_code_issues(document))
+    assert block["by_reason"] == {"no_reference_face_available": 1}
 
 
 def test_synthesised_glyph_names_never_prove_anything(tmp_path, monkeypatch):
@@ -462,7 +540,9 @@ def test_a_winansi_font_with_no_tounicode_is_untouched(tmp_path, monkeypatch):
 
 def test_a_type3_font_is_out_of_scope_and_never_outline_matched(tmp_path, monkeypatch):
     # Type3 glyphs are content-stream procedures: no glyf, no outline to hash.
-    # The trigger is Type0 only, so this font is never reached at all.
+    # The trigger is Type0 only, so nothing here is ever substituted - but
+    # MuPDF has already said these characters are unmapped, so they are still
+    # counted rather than passing as clean.
     layout = {1: "D", 2: "0"}
     keys = {7: {"Subtype": ("name", "/Type3")}}
     program = subset_program(tmp_path / "subset.ttf", layout)
@@ -481,7 +561,10 @@ def test_a_type3_font_is_out_of_scope_and_never_outline_matched(tmp_path, monkey
     gcr.recover_glyph_codes_in_place(page, tdict)
 
     assert span_text(tdict) == before
-    assert gcr.glyph_code_issues(document) == []
+    block = gcr.glyph_code_delivery_block(gcr.glyph_code_issues(document))
+    assert block["recovered"] == 0
+    assert block["by_reason"] == {"font_is_not_type0": 1}
+    assert block["items"][0]["raw_codes"] == [141, 142]
 
 
 def test_a_font_that_declares_tounicode_is_left_to_the_pdf(tmp_path, monkeypatch):
@@ -496,10 +579,37 @@ def test_a_font_that_declares_tounicode_is_left_to_the_pdf(tmp_path, monkeypatch
     gcr.recover_glyph_codes_in_place(page, tdict)
 
     assert span_text(tdict) == before
-    assert gcr.glyph_code_issues(document) == []
+    block = gcr.glyph_code_delivery_block(gcr.glyph_code_issues(document))
+    assert block["recovered"] == 0
+    assert block["by_reason"] == {"font_declares_to_unicode": 1}
 
 
-def test_characters_the_pdf_already_proved_are_never_second_guessed(tmp_path, monkeypatch):
+def test_a_page_with_no_composite_or_type3_font_is_never_even_traced(tmp_path, monkeypatch):
+    # The cheap gate: a simple font always carries a real text encoding, so a
+    # page of nothing but TrueType fonts costs no second text extraction.
+    layout = {1: "D", 2: "0"}
+    program = subset_program(tmp_path / "subset.ttf", layout)
+    document = FakeDocument({7: {"Subtype": ("name", "/TrueType")}}, program)
+    entries = [(ord("D"), 1), (ord("0"), 2)]
+
+    class CountingPage(FakePage):
+        traces_taken = 0
+
+        def get_texttrace(self):
+            CountingPage.traces_taken += 1
+            return self._traces
+
+    page = CountingPage(document, [(7, "ttf", "TrueType", "SampleGothic", "F1", "WinAnsi")],
+                        [trace_span("SampleGothic", entries)])
+
+    gcr.recover_glyph_codes_in_place(page, tdict_of(raw_span("SampleGothic", entries)))
+
+    assert CountingPage.traces_taken == 0
+    assert gcr.page_delivers_glyph_codes(page) is False
+
+
+def test_characters_mupdf_resolved_are_never_second_guessed_nor_called_tounicode(
+        tmp_path, monkeypatch):
     layout = {1: "D", 2: "0", 3: "4", 4: "2"}
     document, page, _entries = build_case(tmp_path, monkeypatch, layout, [1, 2])
     # One character MuPDF resolved itself (a partial map), one it did not.
@@ -512,17 +622,20 @@ def test_characters_the_pdf_already_proved_are_never_second_guessed(tmp_path, mo
 
     assert span_text(tdict) == ["Z0"]
     block = gcr.glyph_code_delivery_block(gcr.glyph_code_issues(document))
-    assert block["glyphs_by_route"]["pdf_to_unicode"] == 1
-    assert block["glyphs_by_route"]["outline_identity"] == 1
+    # An in-scope font has no /ToUnicode by construction, so no count in this
+    # block may read as one. The character MuPDF had is counted apart.
+    assert "pdf_to_unicode" not in block["glyphs_by_route"]
+    assert block["glyphs_by_route"] == {"outline_identity": 1}
+    assert block["characters_left_as_delivered"] == {"mupdf_resolved": 1}
 
 
 # ── how the result is delivered and reported ──
 
 
-def test_a_plain_text_dictionary_without_characters_is_recovered(tmp_path, monkeypatch):
-    # FreeCAD reads page.get_text("dict"), whose spans carry no per-character
-    # list. Every one of this font's codes is unknown and the CMap is
-    # Identity, so the delivered code is the glyph index.
+def test_a_plain_text_dictionary_is_never_bound_by_guessing_glyph_ids(tmp_path, monkeypatch):
+    # page.get_text("dict") carries no per-character origins. Reading the
+    # delivered code as a glyph index is how a character no glyph drew becomes
+    # a letter, so it is refused and reported as this run's limitation.
     layout = {1: "D", 2: "0", 3: "4", 4: "2"}
     document, page, _entries = build_case(tmp_path, monkeypatch, layout, [1, 2, 3, 4])
     span = {"font": "SampleGothic", "bbox": [10.0, 90.0, 200.0, 104.0],
@@ -531,7 +644,53 @@ def test_a_plain_text_dictionary_without_characters_is_recovered(tmp_path, monke
 
     gcr.recover_glyph_codes_in_place(page, tdict)
 
-    assert span["text"] == "D042"
+    assert span["text"] == "\x01\x02\x03\x04"
+    block = gcr.glyph_code_delivery_block(gcr.glyph_code_issues(document))
+    assert block["by_reason"] == {"span_has_no_character_origins": 1}
+    assert block["unproven_from_run_limitation"] == 1
+
+
+def test_a_layout_space_in_a_plain_dictionary_never_becomes_a_character(
+        tmp_path, monkeypatch):
+    # MuPDF's layout inserts a space between two runs on one baseline. No
+    # glyph drew it. Reading its code point as a glyph index picks whichever
+    # character that subset draws at glyph 32 - legible, plausible and wrong.
+    layout = {1: "D", 2: "0", 3: "4", 4: "2", 32: "M"}
+    document, page, _entries = build_case(tmp_path, monkeypatch, layout,
+                                          [1, 2, 3, 4, 32])
+    span = {"font": "SampleGothic", "bbox": [10.0, 90.0, 200.0, 104.0],
+            "size": 10.0, "text": "\x01\x02 \x03\x04"}
+    tdict = tdict_of(span)
+
+    gcr.recover_glyph_codes_in_place(page, tdict)
+
+    assert span["text"] == "\x01\x02 \x03\x04"
+    assert "M" not in span["text"]
+
+
+def test_the_recovered_text_is_copied_onto_a_plain_dictionary_span_for_span(
+        tmp_path, monkeypatch):
+    # The host route: recover the per-character dictionary, copy the result
+    # across. A span that does not line up is left alone and counted.
+    layout = {1: "D", 2: "0", 3: "4", 4: "2"}
+    document, page, entries = build_case(tmp_path, monkeypatch, layout, [1, 2, 3, 4])
+    raw = tdict_of(raw_span("SampleGothic", entries))
+    gcr.recover_glyph_codes_in_place(page, raw)
+    assert span_text(raw) == ["D042"]
+
+    plain = tdict_of({"font": "SampleGothic", "bbox": [10.0, 90.0, 200.0, 104.0],
+                      "size": 10.0, "text": "\x01\x02\x03\x04"})
+    assert gcr.copy_recovered_text(raw, plain) == (1, 0)
+    assert span_text(plain) == ["D042"]
+
+    misaligned = tdict_of({"font": "SampleGothic", "bbox": [10.0, 90.0, 200.0, 104.0],
+                           "size": 10.0, "text": "\x01\x02\x03"})
+    assert gcr.copy_recovered_text(raw, misaligned) == (0, 1)
+    assert span_text(misaligned) == ["\x01\x02\x03"]
+
+    other_place = tdict_of({"font": "SampleGothic", "bbox": [99.0, 90.0, 200.0, 104.0],
+                            "size": 10.0, "text": "\x01\x02\x03\x04"})
+    assert gcr.copy_recovered_text(raw, other_place) == (0, 1)
 
 
 def test_running_twice_recovers_once_and_counts_once(tmp_path, monkeypatch):
@@ -663,3 +822,173 @@ def test_reference_directories_honour_an_explicit_list(tmp_path, monkeypatch):
                        str(tmp_path) + os.pathsep + str(tmp_path / "missing"))
     gcr.clear_reference_font_cache()
     assert str(tmp_path) in gcr.reference_font_directories()
+
+
+# ── one span, one record, whichever dictionary examined it ──
+
+
+def test_two_dictionaries_of_one_page_report_one_row_per_span(tmp_path, monkeypatch):
+    # A host may hand this module its own dictionary and the one a cross-check
+    # compares against. They describe the same spans, so the report must not
+    # claim to have examined the page twice, nor list one span under two
+    # opposite verdicts, nor warn about a span that was recovered. The space
+    # below is MuPDF's layout, not a glyph: the two dictionaries account for it
+    # differently, which is exactly what used to make it two rows.
+    layout = {1: "D", 2: "0", 3: "4", 4: "2", 32: "M"}
+    document, page, entries = build_case(tmp_path, monkeypatch, layout, [1, 2, 3, 4])
+
+    rich_span = raw_span("SampleGothic", entries)
+    rich_span["chars"].insert(2, {"c": " ", "origin": (300.0, 100.0),
+                                  "bbox": (300.0, 90.0, 307.0, 104.0)})
+    rich = tdict_of(rich_span)
+    gcr.recover_glyph_codes_in_place(page, rich)
+    assert span_text(rich) == ["D0 42"]
+
+    plain = tdict_of({"font": "SampleGothic", "bbox": [10.0, 90.0, 200.0, 104.0],
+                      "size": 10.0, "text": "\x01\x02 \x03\x04"})
+    gcr.recover_glyph_codes_in_place(page, plain)
+
+    block = gcr.glyph_code_delivery_block(gcr.glyph_code_issues(document))
+    assert block["spans_examined"] == 1
+    assert (block["recovered"], block["unproven"]) == (1, 0)
+    assert gcr.glyph_code_warning_count(block) == 0
+    assert block["characters_left_as_delivered"] == {"layout_space": 1}
+
+
+def test_running_twice_over_a_plain_dictionary_changes_nothing(tmp_path, monkeypatch):
+    layout = {1: "D", 2: "0", 3: "4", 4: "2"}
+    document, page, _entries = build_case(tmp_path, monkeypatch, layout, [1, 2, 3, 4])
+    span = {"font": "SampleGothic", "bbox": [10.0, 90.0, 200.0, 104.0],
+            "size": 10.0, "text": "\x01\x02\x03\x04"}
+    tdict = tdict_of(span)
+
+    for _ in range(3):
+        gcr.recover_glyph_codes_in_place(page, tdict)
+
+    assert span["text"] == "\x01\x02\x03\x04"
+    assert gcr.glyph_code_delivery_block(gcr.glyph_code_issues(document))["spans_examined"] == 1
+
+
+# ── what a report may and may not claim ──
+
+
+def test_a_run_limitation_is_never_reported_as_the_document_failing(tmp_path, monkeypatch):
+    layout = {1: "D", 2: "0", 3: "4", 4: "2"}
+    document, page, _entries = build_case(tmp_path, monkeypatch, layout, [1, 2, 3, 4])
+    tdict = tdict_of({"font": "SampleGothic", "bbox": [10.0, 90.0, 200.0, 104.0],
+                      "size": 10.0, "text": "\x01\x02\x03\x04"})
+
+    gcr.recover_glyph_codes_in_place(page, tdict)
+
+    line = gcr.summarize_glyph_code_issues(gcr.glyph_code_issues(document))
+    assert "a limitation of this import, not of the sheet" in line
+    assert "no usable Unicode map" not in line
+
+
+def test_two_subsets_of_one_family_are_reported_not_passed_over(tmp_path, monkeypatch):
+    # Both fonts strip to the same base name, so neither resolves to one xref.
+    # Nothing may be proven - and the sheet must not publish a clean report.
+    layout = {1: "D", 2: "0", 3: "4", 4: "2"}
+    document, page, entries = build_case(
+        tmp_path, monkeypatch, layout, [1, 2, 3, 4],
+        font_records=[(7, "ttf", "Type0", "AAAAAA+SampleGothic", "F1", "Identity-H"),
+                      (9, "ttf", "Type0", "AAAAAB+SampleGothic", "F2", "Identity-H")],
+    )
+    tdict = tdict_of(raw_span("SampleGothic", entries))
+    before = span_text(tdict)
+
+    gcr.recover_glyph_codes_in_place(page, tdict)
+
+    assert span_text(tdict) == before
+    block = gcr.glyph_code_delivery_block(gcr.glyph_code_issues(document))
+    assert block["by_reason"] == {"font_name_ambiguous_on_page": 1}
+    assert block["unproven_from_run_limitation"] == 1
+
+
+def test_a_font_the_page_does_not_name_is_reported_not_passed_over(tmp_path, monkeypatch):
+    # The page's font dictionaries do not name the font that drew this text,
+    # so there is nothing to read the subset out of. Saying so is a statement
+    # about this run, not about what the document declares.
+    layout = {1: "D", 2: "0", 3: "4", 4: "2"}
+    document, page, entries = build_case(
+        tmp_path, monkeypatch, layout, [1, 2, 3, 4],
+        font_records=[(7, "ttf", "Type0", "AAAAAA+OtherFace", "F1", "Identity-H")],
+    )
+    tdict = tdict_of(raw_span("SampleGothic", entries))
+    before = span_text(tdict)
+
+    gcr.recover_glyph_codes_in_place(page, tdict)
+
+    assert span_text(tdict) == before
+    block = gcr.glyph_code_delivery_block(gcr.glyph_code_issues(document))
+    assert block["by_reason"] == {"font_not_found_on_page": 1}
+    assert block["unproven_from_run_limitation"] == 1
+
+
+def test_a_blank_glyph_is_named_a_convention_and_not_outline_identity(tmp_path, monkeypatch):
+    # Every empty outline hashes alike in every face, so the only thing behind
+    # this character is its advance. The report says which it was.
+    layout = {1: "D", 2: " ", 3: "0"}
+    document, page, entries = build_case(tmp_path, monkeypatch, layout, [1, 2, 3])
+    tdict = tdict_of(raw_span("SampleGothic", entries))
+
+    gcr.recover_glyph_codes_in_place(page, tdict)
+
+    assert span_text(tdict) == ["D 0"]
+    block = gcr.glyph_code_delivery_block(gcr.glyph_code_issues(document))
+    assert block["glyphs_by_route"] == {"blank_glyph_advance": 1, "outline_identity": 2}
+    assert block["spans_by_route"] == {"blank_glyph_advance": 1}
+
+
+def test_an_accented_glyph_built_from_components_is_proven_like_any_other(
+        tmp_path, monkeypatch):
+    # glyf records an accented glyph as references to other glyphs rather than
+    # as contours. A pen that does not follow them hashes nothing comparable,
+    # so such a character could never be proven - and by the all-or-nothing
+    # rule one of them leaves a whole span raw.
+    layout = {1: "D", 2: "0", 3: "4"}
+    reference_dir = tmp_path / "reference"
+    reference_dir.mkdir()
+    reference_face(reference_dir, characters="D04", composite_index=2)
+    program = subset_program(tmp_path / "subset.ttf", layout, composite_index=3)
+    monkeypatch.setenv("BCS_GLYPH_REFERENCE_FONTS", str(reference_dir))
+    gcr.clear_reference_font_cache()
+
+    document = FakeDocument(type0_keys({1: 600, 2: 520, 3: 500}), program)
+    entries = [(UNKNOWN, 1), (UNKNOWN, 3)]
+    page = FakePage(document, FONT_RECORDS, [trace_span("SampleGothic", entries)])
+    tdict = tdict_of(raw_span("SampleGothic", entries))
+
+    gcr.recover_glyph_codes_in_place(page, tdict)
+
+    assert span_text(tdict) == ["D4"]
+    block = gcr.glyph_code_delivery_block(gcr.glyph_code_issues(document))
+    assert block["glyphs_by_route"] == {"outline_identity": 2}
+
+
+def test_no_fonttools_log_record_escapes_the_reference_index_build(tmp_path, monkeypatch):
+    import logging
+
+    captured = []
+
+    class Capture(logging.Handler):
+        def emit(self, record):
+            captured.append(record.name)
+
+    (tmp_path / "broken.ttf").write_bytes(b"\x00\x01\x00\x00not a font at all")
+    reference_face(tmp_path)
+    monkeypatch.setenv("BCS_GLYPH_REFERENCE_FONTS", str(tmp_path))
+    gcr.clear_reference_font_cache()
+
+    handler = Capture()
+    root = logging.getLogger()
+    root.addHandler(handler)
+    previous = root.level
+    root.setLevel(logging.DEBUG)
+    try:
+        assert len(gcr._reference_index(gcr.reference_font_directories())) == 1
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(previous)
+
+    assert [name for name in captured if name.startswith("fontTools")] == []

@@ -121,6 +121,18 @@ def main() -> int:
             clip_fill_warnings = clip_fill_delivery["dropped"] + clip_fill_delivery["approximated"]
             if clip_fill_warning:
                 _print_stderr(f"{rel}: {clip_fill_warning}")
+            # Text a font delivered as raw glyph codes. A batch rewrites those
+            # characters from an external reference face like any other run, so
+            # it says so here too; a recovered span is stated and only an
+            # unproven one warns.
+            glyph_code_delivery = run.extraction.glyph_code_delivery()
+            glyph_code_warning = run.extraction.glyph_code_warning(
+                see="See text_glyph_codes in the batch report." if args.json
+                else "Run the batch with --json for the text_glyph_codes records."
+            )
+            glyph_code_warnings = int(glyph_code_delivery["unproven"])
+            if glyph_code_warning:
+                _print_stderr(f"{rel}: {glyph_code_warning}")
             # A degraded text item never costs the sheet (the DXF is written), but
             # such a sheet is DEGRADED, never passed, and the batch exits non-zero.
             degraded = degraded_text_items(export.text_deliveries)
@@ -138,6 +150,7 @@ def main() -> int:
             warnings = (
                 clip_fill_warnings + int(degraded["total"])
                 + int(search_text["failed"]) + int(search_text["mismatch"])
+                + glyph_code_warnings
             )
             aggregate["degraded" if degraded["total"] else "passed"] += 1
             aggregate["warnings"] += warnings
@@ -152,6 +165,7 @@ def main() -> int:
                 "images": export.image_count,
                 "warnings": warnings,
                 "clip_fill_delivery": clip_fill_delivery,
+                "text_glyph_codes": glyph_code_delivery,
                 "searchable_text_companions": search_text,
             })
         except Exception as exc:  # noqa: BLE001

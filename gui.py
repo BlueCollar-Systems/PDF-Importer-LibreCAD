@@ -380,6 +380,13 @@ class Pdf2DxfApp(tk.Tk):
             clip_fill_warning = str(stats.get("clip_fill_warning") or "")
             if clip_fill_warning:
                 self._log(clip_fill_warning)
+            # Text a font delivered as raw glyph codes: recovered characters
+            # came from an installed reference face, not from the PDF, and an
+            # unproven span is still on the drawing as raw codes. Either way
+            # the operator is the one who has to know.
+            glyph_code_warning = str(stats.get("text_glyph_code_warning") or "")
+            if glyph_code_warning:
+                self._log(glyph_code_warning)
             # A lost hidden search-text companion is a warning; the drawing is unaffected.
             search_text_warning = str(stats.get("searchable_text_warning") or "")
             if search_text_warning:
@@ -431,6 +438,7 @@ class Pdf2DxfApp(tk.Tk):
                  f"Complete report: {text_delivery.get('report_path', '')}\n"
                  f"Output: {output_path}"
                 + (f"\n\n{clip_fill_warning}" if clip_fill_warning else "")
+                + (f"\n\n{glyph_code_warning}" if glyph_code_warning else "")
                 + (f"\n\n{search_text_warning}" if search_text_warning else "")
                 + (f"\n\n{launch_message}" if launch_message else ""),
             ))

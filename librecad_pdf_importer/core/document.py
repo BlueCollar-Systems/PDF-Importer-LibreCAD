@@ -27,6 +27,8 @@ from pdfcadcore.geometry_cleanup import _dxf_arc_angles, circle_fit
 from pdfcadcore.glyph_code_recovery import (
     glyph_code_delivery_block,
     glyph_code_issues as core_glyph_code_issues,
+    merge_glyph_code_blocks,
+    summarize_glyph_code_block,
     summarize_glyph_code_issues,
 )
 from pdfcadcore.auto_mode import drawings_need_text_counts
@@ -168,6 +170,18 @@ def merge_clip_fill_deliveries(deliveries: Iterable[dict]) -> dict:
         "issues": issues[:CLIP_FILL_REPORT_ISSUE_CAP],
         "issues_truncated": truncated or len(issues) > CLIP_FILL_REPORT_ISSUE_CAP,
     }
+
+
+def merge_glyph_code_deliveries(deliveries: Iterable[dict]) -> dict:
+    """One text_glyph_codes block for a document that was imported page by page."""
+    return merge_glyph_code_blocks(deliveries)
+
+
+def glyph_code_warning_line(deliveries: Iterable[dict],
+                            see: str = GLYPH_CODE_SEE_IMPORT_REPORT) -> str:
+    """One operator line over a document's text_glyph_codes blocks (one per
+    separately imported page); '' when no span was delivered as glyph codes."""
+    return summarize_glyph_code_block(merge_glyph_code_deliveries(deliveries), see)
 
 
 def clip_fill_warning_line(deliveries: Iterable[dict], see: str = CLIP_FILL_SEE_IMPORT_REPORT) -> str:
@@ -346,6 +360,10 @@ class DocumentExtraction:
                 "per_page": image_delivery_pages,
             },
             "clip_fill_delivery": self.clip_fill_delivery(),
+            # Both entry points publish the same blocks: a caller driving the
+            # CLI must not have to read a free-text stderr line to learn that
+            # text was recovered rather than read.
+            "text_glyph_codes": self.glyph_code_delivery(),
             "profiles": [
                 {
                     "page": p.page_data.page_number,

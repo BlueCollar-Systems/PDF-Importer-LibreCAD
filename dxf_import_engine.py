@@ -289,7 +289,10 @@ def _write_resumable_summary(
     manifest: Dict[str, Any],
     selected_pages: list[int],
 ) -> str:
-    from librecad_pdf_importer.core.document import merge_clip_fill_deliveries
+    from librecad_pdf_importer.core.document import (
+        merge_clip_fill_deliveries,
+        merge_glyph_code_deliveries,
+    )
 
     output = Path(output_path).expanduser().resolve()
     summary_path = output.with_name(f"{output.stem}_import_report.json")
@@ -300,6 +303,13 @@ def _write_resumable_summary(
         record.get("clip_fill_delivery") or {} for record in page_records
     )
     clip_fill_warnings = clip_fill_delivery["dropped"] + clip_fill_delivery["approximated"]
+    # Text a font delivered as raw glyph codes: the same block and the same
+    # warning term a single-shot run publishes, so an operator who resumed a
+    # job is told exactly what one who did not would be.
+    glyph_code_delivery = merge_glyph_code_deliveries(
+        record.get("text_glyph_codes") or {} for record in page_records
+    )
+    glyph_code_warnings = int(glyph_code_delivery["unproven"])
     # A page with a degraded or dropped text item is exported, never certified,
     # and the report the operator is pointed at says so as loudly as its page report.
     degraded_text = _degraded_text_block(page_records)
@@ -326,10 +336,15 @@ def _write_resumable_summary(
         "text_items_degraded_total": degraded_text["total"],
         "text_items_degraded_truncated": degraded_text["truncated"],
         "page_reports": [record.get("import_report_path", "") for record in page_records],
-        # Left-out / approximate clipped fills, degraded / dropped text items and
-        # lost search-text companions.
-        "warnings": clip_fill_warnings + text_degrade_warnings + search_text_warnings,
+        # Left-out / approximate clipped fills, degraded / dropped text items,
+        # lost search-text companions and spans whose raw glyph codes nothing
+        # proved.
+        "warnings": (
+            clip_fill_warnings + text_degrade_warnings + search_text_warnings
+            + glyph_code_warnings
+        ),
         "clip_fill_delivery": clip_fill_delivery,
+        "text_glyph_codes": glyph_code_delivery,
         # What a search-text warning is about; the page reports name the items.
         "searchable_text_companions": search_text,
         "output": str(output),
@@ -387,7 +402,10 @@ def _convert_resumable(
     librecad_executable: Optional[str],
     searchable_text: bool = True,
 ) -> Dict[str, Any]:
-    from librecad_pdf_importer.core.document import clip_fill_warning_line
+    from librecad_pdf_importer.core.document import (
+        clip_fill_warning_line,
+        glyph_code_warning_line,
+    )
     from librecad_pdf_importer.exporters.dxf_exporter import searchable_text_warning_line
 
     source = Path(input_path).expanduser().resolve()
@@ -488,6 +506,7 @@ def _convert_resumable(
             "import_report_path": str(page_stats.get("import_report_path", "")),
             "text_delivery": dict(page_stats.get("text_delivery") or {}),
             "clip_fill_delivery": dict(page_stats.get("clip_fill_delivery") or {}),
+            "text_glyph_codes": dict(page_stats.get("text_glyph_codes") or {}),
             "searchable_text_companions": dict(
                 page_stats.get("searchable_text_companions") or {}
             ),
@@ -527,6 +546,9 @@ def _convert_resumable(
         # One line for the conversion, pages certified by an earlier run included.
         "clip_fill_warning": clip_fill_warning_line(
             record.get("clip_fill_delivery") or {} for record in records
+        ),
+        "text_glyph_code_warning": glyph_code_warning_line(
+            record.get("text_glyph_codes") or {} for record in records
         ),
         "searchable_text_warning": searchable_text_warning_line(_search_text_block(records)),
     }

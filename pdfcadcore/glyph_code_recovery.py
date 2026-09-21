@@ -10,12 +10,12 @@ itself as the character. A dimension therefore arrives as ``06-3`` where the
 drawing says ``MS-3``: already wrong, already legible, and invisible to any
 check that looks for control characters.
 
-What this module does, per character, stopping at the first route that PROVES
-the character:
+What this module does, per character:
 
-1. ``pdf_to_unicode``  - the PDF's own ``/ToUnicode``. Normative. MuPDF already
-   applies it, so a character MuPDF resolved is left exactly as it is and
-   counted on this route; nothing here second-guesses it.
+1. The PDF's own ``/ToUnicode`` is normative and MuPDF has already applied it.
+   A font that declares one is out of scope here; a character MuPDF resolved
+   inside an in-scope font is left exactly as it is and counted as delivered,
+   never as a route this module proved.
 2. ``embedded_cmap``   - the embedded font program's own ``cmap``, reverse
    mapped glyph id -> codepoint.
 3. ``post_glyph_name`` - the real ``post`` table's glyph names through AGL or
@@ -28,9 +28,22 @@ the character:
    reference face is chosen by the PDF font's declared family, width and
    weight, the PDF's own ``/W`` advance for the glyph must agree with the
    reference glyph's advance, and the match must be unambiguous.
+5. ``blank_glyph_advance`` - a glyph the subset draws with no contours at all,
+   whose ``/W`` advance is a reference face's space advance. Every empty
+   outline hashes alike in every face, so this is a convention rather than the
+   structural equality route 4 rests on, and it is named separately for that
+   reason.
 
-There is no fifth route. No offsets, no "standard Macintosh glyph order"
+There is no sixth route. No offsets, no "standard Macintosh glyph order"
 assumption, no encoding guesses.
+
+A name a font gives a glyph (routes 2 and 3) is a declaration, not a drawing.
+A subsetter that reorders ``glyf`` without rewriting ``post`` leaves names that
+contradict the outlines, and such a name reads as a plausible character. So a
+route 2 or 3 answer is accepted only when the PDF's own ``/W`` advance for the
+glyph agrees with that character's advance in a face-matched reference, and it
+is refused outright when the glyph's outline proves a different character. The
+drawing is what the fabricator reads.
 
 Two rules govern everything else:
 
@@ -41,13 +54,23 @@ Two rules govern everything else:
 * **Nothing is ever presented as if the PDF had declared it.** Every span this
   module changes is recorded with the route that proved it, and every span it
   could not prove is recorded with the font, the location and the raw codes, so
-  a host can tell the operator.
+  a host can tell the operator. A span this run could not examine at all is
+  recorded as a limitation of the run, never as a failure of the document.
 
-When no reference face for the declared family is installed, route 4 recovers
-nothing and says so (reason ``no_reference_face_available``, naming the family
-it looked for). It never falls back to a guess. ``BCS_GLYPH_REFERENCE_FONTS``
-overrides the search: a path-separated list of directories or files, or the
-single word ``none`` to switch reference matching off entirely.
+A glyph id is only ever read from ``page.get_texttrace()``, bound to a
+delivered character by that character's own origin. It is never inferred from
+the character a host was handed: a text dictionary without per-character
+origins carries characters MuPDF's layout inserted, which no glyph drew, and
+reading those as glyph indices fabricates letters. A host holding such a
+dictionary recovers the RAWDICT instead and copies the result across with
+:func:`copy_recovered_text`.
+
+When no reference face for the declared family is installed, routes 2 to 5
+recover nothing and say so (reason ``no_reference_face_available``, naming the
+family it looked for). It never falls back to a guess.
+``BCS_GLYPH_REFERENCE_FONTS`` overrides the search: a path-separated list of
+directories or files, or the single word ``none`` to switch reference matching
+off entirely.
 
 Nothing in this module raises. A failure anywhere means "nothing is proven for
 that font", which is recorded and reported like any other unproven span.
@@ -55,6 +78,7 @@ that font", which is recorded and reported like any other unproven span.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 import sys
@@ -67,18 +91,36 @@ GLYPH_CODE_SCHEMA = "bcs.text_glyph_codes/1.0"
 # the obvious garbage and misses the plausible, legible, wrong text.
 UNKNOWN_CHARACTER = 0xFFFD
 
-ROUTE_TO_UNICODE = "pdf_to_unicode"
 ROUTE_EMBEDDED_CMAP = "embedded_cmap"
 ROUTE_POST_NAME = "post_glyph_name"
 ROUTE_OUTLINE_IDENTITY = "outline_identity"
+ROUTE_BLANK_ADVANCE = "blank_glyph_advance"
 
 # Most speculative last: a span is reported on the weakest route it needed.
 ROUTE_ORDER = (
-    ROUTE_TO_UNICODE,
     ROUTE_EMBEDDED_CMAP,
     ROUTE_POST_NAME,
     ROUTE_OUTLINE_IDENTITY,
+    ROUTE_BLANK_ADVANCE,
 )
+
+# Characters this module did NOT prove and did NOT change. They are counted
+# apart from the routes so that no report ever implies the PDF declared them.
+DELIVERED_MUPDF_RESOLVED = "mupdf_resolved"
+DELIVERED_LAYOUT_SPACE = "layout_space"
+
+# An unproven span is either something this document does not say (a property
+# of the PDF) or something this run could not look at (a property of the tool).
+# The two must never be reported in the same sentence.
+LIMITATION_REASONS = frozenset((
+    "characters_not_bound_to_glyph_ids",
+    "span_has_no_character_origins",
+    "font_name_ambiguous_on_page",
+    "font_not_found_on_page",
+    "recovered_text_not_transferable",
+    "glyph_code_recovery_failed",
+    "record_limit_reached",
+))
 
 REPORT_ITEM_LIMIT = 200
 _RAW_CODES_PER_ITEM = 48
@@ -88,10 +130,17 @@ _FACE_TABLE_CACHE_LIMIT = 8
 _DOCUMENT_RECORDS = "_bcs_glyph_code_records"
 _DOCUMENT_PROOFS = "_bcs_glyph_code_font_proofs"
 _PAGE_TRACE = "_bcs_glyph_code_page_trace"
+_PAGE_CANDIDATE_FONTS = "_bcs_glyph_code_page_candidates"
 # A pathological sheet must not turn the report into the document. Counting
 # stops honestly rather than quietly.
 _MAX_RECORDS = 20000
-_OVERFLOW_KEY = (-1, (), ("record-limit",))
+_OVERFLOW_KEY = (-1, ("record-limit",))
+
+# Only a composite (Type0) or a Type3 font can hand MuPDF a code it maps to no
+# character at all: a simple font carries a real text encoding. Reading the
+# page's font dictionaries is far cheaper than a second text extraction, so a
+# page that declares neither is never traced.
+_UNMAPPABLE_FONT_TYPES = ("type0", "type3")
 
 _SUBSET_PREFIX = re.compile(r"^[A-Z]{6}\+")
 _INDIRECT_REFERENCE = re.compile(r"(\d+)\s+(\d+)\s+R")
@@ -137,6 +186,29 @@ _FOUNDRY_SUFFIXES = ("mt", "ps", "std", "pro", "itc", "adobe")
 
 _REFERENCE_INDEX_CACHE = {}
 _FACE_TABLE_CACHE = {}
+
+
+class _quiet_fonttools:
+    """Keep fontTools' own log records off the operator's console.
+
+    This module opens every face on the host to read its name table, and a
+    malformed one makes fontTools log a record - at ERROR level, for something
+    it recovers from - rather than raise. Unattributed, beside this module's
+    own operator line, that reads as a problem with the drawing. A face that
+    cannot be read contributes nothing and says nothing, which is the contract.
+    """
+
+    __slots__ = ("_level",)
+
+    def __enter__(self):
+        logger = logging.getLogger("fontTools")
+        self._level = logger.level
+        logger.setLevel(logging.CRITICAL)
+        return self
+
+    def __exit__(self, *_exc):
+        logging.getLogger("fontTools").setLevel(self._level)
+        return False
 
 
 def _without_subset_prefix(name) -> str:
@@ -412,22 +484,23 @@ def _reference_index(directories):
     except Exception:
         _REFERENCE_INDEX_CACHE[key] = ()
         return ()
-    for path in _iter_reference_files(directories):
-        font = None
-        try:
-            font = TTFont(path, lazy=True, fontNumber=0)
-            names = font["name"]
-            family = names.getDebugName(16) or names.getDebugName(1) or ""
-            subfamily = names.getDebugName(17) or names.getDebugName(2) or ""
-            entries.append((path, _face_style(family, subfamily)))
-        except Exception:
-            continue
-        finally:
-            if font is not None:
-                try:
-                    font.close()
-                except Exception:
-                    pass
+    with _quiet_fonttools():
+        for path in _iter_reference_files(directories):
+            font = None
+            try:
+                font = TTFont(path, lazy=True, fontNumber=0)
+                names = font["name"]
+                family = names.getDebugName(16) or names.getDebugName(1) or ""
+                subfamily = names.getDebugName(17) or names.getDebugName(2) or ""
+                entries.append((path, _face_style(family, subfamily)))
+            except Exception:
+                continue
+            finally:
+                if font is not None:
+                    try:
+                        font.close()
+                    except Exception:
+                        pass
     entries = tuple(entries)
     _REFERENCE_INDEX_CACHE[key] = entries
     return entries
@@ -456,37 +529,66 @@ def _reference_faces_for(style):
 # ── outline identity ──
 
 
+class _GlyfGlyph:
+    """One ``glyf`` entry, drawable the way a decomposing pen expects."""
+
+    __slots__ = ("_table", "_name")
+
+    def __init__(self, table, name):
+        self._table = table
+        self._name = name
+
+    def draw(self, pen):
+        self._table[self._name].draw(pen, self._table)
+
+
+class _GlyfGlyphSet:
+    """``glyf`` presented as a glyph set, so a component can be followed."""
+
+    __slots__ = ("_table",)
+
+    def __init__(self, table):
+        self._table = table
+
+    def __getitem__(self, name):
+        return _GlyfGlyph(self._table, name)
+
+
 def _outline_drawer(font):
-    """One way to draw a glyph, used identically on subset and reference.
+    """Record one glyph's contours, identically on subset and reference.
 
     A subset stripped to its outlines routinely carries an ``hmtx`` table cut
     to the glyphs it kept while ``maxp`` still counts the original 3,000; the
     high-level glyph set refuses such a font outright. ``glyf`` alone draws it,
-    composites included, and the reference face is drawn exactly the same way
-    so the two command streams are comparable at all.
+    and the reference face is drawn exactly the same way so the two command
+    streams are comparable at all.
+
+    An accented glyph is a COMPOSITE: ``glyf`` records it as references to
+    other glyphs, not as contours. The pen follows those references on both
+    sides so the two compare as the contours they draw. A component the subset
+    no longer carries raises rather than being skipped - half an outline must
+    never be hashed as if it were the whole glyph.
     """
+    from fontTools.pens.recordingPen import DecomposingRecordingPen
+
     try:
         glyf = font["glyf"]
     except Exception:
         glyf = None
-    if glyf is not None:
-        def draw(glyph_name, pen):
-            glyf[glyph_name].draw(pen, glyf)
-        return draw
-    glyph_set = font.getGlyphSet()
+    glyph_set = _GlyfGlyphSet(glyf) if glyf is not None else font.getGlyphSet()
 
-    def draw_from_set(glyph_name, pen):
+    def record(glyph_name):
+        pen = DecomposingRecordingPen(glyph_set)
+        pen.skipMissingComponents = False
         glyph_set[glyph_name].draw(pen)
-    return draw_from_set
+        return pen.value
+
+    return record
 
 
 def _outline_signature(drawer, glyph_name, scale):
-    from fontTools.pens.recordingPen import RecordingPen
-
-    pen = RecordingPen()
-    drawer(glyph_name, pen)
     parts = []
-    for operator, arguments in pen.value:
+    for operator, arguments in drawer(glyph_name):
         parts.append(operator)
         for point in arguments:
             if point is None:
@@ -494,6 +596,12 @@ def _outline_signature(drawer, glyph_name, scale):
             else:
                 parts.append("%.3f,%.3f" % (point[0] * scale, point[1] * scale))
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
+# The signature of a glyph that draws nothing. Every blank glyph in every face
+# hashes to it, so a match on it is a convention about advance width and not
+# the structural equality the outline route rests on.
+_EMPTY_OUTLINE_SIGNATURE = hashlib.sha256(b"").hexdigest()
 
 
 def _face_outline_table(path):
@@ -511,22 +619,23 @@ def _face_outline_table(path):
     try:
         from fontTools.ttLib import TTFont
 
-        font = TTFont(path, lazy=True, fontNumber=0)
-        upem = float(font["head"].unitsPerEm or 1000)
-        scale = 1000.0 / upem
-        cmap = font.getBestCmap() or {}
-        drawer = _outline_drawer(font)
-        metrics = font["hmtx"]
-        for codepoint in _CANDIDATE_CODEPOINTS:
-            glyph_name = cmap.get(codepoint)
-            if glyph_name is None or _is_private_use(codepoint):
-                continue
-            try:
-                signature = _outline_signature(drawer, glyph_name, scale)
-                advance = float(metrics[glyph_name][0]) * scale
-            except Exception:
-                continue
-            table.setdefault(signature, {})[codepoint] = advance
+        with _quiet_fonttools():
+            font = TTFont(path, lazy=True, fontNumber=0)
+            upem = float(font["head"].unitsPerEm or 1000)
+            scale = 1000.0 / upem
+            cmap = font.getBestCmap() or {}
+            drawer = _outline_drawer(font)
+            metrics = font["hmtx"]
+            for codepoint in _CANDIDATE_CODEPOINTS:
+                glyph_name = cmap.get(codepoint)
+                if glyph_name is None or _is_private_use(codepoint):
+                    continue
+                try:
+                    signature = _outline_signature(drawer, glyph_name, scale)
+                    advance = float(metrics[glyph_name][0]) * scale
+                except Exception:
+                    continue
+                table.setdefault(signature, {})[codepoint] = advance
     except Exception:
         table = {}
     finally:
@@ -539,6 +648,27 @@ def _face_outline_table(path):
         _FACE_TABLE_CACHE.clear()
     _FACE_TABLE_CACHE[key] = table
     return table
+
+
+def _reference_advances(tables):
+    """``{codepoint: (advance, ...)}`` over the matched reference faces."""
+    advances = {}
+    for table in tables:
+        for candidates in table.values():
+            for codepoint, advance in candidates.items():
+                advances.setdefault(codepoint, []).append(advance)
+    return advances
+
+
+def _advance_agrees(advances, codepoint, declared_width, default_width) -> bool:
+    """Whether the PDF's own advance for the glyph fits that character."""
+    width = declared_width if declared_width is not None else default_width
+    if width is None:
+        return False
+    for advance in advances.get(int(codepoint), ()):
+        if abs(advance - width) <= 1.0:
+            return True
+    return False
 
 
 def _unambiguous_candidate(candidates, declared_width, default_width):
@@ -716,7 +846,8 @@ def _resolve_font(document, xref, base_name, needed_glyphs):
         from fontTools.ttLib import TTFont
         from io import BytesIO
 
-        font = TTFont(BytesIO(data), lazy=True, fontNumber=0)
+        with _quiet_fonttools():
+            font = TTFont(BytesIO(data), lazy=True, fontNumber=0)
     except Exception as exc:
         proof.reason = "embedded_font_program_unreadable"
         proof.detail = "%s: %s" % (type(exc).__name__, exc)
@@ -724,22 +855,23 @@ def _resolve_font(document, xref, base_name, needed_glyphs):
 
     try:
         wanted = {int(glyph_id) for glyph_id in needed_glyphs}
+        # What the font NAMES each glyph. A name is a declaration, not the
+        # drawing, so it is only ever a candidate here - it is corroborated or
+        # refused against the outline and the PDF's own advance below.
+        named = {}
         # Route 2 - the font's own cmap.
         if _sfnt_has_table(data, b"cmap"):
             for glyph_id, codepoint in _embedded_cmap_characters(font).items():
-                if glyph_id in wanted and glyph_id not in proof.characters:
-                    proof.characters[glyph_id] = chr(codepoint)
-                    proof.routes[glyph_id] = ROUTE_EMBEDDED_CMAP
+                if glyph_id in wanted:
+                    named.setdefault(glyph_id, (codepoint, ROUTE_EMBEDDED_CMAP))
         # Route 3 - real post table names.
         for glyph_id, codepoint in _post_name_characters(font, data).items():
-            if glyph_id in wanted and glyph_id not in proof.characters:
-                proof.characters[glyph_id] = chr(codepoint)
-                proof.routes[glyph_id] = ROUTE_POST_NAME
-        remaining = sorted(wanted - set(proof.characters))
-        if remaining:
-            _prove_by_outline(
-                proof, font, remaining, widths, default_width, document, descendant_xref
-            )
+            if glyph_id in wanted:
+                named.setdefault(glyph_id, (codepoint, ROUTE_POST_NAME))
+        _prove_glyphs(
+            proof, font, sorted(wanted), widths, default_width,
+            document, descendant_xref, named,
+        )
     except Exception as exc:
         proof.reason = proof.reason or "font_proof_failed"
         proof.detail = proof.detail or "%s: %s" % (type(exc).__name__, exc)
@@ -751,7 +883,17 @@ def _resolve_font(document, xref, base_name, needed_glyphs):
     return proof
 
 
-def _prove_by_outline(proof, font, glyph_ids, widths, default_width, document, descendant_xref):
+def _prove_glyphs(proof, font, glyph_ids, widths, default_width,
+                  document, descendant_xref, named):
+    """Decide each glyph's character: the outline it draws, corroborated names.
+
+    The outline is hashed against a face-matched reference (route 4, or route 5
+    where the glyph draws nothing at all). A name the font gave the glyph
+    (routes 2 and 3) is accepted only where the PDF's own ``/W`` advance agrees
+    with that character in the same reference, and is refused outright where
+    the outline proves a different character - a ``post`` table left stale by a
+    subsetter names a glyph the file no longer draws.
+    """
     italic_hint, bold_hint = _descriptor_style(document, descendant_xref)
     style = _face_style(proof.base_name, "", italic_hint, bold_hint)
     proof.looked_for = style.describe()
@@ -771,26 +913,50 @@ def _prove_by_outline(proof, font, glyph_ids, widths, default_width, document, d
     drawer = _outline_drawer(font)
     order = font.getGlyphOrder()
     tables = [_face_outline_table(path) for path in faces]
+    advances = _reference_advances(tables)
     for glyph_id in glyph_ids:
         if glyph_id < 0 or glyph_id >= len(order):
             continue
+        declared = widths.get(int(glyph_id))
         try:
             signature = _outline_signature(drawer, order[glyph_id], scale)
         except Exception:
-            continue
-        declared = widths.get(int(glyph_id))
-        answers = set()
-        for table in tables:
-            candidates = table.get(signature)
-            if not candidates:
+            signature = None
+        drawn = None
+        drawn_route = ""
+        if signature is not None:
+            answers = set()
+            for table in tables:
+                candidates = table.get(signature)
+                if not candidates:
+                    continue
+                codepoint = _unambiguous_candidate(candidates, declared, default_width)
+                if codepoint is not None:
+                    answers.add(codepoint)
+            # Two reference faces that disagree prove nothing between them.
+            if len(answers) == 1:
+                drawn = answers.pop()
+                drawn_route = (
+                    ROUTE_BLANK_ADVANCE
+                    if signature == _EMPTY_OUTLINE_SIGNATURE
+                    else ROUTE_OUTLINE_IDENTITY
+                )
+        candidate = named.get(glyph_id)
+        if candidate is not None:
+            codepoint, route = candidate
+            if drawn is not None and drawn != codepoint:
+                # The font's name for this glyph contradicts the outline the
+                # file draws. Nothing here proves which is meant.
                 continue
-            codepoint = _unambiguous_candidate(candidates, declared, default_width)
-            if codepoint is not None:
-                answers.add(codepoint)
-        # Two reference faces that disagree prove nothing between them.
-        if len(answers) == 1:
-            proof.characters[glyph_id] = chr(answers.pop())
-            proof.routes[glyph_id] = ROUTE_OUTLINE_IDENTITY
+            if _advance_agrees(advances, codepoint, declared, default_width):
+                proof.characters[glyph_id] = chr(codepoint)
+                proof.routes[glyph_id] = route
+                continue
+            if drawn is None:
+                continue
+        if drawn is not None:
+            proof.characters[glyph_id] = chr(drawn)
+            proof.routes[glyph_id] = drawn_route
 
 
 # ── per page ──
@@ -822,6 +988,33 @@ def _records_of(document):
     return records
 
 
+def _page_candidate_fonts(page) -> bool:
+    """Whether this page declares a font that can deliver an unmapped code.
+
+    ``page.get_fonts()`` reads the page's font dictionaries; a second text
+    extraction reads the whole content stream. A simple font always carries a
+    real text encoding, so a page of nothing but TrueType and Type1 fonts can
+    never reach MuPDF as U+FFFD and is answered here without tracing anything.
+    """
+    cached = getattr(page, _PAGE_CANDIDATE_FONTS, None)
+    if isinstance(cached, bool):
+        return cached
+    try:
+        records = tuple(page.get_fonts(full=True))
+    except Exception:
+        # Nothing was read, so nothing may be ruled out.
+        return True
+    found = any(
+        str(record[2] or "").strip().lstrip("/").lower() in _UNMAPPABLE_FONT_TYPES
+        for record in records
+    )
+    try:
+        setattr(page, _PAGE_CANDIDATE_FONTS, found)
+    except Exception:
+        pass
+    return found
+
+
 def _page_font_xrefs(page):
     """Span font name -> the one PDF font xref it names, when unambiguous."""
     names = {}
@@ -846,6 +1039,26 @@ def _page_font_xrefs(page):
     return names
 
 
+def _trace_codepoint(char):
+    if isinstance(char, dict):
+        raw = char.get("unicode", char.get("c"))
+    else:
+        raw = char[0]
+    return ord(raw) if isinstance(raw, str) else int(raw)
+
+
+def _trace_has_unknown(traces) -> bool:
+    """Whether MuPDF reported any drawn character as unmapped, cheaply."""
+    for trace in traces or ():
+        for char in trace.get("chars", ()) or ():
+            try:
+                if _trace_codepoint(char) == UNKNOWN_CHARACTER:
+                    return True
+            except Exception:
+                continue
+    return False
+
+
 def _page_trace(page):
     """Per font: every drawn character's glyph id and whether MuPDF knew it.
 
@@ -861,6 +1074,14 @@ def _page_trace(page):
     try:
         traces = page.get_texttrace()
     except Exception:
+        return by_font
+    if not _trace_has_unknown(traces):
+        # MuPDF resolved every character it drew, so there is nothing here to
+        # bind and the per-character origin map is not worth building.
+        try:
+            setattr(page, _PAGE_TRACE, by_font)
+        except Exception:
+            pass
         return by_font
     for trace in traces or ():
         font_name = _without_subset_prefix(trace.get("font"))
@@ -928,17 +1149,54 @@ def _apply_span_text(span, has_chars, units, replacements):
     span["text"] = "".join(replacements)
 
 
-def _record_key(page_number, span, glyph_ids):
+def _record_key(page_number, span):
+    """One span, one record - wherever it was examined from.
+
+    A host may hand this module two dictionaries for the same page (its own
+    and the one a cross-check compares against). They describe the same spans,
+    so the record is keyed by where the span is and nothing else; a second
+    look at a span replaces the first only when it says more.
+    """
     box = span.get("bbox") or ()
     try:
         located = tuple(round(float(value), 2) for value in tuple(box)[:4])
     except Exception:
         located = ()
-    return (int(page_number), located, tuple(glyph_ids))
+    return (int(page_number), located)
+
+
+def _record_rank(record):
+    """How much a record says. A stronger verdict replaces a weaker one."""
+    return (
+        1 if record.get("status") == "recovered" else 0,
+        int(record.get("glyphs") or 0),
+    )
+
+
+def merge_glyph_code_records(records, issues) -> None:
+    """Merge issue rows into a host's own map, keeping the stronger verdict.
+
+    A host that collects records itself uses this rather than its own key, so
+    that one span is one row in its report too.
+    """
+    if not isinstance(records, dict):
+        return
+    for issue in issues or ():
+        if not isinstance(issue, dict):
+            continue
+        key = (int(issue.get("page_number") or 0), tuple(issue.get("bbox_pdf") or ()))
+        existing = records.get(key)
+        if existing is None or _record_rank(issue) > _record_rank(existing):
+            records[key] = issue
 
 
 def _store(records, key, record):
-    if key in records or len(records) < _MAX_RECORDS:
+    existing = records.get(key)
+    if existing is not None:
+        if _record_rank(record) > _record_rank(existing):
+            records[key] = record
+        return
+    if len(records) < _MAX_RECORDS:
         records[key] = record
         return
     records.setdefault(_OVERFLOW_KEY, {
@@ -948,7 +1206,9 @@ def _store(records, key, record):
         "status": "unproven",
         "route": "",
         "routes": {},
+        "characters_left_as_delivered": {},
         "reason": "record_limit_reached",
+        "limitation": True,
         "detail": "more than %d glyph-code spans in this document" % _MAX_RECORDS,
         "glyphs": 0,
         "glyphs_unproven": 0,
@@ -965,49 +1225,54 @@ def _recover_span(page_number, span, proof, trace_entry, records):
     units, has_chars = _span_units(span)
     if not units:
         return
+    if not has_chars:
+        # A plain text dictionary carries no per-character origins, and a glyph
+        # id may never be inferred from the character a host was handed: MuPDF's
+        # layout inserts characters no glyph drew, and reading one of those as a
+        # glyph index invents a letter. Such a host recovers the RAWDICT and
+        # copies the result across with copy_recovered_text.
+        _store(records, _record_key(page_number, span), _unproven_record(
+            page_number, span, font_name, proof, (),
+            "span_has_no_character_origins", len(units),
+        ))
+        return
     by_origin = trace_entry.get("by_origin", {}) if trace_entry else {}
     clash = trace_entry.get("clash", set()) if trace_entry else set()
-    known_count = int(trace_entry.get("known", 0)) if trace_entry else 0
 
     replacements = []
     glyph_ids = []
     routes = []
+    delivered = []
     unproven = 0
     bind_failed = False
     for _char, text, key in units:
         bound = by_origin.get(key) if key is not None and key not in clash else None
-        if bound is None and key is None and known_count == 0 and proof.cid_is_gid:
-            # No per-character origins (a plain text dictionary). Every one of
-            # this font's drawn characters is unknown to MuPDF and the CMap is
-            # Identity, so the delivered code IS the glyph index.
-            bound = (UNKNOWN_CHARACTER, ord(text))
         if bound is None:
             if key is not None and key not in by_origin and text == " ":
                 # A space the layout inserted between runs, with no glyph
                 # behind it. It is not this font's code and is left alone.
                 replacements.append(text)
-                routes.append(ROUTE_TO_UNICODE)
+                delivered.append(DELIVERED_LAYOUT_SPACE)
                 continue
             bind_failed = True
             break
         codepoint, glyph_id = bound
         if codepoint != UNKNOWN_CHARACTER:
-            # The PDF proved this character itself; never second-guessed.
+            # MuPDF already had this character; never second-guessed.
             replacements.append(text)
-            routes.append(ROUTE_TO_UNICODE)
+            delivered.append(DELIVERED_MUPDF_RESOLVED)
             continue
         glyph_ids.append(glyph_id)
         proven = proof.character(glyph_id)
         if proven is None:
             unproven += 1
             replacements.append(text)
-            routes.append("")
         else:
             replacements.append(proven)
             routes.append(proof.route(glyph_id))
 
     if bind_failed:
-        _store(records, _record_key(page_number, span, glyph_ids), _unproven_record(
+        _store(records, _record_key(page_number, span), _unproven_record(
             page_number, span, font_name, proof, glyph_ids,
             "characters_not_bound_to_glyph_ids", len(units),
         ))
@@ -1017,29 +1282,33 @@ def _recover_span(page_number, span, proof, trace_entry, records):
         return
     if unproven:
         # All or nothing: one unproven character leaves the whole span raw.
-        _store(records, _record_key(page_number, span, glyph_ids), _unproven_record(
+        _store(records, _record_key(page_number, span), _unproven_record(
             page_number, span, font_name, proof, glyph_ids,
             proof.reason or "glyph_outline_not_proven", unproven,
         ))
         return
 
     _apply_span_text(span, has_chars, units, replacements)
-    used = [route for route in routes if route]
-    weakest = ROUTE_TO_UNICODE
-    for route in used:
-        if ROUTE_ORDER.index(route) > ROUTE_ORDER.index(weakest):
-            weakest = route
+    used = [route for route in routes if route in ROUTE_ORDER]
+    weakest = max(used, key=ROUTE_ORDER.index) if used else ROUTE_OUTLINE_IDENTITY
     counts = {}
     for route in used:
         counts[route] = counts.get(route, 0) + 1
-    _store(records, _record_key(page_number, span, glyph_ids), {
+    left = {}
+    for marker in delivered:
+        left[marker] = left.get(marker, 0) + 1
+    _store(records, _record_key(page_number, span), {
         "page_number": int(page_number),
         "font_name": font_name,
         "source_xref": int(proof.xref),
         "status": "recovered",
         "route": weakest,
         "routes": dict(sorted(counts.items())),
+        # Characters this module did NOT prove and did NOT change, counted
+        # apart from the routes so no report implies the PDF declared them.
+        "characters_left_as_delivered": dict(sorted(left.items())),
         "reason": "",
+        "limitation": False,
         "glyphs": len(glyph_ids),
         "glyphs_recovered": len(glyph_ids),
         "raw_codes": list(glyph_ids[:_RAW_CODES_PER_ITEM]),
@@ -1057,21 +1326,29 @@ def _bbox_of(span):
 
 
 def _unproven_record(page_number, span, font_name, proof, glyph_ids, reason, unproven):
+    """One span left exactly as the PDF delivered it, and why.
+
+    ``proof`` is None for a span this module declined to examine at all - an
+    out-of-scope font, or a font name that means two subsets on one page.
+    """
     return {
         "page_number": int(page_number),
         "font_name": font_name,
-        "source_xref": int(proof.xref),
+        "source_xref": int(proof.xref) if proof is not None else 0,
         "status": "unproven",
         "route": "",
         "routes": {},
+        "characters_left_as_delivered": {},
         "reason": str(reason),
-        "detail": str(proof.detail or ""),
+        # Whether this says something about the document or about this run.
+        "limitation": str(reason) in LIMITATION_REASONS,
+        "detail": str(proof.detail or "") if proof is not None else "",
         "glyphs": len(glyph_ids),
         "glyphs_unproven": int(unproven),
         "raw_codes": list(glyph_ids[:_RAW_CODES_PER_ITEM]),
         "raw_codes_truncated": len(glyph_ids) > _RAW_CODES_PER_ITEM,
-        "looked_for_face": str(proof.looked_for or ""),
-        "reference_faces": list(proof.reference_faces),
+        "looked_for_face": str(proof.looked_for or "") if proof is not None else "",
+        "reference_faces": list(proof.reference_faces) if proof is not None else [],
         "bbox_pdf": _bbox_of(span),
     }
 
@@ -1085,33 +1362,92 @@ def recover_glyph_codes_in_place(page, tdict) -> None:
     read back with :func:`glyph_code_issues`.
 
     Calling this twice for the same page is safe and does not double-count: a
-    record is keyed by page, span box and raw codes.
+    record is keyed by page and span box, and a glyph id is only ever read from
+    the trace, never from a character this call already recovered.
     """
     try:
         _recover_page(page, tdict)
     except Exception as exc:
-        document = _document_of(page)
-        records = _records_of(document) if document is not None else None
-        if records is None:
-            return
-        page_number = int(getattr(page, "number", 0) or 0) + 1
-        records[(page_number, (), ("page",))] = {
-            "page_number": page_number,
-            "font_name": "",
-            "source_xref": 0,
-            "status": "unproven",
-            "route": "",
-            "routes": {},
-            "reason": "glyph_code_recovery_failed",
-            "detail": "%s: %s" % (type(exc).__name__, exc),
-            "glyphs": 0,
-            "glyphs_unproven": 0,
-            "raw_codes": [],
-            "raw_codes_truncated": False,
-            "looked_for_face": "",
-            "reference_faces": [],
-            "bbox_pdf": [],
-        }
+        record_glyph_code_limitation(
+            page, "glyph_code_recovery_failed", "%s: %s" % (type(exc).__name__, exc)
+        )
+
+
+def record_glyph_code_limitation(page, reason: str, detail: str = "") -> None:
+    """Record that this RUN could not examine a page, not that the PDF failed.
+
+    A host whose own dictionary cannot be recovered says so here, so the count
+    stays honest and the operator line says it was the tool and not the sheet.
+    """
+    document = _document_of(page)
+    records = _records_of(document) if document is not None else None
+    if records is None:
+        return
+    page_number = int(getattr(page, "number", 0) or 0) + 1
+    records[(page_number, ("page",))] = {
+        "page_number": page_number,
+        "font_name": "",
+        "source_xref": 0,
+        "status": "unproven",
+        "route": "",
+        "routes": {},
+        "characters_left_as_delivered": {},
+        "reason": str(reason),
+        "limitation": True,
+        "detail": str(detail or ""),
+        "glyphs": 0,
+        "glyphs_unproven": 0,
+        "raw_codes": [],
+        "raw_codes_truncated": False,
+        "looked_for_face": "",
+        "reference_faces": [],
+        "bbox_pdf": [],
+    }
+
+
+def page_delivers_glyph_codes(page) -> bool:
+    """Whether this page draws a character no font mapped to a character.
+
+    Cheap and cached. A page declaring no composite or Type3 font is answered
+    from its font dictionaries without any text extraction, so a host may ask
+    before deciding to build a second, per-character dictionary of the page.
+    """
+    try:
+        if not _page_candidate_fonts(page):
+            return False
+        return any(entry["unknown"] for entry in _page_trace(page).values())
+    except Exception:
+        return False
+
+
+def _unexamined_glyph_ids(span, trace_entry):
+    """The glyph ids of this span's characters MuPDF reported as unmapped."""
+    units, has_chars = _span_units(span)
+    if not has_chars or not trace_entry:
+        return []
+    by_origin = trace_entry.get("by_origin", {})
+    glyph_ids = []
+    for _char, _text, key in units:
+        bound = by_origin.get(key) if key is not None else None
+        if bound is not None and bound[0] == UNKNOWN_CHARACTER:
+            glyph_ids.append(bound[1])
+    return glyph_ids
+
+
+def _report_unexamined(page_number, span, font_name, trace_entry, reason, records):
+    """Record a span whose unmapped characters this module will not touch.
+
+    Substitution stays as narrowly scoped as it is - a Type3 font, a partial
+    ``/ToUnicode`` and a font name that means two different subsets on one page
+    are all left exactly as delivered. Detection is structural and certain, so
+    the span is still counted rather than passing as clean.
+    """
+    glyph_ids = _unexamined_glyph_ids(span, trace_entry)
+    if not glyph_ids:
+        return
+    _store(records, _record_key(page_number, span), _unproven_record(
+        page_number, span, font_name, None, glyph_ids, reason, len(glyph_ids),
+    ))
 
 
 def _recover_page(page, tdict) -> None:
@@ -1124,6 +1460,10 @@ def _recover_page(page, tdict) -> None:
     if records is None:
         return
     page_number = int(getattr(page, "number", 0) or 0) + 1
+    if not _page_candidate_fonts(page):
+        # No composite or Type3 font on the page, so nothing it draws can
+        # reach MuPDF unmapped. Answered without tracing the page at all.
+        return
     trace = _page_trace(page)
     if not any(entry["unknown"] for entry in trace.values()):
         # MuPDF resolved every character it drew. Nothing here is in scope.
@@ -1143,11 +1483,21 @@ def _recover_page(page, tdict) -> None:
                 wanted.add(glyph_id)
 
     proofs = {}
+    unresolved = {}
     for font_name, wanted in needed.items():
         if not wanted:
             continue
+        if font_name not in font_xrefs:
+            # The page's font dictionaries do not name the font that drew this
+            # text, so there is nothing to read the subset out of.
+            unresolved[font_name] = "font_not_found_on_page"
+            continue
         xref = font_xrefs.get(font_name)
         if xref is None:
+            # Two subsets of one family on this page answer to the same name.
+            # Nothing may be proven for either, and the spans are reported
+            # rather than passed over.
+            unresolved[font_name] = "font_name_ambiguous_on_page"
             continue
         proof = cache.get(int(xref))
         if proof is None or not wanted <= proof.attempted:
@@ -1164,15 +1514,83 @@ def _recover_page(page, tdict) -> None:
         for line in block.get("lines", ()) or ():
             for span in line.get("spans", ()) or ():
                 font_name = _without_subset_prefix(span.get("font"))
-                proof = proofs.get(font_name)
-                if proof is None or not proof.in_scope:
+                entry = trace.get(font_name)
+                if not entry or not entry["unknown"]:
                     continue
+                proof = proofs.get(font_name)
                 try:
-                    _recover_span(page_number, span, proof, trace.get(font_name), records)
+                    if font_name in unresolved:
+                        _report_unexamined(
+                            page_number, span, font_name, entry,
+                            unresolved[font_name], records,
+                        )
+                    elif proof is None or not proof.in_scope:
+                        _report_unexamined(
+                            page_number, span, font_name, entry,
+                            (proof.reason if proof is not None else "") or "font_out_of_scope",
+                            records,
+                        )
+                    else:
+                        _recover_span(page_number, span, proof, entry, records)
                 except Exception:
                     # One span that cannot be handled costs that span, and it
                     # keeps the characters the PDF delivered.
                     continue
+
+
+# ── handing the result to a host that reads a plain text dictionary ──
+
+
+def copy_recovered_text(source_tdict, target_tdict):
+    """Copy a recovered RAWDICT's span strings onto a plain text dictionary.
+
+    ``page.get_text("dict")`` carries no per-character origins, and a glyph id
+    may never be inferred from a delivered character. A host holding such a
+    dictionary recovers the RAWDICT - the dictionary the shared extractor reads
+    - and copies the result across span for span.
+
+    A span is copied only where the two dictionaries agree on where it is,
+    which font drew it and how many characters it has, so the two can never
+    end up disagreeing about a character.
+
+    Returns ``(copied, not_transferable)``.
+    """
+    copied = 0
+    not_transferable = 0
+    if not isinstance(source_tdict, dict) or not isinstance(target_tdict, dict):
+        return copied, not_transferable
+    source_blocks = list(source_tdict.get("blocks", ()) or ())
+    target_blocks = list(target_tdict.get("blocks", ()) or ())
+    for block_index in range(min(len(source_blocks), len(target_blocks))):
+        source_block = source_blocks[block_index]
+        target_block = target_blocks[block_index]
+        if source_block.get("type") != 0 or target_block.get("type") != 0:
+            continue
+        source_lines = list(source_block.get("lines", ()) or ())
+        target_lines = list(target_block.get("lines", ()) or ())
+        for line_index in range(min(len(source_lines), len(target_lines))):
+            source_spans = list(source_lines[line_index].get("spans", ()) or ())
+            target_spans = list(target_lines[line_index].get("spans", ()) or ())
+            for span_index in range(min(len(source_spans), len(target_spans))):
+                source_span = source_spans[span_index]
+                target_span = target_spans[span_index]
+                chars = source_span.get("chars") or ()
+                if not chars:
+                    continue
+                text = "".join(str(char.get("c", "") or "") for char in chars)
+                current = str(target_span.get("text", "") or "")
+                if text == current:
+                    continue
+                if (
+                    len(text) != len(current)
+                    or str(source_span.get("font", "")) != str(target_span.get("font", ""))
+                    or _bbox_of(source_span) != _bbox_of(target_span)
+                ):
+                    not_transferable += 1
+                    continue
+                target_span["text"] = text
+                copied += 1
+    return copied, not_transferable
 
 
 # ── reading the result back ──
@@ -1216,15 +1634,23 @@ def glyph_code_delivery_block(issues, item_limit: int = REPORT_ITEM_LIMIT) -> di
     unproven = [row for row in rows if row.get("status") != "recovered"]
     by_route = {}
     glyphs_by_route = {}
+    left_as_delivered = {}
     for row in recovered:
         route = str(row.get("route") or "")
         by_route[route] = by_route.get(route, 0) + 1
+        # Only the routes that PROVED a character. A character MuPDF already
+        # had, and a space its layout inserted, are counted separately: an
+        # in-scope font has no /ToUnicode by construction, so no count here may
+        # ever read as one.
         for name, count in (row.get("routes") or {}).items():
             glyphs_by_route[name] = glyphs_by_route.get(name, 0) + int(count)
+        for name, count in (row.get("characters_left_as_delivered") or {}).items():
+            left_as_delivered[name] = left_as_delivered.get(name, 0) + int(count)
     by_reason = {}
     for row in unproven:
         reason = str(row.get("reason") or "unknown")
         by_reason[reason] = by_reason.get(reason, 0) + 1
+    limitations = [row for row in unproven if row.get("limitation")]
     pages = sorted({int(row.get("page_number") or 0) for row in rows})
     return {
         "schema": GLYPH_CODE_SCHEMA,
@@ -1232,13 +1658,65 @@ def glyph_code_delivery_block(issues, item_limit: int = REPORT_ITEM_LIMIT) -> di
         "spans_examined": len(rows),
         "recovered": len(recovered),
         "unproven": len(unproven),
+        # Of the unproven spans, those this RUN could not examine rather than
+        # spans this document does not explain.
+        "unproven_from_run_limitation": len(limitations),
         "glyphs_recovered": sum(int(row.get("glyphs_recovered") or 0) for row in recovered),
         "glyphs_unproven": sum(int(row.get("glyphs") or 0) for row in unproven),
         "spans_by_route": dict(sorted(by_route.items())),
         "glyphs_by_route": dict(sorted(glyphs_by_route.items())),
+        "characters_left_as_delivered": dict(sorted(left_as_delivered.items())),
         "by_reason": dict(sorted(by_reason.items())),
         "items": rows[:max(0, int(item_limit))],
         "items_truncated": len(rows) > max(0, int(item_limit)),
+    }
+
+
+_BLOCK_COUNTS = (
+    "spans_examined", "recovered", "unproven", "unproven_from_run_limitation",
+    "glyphs_recovered", "glyphs_unproven",
+)
+_BLOCK_TALLIES = (
+    "spans_by_route", "glyphs_by_route", "characters_left_as_delivered", "by_reason",
+)
+
+
+def merge_glyph_code_blocks(blocks, item_limit: int = REPORT_ITEM_LIMIT) -> dict:
+    """One block for a document a host built page by page, or run by run.
+
+    The counts add; the item lists concatenate and are capped again with the
+    unproven spans first, so the cap never hides one. A host that merges as it
+    goes keeps a bounded block rather than a list that grows with the document.
+    """
+    counts = {key: 0 for key in _BLOCK_COUNTS}
+    tallies = {name: {} for name in _BLOCK_TALLIES}
+    pages = set()
+    items = []
+    truncated = False
+    for block in blocks or ():
+        if not isinstance(block, dict):
+            continue
+        for key in counts:
+            counts[key] += int(block.get(key) or 0)
+        for name, tally in tallies.items():
+            for label, count in (block.get(name) or {}).items():
+                tally[label] = tally.get(label, 0) + int(count)
+        for page in block.get("pages") or ():
+            try:
+                pages.add(int(page))
+            except (TypeError, ValueError):
+                continue
+        items += [row for row in (block.get("items") or ()) if isinstance(row, dict)]
+        truncated = truncated or bool(block.get("items_truncated"))
+    items.sort(key=lambda row: row.get("status") == "recovered")
+    cap = max(0, int(item_limit))
+    return {
+        "schema": GLYPH_CODE_SCHEMA,
+        "pages": sorted(pages),
+        **counts,
+        **{name: dict(sorted(tally.items())) for name, tally in tallies.items()},
+        "items": items[:cap],
+        "items_truncated": truncated or len(items) > cap,
     }
 
 
@@ -1249,30 +1727,63 @@ def glyph_code_warning_count(block) -> int:
     return int(block.get("unproven", 0) or 0)
 
 
+def _where(rows) -> tuple:
+    pages = ", ".join(str(page) for page in sorted(
+        {int(row.get("page_number") or 0) for row in rows}
+    )[:8])
+    fonts = ", ".join(sorted({str(row.get("font_name") or "?") for row in rows})[:4])
+    return fonts or "?", pages or "?"
+
+
 def summarize_glyph_code_issues(issues, see: str = "") -> str:
     """One operator sentence for the whole import, or '' when nothing applied."""
-    block = glyph_code_delivery_block(issues)
-    if not block["spans_examined"]:
+    return summarize_glyph_code_block(glyph_code_delivery_block(issues), see)
+
+
+def summarize_glyph_code_block(block, see: str = "") -> str:
+    """The same sentence from an already-built block.
+
+    A host that imported a document page by page has blocks rather than rows,
+    and its counts have to be the block's own, not a recount of the capped
+    item list.
+
+    What this document does not say and what this run could not look at are
+    never put in the same sentence: one is a property of the sheet and the
+    other is a limitation of the tool.
+    """
+    if not isinstance(block, dict) or not block.get("spans_examined"):
         return ""
-    unproven = [row for row in block["items"] if row.get("status") != "recovered"]
+    unproven = [row for row in block.get("items") or () if row.get("status") != "recovered"]
+    from_document = [row for row in unproven if not row.get("limitation")]
+    from_run = [row for row in unproven if row.get("limitation")]
+    # The counts are the block's; the item list only says which fonts and pages.
+    limited = int(block.get("unproven_from_run_limitation") or 0)
+    unreadable = max(0, int(block.get("unproven") or 0) - limited)
     parts = []
-    if block["recovered"]:
+    if block.get("recovered"):
         routes = ", ".join(
-            "%s x%d" % (name, count) for name, count in block["spans_by_route"].items()
+            "%s x%d" % (name, count)
+            for name, count in (block.get("spans_by_route") or {}).items()
         )
         parts.append(
             "%d text span(s) were delivered as raw glyph codes and their characters "
             "were recovered (%s), not read from the PDF" % (block["recovered"], routes)
         )
-    if block["unproven"]:
-        pages = ", ".join(str(page) for page in sorted(
-            {int(row.get("page_number") or 0) for row in unproven}
-        )[:8])
-        fonts = ", ".join(sorted({str(row.get("font_name") or "?") for row in unproven})[:4])
+    if unreadable:
+        fonts, pages = _where(from_document)
         parts.append(
             "%d text span(s) use an embedded font with no usable Unicode map; their "
             "characters could not be proven and are shown as the PDF's raw glyph codes "
-            "(font %s, page %s)" % (block["unproven"], fonts or "?", pages or "?")
+            "(font %s, page %s)" % (unreadable, fonts, pages)
+        )
+    if limited:
+        fonts, pages = _where(from_run)
+        reasons = ", ".join(sorted({str(row.get("reason") or "?") for row in from_run})[:4])
+        parts.append(
+            "%d text span(s) were not examined for raw glyph codes by this run (%s) and "
+            "are shown exactly as the PDF delivered them - a limitation of this import, "
+            "not of the sheet (font %s, page %s)"
+            % (limited, reasons or "?", fonts, pages)
         )
     if not parts:
         return ""

@@ -12,7 +12,7 @@
   "generic_classifier.py": "fa2a97506db43b13ef60bab4244a05ab3dd0263f9ab90807e503bd962972d2cc",
   "generic_recognizer.py": "5be71ca54023f7c049932c83453dc842a390509e23972762e3a37c4f7d134501",
   "geometry_cleanup.py": "0432c2f126d5ee104dd2b89669c135548fa5236eaa0a45e3bd1c561d25d7f16a",
-  "glyph_code_recovery.py": "05e2efd3d3e3d27f8032b34b75a642f8ecabf1188ef65364ce219e4b2158b242",
+  "glyph_code_recovery.py": "7238f05a130565d56a481aed4cab1385c0be3204c0cb315146ce6baff64ce873",
   "hatch_detector.py": "132b4e77c9b40beb906d7d87a5be3a4222f958c6cbb9ee3142170c4e04820d1f",
   "import_bounds.py": "0683f2377c2bd264fea6a9bc08dde528900723f607212c64e256f721223bccb3",
   "import_config.py": "e42fd14e282885678655b0ad1f69040280a7c58b728166756277f21f6c5dd304",
