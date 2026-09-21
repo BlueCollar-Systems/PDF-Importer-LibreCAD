@@ -941,7 +941,10 @@ def test_lost_companion_reaches_the_gui_log_and_the_resumable_summary(tmp_path) 
         stack.enter_context(_lose_the_target_companion())
         showinfo = stack.enter_context(patch.object(gui.messagebox, "showinfo"))
         showerror = stack.enter_context(patch.object(gui.messagebox, "showerror"))
-        gui.Pdf2DxfApp._run_conversion(app, str(pdf_path), str(tmp_path / "gui.dxf"))
+        gui.Pdf2DxfApp._run_conversion(
+            app, str(pdf_path), str(tmp_path / "gui.dxf"),
+            gui.Pdf2DxfApp._capture_options(app),
+        )
 
     line = "Warning: 1 hidden search-text companion(s) could not be written or verified"
     assert not showerror.called

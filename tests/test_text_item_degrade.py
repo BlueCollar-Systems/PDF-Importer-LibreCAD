@@ -1452,7 +1452,10 @@ def test_gui_error_box_names_the_failure_report_once_whatever_stopped_the_export
             _finish_conversion=lambda: None,
         )
         with fault, patch.object(gui.messagebox, "showerror") as showerror:
-            gui.Pdf2DxfApp._run_conversion(app, str(pdf_path), str(tmp_path / f"{name}.dxf"))
+            gui.Pdf2DxfApp._run_conversion(
+                app, str(pdf_path), str(tmp_path / f"{name}.dxf"),
+                gui.Pdf2DxfApp._capture_options(app),
+            )
         [call] = showerror.call_args_list
         assert call.args[0] == "Conversion failed"
         return call.args[1]
