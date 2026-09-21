@@ -24,6 +24,7 @@ For each representative shop drawing you import:
 | Requested/delivered/fallback/result shown in the complete report | ☐ |
 | No degraded or dropped text: `extra.text_items_degraded_total` is 0, no `P###_TEXT_DEGRADED` layer, and no "Warning: text item ..." line (a sheet with one is delivered but never certified) | ☐ |
 | Searchable text: the layer `P###_TEXT_SEARCH` exists, is frozen (nothing extra is visible or printed), and `extra.searchable_text_companions` reports `failed: 0` and `mismatch: 0`; thawing it and freezing `P###_TEXT` shows editable LFF text with the exact strings at the right place, rotation, and width (glyph shapes differ from the PDF font), and it prints only after the layer's print flag is switched on | ☐ |
+| Recovered text: `extra.text_glyph_codes` reports `unproven: 0`, and every recovered span is read against the source PDF page and says the same thing - these characters were matched against a reference face installed on this machine, not read from the file | ☐ |
 | Scale plausible vs the source drawing | ☐ |
 | Multi-page import behaves as expected | ☐ |
 

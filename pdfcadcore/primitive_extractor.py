@@ -878,6 +878,12 @@ def _extract_text(
             tdict = page.get_text("dict")
         except (RuntimeError, TypeError, ValueError):
             return items
+    # A font whose PDF Unicode map is unusable delivers spans as raw glyph
+    # codes, not characters. Recover them only where this document proves the
+    # mapping; an unproven span stays exactly as MuPDF gave it and is reported.
+    from .glyph_code_recovery import recover_glyph_codes_in_place
+
+    recover_glyph_codes_in_place(page, tdict)
     try:
         from .embedded_fonts import EmbeddedFontCatalog
 

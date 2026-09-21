@@ -262,6 +262,10 @@ def write_import_report(
 
     clip_fill_delivery = extraction.clip_fill_delivery()
     clip_fill_warnings = clip_fill_delivery["dropped"] + clip_fill_delivery["approximated"]
+    # Text spans a font delivered as raw glyph codes. A span whose characters
+    # were proven is a clean delivery; only an unproven one warns.
+    glyph_code_delivery = extraction.glyph_code_delivery()
+    glyph_code_warnings = int(glyph_code_delivery["unproven"])
     extra = {
         "result_status": str(
             getattr(run.config, "_result_status", "pending_export")
@@ -432,6 +436,8 @@ def write_import_report(
     extra["text_items_degraded_total"] = degraded_text["total"]
     extra["text_items_degraded_truncated"] = degraded_text["truncated"]
     extra["searchable_text_companions"] = search_text
+    if glyph_code_delivery["spans_examined"]:
+        extra["text_glyph_codes"] = glyph_code_delivery
     if terminal_failure:
         extra["terminal_failure"] = dict(terminal_failure)
 
@@ -463,8 +469,14 @@ def write_import_report(
         text_glyph_estimate=text_glyph_estimate,
         text_fallback=text_fallback,
         # Clipped fills left out while visible or approximate, text items that
-        # were degraded or dropped, and search-text companions that were lost.
-        warnings=clip_fill_warnings + text_degrade_warnings + search_text_warnings,
+        # were degraded or dropped, search-text companions that were lost, and
+        # text spans whose raw glyph codes nothing in this document proved.
+        warnings=(
+            clip_fill_warnings
+            + text_degrade_warnings
+            + search_text_warnings
+            + glyph_code_warnings
+        ),
         extra=extra,
     )
     if degraded_text["total"]:

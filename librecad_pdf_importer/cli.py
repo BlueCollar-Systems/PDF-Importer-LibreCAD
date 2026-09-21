@@ -284,6 +284,10 @@ def _main() -> int:
     clip_fill_warning = run.extraction.clip_fill_warning()
     if clip_fill_warning:
         _print_stderr(clip_fill_warning)
+    # Recovered spans are stated and unproven ones warned about, in one line.
+    glyph_code_warning = run.extraction.glyph_code_warning()
+    if glyph_code_warning:
+        _print_stderr(glyph_code_warning)
     # The DXF was written (exit code 0), but a degraded text item must be loud.
     text_delivery = summary["export"]["text_delivery"]
     for line in degraded_text_item_lines(
