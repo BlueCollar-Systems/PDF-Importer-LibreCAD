@@ -4,6 +4,27 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
+- Preserve qualified straight dash-dot strokes whose painted dots have zero
+  centerline length, such as `[20 3 0 3]`. Modern DXF exports retain editable dash
+  LINE segments and solid analytic circular HATCH dots with their original phase,
+  size and position. The new case requires round caps, opaque Normal paint,
+  uniform source scaling, and complete ink inside proven rectangular clips.
+  Curved, partially clipped, nonuniformly transformed and unproven patterns keep
+  the disclosed native linetype approximation; legacy R12 does so for dots too.
+  Native LINE end caps and lineweight display remain host-dependent.
+- Preserve short and zero-length literal strokes instead of discarding their
+  centerlines during point cleanup. For source-proven solid round-cap strokes,
+  add editable HATCH boundaries with true semicircular arcs and retain the
+  original LINE. Verify both after saving, including source identity and placement.
+- Preserve qualified Multiply markup appearance using local source-rendered
+  display images at 600 DPI above the editable geometry. Only fully source-bound,
+  vector-only footprints with proven clipping and blend groups qualify. Exact
+  pixel placement, source bytes, and saved image depth are checked; no DPI reduction
+  occurs when the pixel budget is exceeded. Unqualified cases are reported.
+- Respect paint order around these strokes and existing opaque images, while
+  allowing text grouped across a spatially separate stroke to retain its requested
+  representation. Hide the SOURCE_BLEND_DISPLAY layer to edit underlying geometry;
+  this display aid does not provide general PDF blend support or unlimited zoom.
 - Text a PDF delivers as raw glyph codes is now recovered where this tool can
   prove the characters, and reported either way. The trigger is narrow and
   structural: `/Subtype /Type0` with an Identity CMap and no `/ToUnicode`, over

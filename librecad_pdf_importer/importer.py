@@ -279,6 +279,9 @@ def write_import_report(
         "image_delivery": extraction.summary().get("image_delivery"),
         "final_rect_paint_delivery": list(getattr(run.config, "_final_rect_paint_deliveries", ()) or ()),
         "clip_fill_delivery": clip_fill_delivery,
+        "source_stroke_ink_delivery": list(getattr(run.config, "_source_capsule_deliveries", ()) or ()),
+        "source_blend_display_delivery": list(getattr(run.config, "_nontext_composite_deliveries", ()) or ()),
+        "source_stroke_ink_plan": extraction.summary().get("source_stroke_ink_plan"),
         "model_3d_intent": analyze_model3d_intent(
             text_items,
             host_supports_3d=False,
