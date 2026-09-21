@@ -2,7 +2,7 @@
 
 All notable release changes are recorded here.
 
-## Unreleased
+## 1.0.102 - 2026-09-21
 
 - Preserve qualified straight dash-dot strokes whose painted dots have zero
   centerline length, such as `[20 3 0 3]`. Modern DXF exports retain editable dash
