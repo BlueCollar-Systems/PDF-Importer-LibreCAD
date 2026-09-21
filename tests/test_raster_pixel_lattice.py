@@ -76,16 +76,25 @@ def test_serialized_axis_reversal_is_rejected_even_when_lengths_match(tmp_path, 
 
     def corrupted(*args, **kwargs):
         doc, auditor = original(*args, **kwargs)
-        image = next(iter(doc.modelspace().query("IMAGE")))
-        image.dxf.v_pixel = -image.dxf.v_pixel
+        for image in doc.modelspace().query("IMAGE"):
+            image.dxf.v_pixel = -image.dxf.v_pixel
         return doc, auditor
 
     monkeypatch.setattr(exporter, "_reopen_candidate_for_verification", corrupted)
     target = tmp_path / "output.dxf"
-    with pytest.raises(RuntimeError, match="raster placement changed"):
-        exporter.export_to_dxf(run.extraction, str(target), exporter.DxfExportOptions(
-            include_images=False, text_mode="raster"))
-    assert not target.exists()
+    result = exporter.export_to_dxf(run.extraction, str(target), exporter.DxfExportOptions(
+        include_images=False, text_mode="raster"))
+    # The reversed IMAGE is still rejected post-write; since the 2026-09-19 owner
+    # decision that costs the item (one forced re-export, visible degraded TEXT),
+    # not the sheet. The rejected raster never reaches the accepted DXF.
+    delivery = result.text_deliveries[0]
+    assert delivery["verified"] is False and delivery["degraded"] is True
+    assert delivery["degrade_reason"].endswith("raster placement changed")
+    assert delivery["attempts"][0]["strategy"] == "serialized_delivery_verification"
+    assert delivery["final_representation"] == "text"
+    native = ezdxf.readfile(target)
+    assert [entity.dxftype() for entity in native.modelspace()] == ["TEXT"]
+    assert not list(tmp_path.rglob("*.png"))
 
 
 @pytest.mark.parametrize("origin,size,dpi,matrix", [

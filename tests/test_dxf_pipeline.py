@@ -1605,7 +1605,12 @@ class TestDxfPipeline(unittest.TestCase):
         )
         self.assertGreater(export.entity_count, 0)
         dxf = ezdxf.readfile(export.output_path)
-        types = {entity.dxftype() for entity in dxf.modelspace()}
+        # Visible entities: the hidden search-text companions live on a frozen layer.
+        types = {
+            entity.dxftype()
+            for entity in dxf.modelspace()
+            if not entity.dxf.layer.endswith("TEXT_SEARCH")
+        }
         self.assertIn("INSERT", types)
         self.assertNotIn("TEXT", types)
         self.assertNotIn("IMAGE", types)

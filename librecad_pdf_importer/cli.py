@@ -7,16 +7,20 @@ import sys
 import time
 from pathlib import Path
 
+from conversion_control import ImportStopped
+
 from .exporters.dxf_exporter import (
     DxfExportOptions,
-    TextRepresentationDeliveryError,
+    degraded_text_item_lines,
     export_to_dxf,
+    searchable_text_warning_line,
     summarize_text_delivery,
 )
 from .importer import (
     apply_uniform_scale,
     failure_import_report_path,
     run_import,
+    terminal_failure_record,
     write_import_report,
 )
 from .launchers.librecad_launcher import find_librecad_executable, launch_librecad
@@ -30,7 +34,8 @@ def build_parser() -> argparse.ArgumentParser:
     """Argument parser for LC CLI (BCS-ARCH-001 Rule 5 sweep).
 
     User-facing flags only: --mode, --text-mode, --import-text/--no-import-text,
-    --pages, --scale, --dxf-version, --gui, --verbose, plus output/IO controls.
+    --searchable-text/--no-searchable-text, --pages, --scale, --dxf-version,
+    --gui, --verbose, plus output/IO controls.
     Quality-tier flags (--hatch-mode, --arc-mode, --cleanup-level,
     --lineweight-mode, --raster-dpi, --strict-text-fidelity, --no-arcs,
     --no-raster-fallback, --grouping-mode) have been removed — their
@@ -53,6 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
                         action=argparse.BooleanOptionalAction,
                         default=None,
                         help="Import text from the PDF (--no-import-text to skip)")
+    parser.add_argument("--searchable-text",
+                        action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Write each outlined/rastered string as hidden TEXT on the "
+                             "frozen layer P###_TEXT_SEARCH so the DXF is searchable "
+                             "(--no-searchable-text to skip)")
     parser.add_argument("--dxf-version", default="R2018",
                         choices=["R12", "R2000", "R2004", "R2007", "R2010", "R2013", "R2018"],
                         help="Target DXF version")
@@ -85,6 +96,36 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    try:
+        return _main()
+    except Exception as exc:  # noqa: BLE001
+        # A console exe answers a failed import with one readable line, not a
+        # Python traceback; --verbose keeps the traceback for a bug report.
+        from pdfcadcore.cli_error_copy import cli_error
+
+        if "--verbose" in sys.argv[1:]:
+            import traceback
+
+            traceback.print_exc()
+        message = f"{type(exc).__name__}: {exc}"
+        failure_report = str(getattr(exc, "failure_report_path", "") or "")
+        report_error = str(getattr(exc, "failure_report_error", "") or "")
+        if failure_report:  # a failed export leaves one, whatever stopped it
+            message += f" (complete failure report: {failure_report})"
+        elif report_error:  # ... unless the report itself could not be written
+            message += f" (the failure report could not be written: {report_error})"
+        _print_stderr(cli_error("import_failed", message=message))
+        return 3
+
+
+def _print_stderr(line: str) -> None:
+    try:
+        print(line, file=sys.stderr)
+    except UnicodeEncodeError:  # a cp1252 console must not turn the message into a traceback
+        print(line.encode("ascii", "backslashreplace").decode("ascii"), file=sys.stderr)
+
+
+def _main() -> int:
     if sys.argv[1:] == ["--self-test"]:
         from .runtime_self_test import run_runtime_self_test
 
@@ -169,27 +210,41 @@ def main() -> int:
                 page_arrangement=args.page_arrangement,
                 page_gap_ratio=max(0.0, float(args.page_gap_ratio or 0.0)),
                 provenance_opts=run.config,
+                searchable_text=bool(args.searchable_text),
             ),
         )
-    except TextRepresentationDeliveryError as exc:
+    except Exception as exc:  # noqa: BLE001 - every failed export leaves a report
+        # One unverifiable text item no longer lands here (it degrades and the
+        # sheet exports); what does is a deliberate stop (ImportStopped: duplicate
+        # source IDs or handles, post-write verification still failing after its
+        # one retry) or an unexpected failure, which main() answers in one line.
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
-        failure_path = failure_import_report_path(str(out_path), run)
-        write_import_report(
-            run,
-            failure_path,
-            elapsed_ms=elapsed_ms,
-            performance_phases={
-                "run_import_ms": run_import_ms,
-                "export_dxf_ms": (time.perf_counter() - t_export) * 1000.0,
-                "total_ms": elapsed_ms,
-            },
-        )
-        exc.failure_report_path = failure_path
-        print(
-            f"Import stopped: {exc}\nComplete failure report: {failure_path}",
-            file=sys.stderr,
-        )
+        try:
+            failure_path = failure_import_report_path(str(out_path), run)
+            write_import_report(
+                run,
+                failure_path,
+                elapsed_ms=elapsed_ms,
+                performance_phases={
+                    "run_import_ms": run_import_ms,
+                    "export_dxf_ms": (time.perf_counter() - t_export) * 1000.0,
+                    "total_ms": elapsed_ms,
+                },
+                terminal_failure=terminal_failure_record(exc),
+            )
+        except Exception as report_exc:  # noqa: BLE001 - the ORIGINAL failure survives
+            # Read-only folder, disk full: exactly when an export fails. Say so, and
+            # keep the real cause and its exit code (2 deliberate, 3 otherwise).
+            report_error = f"{type(report_exc).__name__}: {report_exc}"
+            exc.failure_report_error = report_error
+            report_note = f"The failure report could not be written: {report_error}"
+        else:
+            exc.failure_report_path = failure_path
+            report_note = f"Complete failure report: {failure_path}"
         run.close()
+        if not isinstance(exc, ImportStopped):
+            raise
+        _print_stderr(f"Import stopped: {exc}\n{report_note}")
         return 2
     export_dxf_ms = (time.perf_counter() - t_export) * 1000.0
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
@@ -220,11 +275,28 @@ def main() -> int:
                 export.text_deliveries,
                 report_path=str(import_report_path),
             ),
+            "searchable_text_companions": export.searchable_text_companions,
         },
     }
 
     summary_json = json.dumps(summary, indent=2, allow_nan=False)
     print(summary_json)
+    clip_fill_warning = run.extraction.clip_fill_warning()
+    if clip_fill_warning:
+        _print_stderr(clip_fill_warning)
+    # Recovered spans are stated and unproven ones warned about, in one line.
+    glyph_code_warning = run.extraction.glyph_code_warning()
+    if glyph_code_warning:
+        _print_stderr(glyph_code_warning)
+    # The DXF was written (exit code 0), but a degraded text item must be loud.
+    text_delivery = summary["export"]["text_delivery"]
+    for line in degraded_text_item_lines(
+        text_delivery["degraded_items"], text_delivery["degraded_item_count"]
+    ):
+        _print_stderr(line)
+    search_text_warning = searchable_text_warning_line(export.searchable_text_companions)
+    if search_text_warning:
+        _print_stderr(search_text_warning)
 
     if args.json:
         report = Path(args.json).expanduser().resolve()

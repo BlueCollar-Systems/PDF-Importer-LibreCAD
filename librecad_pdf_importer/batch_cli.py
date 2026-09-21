@@ -6,7 +6,14 @@ import json
 from pathlib import Path
 import sys
 
-from .exporters.dxf_exporter import DxfExportOptions, export_to_dxf
+from .cli import _print_stderr
+from .exporters.dxf_exporter import (
+    DxfExportOptions,
+    degraded_text_item_lines,
+    degraded_text_items,
+    export_to_dxf,
+    searchable_text_warning_line,
+)
 from .importer import run_import
 
 
@@ -72,7 +79,9 @@ def main() -> int:
         "text_mode": args.text_mode,
         "total": len(pdfs),
         "passed": 0,
+        "degraded": 0,
         "failed": 0,
+        "warnings": 0,
         "results": [],
     }
 
@@ -102,15 +111,62 @@ def main() -> int:
                     provenance_opts=run.config,
                 ),
             )
-            aggregate["passed"] += 1
+            # A batch writes no import report per PDF, so a visible clipped fill
+            # that was left out is said here: in the record and on stderr.
+            clip_fill_delivery = run.extraction.clip_fill_delivery()
+            clip_fill_warning = run.extraction.clip_fill_warning(
+                see="See clip_fill_delivery in the batch report." if args.json
+                else "Run the batch with --json for the clip_fill_delivery records."
+            )
+            clip_fill_warnings = clip_fill_delivery["dropped"] + clip_fill_delivery["approximated"]
+            if clip_fill_warning:
+                _print_stderr(f"{rel}: {clip_fill_warning}")
+            # Text a font delivered as raw glyph codes. A batch rewrites those
+            # characters from an external reference face like any other run, so
+            # it says so here too; a recovered span is stated and only an
+            # unproven one warns.
+            glyph_code_delivery = run.extraction.glyph_code_delivery()
+            glyph_code_warning = run.extraction.glyph_code_warning(
+                see="See text_glyph_codes in the batch report." if args.json
+                else "Run the batch with --json for the text_glyph_codes records."
+            )
+            glyph_code_warnings = int(glyph_code_delivery["unproven"])
+            if glyph_code_warning:
+                _print_stderr(f"{rel}: {glyph_code_warning}")
+            # A degraded text item never costs the sheet (the DXF is written), but
+            # such a sheet is DEGRADED, never passed, and the batch exits non-zero.
+            degraded = degraded_text_items(export.text_deliveries)
+            for line in degraded_text_item_lines(degraded["items"], degraded["total"]):
+                _print_stderr(f"{rel}: {line}")
+            # A lost hidden search-text companion is a warning; the sheet still passes.
+            search_text = export.searchable_text_companions
+            search_text_warning = searchable_text_warning_line(
+                search_text,
+                see="See searchable_text_companions in the batch report." if args.json
+                else "Run the batch with --json for the searchable_text_companions records.",
+            )
+            if search_text_warning:
+                _print_stderr(f"{rel}: {search_text_warning}")
+            warnings = (
+                clip_fill_warnings + int(degraded["total"])
+                + int(search_text["failed"]) + int(search_text["mismatch"])
+                + glyph_code_warnings
+            )
+            aggregate["degraded" if degraded["total"] else "passed"] += 1
+            aggregate["warnings"] += warnings
             aggregate["results"].append({
                 "pdf": str(pdf),
                 "dxf": export.output_path,
-                "status": "PASS",
+                "status": "DEGRADED" if degraded["total"] else "PASS",
+                "text_items_degraded": degraded["total"],
                 "mode": args.mode,
                 "text_mode": args.text_mode,
                 "entities": export.entity_count,
                 "images": export.image_count,
+                "warnings": warnings,
+                "clip_fill_delivery": clip_fill_delivery,
+                "text_glyph_codes": glyph_code_delivery,
+                "searchable_text_companions": search_text,
             })
         except Exception as exc:  # noqa: BLE001
             aggregate["failed"] += 1
@@ -141,7 +197,9 @@ def main() -> int:
         )
         print(f"Wrote report: {out}")
 
-    return 0 if aggregate["failed"] == 0 else 1
+    # A DEGRADED sheet is uncertified exactly as a FAIL sheet is: scripts that spot
+    # uncertified sheets by a non-zero exit code keep working.
+    return 0 if aggregate["failed"] == 0 and aggregate["degraded"] == 0 else 1
 
 
 if __name__ == "__main__":

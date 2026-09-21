@@ -9,11 +9,13 @@ converter.  Uses *ttk* widgets for a modern look.
 from __future__ import annotations
 
 import os
+import math
 import re
 import sys
 import threading
 import time
 import tkinter as tk
+from dataclasses import dataclass
 from tkinter import filedialog, messagebox, ttk
 
 # Ensure project root is on sys.path
@@ -33,15 +35,28 @@ IMPORT_MODE_AUTO = "auto"
 # tries that type first; only item-specific, reported impossibility can advance
 # it to the nearest verified visual representation.
 TEXT_MODES = {
-    "Text (editable native TEXT)": "text",
-    "Labels (closest Text fallback)": "labels",
-    "3D Text (2D host: Text fallback)": "3d_text",
+    "Text (may become outlines)": "text",
+    "Labels (fallback reported)": "labels",
+    "3D Text (LibreCAD is 2D)": "3d_text",
     "Glyphs (grouped outlines)": "glyphs",
     "Geometry (raw outlines)": "geometry",
     "Raster (exact item pixels)": "raster",
 }
 
 DXF_VERSIONS = ("R12", "R2000", "R2004", "R2007", "R2010", "R2013", "R2018")
+DEFAULT_TEXT_LABEL = next(label for label, mode in TEXT_MODES.items() if mode == "text")
+
+
+@dataclass(frozen=True)
+class ConversionOptions:
+    """Validated values captured on the UI thread before conversion starts."""
+
+    scale: float
+    import_text: bool
+    text_mode: str
+    pages: tuple[int, ...] | None
+    dxf_version: str
+    launch_librecad: bool
 
 
 # ---------------------------------------------------------------------------
@@ -54,10 +69,10 @@ class Pdf2DxfApp(tk.Tk):
         super().__init__()
         self.title("PDF to DXF Converter - BlueCollar-Systems")
         self.resizable(True, True)
-        self.minsize(560, 500)
+        self.minsize(560, 620)
 
         # Try to set a reasonable starting size
-        self.geometry("620x580")
+        self.geometry("680x680")
 
         self._converting = False
         self._cancel_event = threading.Event()
@@ -82,12 +97,13 @@ class Pdf2DxfApp(tk.Tk):
             text="BlueCollar-Systems -- BUILT. NOT BOUGHT.",
             font=("Segoe UI", 9),
         ).grid(row=1, column=0, columnspan=3, sticky=tk.W, padx=8)
-        ttk.Label(
+        tagline = ttk.Label(
             frame,
             text="Professional import — maximum fidelity; Auto picks vector, raster, or hybrid per page.",
             font=("Segoe UI", 9),
             wraplength=560,
-        ).grid(row=2, column=0, columnspan=3, sticky=tk.W, padx=8, pady=(0, 4))
+        )
+        tagline.grid(row=2, column=0, columnspan=3, sticky=tk.EW, padx=8, pady=(0, 4))
 
         # ---- Input file ----
         ttk.Label(frame, text="Input PDF:").grid(row=3, column=0, sticky=tk.W, **pad)
@@ -109,24 +125,30 @@ class Pdf2DxfApp(tk.Tk):
 
         # ---- Page range ----
         ttk.Label(frame, text="Pages:").grid(row=5, column=0, sticky=tk.W, **pad)
+        pages_frame = ttk.Frame(frame)
+        pages_frame.grid(row=5, column=1, columnspan=2, sticky=tk.EW, **pad)
         self._var_pages = tk.StringVar()
-        ttk.Entry(frame, textvariable=self._var_pages, width=20).grid(
-            row=5, column=1, sticky=tk.W, **pad,
+        ttk.Entry(pages_frame, textvariable=self._var_pages, width=16).pack(
+            side=tk.LEFT,
         )
-        ttk.Label(frame, text="(e.g. 1,2,5  or blank for all)").grid(
-            row=5, column=2, sticky=tk.W, **pad,
+        ttk.Label(pages_frame, text="1,3-5; blank for all").pack(
+            side=tk.LEFT, padx=(10, 0),
         )
 
         # ---- Scale ----
         ttk.Label(frame, text="Scale:").grid(row=6, column=0, sticky=tk.W, **pad)
         self._var_scale = tk.StringVar(value="1.0")
-        ttk.Entry(frame, textvariable=self._var_scale, width=10).grid(
-            row=6, column=1, sticky=tk.W, **pad,
+        scale_frame = ttk.Frame(frame)
+        scale_frame.grid(row=6, column=1, columnspan=2, sticky=tk.EW, **pad)
+        self._ent_scale = ttk.Entry(scale_frame, textvariable=self._var_scale, width=10)
+        self._ent_scale.pack(side=tk.LEFT)
+        ttk.Label(scale_frame, text="Multiplier: 1.0 = unchanged").pack(
+            side=tk.LEFT, padx=(10, 0),
         )
 
         # ---- Requested text representation ----
         ttk.Label(frame, text="Text:").grid(row=7, column=0, sticky=tk.W, **pad)
-        self._var_text_mode = tk.StringVar(value="Text (editable native TEXT)")
+        self._var_text_mode = tk.StringVar(value=DEFAULT_TEXT_LABEL)
         text_combo = ttk.Combobox(
             frame,
             textvariable=self._var_text_mode,
@@ -134,16 +156,22 @@ class Pdf2DxfApp(tk.Tk):
             state="readonly",
             width=38,
         )
-        text_combo.grid(row=7, column=1, sticky=tk.W, **pad)
-        ttk.Label(
+        text_combo.grid(row=7, column=1, columnspan=2, sticky=tk.EW, **pad)
+        text_help = ttk.Label(
             frame,
             text=(
-                "LibreCAD is 2D. The selected type is attempted item by item; "
-                "any verified fallback is shown in the result and complete report."
+                "Visible Text normally becomes verified outlines because LibreCAD "
+                "substitutes PDF fonts. Labels and 3D Text also have 2D host limits. "
+                "Any fallback or unverified item is listed in the log and report."
             ),
-            font=("Segoe UI", 8),
-            wraplength=420,
-        ).grid(row=8, column=1, columnspan=2, sticky=tk.W, padx=8)
+            wraplength=620,
+        )
+        text_help.grid(row=8, column=0, columnspan=3, sticky=tk.EW, padx=8, pady=(0, 6))
+        # Wrap explanations to the available width, including at larger UI scales.
+        frame.bind("<Configure>", lambda event: [
+            label.configure(wraplength=max(200, event.width - 36))
+            for label in (tagline, text_help)
+        ])
 
         # ---- DXF version ----
         ttk.Label(frame, text="DXF Version:").grid(row=9, column=0, sticky=tk.W, **pad)
@@ -198,9 +226,14 @@ class Pdf2DxfApp(tk.Tk):
 
         # ---- Status log ----
         ttk.Label(frame, text="Log:").grid(row=13, column=0, sticky=tk.NW, **pad)
-        self._log_text = tk.Text(frame, height=10, width=70, state=tk.DISABLED,
+        log_frame = ttk.Frame(frame)
+        log_frame.grid(row=14, column=0, columnspan=3, sticky=tk.NSEW, **pad)
+        self._log_text = tk.Text(log_frame, height=10, width=1, state=tk.DISABLED,
                                  wrap=tk.WORD, font=("Consolas", 9))
-        self._log_text.grid(row=14, column=0, columnspan=3, sticky=tk.NSEW, **pad)
+        self._log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        log_scroll = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self._log_text.yview)
+        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self._log_text.configure(yscrollcommand=log_scroll.set)
 
         # Let the log area expand when the window is resized
         frame.columnconfigure(1, weight=1)
@@ -235,7 +268,8 @@ class Pdf2DxfApp(tk.Tk):
     def _log(self, msg: str) -> None:
         """Append a message to the log widget (thread-safe via after())."""
         def _append():
-            progress = re.search(r"Page\s+(\d+)/(\d+)\s+certified", msg)
+            # A page with a degraded text item is "exported ... NOT certified".
+            progress = re.search(r"Page\s+(\d+)/(\d+)\s+(?:certified|exported)", msg)
             if progress:
                 current, total = int(progress.group(1)), int(progress.group(2))
                 self._progress.configure(maximum=max(1, total), value=current)
@@ -256,6 +290,27 @@ class Pdf2DxfApp(tk.Tk):
     # ------------------------------------------------------------------
     # Conversion
     # ------------------------------------------------------------------
+    def _capture_options(self) -> ConversionOptions:
+        """Read Tk variables once, on the main thread, and reject invalid inputs."""
+        from page_selection import parse_page_selection
+
+        try:
+            scale = float(self._var_scale.get())
+        except ValueError:
+            raise ValueError("Scale must be a positive, finite number, such as 1.0 or 0.5.") from None
+        if not math.isfinite(scale) or scale <= 0:
+            raise ValueError("Scale must be a positive, finite number, such as 1.0 or 0.5.")
+        raw_pages = self._var_pages.get().strip()
+        pages = parse_page_selection(raw_pages) if raw_pages else None
+        return ConversionOptions(
+            scale=scale,
+            import_text=self._var_import_text.get(),
+            text_mode=TEXT_MODES[self._var_text_mode.get()],
+            pages=tuple(pages) if pages is not None else None,
+            dxf_version=self._var_dxf_ver.get(),
+            launch_librecad=self._var_launch_librecad.get(),
+        )
+
     def _start_conversion(self) -> None:
         if self._converting:
             return
@@ -273,6 +328,12 @@ class Pdf2DxfApp(tk.Tk):
             output_path = os.path.splitext(input_path)[0] + ".dxf"
             self._var_output.set(output_path)
 
+        try:
+            options = self._capture_options()
+        except ValueError as exc:
+            messagebox.showwarning("Check conversion settings", str(exc))
+            return
+
         self._converting = True
         self._cancel_event.clear()
         self._btn_convert.configure(state=tk.DISABLED)
@@ -287,12 +348,14 @@ class Pdf2DxfApp(tk.Tk):
         # Run conversion in a background thread to keep the UI responsive
         thread = threading.Thread(
             target=self._run_conversion,
-            args=(input_path, output_path),
+            args=(input_path, output_path, options),
             daemon=True,
         )
         thread.start()
 
-    def _run_conversion(self, input_path: str, output_path: str) -> None:
+    def _run_conversion(
+        self, input_path: str, output_path: str, options: ConversionOptions,
+    ) -> None:
         """Execute the conversion pipeline (runs in a worker thread)."""
         try:
             from pdfcadcore.import_config import ImportConfig
@@ -301,36 +364,29 @@ class Pdf2DxfApp(tk.Tk):
             # BCS-ARCH-001: GUI always uses Auto (strategy per page).
             config: ImportConfig = ImportConfig.auto()
 
-            # Apply GUI overrides
-            try:
-                config.user_scale = float(self._var_scale.get())
-            except ValueError:
-                config.user_scale = 1.0
-
-            config.import_text = self._var_import_text.get()
-            config.text_mode = TEXT_MODES.get(self._var_text_mode.get(), "text")
+            # The worker never reads live Tk values: edits belong to the next run.
+            config.user_scale = options.scale
+            config.import_text = options.import_text
+            config.text_mode = options.text_mode
             config.verbose = True
-
-            # Parse pages
-            raw_pages = self._var_pages.get().strip()
-            if raw_pages:
-                from page_selection import parse_page_selection
-
-                config.pages = parse_page_selection(raw_pages)
-
-            dxf_version = self._var_dxf_ver.get()
+            config.pages = list(options.pages) if options.pages is not None else None
+            dxf_version = options.dxf_version
 
             t0 = time.perf_counter()
             self._log(f"Starting conversion: {os.path.basename(input_path)}")
             self._log("Import mode: Auto (per-page strategy)")
+            self._log(
+                f"Settings: scale={options.scale:g}; text="
+                f"{options.text_mode if options.import_text else 'off'}; DXF={dxf_version}"
+            )
             selection = (
                 f"{len(config.pages)} selected page(s)"
                 if config.pages is not None
                 else "all pages in the PDF"
             )
             self._log(
-                f"Work estimate: {selection}. Each completed page is certified "
-                "and resumable."
+                f"Work estimate: {selection}. Each completed page is checkpointed "
+                "and resumable; a page with a degraded text item is never certified."
             )
 
             from pdf_open_guard import precheck_pdf
@@ -375,9 +431,35 @@ class Pdf2DxfApp(tk.Tk):
             self._log(
                 f"  Complete report: {text_delivery.get('report_path', '')}"
             )
+            # Said once, at completion, pages certified by an earlier run included.
+            clip_fill_warning = str(stats.get("clip_fill_warning") or "")
+            if clip_fill_warning:
+                self._log(clip_fill_warning)
+            # Text a font delivered as raw glyph codes: recovered characters
+            # came from an installed reference face, not from the PDF, and an
+            # unproven span is still on the drawing as raw codes. Either way
+            # the operator is the one who has to know.
+            glyph_code_warning = str(stats.get("text_glyph_code_warning") or "")
+            if glyph_code_warning:
+                self._log(glyph_code_warning)
+            # A lost hidden search-text companion is a warning; the drawing is unaffected.
+            search_text_warning = str(stats.get("searchable_text_warning") or "")
+            if search_text_warning:
+                self._log(search_text_warning)
+            # A degraded text item never costs the sheet, so it must be loud.
+            degraded_count = int(text_delivery.get("degraded_item_count") or 0)
+            if degraded_count:
+                from librecad_pdf_importer.exporters.dxf_exporter import (
+                    degraded_text_item_lines,
+                )
+
+                for line in degraded_text_item_lines(
+                    text_delivery.get("degraded_items") or [], degraded_count
+                ):
+                    self._log(f"  {line}")
 
             launch_message = ""
-            if self._var_launch_librecad.get():
+            if options.launch_librecad:
                 from librecad_pdf_importer.launchers.librecad_launcher import launch_librecad
                 launch_ok, launch_status = launch_librecad(
                     output_path,
@@ -391,10 +473,18 @@ class Pdf2DxfApp(tk.Tk):
                         "librecad_pdf_importer.launchers.librecad_launcher.",
                     )
 
-            self.after(0, lambda: messagebox.showinfo(
-                "Done",
-                f"Conversion complete.\n\n"
-                 f"Pages: {stats.get('pages', '?')}\n"
+            # The sheet exported, so this is a warning, never an error box.
+            show_done = messagebox.showwarning if degraded_count else messagebox.showinfo
+            self.after(0, lambda: show_done(
+                "Done with warnings" if degraded_count else "Done",
+                (
+                    f"Conversion complete, but {degraded_count} text item(s) could not "
+                    "be verified and were degraded or dropped. Review them in the log "
+                    "and the report before using this drawing.\n\n"
+                    if degraded_count
+                    else "Conversion complete.\n\n"
+                )
+                + f"Pages: {stats.get('pages', '?')}\n"
                  f"Entities: {stats.get('entities', '?')}\n"
                  f"Text requested: {text_delivery.get('requested', 'none')}\n"
                  f"Text delivered: {text_delivery.get('delivered', 'none')}\n"
@@ -402,6 +492,9 @@ class Pdf2DxfApp(tk.Tk):
                  f"{'yes' if text_delivery.get('fallback_used') else 'no'}\n"
                  f"Complete report: {text_delivery.get('report_path', '')}\n"
                  f"Output: {output_path}"
+                + (f"\n\n{clip_fill_warning}" if clip_fill_warning else "")
+                + (f"\n\n{glyph_code_warning}" if glyph_code_warning else "")
+                + (f"\n\n{search_text_warning}" if search_text_warning else "")
                 + (f"\n\n{launch_message}" if launch_message else ""),
             ))
 
@@ -421,8 +514,14 @@ class Pdf2DxfApp(tk.Tk):
                 self.after(0, lambda e=exc: messagebox.showerror("Conversion failed", str(e)))
             else:
                 self._log(f"\nERROR: {exc}")
-                self.after(0, lambda e=exc: messagebox.showerror(
-                    "Conversion failed", str(e),
+                # Like the console entry points: name the failure report the export
+                # left. A deliberate stop already carries it in its message.
+                detail = str(exc)
+                failure_report = str(getattr(exc, "failure_report_path", "") or "")
+                if failure_report and failure_report not in detail:
+                    detail += f"\n\nComplete failure report: {failure_report}"
+                self.after(0, lambda m=detail: messagebox.showerror(
+                    "Conversion failed", m,
                 ))
 
         finally:

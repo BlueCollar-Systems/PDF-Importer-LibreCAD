@@ -31,7 +31,6 @@ from dxf_text_builder import (
 from librecad_pdf_importer.core.document import DocumentExtraction, ExtractedPage
 from librecad_pdf_importer.exporters.dxf_exporter import (
     DxfExportOptions,
-    TextRepresentationDeliveryError,
     _PositionedTranslationAnchor,
     _positioned_session_anchor_map,
     _positioned_translation_receipt_digest,
@@ -80,6 +79,15 @@ _POSITIONED_GEOMETRY_PROOF_FIELDS = (
     "positioned_geometry_entity_count",
     "positioned_geometry_sha256",
 )
+
+
+def _visible(drawing) -> list:
+    """Modelspace without the hidden search-text companions (frozen P###_TEXT_SEARCH)."""
+    return [
+        entity
+        for entity in drawing.modelspace()
+        if not entity.dxf.layer.endswith("TEXT_SEARCH")
+    ]
 
 
 def _world_point(
@@ -389,7 +397,7 @@ def test_positioned_fraction_geometry_is_persisted_as_fill_only_raw_geometry(
     assert final.evidence["positioned_source_glyph_ids"] == list(_GLYPH_IDS)
     assert final.evidence["positioned_visible_geometry_fill_only"] is True
     assert final.evidence["positioned_contour_entities_omitted"] is True
-    entities = list(reopened.modelspace())
+    entities = _visible(reopened)
     character_solid_counts = final.evidence[
         "positioned_geometry_character_solid_counts"
     ]
@@ -1517,11 +1525,80 @@ def test_multi_page_stack_translates_positioned_fraction_layout_and_reopen_evide
             abs=1e-9,
         )
     else:
-        serialized_bbox = _bbox_tuple(list(reopened.modelspace()))
+        serialized_bbox = _bbox_tuple(_visible(reopened))
         assert serialized_bbox == pytest.approx(
             evidence["expected_outline_bbox"],
             abs=1e-7,
         )
+
+
+@pytest.mark.parametrize("mode", ["glyphs", "geometry"])
+def test_recovered_quad_shear_noise_still_delivers_verified_outlines(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    # Quads rebuilt by recover_char_quad carry up to 1.8e-5 of float32 shear
+    # noise, 11% under the former 2e-5 bound. 5e-5 (0.003 degrees) sits between
+    # that and the 1e-4 bound: it must deliver exact outlines, not a raster patch.
+    item = _positioned_fraction("vertical")
+    sheared = []
+    for character in item.source_char_layout:
+        q0, q1, q2, q3 = character.target_quad
+        offset = 5e-5 * character.glyph_height
+        sheared.append(
+            replace(
+                character,
+                target_quad=(q0, q1, (q2[0] + offset, q2[1]), (q3[0] + offset, q3[1])),
+            )
+        )
+    item.source_char_layout = tuple(sheared)
+
+    _reopened, result, _anchors = _save_reopen(tmp_path, item, mode)
+
+    assert result.verified is True
+    assert result.final_representation == mode
+    assert [attempt.outcome for attempt in result.attempts] == ["verified"]
+
+
+def _assert_invalid_layout_degraded_to_visible_text(
+    output: Path,
+    result: object,
+    item: NormalizedText,
+    *,
+    expected_dy: float,
+) -> None:
+    """Owner decision 2026-09-19: an invalid layout costs the item, not the sheet.
+
+    The builder's veto is unchanged (never authorized, never repaired); with no
+    readable source PDF the item raster is impossible too, so the exact string
+    is kept as visible, unverified TEXT on the page's degraded layer.
+    """
+    delivery = result.text_deliveries[0]
+    assert delivery["verified"] is False and delivery["degraded"] is True
+    assert delivery["dropped"] is False
+    assert delivery["proof_class"] == "invalid_layout"
+    assert delivery["terminal_fallback_authorized"] is False
+    assert delivery["final_representation"] == "text"
+    assert [attempt["strategy"] for attempt in delivery["attempts"]] == [
+        "positioned_fraction_layout_validation",
+        "pymupdf_opaque_source_item_clip",
+        "degraded_visible_source_text",
+    ]
+    assert [attempt["outcome"] for attempt in delivery["attempts"]] == [
+        "impossible",
+        "failed",
+        "degraded",
+    ]
+    reopened = ezdxf.readfile(output)
+    entities = list(reopened.modelspace())
+    assert [entity.dxftype() for entity in entities] == ["TEXT"]
+    assert entities[0].dxf.text == _TEXT
+    assert entities[0].dxf.layer == "P002_TEXT_DEGRADED"
+    assert entities[0].dxf.handle == delivery["entity_handles"][0]
+    assert tuple(entities[0].dxf.insert)[:2] == pytest.approx(
+        (item.insertion[0], item.insertion[1] + expected_dy), abs=1e-9
+    )
+    assert not output.with_name(f"{output.stem}_assets").exists()
 
 
 @pytest.mark.parametrize("mode", ["glyphs", "geometry"])
@@ -1537,27 +1614,26 @@ def test_multi_page_stack_does_not_repair_malformed_layout_container(
     item.source_char_layout = malformed_layout
     output = tmp_path / f"two-page-malformed-layout-{mode}.dxf"
 
-    with pytest.raises(TextRepresentationDeliveryError) as raised:
-        export_to_dxf(
-            _two_page_positioned_fraction_extraction(
-                tmp_path / "must-not-be-read.pdf",
-                item,
-            ),
-            str(output),
-            DxfExportOptions(
-                include_images=False,
-                attach_metadata=False,
-                text_mode=mode,
-                dxf_version="R2010",
-                page_arrangement="spread",
-                page_gap_ratio=0.02,
-            ),
-        )
+    result = export_to_dxf(
+        _two_page_positioned_fraction_extraction(
+            tmp_path / "unreadable-source.pdf",
+            item,
+        ),
+        str(output),
+        DxfExportOptions(
+            include_images=False,
+            attach_metadata=False,
+            text_mode=mode,
+            dxf_version="R2010",
+            page_arrangement="spread",
+            page_gap_ratio=0.02,
+        ),
+    )
 
     assert item.source_char_layout is malformed_layout
-    assert raised.value.delivery.terminal_fallback_authorized is False
-    assert not output.exists()
-    assert not output.with_name(f"{output.stem}_assets").exists()
+    _assert_invalid_layout_degraded_to_visible_text(
+        output, result, item, expected_dy=-120.0
+    )
 
 
 @pytest.mark.parametrize("mode", ["glyphs", "geometry"])
@@ -1708,7 +1784,7 @@ def test_reopen_cannot_delete_fill_contract_to_bypass_shifted_geometry(
 
 
 @pytest.mark.parametrize("mode", ["glyphs", "geometry"])
-def test_multi_page_stack_preserves_malformed_target_origin_for_terminal_refusal(
+def test_multi_page_stack_preserves_malformed_target_origin_for_item_degrade(
     tmp_path: Path,
     mode: str,
 ) -> None:
@@ -1722,27 +1798,26 @@ def test_multi_page_stack_preserves_malformed_target_origin_for_terminal_refusal
     original_layout = item.source_char_layout
     output = tmp_path / f"two-page-malformed-target-origin-{mode}.dxf"
 
-    with pytest.raises(TextRepresentationDeliveryError) as raised:
-        export_to_dxf(
-            _two_page_positioned_fraction_extraction(
-                tmp_path / "must-not-be-read.pdf",
-                item,
-            ),
-            str(output),
-            DxfExportOptions(
-                include_images=False,
-                attach_metadata=False,
-                text_mode=mode,
-                dxf_version="R2010",
-                page_arrangement="spread",
-                page_gap_ratio=0.02,
-            ),
-        )
+    result = export_to_dxf(
+        _two_page_positioned_fraction_extraction(
+            tmp_path / "unreadable-source.pdf",
+            item,
+        ),
+        str(output),
+        DxfExportOptions(
+            include_images=False,
+            attach_metadata=False,
+            text_mode=mode,
+            dxf_version="R2010",
+            page_arrangement="spread",
+            page_gap_ratio=0.02,
+        ),
+    )
 
     assert item.source_char_layout is original_layout
-    assert raised.value.delivery.terminal_fallback_authorized is False
-    assert not output.exists()
-    assert not output.with_name(f"{output.stem}_assets").exists()
+    _assert_invalid_layout_degraded_to_visible_text(
+        output, result, item, expected_dy=-120.0
+    )
 
 
 def test_positioned_delivery_does_not_invent_bbox_quad_equality() -> None:
@@ -1819,7 +1894,7 @@ def test_positioned_fraction_fill_only_contract_survives_r12_reopen(
             for entity in reopened.blocks.get(nested_insert.dxf.name)
         ]
     else:
-        entities = list(reopened.modelspace())
+        entities = _visible(reopened)
     outlines = [
         entity for entity in entities if entity.dxftype() in {"LWPOLYLINE", "POLYLINE"}
     ]
@@ -1867,6 +1942,49 @@ def test_r12_positioned_fraction_refuses_nonrepresentable_source_rgb_without_art
         "r12_source_color_encoding": "unrepresentable_srgb8",
         "r12_source_color_rgb": [51, 102, 204],
     }
+
+
+@pytest.mark.parametrize("mode", ["glyphs", "geometry"])
+def test_r12_nonrepresentable_positioned_color_costs_one_item_not_the_sheet(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    # The builder veto above is unchanged. R12 has no IMAGE entity, so the item
+    # raster patch is impossible too and the exact string stays visible instead.
+    item = _positioned_fraction("vertical", color=_COLOR)
+    output = tmp_path / f"r12-color-{mode}.dxf"
+
+    result = export_to_dxf(
+        DocumentExtraction(
+            pdf_path=str(tmp_path / "unreadable-source.pdf"),
+            pages=[
+                ExtractedPage(
+                    page_data=PageData(
+                        page_number=int(item.page_number),
+                        width=300.0,
+                        height=100.0,
+                        text_items=[item],
+                    ),
+                    profile=SimpleNamespace(),
+                )
+            ],
+        ),
+        str(output),
+        DxfExportOptions(include_images=False, text_mode=mode, dxf_version="R12"),
+    )
+
+    delivery = result.text_deliveries[0]
+    assert delivery["verified"] is False and delivery["degraded"] is True
+    assert delivery["proof_class"] == "proven_impossible"
+    assert delivery["attempts"][0]["strategy"] == "positioned_fraction_r12_color_validation"
+    assert delivery["final_representation"] == "text"
+    assert result.text_fallbacks[0]["reason"] == "item_degraded_after_proven_impossibility"
+    reopened = ezdxf.readfile(output)
+    assert reopened.dxfversion == "AC1009"
+    assert [
+        (entity.dxftype(), entity.dxf.text, entity.dxf.layer)
+        for entity in reopened.modelspace()
+    ] == [("TEXT", _TEXT, f"P{int(item.page_number):03d}_TEXT_DEGRADED")]
 
 
 def test_r12_positioned_fraction_rejects_invalid_serialized_aci_evidence(
@@ -1958,13 +2076,16 @@ def test_invalid_positioned_fraction_refuses_terminally_without_artifacts(
     assert result.attempts[0].evidence["fallback_authorized_for_this_item"] is False
 
 
-def test_invalid_positioned_fraction_export_never_reads_pdf_or_attempts_raster(
+def test_invalid_positioned_fraction_export_tries_raster_then_keeps_visible_text(
     tmp_path: Path,
 ) -> None:
+    # The old rules never "authorized" an item raster for an invalid layout and
+    # the sheet died. The raster patch is now tried regardless; when it cannot
+    # be made, the exact string stays visible and the sheet still exports.
     item = _positioned_fraction("vertical")
     item.source_char_layout = item.source_char_layout[:-1]
     extraction = DocumentExtraction(
-        pdf_path=str(tmp_path / "must-not-be-read.pdf"),
+        pdf_path=str(tmp_path / "unreadable-source.pdf"),
         pages=[
             ExtractedPage(
                 page_data=PageData(
@@ -1978,8 +2099,7 @@ def test_invalid_positioned_fraction_export_never_reads_pdf_or_attempts_raster(
         ],
     )
     output = tmp_path / "existing-native-output.dxf"
-    prior = b"prior native artifact\n"
-    output.write_bytes(prior)
+    output.write_bytes(b"prior native artifact\n")
 
     def unchanged_delivery(delivery, **_kwargs):
         return delivery, None
@@ -1993,18 +2113,24 @@ def test_invalid_positioned_fraction_export_never_reads_pdf_or_attempts_raster(
             "librecad_pdf_importer.exporters.dxf_exporter._attempt_terminal_text_raster",
             side_effect=unchanged_delivery,
         ) as raster_fallback,
-        pytest.raises(TextRepresentationDeliveryError) as raised,
     ):
-        export_to_dxf(
+        result = export_to_dxf(
             extraction,
             str(output),
             DxfExportOptions(include_images=False, text_mode="text"),
         )
 
-    assert output.read_bytes() == prior
-    assert raised.value.delivery.terminal_fallback_authorized is False
-    assert hash_pdf.call_count == 0
-    assert raster_fallback.call_count == 0
+    assert hash_pdf.call_count == 1
+    assert raster_fallback.call_count == 1
+    delivery = result.text_deliveries[0]
+    assert delivery["terminal_fallback_authorized"] is False
+    assert delivery["verified"] is False and delivery["degraded"] is True
+    assert delivery["proof_class"] == "invalid_layout"
+    assert delivery["final_representation"] == "text"
+    texts = list(ezdxf.readfile(output).modelspace())
+    assert [(entity.dxftype(), entity.dxf.text, entity.dxf.layer) for entity in texts] == [
+        ("TEXT", _TEXT, "P003_TEXT_DEGRADED")
+    ]
     assert not output.with_name(f"{output.stem}_assets").exists()
 
 

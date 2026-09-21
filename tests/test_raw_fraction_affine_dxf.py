@@ -17,6 +17,15 @@ from pdfcadcore.primitive_extractor import extract_page
 SCALE = 25.4 / 72.0
 
 
+def _visible(drawing) -> list:
+    """Modelspace without the hidden search-text companions (frozen P###_TEXT_SEARCH)."""
+    return [
+        entity
+        for entity in drawing.modelspace()
+        if not entity.dxf.layer.endswith("TEXT_SEARCH")
+    ]
+
+
 def make_fraction(path, shear=0.0, rotated=False):
     doc = fitz.open()
     page = doc.new_page(width=200, height=150)
@@ -121,7 +130,7 @@ def test_persisted_raw_fraction_has_source_positions_and_unstretched_ink(tmp_pat
     font.close()
     expected = (min(p[0] for p in expected_points), min(p[1] for p in expected_points),
                 max(p[0] for p in expected_points), max(p[1] for p in expected_points))
-    actual = builder._bbox_tuple(list(doc.modelspace()))
+    actual = builder._bbox_tuple(_visible(doc))
     assert actual == pytest.approx(expected, abs=0.015)
 
 
@@ -168,7 +177,7 @@ def test_ordinary_anisotropic_string_preserves_full_source_glyph_em(tmp_path, te
                    (ox+x1/em*12*SCALE, oy+y1/em*20*SCALE)]
     expected = (min(p[0] for p in points), min(p[1] for p in points),
                 max(p[0] for p in points), max(p[1] for p in points))
-    assert builder._bbox_tuple(list(doc.modelspace())) == pytest.approx(expected, abs=.015)
+    assert builder._bbox_tuple(_visible(doc)) == pytest.approx(expected, abs=.015)
     font.close()
 
 

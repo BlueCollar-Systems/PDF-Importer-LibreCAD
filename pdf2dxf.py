@@ -55,6 +55,12 @@ def _build_parser() -> argparse.ArgumentParser:
                    action=argparse.BooleanOptionalAction,
                    default=None,
                    help="Import text from the PDF (--no-import-text to skip)")
+    p.add_argument("--searchable-text",
+                   action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="Write each outlined/rastered string as hidden TEXT on the "
+                        "frozen layer P###_TEXT_SEARCH so the DXF is searchable "
+                        "(--no-searchable-text to skip)")
     p.add_argument("--dxf-version", default="R2010", choices=DXF_VERSIONS,
                    help="DXF version (default: R2010)")
     p.add_argument("--gui", action="store_true",
@@ -201,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     # Run conversion
+    from conversion_control import ImportStopped
     from dxf_import_engine import ConversionCancelled, convert
     from pdfcadcore.fitz_loader import PdfOpenError
 
@@ -228,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
             dxf_version=args.dxf_version,
             progress_callback=_progress if args.verbose else None,
             resumable=bool(args.resume),
+            searchable_text=bool(args.searchable_text),
         )
     except KeyboardInterrupt:
         print(
@@ -244,6 +252,29 @@ def main(argv: list[str] | None = None) -> int:
 
         _safe_print(cli_error("not_a_pdf", message=str(exc)), file=sys.stderr)
         return 2
+    except ImportStopped as exc:
+        # Stopped deliberately, and it says why. The engine wrote the failure
+        # report and named it in the message (or says that it could not write it).
+        _safe_print(f"Import stopped: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:  # noqa: BLE001
+        # A console exe answers a failed import with one readable line, not a
+        # Python traceback; --verbose keeps the traceback for a bug report.
+        from pdfcadcore.cli_error_copy import cli_error
+
+        if args.verbose:
+            import traceback
+
+            _safe_print(traceback.format_exc(), file=sys.stderr)
+        message = f"{type(exc).__name__}: {exc}"
+        failure_report = str(getattr(exc, "failure_report_path", "") or "")
+        report_error = str(getattr(exc, "failure_report_error", "") or "")
+        if failure_report:  # a failed export leaves one, whatever stopped it
+            message += f" (complete failure report: {failure_report})"
+        elif report_error:  # ... unless the report itself could not be written
+            message += f" (the failure report could not be written: {report_error})"
+        _safe_print(cli_error("import_failed", message=message), file=sys.stderr)
+        return 3
 
     elapsed = time.perf_counter() - t0
 
@@ -260,6 +291,20 @@ def main(argv: list[str] | None = None) -> int:
     report_path = stats.get("import_report_path")
     if report_path:
         _safe_print(f"  import_report:   {report_path}")
+    if stats.get("clip_fill_warning"):
+        _safe_print(str(stats["clip_fill_warning"]), file=sys.stderr)
+    # The DXF was written (exit code 0), but a degraded text item must be loud.
+    text_delivery = dict(stats.get("text_delivery") or {})
+    if text_delivery.get("degraded_item_count"):
+        from librecad_pdf_importer.exporters.dxf_exporter import degraded_text_item_lines
+
+        for line in degraded_text_item_lines(
+            text_delivery.get("degraded_items") or [],
+            int(text_delivery["degraded_item_count"]),
+        ):
+            _safe_print(line, file=sys.stderr)
+    if stats.get("searchable_text_warning"):
+        _safe_print(str(stats["searchable_text_warning"]), file=sys.stderr)
     return 0
 
 

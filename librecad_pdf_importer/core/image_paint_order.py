@@ -214,7 +214,9 @@ def verify_serialized_image_paint_order(path, expected_handles):
     current_sort = None
     in_entities = False
     section_pending = False
-    with open(path, encoding="utf-8") as stream:
+    # Only ASCII group codes and handles are read here. A pre-R2007 DXF is cp1252,
+    # so one TEXT value with a degree sign must not cost the sheet a decode error.
+    with open(path, encoding="utf-8", errors="surrogateescape") as stream:
         while True:
             code_line = stream.readline()
             if not code_line:

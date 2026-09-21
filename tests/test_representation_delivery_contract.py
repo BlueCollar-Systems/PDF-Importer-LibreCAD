@@ -71,6 +71,15 @@ fitz = import_fitz()
 _EMPTY_POSITIONED_SESSION: object | None = None
 
 
+def _visible(drawing) -> list:
+    """Modelspace without the hidden search-text companions (frozen P###_TEXT_SEARCH)."""
+    return [
+        entity
+        for entity in drawing.modelspace()
+        if not entity.dxf.layer.endswith("TEXT_SEARCH")
+    ]
+
+
 def _production_empty_positioned_session() -> object:
     global _EMPTY_POSITIONED_SESSION
     if _EMPTY_POSITIONED_SESSION is not None:
@@ -582,7 +591,7 @@ def test_librecad_visible_text_descends_to_glyphs_and_survives_parent_reopen(
         attempt["attempted_representation"] for attempt in delivery["attempts"]
     ] == expected_attempts
     drawing = ezdxf.readfile(output)
-    assert {entity.dxftype() for entity in drawing.modelspace()} == {"INSERT"}
+    assert {entity.dxftype() for entity in _visible(drawing)} == {"INSERT"}
 
     native_attempt = next(
         attempt
@@ -1152,7 +1161,7 @@ def test_librecad_native_text_attempt_preserves_source_cap_height_invariant(
 
     delivery = result.text_deliveries[0]
     assert delivery["final_representation"] == "glyphs"
-    assert {entity.dxftype() for entity in ezdxf.readfile(output).modelspace()} == {
+    assert {entity.dxftype() for entity in _visible(ezdxf.readfile(output))} == {
         "INSERT"
     }
     native = next(
@@ -2573,7 +2582,7 @@ def test_render_stage_must_not_alter_delivered_text_representation(tmp_path) -> 
         delivery["final_representation"] == "glyphs"
         for delivery in result.text_deliveries
     )
-    assert {entity.dxftype() for entity in drawing.modelspace()} == {"INSERT"}
+    assert {entity.dxftype() for entity in _visible(drawing)} == {"INSERT"}
     assert [entry["source_id"] for entry in result.text_deliveries] == [
         "text_span:3:1",
         "text_span:3:2",
@@ -2978,7 +2987,7 @@ def test_explicit_item_raster_is_verified_without_being_reported_as_fallback(
     ]
     assert result.text_fallbacks == []
     drawing = ezdxf.readfile(output)
-    assert [entity.dxftype() for entity in drawing.modelspace()] == ["IMAGE"]
+    assert [entity.dxftype() for entity in _visible(drawing)] == ["IMAGE"]
     image = next(iter(drawing.modelspace()))
     evidence = delivery["attempts"][0]["evidence"]
     assert evidence["host_safe_opaque_image_required"] is True
@@ -3109,7 +3118,12 @@ def test_run_import_records_but_does_not_publish_pre_export_report(tmp_path) -> 
     assert report_path.read_bytes() == prior
 
 
-def test_failed_3d_export_writes_separate_complete_failure_report(tmp_path) -> None:
+def test_unrenderable_terminal_raster_degrades_the_item_and_convert_completes(
+    tmp_path,
+) -> None:
+    # Owner decision 2026-09-19: this used to stop the import with a separate
+    # failure report. The item now degrades to visible TEXT and the sheet exports;
+    # the (normal) report stays loud and certification still fails.
     from dxf_import_engine import convert
 
     pdf_path = tmp_path / "source.pdf"
@@ -3177,34 +3191,55 @@ def test_failed_3d_export_writes_separate_complete_failure_report(tmp_path) -> N
         ),
         patch.object(dxf_exporter_module.fitz, "open", side_effect=tracked_open),
     ):
-        with pytest.raises(RuntimeError, match="text_span:1:1") as raised:
-            convert(str(pdf_path), str(dxf_path), config=config, dxf_version="R2010")
+        stats = convert(str(pdf_path), str(dxf_path), config=config, dxf_version="R2010")
 
     assert opened_documents
     assert all(document.is_closed for document in opened_documents)
-    assert dxf_path.read_bytes() == prior_dxf
-    assert accepted_report.read_bytes() == prior_report
-    failure_report_path = Path(raised.value.failure_report_path)
-    assert failure_report_path.is_file()
-    assert failure_report_path != accepted_report
-    report = json.loads(failure_report_path.read_text(encoding="utf-8"))
-    assert report["extra"]["result_status"] == "failed"
+    assert dxf_path.read_bytes() != prior_dxf
+    drawing = ezdxf.readfile(dxf_path)
+    assert [
+        (entity.dxftype(), entity.dxf.text, entity.dxf.layer)
+        for entity in drawing.modelspace()
+    ] == [("TEXT", "W12X30", "P001_TEXT_DEGRADED")]
+    assert not list(tmp_path.glob("*failed_import_report*"))
+    assert stats["text_delivery"]["verified"] is False
+    assert stats["text_delivery"]["degraded_item_count"] == 1
+    assert stats["text_delivery"]["degraded_items"][0]["delivered"] == "text"
+    assert accepted_report.read_bytes() != prior_report
+    report = json.loads(accepted_report.read_text(encoding="utf-8"))
+    assert report["extra"]["result_status"] == "success"
+    assert report["result"]["warnings"] == 1
     assert report["extra"]["import_contract_ready"]["ready"] is False
-    assert report["extra"]["human_summary"].startswith("Import failed")
+    assert report["extra"]["import_contract_ready"]["checks"]["text_delivery"] is False
+    assert report["extra"]["text_items_degraded"] == [
+        {
+            "source_id": "text_span:1:1",
+            "page": 1,
+            "text": "W12X30",
+            "reason": "all structural representations were proven impossible",
+            "reason_code": "item_degraded_after_proven_impossibility",
+            "proof_class": "proven_impossible",
+            "delivered": "text",
+        }
+    ]
     delivery = report["extra"]["text_representation_delivery"]
     assert delivery["verified"] is False
     assert delivery["requested_representation"] == "3d_text"
     assert len(delivery["items"]) == 1
     item = delivery["items"][0]
     assert item["source_id"] == "text_span:1:1"
-    assert item["final_representation"] is None
-    assert item["verified"] is False
+    assert item["final_representation"] == "text"
+    assert item["verified"] is False and item["degraded"] is True
     assert [attempt["attempted_representation"] for attempt in item["attempts"]] == [
         "3d_text",
         "raster",
+        "text",
     ]
-    assert all(attempt["outcome"] == "impossible" for attempt in item["attempts"][:-1])
-    assert item["attempts"][-1]["outcome"] == "failed"
+    assert [attempt["outcome"] for attempt in item["attempts"]] == [
+        "impossible",
+        "failed",
+        "degraded",
+    ]
 
 
 def test_exporter_reaches_verified_item_raster_terminal_attempt(tmp_path) -> None:
@@ -3252,8 +3287,8 @@ def test_exporter_reaches_verified_item_raster_terminal_attempt(tmp_path) -> Non
     assert asset_path.is_file()
     assert asset_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
     drawing = ezdxf.readfile(output)
-    assert {entity.dxftype() for entity in drawing.modelspace()} == {"IMAGE"}
-    assert {entity.dxf.handle for entity in drawing.modelspace()} == set(
+    assert {entity.dxftype() for entity in _visible(drawing)} == {"IMAGE"}
+    assert {entity.dxf.handle for entity in _visible(drawing)} == set(
         delivery["entity_handles"]
     )
     report_path = tmp_path / "raster_terminal_import_report.json"
@@ -3323,7 +3358,7 @@ def test_terminal_raster_uses_exact_raw_source_bbox_through_page_transform(
     assert Path(attempt["evidence"]["asset_path"]).is_file()
 
 
-def test_exporter_fails_loudly_when_terminal_raster_cannot_be_verified(
+def test_exporter_degrades_loudly_when_terminal_raster_cannot_be_verified(
     tmp_path,
 ) -> None:
     run = _real_text_extraction(tmp_path)
@@ -3338,9 +3373,7 @@ def test_exporter_fails_loudly_when_terminal_raster_cannot_be_verified(
         terminal_fallback_authorized=True,
         failure_reason="all structural representations failed",
     )
-    output = tmp_path / "must_not_publish.dxf"
-    prior_output = b"prior accepted DXF must remain byte-for-byte unchanged\r\n"
-    output.write_bytes(prior_output)
+    output = tmp_path / "degraded_not_certified.dxf"
     with (
         patch(
             "librecad_pdf_importer.exporters.dxf_exporter.build_text",
@@ -3351,13 +3384,20 @@ def test_exporter_fails_loudly_when_terminal_raster_cannot_be_verified(
             side_effect=RuntimeError("terminal renderer unavailable"),
         ),
     ):
-        with pytest.raises(RuntimeError, match=source_id):
-            export_to_dxf(
-                run.extraction,
-                str(output),
-                DxfExportOptions(include_images=False, text_mode="labels"),
-            )
-    assert output.read_bytes() == prior_output
+        result = export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(include_images=False, text_mode="labels"),
+        )
+    # One unverifiable item no longer costs the sheet, and is never certified.
+    delivery = result.text_deliveries[0]
+    assert delivery["source_id"] == source_id
+    assert delivery["verified"] is False and delivery["degraded"] is True
+    assert delivery["final_representation"] == "text"
+    assert "terminal renderer unavailable" in delivery["attempts"][-2]["reason"]
+    assert [entity.dxf.text for entity in ezdxf.readfile(output).modelspace()] == [
+        "W12X30"
+    ]
     assert not list(tmp_path.rglob("*.png"))
 
 
@@ -3385,14 +3425,20 @@ def test_terminal_raster_cannot_borrow_neighboring_ink_for_whitespace(tmp_path) 
         "librecad_pdf_importer.exporters.dxf_exporter.build_text",
         return_value=failure,
     ):
-        with pytest.raises(RuntimeError, match="whitespace-only"):
-            export_to_dxf(
-                run.extraction,
-                str(output),
-                DxfExportOptions(include_images=False, text_mode="labels"),
-            )
+        result = export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(include_images=False, text_mode="labels"),
+        )
 
-    assert not output.exists()
+    # The raster rung still refuses to certify whitespace from unrelated page
+    # ink; that refusal now costs the rung (then the item), never the sheet.
+    delivery = result.text_deliveries[0]
+    assert delivery["verified"] is False and delivery["degraded"] is True
+    assert "whitespace-only" in delivery["attempts"][-2]["reason"]
+    assert delivery["attempts"][-2]["outcome"] == "failed"
+    assert output.is_file()
+    assert not list(ezdxf.readfile(output).modelspace().query("IMAGE"))
     assert not list(tmp_path.rglob("*.png"))
 
 
@@ -3430,7 +3476,7 @@ def test_requested_raster_omits_zero_ink_for_whitespace(
     assert list(drawing.modelspace().query("IMAGE")) == []
 
 
-def test_unproven_structural_failure_cannot_start_terminal_raster(
+def test_unproven_structural_failure_is_rescued_as_an_uncertified_raster(
     tmp_path,
 ) -> None:
     run = _real_text_extraction(tmp_path)
@@ -3446,26 +3492,36 @@ def test_unproven_structural_failure_cannot_start_terminal_raster(
         failure_reason="requested representation failed without impossibility proof",
     )
     output = tmp_path / "unproven_failure.dxf"
-    prior_output = b"prior accepted DXF must survive unproven fallback\r\n"
-    output.write_bytes(prior_output)
-    with (
-        patch(
-            "librecad_pdf_importer.exporters.dxf_exporter.build_text",
-            return_value=failure,
-        ),
-        patch(
-            "librecad_pdf_importer.exporters.dxf_exporter.fitz.open",
-            side_effect=AssertionError("terminal Raster must not be attempted"),
-        ),
+    with patch(
+        "librecad_pdf_importer.exporters.dxf_exporter.build_text",
+        return_value=failure,
     ):
-        with pytest.raises(RuntimeError, match="without impossibility proof"):
-            export_to_dxf(
-                run.extraction,
-                str(output),
-                DxfExportOptions(include_images=False, text_mode="labels"),
-            )
+        result = export_to_dxf(
+            run.extraction,
+            str(output),
+            DxfExportOptions(include_images=False, text_mode="labels"),
+        )
 
-    assert output.read_bytes() == prior_output
+    # The raster patch is tried whether or not the old rules authorized it, but
+    # an unproven failure may be OUR bug: the rescue is never certified.
+    delivery = result.text_deliveries[0]
+    assert delivery["final_representation"] == "raster"
+    assert delivery["attempts"][-1]["outcome"] == "verified"
+    assert delivery["verified"] is False and delivery["degraded"] is True
+    assert delivery["terminal_fallback_authorized"] is False
+    assert delivery["proof_class"] == "unproven_failure"
+    assert delivery["degrade_reason"] == (
+        "requested representation failed without impossibility proof"
+    )
+    assert result.text_fallbacks == [
+        {
+            "requested": "labels",
+            "delivered": "raster",
+            "reason": "item_degraded_after_unproven_failure",
+            "count": 1,
+        }
+    ]
+    assert {entity.dxftype() for entity in _visible(ezdxf.readfile(output))} == {"IMAGE"}
 
 
 def test_duplicate_source_identity_aborts_without_replacing_prior_output(
@@ -4046,7 +4102,7 @@ def test_real_welding_chart_requested_item_raster_is_source_bound(
     assert evidence["source_id"] == delivery["source_id"]
     assert evidence["visible_ink_verified"] is True
     drawing = ezdxf.readfile(output)
-    assert [entity.dxftype() for entity in drawing.modelspace()] == ["IMAGE"]
+    assert [entity.dxftype() for entity in _visible(drawing)] == ["IMAGE"]
     run.close()
     assert Path(evidence["asset_path"]).is_file()
 

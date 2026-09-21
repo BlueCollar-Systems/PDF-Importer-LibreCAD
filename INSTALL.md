@@ -104,22 +104,36 @@ The graphical interface uses **Auto** import only (vector/raster/hybrid chosen p
 
 ### Before you import (text modes)
 
-- **Text** — native editable DXF `TEXT`, verified as the requested Text semantic.
-- **Labels** — editable flat DXF `TEXT` using LibreCAD's parent-native Unicode
-  LFF face, with source content and item transform verified after serialization.
+- **Text** — the native DXF `TEXT` candidate is built and checked first, but
+  LibreCAD's substituted LFF font does not reproduce the source glyphs, so visible
+  text is delivered as exact Glyph outlines (reported as that fallback). Only a
+  whitespace-only span ends as native `TEXT`.
+- **Labels** — DXF has no native Label entity; that is recorded, then the span
+  follows the Text path above and is delivered as Glyph outlines.
 - **3D Text** — attempts DXF `TEXT` with thickness and +Z extrusion first;
-  native success also requires verified 3D display/edit semantics in the parent.
+  native success also requires verified 3D display/edit semantics in the parent,
+  which 2D LibreCAD cannot give, so the span is delivered as Glyph outlines.
 - **Glyphs** — grouped outline block references.
 - **Geometry** — raw outline edges, not editable as text.
 - **Raster** — source-bound exact item pixels in a verified DXF `IMAGE`.
+- **Searchable text (every mode)** — outlines are the visual truth, and the exact
+  strings are hidden native `TEXT` on the frozen, non-plotting layer
+  `P###_TEXT_SEARCH`. To work with editable LFF text, thaw `P###_TEXT_SEARCH` and
+  freeze `P###_TEXT`; to print that text, also switch the layer's print flag on in
+  the layer list (the layer is non-plotting). `--no-searchable-text` (CLI) leaves
+  the layer out. A pre-R2007 (R12/R2000/R2004) file is cp1252, not UTF-8: a
+  character in that code page (degree, plus-minus, diameter) is one cp1252 byte and
+  any other is a `\U+XXXX` escape, so a UTF-8 text search of such a file does not
+  find non-ASCII strings.
 - Scale warnings appear in `import_report.json` (`extra.scale_crosscheck` / `human_summary`) when title-block scale is uncertain.
 
 The GUI and CLI expose the same six representation choices. The selected type
-is attempted and verified item by item. For Text and Labels, LibreCAD's required
-LFF font substitution is recorded as a font substitution—not a change to Glyphs
-or Geometry—and DXF FIT alignment preserves the source advance. The result
-dialog, log, and complete report show requested and delivered types. Choose
-Glyphs or Geometry when exact source-font outlines matter more than editability.
+is attempted and verified item by item. For Text, Labels, and 3D Text a visibly
+substituted LibreCAD LFF font is never certified as delivered Text (since
+1.0.81): the span descends to exact Glyph outlines and the report says so. The
+hidden `P###_TEXT_SEARCH` companions keep the exact string, anchor, rotation, and
+source-width FIT alignment and certify nothing. The result dialog, log, and
+complete report show requested and delivered types.
 
 ## Modes (BCS-ARCH-001, CLI/batch)
 
@@ -136,12 +150,17 @@ only in extraction strategy, not in quality tier.
 ### Text Rendering (orthogonal)
 
 GUI and CLI: `text`, `labels`, `3d_text`, `glyphs`, `geometry`, and `raster` as
-distinct requests, plus the Import text toggle. Text is native `TEXT`; 3D Text
-first attempts native `TEXT` with verified extrusion. DXF has no native Label
-entity, so Labels records that exact item-scoped impossibility and then reports
-the closest verified Text fallback instead of relabeling TEXT/MTEXT. Glyphs are
-grouped block references, Geometry is raw modelspace edges, and requested Raster
-is an exact source-item `IMAGE`.
+distinct requests, plus the Import text toggle. Text builds the native `TEXT`
+candidate first and 3D Text first attempts native `TEXT` with verified extrusion,
+but a visibly substituted LibreCAD LFF font is never certified as delivered Text
+(since 1.0.81): a visible span is delivered as exact Glyph outlines and reported
+as that fallback, and only a whitespace-only span ends as native `TEXT`. DXF has
+no native Label entity, so Labels records that exact item-scoped impossibility
+instead of relabeling TEXT/MTEXT and then follows the same Text path to Glyph
+outlines. Glyphs are grouped block references, Geometry is raw modelspace edges,
+and requested Raster is an exact source-item `IMAGE`. In every mode the exact
+strings are hidden native `TEXT` on the frozen layer `P###_TEXT_SEARCH`
+(`--no-searchable-text` leaves it out).
 
 ## Requirements
 
@@ -174,7 +193,11 @@ Standalone app self-test after install:
 **Missing text?** Treat that as a failed delivery. Open the complete import
 report, compare `text_source_spans` with `text_representation_delivery`, and
 inspect the exact source-item attempt. Keep the requested representation while
-correcting the source-specific failure.
+correcting the source-specific failure. One text item that cannot be verified
+no longer stops its sheet: it is warned about on stderr (or in the GUI), listed
+in `extra.text_items_degraded`, and delivered as an unverified Raster patch, as
+visible `TEXT` on layer `P###_TEXT_DEGRADED`, or dropped. Such a sheet is
+never certified, so review every listed item before using the drawing.
 
 **Garbled, shifted, rotated, or scaled text?** Do not manually switch the
 request to hide it. Attach the complete report and correct placement, rotation,

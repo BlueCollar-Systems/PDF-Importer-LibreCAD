@@ -6,7 +6,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from .exporters.dxf_exporter import DxfExportOptions, export_to_dxf
+from .exporters.dxf_exporter import DxfExportOptions, degraded_text_items, export_to_dxf
 from .importer import run_import
 
 
@@ -47,7 +47,15 @@ def main() -> int:
                 run = run_import(str(pdf), mode=args.mode, overrides={"pages": args.pages})
                 out_dxf = td_path / f"{pdf.stem}.dxf"
                 export = export_to_dxf(run.extraction, str(out_dxf), DxfExportOptions())
-                ok = export.entity_count >= args.min_entities
+                # This is a QA gate: a degraded text item still exports its sheet,
+                # but it must keep failing here exactly as the old abort did.
+                degraded = degraded_text_items(export.text_deliveries)["total"]
+                ok = export.entity_count >= args.min_entities and not degraded
+                clip_fill_delivery = run.extraction.clip_fill_delivery()
+                clip_fill_warnings = clip_fill_delivery["dropped"] + clip_fill_delivery["approximated"]
+                # A lost hidden search-text companion is a warning; the sheet still passes.
+                search_text = export.searchable_text_companions
+                search_text_warnings = int(search_text["failed"]) + int(search_text["mismatch"])
                 if ok:
                     report["passed"] += 1
                 else:
@@ -57,6 +65,10 @@ def main() -> int:
                     "status": "PASS" if ok else "FAIL",
                     "entities": export.entity_count,
                     "images": export.image_count,
+                    # Visible clipped fills left out or approximate, degraded text
+                    # items and lost search-text companions.
+                    "warnings": clip_fill_warnings + degraded + search_text_warnings,
+                    "text_items_degraded": degraded,
                 })
             except Exception as exc:  # noqa: BLE001
                 report["failed"] += 1
