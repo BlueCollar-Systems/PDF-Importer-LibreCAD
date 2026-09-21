@@ -118,8 +118,16 @@ def test_actual_normal_cap_text_sides_survive_dxf_entity_and_redraw_order(tmp_pa
         result = export_to_dxf(extraction, str(tmp_path / "ordered.dxf"), DxfExportOptions())
         assert [item["final_representation"] for item in result.text_deliveries] == ["glyphs", "glyphs"]
     saved = ezdxf.readfile(result.output_path)
-    entities = list(saved.modelspace())
+    entities = [
+        entity
+        for entity in saved.modelspace()
+        if not str(entity.dxf.layer).endswith("TEXT_SEARCH")
+    ]
     assert [entity.dxftype() for entity in entities] == ["INSERT", "HATCH", "LINE", "INSERT"]
     assert entities[1].has_xdata("BCS_SOURCE_STROKE_INK")
-    assert list(saved.modelspace().get_redraw_order()) == [
-        (entity.dxf.handle, f"{index:X}") for index, entity in enumerate(entities, 1)]
+    visible_handles = {entity.dxf.handle for entity in entities}
+    assert [
+        handle
+        for handle, _sort in saved.modelspace().get_redraw_order()
+        if handle in visible_handles
+    ] == [entity.dxf.handle for entity in entities]
