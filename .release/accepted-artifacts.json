@@ -2,33 +2,33 @@
   "artifacts": {
     "lcpdf_batch_exe": {
       "path": "dist/windows-portable/lcpdf-batch.exe",
-      "sha256": "6fcd9969b226b2abd684695df7169a2de17b3e35e7c5e3a846026d919a57dd6f",
-      "size_bytes": 66844368
+      "sha256": "58f266119f23d7d28da3a56db858365b624870d00ed8f6e3e0d2e2e591742c65",
+      "size_bytes": 66891085
     },
     "lcpdf_gui_exe": {
       "path": "dist/windows-portable/lcpdf-gui.exe",
-      "sha256": "af6dd99230a55c961f932e362674d22918404174620d4c9156c4b436a512c9cf",
-      "size_bytes": 66828648
+      "sha256": "58ee8e02b4a54a933e396ac659eec49f75c3b7a3cb189802a7b6419998170b27",
+      "size_bytes": 66875365
     },
     "lcpdf_import_exe": {
       "path": "dist/windows-portable/lcpdf-import.exe",
-      "sha256": "7592fe526194aa0849b204ddc8bcf48c0c29c55604e7d0a8fbf2621e2934da35",
-      "size_bytes": 66839238
+      "sha256": "4e96ed44aa9fb9453e03b0f1aa4a90d253b687025582fe30f984525789834af6",
+      "size_bytes": 66885955
     },
     "pdf2dxf_exe": {
       "path": "dist/windows-portable/pdf2dxf.exe",
-      "sha256": "1117237fd1de3f976f484b517ead88670ed896ecbd3a0fc982c465799f063e29",
-      "size_bytes": 66831887
+      "sha256": "a1fc1e3bc02e5d878f6523d164fcb6eab5af551acbff6efec3e533a847e76f57",
+      "size_bytes": 66878618
     },
     "portable_zip": {
-      "path": "dist/LibreCAD-PDF-Importer-Windows-Portable_v1.0.101.zip",
-      "sha256": "828307b3def4111e0c22981fe2cf71c6422a9162fd4c20810b31a14cbfe102d4",
-      "size_bytes": 265035895
+      "path": "dist/LibreCAD-PDF-Importer-Windows-Portable_v1.0.102.zip",
+      "sha256": "3bed8f5a475b860c39b40e75736567f0a568daa0fa3d25894261e79dbe285c11",
+      "size_bytes": 265222307
     },
     "source_zip": {
-      "path": "dist/LibreCAD-PDF-Importer_v1.0.101.zip",
-      "sha256": "2dbb21096e0907a00f6ee158f192e565e0306c38201a1ad8f16e35c121ce1355",
-      "size_bytes": 437072
+      "path": "dist/LibreCAD-PDF-Importer_v1.0.102.zip",
+      "sha256": "722d9279638da2681eab2dc60af0d76cf34c63f026c76f0734b1f43ae29cac13",
+      "size_bytes": 456451
     }
   },
   "build_contract": {
@@ -48,14 +48,14 @@
   "provenance": {
     "artifacts": {
       "portable_zip": {
-        "path": "dist/LibreCAD-PDF-Importer-Windows-Portable_v1.0.101.zip",
-        "sha256": "828307b3def4111e0c22981fe2cf71c6422a9162fd4c20810b31a14cbfe102d4",
-        "size_bytes": 265035895
+        "path": "dist/LibreCAD-PDF-Importer-Windows-Portable_v1.0.102.zip",
+        "sha256": "3bed8f5a475b860c39b40e75736567f0a568daa0fa3d25894261e79dbe285c11",
+        "size_bytes": 265222307
       },
       "source_zip": {
-        "path": "dist/LibreCAD-PDF-Importer_v1.0.101.zip",
-        "sha256": "2dbb21096e0907a00f6ee158f192e565e0306c38201a1ad8f16e35c121ce1355",
-        "size_bytes": 437072
+        "path": "dist/LibreCAD-PDF-Importer_v1.0.102.zip",
+        "sha256": "722d9279638da2681eab2dc60af0d76cf34c63f026c76f0734b1f43ae29cac13",
+        "size_bytes": 456451
       }
     },
     "build_contract": {
@@ -73,8 +73,8 @@
       "source_date_epoch": "315532800"
     },
     "release_payload": {
-      "file_count": 120,
-      "sha256": "519704a1f7d59d028f5abbf50d6fb3aa3ba148d1584cc33e87bd67752072afe3"
+      "file_count": 124,
+      "sha256": "035169e4f1454f308e671e00b71f73e933a7cd072d2adf7d71da4663350c5292"
     },
     "runner": {
       "architecture": "X64",
@@ -86,16 +86,16 @@
     "schema": "bcs.release_candidate_provenance/1.0",
     "source": {
       "event_name": "push",
-      "head_sha": "d2e95b6a7926413ebb2052eca1024b172d8592f7",
+      "head_sha": "4af86ea0fcf43ea4482c80b9439b9683753329e5",
       "repository": "BlueCollar-Systems/PDF-Importer-LibreCAD",
       "run_attempt": 1,
-      "run_id": 35660719468,
+      "run_id": 35670055949,
       "workflow": "auto-release",
       "workflow_ref": "BlueCollar-Systems/PDF-Importer-LibreCAD/.github/workflows/auto-release.yml@refs/heads/main",
-      "workflow_sha": "d2e95b6a7926413ebb2052eca1024b172d8592f7"
+      "workflow_sha": "4af86ea0fcf43ea4482c80b9439b9683753329e5"
     },
-    "version": "1.0.101"
+    "version": "1.0.102"
   },
   "schema": "bcs.release_artifacts/1.1",
-  "version": "1.0.101"
+  "version": "1.0.102"
 }
