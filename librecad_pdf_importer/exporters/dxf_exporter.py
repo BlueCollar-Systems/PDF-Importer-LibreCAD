@@ -6047,7 +6047,14 @@ def _ensure_layer(doc: ezdxf.EzDxf, name: str, rgb) -> None:
         kwargs["true_color"] = rgb2int(
             tuple(int(max(0, min(255, round(float(c) * 255)))) for c in rgb)
         )
-    doc.layers.new(name=name, dxfattribs=kwargs)
+    layer = doc.layers.new(name=name, dxfattribs=kwargs)
+    # White knockout/wipeout mask fills are exported on RGB_255_255_255 layers.
+    # In CAD with dark/black canvases (LibreCAD, AutoCAD), these appear as opaque white
+    # blocks that cover all underlying geometry. Turn white layers off by default
+    # so drawings are immediately legible on dark backgrounds, while preserving the
+    # mask geometry in the DXF for plotting or inspection.
+    if name.endswith("RGB_255_255_255") or (rgb is not None and all(float(c) >= 0.999 for c in rgb[:3])):
+        layer.off()
 
 
 def _apply_color(attribs: dict, rgb) -> None:

@@ -28,3 +28,16 @@ def test_pale_tints_and_composited_washes_keep_their_colour():
     assert _tc((1.0, 1.0, 0.7)) == (255, 255, 178)      # 30 % yellow highlight
     assert _tc((0.6, 0.6, 0.6)) == (153, 153, 153)      # 40 % black separator bar
     assert int2rgb(B._true_color_int(1.0, 1.0, 0.7)) == (255, 255, 178)
+
+
+def test_white_knockout_mask_layer_is_off_by_default():
+    import ezdxf
+    doc = ezdxf.new()
+    X._ensure_layer(doc, "page_0001$0$P001_RGB_255_255_255", (1.0, 1.0, 1.0))
+    layer = doc.layers.get("page_0001$0$P001_RGB_255_255_255")
+    assert layer.is_off() is True
+
+    # Standard non-white layers should remain ON by default
+    X._ensure_layer(doc, "page_0001$0$P001_RGB_000_000_000", (0.0, 0.0, 0.0))
+    normal_layer = doc.layers.get("page_0001$0$P001_RGB_000_000_000")
+    assert normal_layer.is_off() is False
