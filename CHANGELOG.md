@@ -2,6 +2,10 @@
 
 All notable release changes are recorded here.
 
+## 1.0.103 - 2026-09-22
+
+- Default-off for white knockout / mask layers that blinded dark CAD canvases (page_0001$0$P001_RGB_255_255_255-style fills stay available but hidden).
+
 ## 1.0.102 - 2026-09-21
 
 - Preserve qualified straight dash-dot strokes whose painted dots have zero
