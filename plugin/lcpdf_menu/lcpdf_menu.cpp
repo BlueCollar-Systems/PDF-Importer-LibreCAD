@@ -276,7 +276,10 @@ PluginCapabilities LC_BcLCPdfMenuPlugin::getCapabilities() const {
                               tr("Launch the BlueCollar PDF-to-DXF importer GUI"))
         << PluginMenuLocation("plugins_menu",
                               tr(kActionSettings),
-                              tr("Configure importer script and Python executable paths"));
+                              tr("Configure importer script and Python executable paths"))
+        << PluginMenuLocation("tools_menu",
+                              tr(kActionLaunch),
+                              tr("Launch the BlueCollar PDF-to-DXF importer GUI"));
     return caps;
 }
 

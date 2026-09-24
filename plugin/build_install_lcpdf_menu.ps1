@@ -50,8 +50,21 @@ if ($candidateDlls.Count -eq 0) {
 }
 
 $builtDll = $candidateDlls[0].FullName
-$destDll = Join-Path $InstallDir ([IO.Path]::GetFileName($builtDll))
-Copy-Item -LiteralPath $builtDll -Destination $destDll -Force
+$docs = [Environment]::GetFolderPath("MyDocuments")
+$targetDirs = @(
+    (Join-Path $docs "LibreCAD\plugins"),
+    (Join-Path $docs "librecad\plugins"),
+    (Join-Path $env:USERPROFILE ".librecad\plugins")
+)
+if (-not [string]::IsNullOrWhiteSpace($InstallDir) -and ($targetDirs -notcontains $InstallDir)) {
+    $targetDirs += $InstallDir
+}
 
-Write-Host "Installed plugin to: $destDll"
-Write-Host "Restart LibreCAD and open Plugins menu."
+foreach ($dir in $targetDirs) {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    Copy-Item -LiteralPath $builtDll -Destination (Join-Path $dir ([IO.Path]::GetFileName($builtDll))) -Force
+    Copy-Item -LiteralPath $builtDll -Destination (Join-Path $dir "bc_lcpdf_menu.dll") -Force
+    Write-Host "Installed plugin to: $dir"
+}
+
+Write-Host "Restart LibreCAD. The importer is now available under both the 'Plugins' and 'Tools' menus."

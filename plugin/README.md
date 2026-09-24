@@ -1,10 +1,11 @@
 # LibreCAD Menu Plugin (LC Importer)
 
 This folder contains a native LibreCAD plugin that adds menu entries under
-`Plugins`:
+`Plugins` and `Tools`:
 
-- `PDF Importer (BlueCollar)...`
-- `PDF Importer Settings...`
+- `Plugins` > `PDF Importer (BlueCollar)...`
+- `Plugins` > `PDF Importer Settings...`
+- `Tools` > `PDF Importer (BlueCollar)...`
 
 The plugin launches the LC importer GUI (`launch_lcpdf_gui.pyw` / `gui.py`) or
 portable `lcpdf-gui.exe` without opening a terminal window.
@@ -25,11 +26,13 @@ native plugin depends on matching LibreCAD's Qt/MSVC runtime; mismatched builds
 powershell -ExecutionPolicy Bypass -File .\plugin\build_install_lcpdf_menu.ps1
 ```
 
-By default this installs the plugin DLL to:
+By default this installs the plugin DLLs (`bc_lcpdf_menu1.dll` and `bc_lcpdf_menu.dll`) to:
 
-`%USERPROFILE%\Documents\LibreCAD\plugins\bc_lcpdf_menu.dll`
+- `%USERPROFILE%\Documents\LibreCAD\plugins\`
+- `%USERPROFILE%\Documents\librecad\plugins\`
+- `%USERPROFILE%\.librecad\plugins\`
 
-LibreCAD loads plugins from this user folder, so admin rights are not required.
+LibreCAD automatically discovers and loads plugins from these user folders, so admin rights are not required.
 
 ## Runtime Notes
 
