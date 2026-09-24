@@ -4,9 +4,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# Import the stdlib-only handoff module directly: the package __init__ pulls in
+# the converter's third-party dependencies, which this harness does not need.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "librecad_pdf_importer"))
 
-from librecad_pdf_importer.librecad_handoff import (  # noqa: E402
+from librecad_handoff import (  # noqa: E402
     handoff_path_from_argv,
     write_handoff_result,
 )
