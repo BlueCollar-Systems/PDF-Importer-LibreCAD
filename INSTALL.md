@@ -6,7 +6,7 @@ This tool converts PDF drawings to DXF files that you can open in LibreCAD, Auto
 
 **Use the portable ZIP** (`LibreCAD-PDF-Importer-Windows-Portable_vX.Y.Z.zip`) as the single supported path for human confirmation and shop-floor testing. It bundles Python, PyMuPDF, ezdxf, FontTools, Matplotlib, NumPy, pdfcadcore, `lcpdf-gui.exe`, and CLI tools with no Qt or system-Python dependencies.
 
-The native **`pdfimporter1.dll` menu plugin is not supported** on most Windows installs — LibreCAD ships its own Qt runtime and a plugin built against a different Qt kit fails with opaque DLL errors. Do not use the native plugin for release sign-off.
+The portable ZIP also carries `librecad-plugin\bc_lcpdf_menu.dll`, which adds **Plugins > Import PDF (BlueCollar)...** to **LibreCAD 2.2.x for Windows (64-bit, Qt 5.15)**. It is built in release CI against the same Qt 5.15.2 MSVC kit LibreCAD 2.2.1.x uses. It only starts `lcpdf-gui.exe` and opens the DXF that program writes, so conversion results are identical either way. (The old locally built `pdfimporter1.dll` is not supported; delete it if you have one.)
 
 ## Quick Start
 
@@ -48,28 +48,24 @@ When `LibreCAD-PDF-Importer-Setup_vX.Y.Z.exe` appears on Releases, double-click 
 > versioned Inno Setup command it prints. The installer script rejects a
 > missing `/DAppVersion=X.Y.Z` instead of silently minting a stale version.
 
-### Option 1: LibreCAD Plugins menu
+### Option 1: LibreCAD Plugins menu (LibreCAD 2.2.x, Windows 64-bit)
 
-> **Important:** The native `pdfimporter1.dll` / `bc_lcpdf_menu` plugin is **not**
-> recommended on most Windows installs. LibreCAD builds ship with their own Qt
-> runtime; a plugin compiled against a different Qt kit (debug vs release, or
-> another MSVC version) fails to load with opaque DLL errors. **Use the portable
-> ZIP (`lcpdf-gui.exe`) instead** — it bundles Python, PyMuPDF, FontTools, and the GUI with
-> no Qt mismatch.
+1. Close LibreCAD.
+2. Run `lcpdf-gui.exe` from the portable folder and press
+   **Install LibreCAD menu entry...**. This copies `bc_lcpdf_menu.dll` into
+   `Documents\LibreCAD\plugins` (no admin rights) and records where
+   `lcpdf-gui.exe` lives.
+3. Start LibreCAD and choose **Plugins > Import PDF (BlueCollar)...**.
+4. In the importer window pick the PDF and options and press **Convert / Resume**.
+   The finished DXF opens in LibreCAD automatically.
 
-If you still want the menu plugin after installing the portable/source package:
-
-1. Build/install plugin:
-```powershell
-powershell -ExecutionPolicy Bypass -File .\plugin\build_install_lcpdf_menu.ps1
-```
-2. Restart LibreCAD
-3. Use `Plugins > PDF Importer (BlueCollar)...`
-
-The plugin auto-detects `launch_lcpdf_gui.pyw`, `gui.py`, or portable
-`lcpdf-gui.exe` beside LibreCAD or in common install folders. Pin paths via
-`Plugins > PDF Importer Settings...`, set `BC_LC_IMPORTER_EXE` for the installed
-app, or set `BC_LC_IMPORTER_SCRIPT` for source launches.
+`Plugins > Import PDF into Current Drawing (BlueCollar)...` inserts the DXF into
+the open drawing as a block instead. `Plugins > PDF Importer Settings (BlueCollar)...`
+pins another importer; `BC_LC_IMPORTER_EXE` / `BC_LC_IMPORTER_SCRIPT` override it.
+From a source checkout: `python scripts\build_librecad_plugin.py --smoke --install`
+(needs the Qt 5.15.2 `msvc2019_64` kit and Visual Studio C++ build tools).
+Other LibreCAD builds (Qt 6 development builds, MinGW, Linux/macOS) cannot load
+the DLL; use `lcpdf-gui.exe` with "Open in LibreCAD after convert" there.
 
 ### Option 2: Command Line
 ```bash

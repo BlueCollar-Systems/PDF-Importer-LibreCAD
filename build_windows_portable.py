@@ -39,6 +39,13 @@ HIDDEN_IMPORTS = [
 ]
 
 COLLECT_ALL = ["fontTools"]
+
+# LibreCAD "Plugins > Import PDF (BlueCollar)..." menu plugin (Qt 5.15 / MSVC).
+LIBRECAD_PLUGIN_DIR = "librecad-plugin"
+LIBRECAD_PLUGIN_FILES = (
+    ("plugin/package/README.txt", "README.txt"),
+    ("plugin/package/LICENSE.GPL-2.0.txt", "LICENSE.GPL-2.0.txt"),
+)
 COPY_METADATA = ["fonttools"]
 
 def read_version() -> str:
@@ -134,7 +141,38 @@ def archive_portable(source_root: Path, archive_path: Path) -> Path:
     return write_deterministic_zip(archive_path, files)
 
 
-def build() -> Path:
+def bundle_librecad_plugin(mode: str) -> Path | None:
+    """Build the LibreCAD menu plugin into the portable folder.
+
+    *mode*: ``require`` (release CI: fail without a Qt 5.15 msvc kit),
+    ``auto`` (include when the kit is present) or ``skip``.
+    """
+    if mode == "skip":
+        return None
+    from scripts.build_librecad_plugin import (
+        DLL_NAME,
+        PluginBuildError,
+        build_plugin,
+        find_qt_root,
+        find_vcvars64,
+    )
+
+    if mode == "auto" and (find_qt_root() is None or find_vcvars64() is None):
+        print("LibreCAD menu plugin skipped: no Qt 5.15 msvc2019_64 kit / MSVC here.")
+        return None
+    target_dir = DIST_ROOT / LIBRECAD_PLUGIN_DIR
+    try:
+        dll = build_plugin(output_dir=ROOT / "build" / "librecad-plugin")
+    except PluginBuildError as exc:
+        raise RuntimeError(f"LibreCAD menu plugin build failed: {exc}") from exc
+    target_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(dll, target_dir / DLL_NAME)
+    for source_relative, name in LIBRECAD_PLUGIN_FILES:
+        shutil.copyfile(ROOT / source_relative, target_dir / name)
+    return target_dir / DLL_NAME
+
+
+def build(librecad_plugin: str = "auto") -> Path:
     version = read_version()
     python_exe = build_python()
     if BUILD_ROOT.exists():
@@ -147,6 +185,7 @@ def build() -> Path:
         entrypoint = write_entrypoint(name, module, function)
         run_pyinstaller(name, entrypoint, mode, python_exe)
 
+    bundle_librecad_plugin(librecad_plugin)
     copy_release_notices(ROOT, DIST_ROOT)
     copy_python_distribution_notices(
         python_exe.parent.parent / "Lib" / "site-packages",
@@ -164,8 +203,14 @@ def build() -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.parse_args()
-    build()
+    parser.add_argument(
+        "--librecad-plugin",
+        choices=("auto", "require", "skip"),
+        default="auto",
+        help="include the LibreCAD menu plugin DLL (release CI uses 'require')",
+    )
+    args = parser.parse_args()
+    build(args.librecad_plugin)
     return 0
 
 

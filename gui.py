@@ -65,9 +65,16 @@ class ConversionOptions:
 class Pdf2DxfApp(tk.Tk):
     """Main application window."""
 
-    def __init__(self) -> None:
+    def __init__(self, handoff_path: str | None = None) -> None:
         super().__init__()
-        self.title("PDF to DXF Converter - BlueCollar-Systems")
+        # Set when LibreCAD's "Plugins > Import PDF (BlueCollar)..." started
+        # this window: the finished DXF path is handed back to that LibreCAD.
+        self._handoff_path = handoff_path
+        self._handoff_delivered = False
+        self.title(
+            "PDF to DXF Converter - BlueCollar-Systems"
+            + (" (for LibreCAD)" if handoff_path else "")
+        )
         self.resizable(True, True)
         self.minsize(560, 620)
 
@@ -77,6 +84,8 @@ class Pdf2DxfApp(tk.Tk):
         self._converting = False
         self._cancel_event = threading.Event()
         self._build_ui()
+        if handoff_path:
+            self.protocol("WM_DELETE_WINDOW", self._close_from_librecad_handoff)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -196,8 +205,28 @@ class Pdf2DxfApp(tk.Tk):
 
         ttk.Checkbutton(opts_frame, text="Import text",
                         variable=self._var_import_text).pack(side=tk.LEFT, padx=6)
-        ttk.Checkbutton(opts_frame, text="Open in LibreCAD after convert",
-                        variable=self._var_launch_librecad).pack(side=tk.LEFT, padx=6)
+        launch_check = ttk.Checkbutton(opts_frame, text="Open in LibreCAD after convert",
+                                       variable=self._var_launch_librecad)
+        launch_check.pack(side=tk.LEFT, padx=6)
+        if self._handoff_path:
+            # The LibreCAD that started this window opens the DXF itself;
+            # never start a second LibreCAD.
+            self._var_launch_librecad.set(False)
+            launch_check.configure(state=tk.DISABLED)
+            ttk.Label(
+                frame,
+                text=(
+                    "Started from LibreCAD: after a successful conversion the DXF "
+                    "opens in that LibreCAD window and this window closes."
+                ),
+                font=("Segoe UI", 9, "bold"),
+            ).grid(row=15, column=0, columnspan=3, sticky=tk.W, padx=8, pady=(4, 0))
+        else:
+            ttk.Button(
+                opts_frame,
+                text="Install LibreCAD menu entry...",
+                command=self._install_librecad_menu,
+            ).pack(side=tk.RIGHT, padx=6)
 
         # ---- Convert button ----
         action_frame = ttk.Frame(frame)
@@ -459,7 +488,7 @@ class Pdf2DxfApp(tk.Tk):
                     self._log(f"  {line}")
 
             launch_message = ""
-            if options.launch_librecad:
+            if options.launch_librecad and not getattr(self, "_handoff_path", None):
                 from librecad_pdf_importer.launchers.librecad_launcher import launch_librecad
                 launch_ok, launch_status = launch_librecad(
                     output_path,
@@ -497,6 +526,13 @@ class Pdf2DxfApp(tk.Tk):
                 + (f"\n\n{search_text_warning}" if search_text_warning else "")
                 + (f"\n\n{launch_message}" if launch_message else ""),
             ))
+            # Unbound call: tests drive this worker with a window-less namespace.
+            Pdf2DxfApp._hand_off_to_librecad(
+                self,
+                output_path,
+                degraded_count,
+                str(text_delivery.get("report_path", "") or ""),
+            )
 
         except Exception as exc:  # noqa: BLE001
             from dxf_import_engine import ConversionCancelled
@@ -531,16 +567,85 @@ class Pdf2DxfApp(tk.Tk):
         self._btn_convert.configure(state=tk.NORMAL)
         self._btn_cancel.configure(state=tk.DISABLED)
         self._converting = False
+        if getattr(self, "_handoff_delivered", False):
+            # Runs after the Done dialog was dismissed; LibreCAD already has
+            # the drawing, so return the operator to it.
+            self.destroy()
+
+    # ------------------------------------------------------------------
+    # LibreCAD menu integration
+    # ------------------------------------------------------------------
+    def _hand_off_to_librecad(
+        self, output_path: str, degraded_count: int, report_path: str,
+    ) -> None:
+        """Tell the LibreCAD plugin which DXF to open (worker thread, after export)."""
+        handoff_path = getattr(self, "_handoff_path", None)
+        if not handoff_path:
+            return
+        from librecad_pdf_importer.librecad_handoff import write_handoff_result
+
+        try:
+            write_handoff_result(
+                handoff_path,
+                status="ok",
+                output_path=output_path,
+                degraded_text_items=degraded_count,
+                report_path=report_path,
+            )
+        except OSError as exc:
+            self._log(f"Could not hand the DXF back to LibreCAD: {exc}")
+            return
+        self._handoff_delivered = True
+        self._log("Handed the DXF to LibreCAD; it opens there now.")
+
+    def _close_from_librecad_handoff(self) -> None:
+        """Window closed without a finished drawing: release the waiting plugin."""
+        if not self._handoff_delivered and self._handoff_path:
+            from librecad_pdf_importer.librecad_handoff import write_handoff_result
+
+            try:
+                write_handoff_result(self._handoff_path, status="closed")
+            except OSError:
+                pass  # the plugin also notices the process exit
+        self.destroy()
+
+    def _install_librecad_menu(self) -> None:
+        from librecad_pdf_importer.librecad_plugin_install import (
+            TARGET_LIBRECAD,
+            PluginInstallError,
+            install_librecad_plugin,
+        )
+
+        try:
+            result = install_librecad_plugin()
+        except PluginInstallError as exc:
+            messagebox.showerror("Install LibreCAD menu entry", str(exc))
+            return
+        messagebox.showinfo(
+            "Install LibreCAD menu entry",
+            "Installed the LibreCAD menu entry.\n\n"
+            f"Plugin: {result.dll_path}\n"
+            f"Starts: {result.launcher_path}\n\n"
+            "Restart LibreCAD, then use:\n"
+            "Plugins > Import PDF (BlueCollar)...\n\n"
+            f"Built for {TARGET_LIBRECAD}.",
+        )
 
 
 # ---------------------------------------------------------------------------
 # Public launcher (called from pdf2dxf.py --gui)
 # ---------------------------------------------------------------------------
-def launch_gui() -> None:
-    """Create and run the Pdf2DxfApp main loop."""
-    app = Pdf2DxfApp()
+def launch_gui(handoff_path: str | None = None) -> None:
+    """Create and run the Pdf2DxfApp main loop.
+
+    *handoff_path* is the ``--librecad-handoff`` file given by the LibreCAD
+    ``Plugins > Import PDF (BlueCollar)...`` menu entry.
+    """
+    app = Pdf2DxfApp(handoff_path=handoff_path)
     app.mainloop()
 
 
 if __name__ == "__main__":
-    launch_gui()
+    from librecad_pdf_importer.librecad_handoff import handoff_path_from_argv
+
+    launch_gui(handoff_path_from_argv(sys.argv[1:]))
