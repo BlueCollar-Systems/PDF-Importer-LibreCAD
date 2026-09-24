@@ -2,6 +2,10 @@
 
 All notable release changes are recorded here.
 
+## Unreleased
+
+- LibreCAD menu entry: the Windows portable ZIP ships `librecad-plugin/bc_lcpdf_menu.dll` (LibreCAD 2.2.x, Qt 5.15.2 MSVC x64). The GUI's **Install LibreCAD menu entry...** copies it to `Documents\LibreCAD\plugins`; LibreCAD then shows **Plugins > Import PDF (BlueCollar)...**, which runs the unchanged importer GUI and opens the finished DXF in that LibreCAD (or inserts it into the current drawing). New `--librecad-handoff` GUI mode; conversion output is unchanged. CI builds, load-tests (QPluginLoader) and round-trips the plugin and requires reproducible bytes.
+
 ## 1.0.103 - 2026-09-22
 
 - Default-off for white knockout / mask layers that blinded dark CAD canvases (page_0001$0$P001_RGB_255_255_255-style fills stay available but hidden).

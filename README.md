@@ -79,6 +79,20 @@ extract it anywhere you can write files, then run `lcpdf-gui.exe`.
 The portable ZIP bundles Python, PyMuPDF, ezdxf, FontTools, Matplotlib, NumPy, pdfcadcore, the GUI, and the
 CLI launchers. No system Python, pip, or administrator rights are required.
 
+### Open it from inside LibreCAD (Plugins menu)
+
+The portable ZIP also ships a LibreCAD plugin, `librecad-plugin\bc_lcpdf_menu.dll`,
+built for **LibreCAD 2.2.x for Windows (64-bit, Qt 5.15)** and verified with
+LibreCAD 2.2.1.5. Install it once:
+
+1. Close LibreCAD.
+2. Run `lcpdf-gui.exe` and press **Install LibreCAD menu entry...** (next to the
+   options). It copies the DLL to `Documents\LibreCAD\plugins` (no admin rights)
+   and records where this `lcpdf-gui.exe` lives.
+3. Start LibreCAD. The **Plugins** menu now has **Import PDF (BlueCollar)...**.
+
+See [LibreCAD Menu Integration](#librecad-menu-integration) for how it works.
+
 **Offline install:** The portable ZIP and published installer work without internet after download. Source ZIP dev installs may run `preflight_check.py --install` once if `lib/` is empty (requires network for that step only).
 
 ## Upgrading / skipping versions
@@ -121,9 +135,10 @@ to check dependencies, or `python preflight_check.py --install` to install
 PyMuPDF, ezdxf, FontTools, Matplotlib, and NumPy into this checkout's private `lib/` folder
 without admin rights.
 
-Optional: install the native LibreCAD menu plugin (Windows):
+Optional: build and install the LibreCAD menu plugin from source (Windows,
+needs the Qt 5.15.2 `msvc2019_64` kit and Visual Studio C++ build tools):
 ```
-powershell -ExecutionPolicy Bypass -File .\plugin\build_install_lcpdf_menu.ps1
+python scripts\build_librecad_plugin.py --smoke --install
 ```
 
 ## CLI Usage
@@ -244,12 +259,47 @@ lcpdf-guiw
 
 ## LibreCAD Menu Integration
 
-After running the plugin installer script, restart LibreCAD and use:
+After **Install LibreCAD menu entry...** (portable GUI) and a LibreCAD restart,
+LibreCAD's **Plugins** menu has:
 
-- `Plugins > PDF Importer (BlueCollar)...`
-- `Plugins > PDF Importer Settings...`
+| Menu entry | What it does |
+|---|---|
+| `Import PDF (BlueCollar)...` (also under **Tools**) | Opens the importer window. Pick the PDF, pages, scale, text mode and DXF version there and press **Convert / Resume**. When the conversion succeeds the DXF opens in a new tab of *this* LibreCAD (the same code path as File > Open) and the importer window closes after you dismiss its Done summary. |
+| `Import PDF into Current Drawing (BlueCollar)...` | Same, but the DXF is inserted into the open drawing as a block at 0,0 (its layers and blocks come along). |
+| `PDF Importer Settings (BlueCollar)...` | Shows which importer the menu starts; pin another `lcpdf-gui.exe` / `launch_lcpdf_gui.pyw`, or go back to the installed one. |
 
-This launches the importer GUI directly from LibreCAD without a terminal window.
+How it works: the plugin (`plugin/lcpdf_menu`, GPL-2.0-or-later) starts
+`lcpdf-gui.exe --librecad-handoff <temp file>` and shows a small "waiting"
+dialog (with **Stop Waiting**) while you work in the importer. The importer
+runs the normal, unchanged conversion; only after a successful export does it
+write the DXF path to the handoff file, which the plugin then opens. A failed
+or paused conversion hands nothing back, and closing the importer window just
+returns you to LibreCAD. "Open in LibreCAD after convert" is disabled in this
+mode so a second LibreCAD is never started.
+
+Limitations:
+
+- Built for LibreCAD **2.2.x for Windows, 64-bit (Qt 5.15 / MSVC)**. Qt 6 based
+  LibreCAD development builds, MinGW builds, and Linux/macOS LibreCAD cannot
+  load this DLL; use `lcpdf-gui.exe` (with "Open in LibreCAD after convert") there.
+- LibreCAD greys out every Plugins entry until a drawing window is open (it
+  opens a blank drawing at start-up by default).
+- Keep the portable folder where it was when you installed; if you move it,
+  press **Install LibreCAD menu entry...** again (or pin it via Settings).
+- Importer builds older than the one that shipped the plugin cannot hand the
+  DXF back; the plugin then tells you to use File > Open.
+- Diagnostics: start LibreCAD with `BC_LCPDF_PLUGIN_TRACE=1` to log each step
+  to `%TEMP%\bc_lcpdf_menu.log`.
+
+The installer keeps exactly one `bc_lcpdf_menu.dll` where LibreCAD looks
+(LibreCAD loads every `*.dll` in its plugin folders, so leftover copies such as
+an old `bc_lcpdf_menu1.dll` or a copy in `%USERPROFILE%\.librecad\plugins` would
+show every entry twice); it removes those and drops a stale path pinned in
+Settings so the freshly installed importer is used.
+
+Uninstall: close LibreCAD and delete `Documents\LibreCAD\plugins\bc_lcpdf_menu.dll`
+and `bc_lcpdf_menu-importer.txt` (or run
+`python -m librecad_pdf_importer.librecad_plugin_install --uninstall` from source).
 
 ## Batch Import
 

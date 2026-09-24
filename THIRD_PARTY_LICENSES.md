@@ -50,3 +50,16 @@ The LibreCAD PDF Importer source authored by BlueCollar Systems is released unde
 the MIT License (see LICENSE). Because the distributed bundle includes AGPL
 components, the bundle **as a whole** is offered under AGPL-3.0 terms; the
 original BlueCollar source remains MIT.
+
+## LibreCAD menu plugin (`librecad-plugin/bc_lcpdf_menu.dll`)
+
+The Windows portable ZIP includes a small LibreCAD plugin that adds
+`Plugins > Import PDF (BlueCollar)...` to LibreCAD 2.2.x. It implements
+LibreCAD's plugin interface (`qc_plugininterface.h` / `document_interface.h`,
+copied unmodified from LibreCAD 2.2.1.5 into `plugin/sdk/`), so the plugin is
+distributed under **GPL-2.0-or-later**; the full license text ships beside it as
+`librecad-plugin/LICENSE.GPL-2.0.txt`, and its complete source is the `plugin/`
+folder of the source ZIP and this repository. It links dynamically against the
+Qt 5.15 libraries (LGPL-3.0) that LibreCAD itself installs; no Qt binaries are
+bundled. The plugin only starts `lcpdf-gui.exe` and opens the DXF that program
+writes; it does not share code with the importer.
