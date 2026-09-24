@@ -216,7 +216,7 @@ class Pdf2DxfApp(tk.Tk):
             ttk.Label(
                 frame,
                 text=(
-                    "Started from LibreCAD: after a successful conversion the DXF "
+                    "Started from LibreCAD: after a successful conversion the DXF\n"
                     "opens in that LibreCAD window and this window closes."
                 ),
                 font=("Segoe UI", 9, "bold"),
