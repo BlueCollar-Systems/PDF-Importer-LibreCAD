@@ -9,6 +9,7 @@ Native LibreCAD 2.2.x plugin that adds to LibreCAD's **Plugins** menu:
   into the current drawing as a block at 0,0 (`Document_Interface::addBlockfromFromdisk`
   + `addInsert`).
 - `PDF Importer Settings (BlueCollar)...` - show / pin / reset the importer path.
+- `Tools > Import PDF (BlueCollar)...` - same as the first entry.
 
 The plugin never converts anything itself; the unchanged importer GUI does.
 

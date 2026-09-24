@@ -27,6 +27,13 @@ PLUGIN_BUNDLE_DIR = "librecad-plugin"
 # Must not contain ".dll": LibreCAD tries to load every such file in the folder.
 SIDECAR_NAME = "bc_lcpdf_menu-importer.txt"
 TARGET_LIBRECAD = "LibreCAD 2.2.x for Windows (Qt 5.15, 64-bit)"
+# Earlier builds were installed as bc_lcpdf_menu1.dll (qmake VERSION suffix)
+# and also copied to ~/.librecad/plugins. LibreCAD loads every "*.dll" in every
+# plugin folder it scans, so any leftover copy with another name doubles each
+# menu entry. The installer removes these (they are only ever ours).
+LEGACY_DLL_NAMES = ("bc_lcpdf_menu1.dll",)
+SETTINGS_INI_NAME = "bc_pdf_importer_plugin.ini"
+PINNED_SETTING_KEYS = ("script_path", "python_path")
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -41,6 +48,8 @@ class PluginInstallResult:
     sidecar_path: Path
     launcher_path: Path
     replaced_existing: bool
+    removed_stale: tuple[Path, ...] = ()
+    cleared_pin: bool = False
 
 
 def documents_directory() -> Path:
@@ -83,6 +92,59 @@ def librecad_user_plugin_directory() -> Path:
     return documents_directory() / "LibreCAD" / "plugins"
 
 
+def librecad_legacy_plugin_directories() -> list[Path]:
+    """Other per-user folders LibreCAD 2.2.x scans for plugins."""
+    return [Path.home() / ".librecad" / "plugins"]
+
+
+def plugin_settings_ini() -> Path:
+    """QSettings(IniFormat, UserScope, "LibreCAD", "bc_pdf_importer_plugin")."""
+    appdata = os.environ.get("APPDATA")
+    base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+    return base / "LibreCAD" / SETTINGS_INI_NAME
+
+
+def _remove_stale_copies(target_dir: Path, keep: Path) -> list[Path]:
+    removed = []
+    candidates = [target_dir / name for name in LEGACY_DLL_NAMES]
+    for folder in librecad_legacy_plugin_directories():
+        candidates += [folder / PLUGIN_DLL_NAME] + [folder / name for name in LEGACY_DLL_NAMES]
+    for path in candidates:
+        try:
+            if path.exists() and path.resolve() != keep.resolve():
+                path.unlink()
+                removed.append(path)
+        except PermissionError as exc:
+            raise PluginInstallError(
+                f"LibreCAD is using an old copy of the menu plugin ({path}). "
+                "Close LibreCAD and try again."
+            ) from exc
+        except OSError:
+            pass
+    return removed
+
+
+def _clear_pinned_launcher(ini_path: Path) -> bool:
+    """Drop a Settings pin so the plugin follows this install's sidecar."""
+    if not ini_path.is_file():
+        return False
+    try:
+        lines = ini_path.read_text(encoding="utf-8", errors="surrogateescape").splitlines(True)
+    except OSError:
+        return False
+    kept = [
+        line for line in lines
+        if line.split("=", 1)[0].strip() not in PINNED_SETTING_KEYS
+    ]
+    if kept == lines:
+        return False
+    try:
+        ini_path.write_text("".join(kept), encoding="utf-8", errors="surrogateescape")
+    except OSError:
+        return False
+    return True
+
+
 def _is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
 
@@ -114,6 +176,7 @@ def install_librecad_plugin(
     *,
     launcher_path: str | os.PathLike[str] | None = None,
     plugin_directory: str | os.PathLike[str] | None = None,
+    settings_ini: str | os.PathLike[str] | None = None,
 ) -> PluginInstallResult:
     """Copy the plugin DLL into LibreCAD's user plugin folder and record the launcher."""
     source = Path(dll_path) if dll_path else bundled_plugin_dll()
@@ -151,17 +214,21 @@ def install_librecad_plugin(
             except OSError:
                 pass
 
+    removed = _remove_stale_copies(target_dir, target)
     sidecar = target_dir / SIDECAR_NAME
     sidecar.write_text(
         "# Written by the BlueCollar PDF Importer. The LibreCAD menu entry starts:\n"
         f"{launcher.resolve()}\n",
         encoding="utf-8",
     )
+    cleared = _clear_pinned_launcher(Path(settings_ini) if settings_ini else plugin_settings_ini())
     return PluginInstallResult(
         dll_path=target,
         sidecar_path=sidecar,
         launcher_path=launcher.resolve(),
         replaced_existing=replaced,
+        removed_stale=tuple(removed),
+        cleared_pin=cleared,
     )
 
 
@@ -169,8 +236,10 @@ def uninstall_librecad_plugin(plugin_directory: str | os.PathLike[str] | None = 
     """Remove the plugin DLL and sidecar; returns the files removed."""
     target_dir = Path(plugin_directory) if plugin_directory else librecad_user_plugin_directory()
     removed = []
-    for name in (PLUGIN_DLL_NAME, SIDECAR_NAME):
-        path = target_dir / name
+    paths = [target_dir / name for name in (PLUGIN_DLL_NAME, SIDECAR_NAME, *LEGACY_DLL_NAMES)]
+    for folder in librecad_legacy_plugin_directories():
+        paths += [folder / PLUGIN_DLL_NAME] + [folder / name for name in LEGACY_DLL_NAMES]
+    for path in paths:
         if path.exists():
             try:
                 path.unlink()

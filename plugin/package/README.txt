@@ -10,6 +10,8 @@ bc_lcpdf_menu.dll adds these entries to LibreCAD's Plugins menu:
       Same, but the DXF is inserted into the open drawing as a block at 0,0.
   Plugins > PDF Importer Settings (BlueCollar)...
       Shows / changes which importer the menu entry starts.
+  Tools > Import PDF (BlueCollar)...
+      Same as the first entry.
 
 Install (once)
 --------------

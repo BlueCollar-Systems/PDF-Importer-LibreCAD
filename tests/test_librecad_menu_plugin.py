@@ -31,6 +31,17 @@ from librecad_pdf_importer.librecad_plugin_install import (  # noqa: E402
 )
 
 PLUGIN_CPP = REPO_ROOT / "plugin" / "lcpdf_menu" / "lcpdf_menu.cpp"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_user_folders(tmp_path, monkeypatch):
+    """Never touch the real Documents, ~/.librecad or %APPDATA% from tests."""
+    monkeypatch.setattr(librecad_plugin_install, "documents_directory",
+                        lambda: tmp_path / "iso-documents")
+    monkeypatch.setattr(librecad_plugin_install, "librecad_legacy_plugin_directories",
+                        lambda: [tmp_path / "iso-home" / ".librecad" / "plugins"])
+    monkeypatch.setattr(librecad_plugin_install, "plugin_settings_ini",
+                        lambda: tmp_path / "iso-appdata" / "LibreCAD" / "bc_pdf_importer_plugin.ini")
 PLUGIN_SDK = REPO_ROOT / "plugin" / "sdk"
 
 
@@ -143,6 +154,29 @@ def test_install_copies_dll_and_records_the_launcher(tmp_path):
         [PLUGIN_DLL_NAME, SIDECAR_NAME]
     )
     assert list(plugins.iterdir()) == []
+
+
+def test_install_removes_duplicate_copies_and_a_stale_pin(tmp_path):
+    dll, launcher = _fake_payload(tmp_path)
+    plugins = tmp_path / "iso-documents" / "LibreCAD" / "plugins"
+    legacy = tmp_path / "iso-home" / ".librecad" / "plugins"
+    for folder in (plugins, legacy):
+        folder.mkdir(parents=True)
+        (folder / "bc_lcpdf_menu1.dll").write_bytes(b"old")
+    (legacy / PLUGIN_DLL_NAME).write_bytes(b"old")
+    (plugins / "other_plugin.dll").write_bytes(b"not ours")
+    ini = tmp_path / "iso-appdata" / "LibreCAD" / "bc_pdf_importer_plugin.ini"
+    ini.parent.mkdir(parents=True)
+    ini.write_text("[General]\npython_path=C:/py.exe\nscript_path=C:/x.pyw\nkeep=1\n",
+                   encoding="utf-8")
+    result = install_librecad_plugin(dll, launcher_path=launcher)
+    assert result.dll_path == plugins / PLUGIN_DLL_NAME
+    assert sorted(p.name for p in plugins.iterdir()) == sorted(
+        [PLUGIN_DLL_NAME, SIDECAR_NAME, "other_plugin.dll"]
+    )
+    assert list(legacy.iterdir()) == []
+    assert len(result.removed_stale) == 3 and result.cleared_pin
+    assert ini.read_text(encoding="utf-8") == "[General]\nkeep=1\n"
 
 
 def test_install_without_a_bundled_dll_explains_where_to_get_it(tmp_path, monkeypatch):

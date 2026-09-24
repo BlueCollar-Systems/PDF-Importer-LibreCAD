@@ -45,16 +45,14 @@ int main(int argc, char **argv) {
     }
 
     const QStringList expected = {
-        QStringLiteral("Import PDF (BlueCollar)..."),
-        QStringLiteral("Import PDF into Current Drawing (BlueCollar)..."),
-        QStringLiteral("PDF Importer Settings (BlueCollar)..."),
+        QStringLiteral("plugins_menu|Import PDF (BlueCollar)..."),
+        QStringLiteral("plugins_menu|Import PDF into Current Drawing (BlueCollar)..."),
+        QStringLiteral("plugins_menu|PDF Importer Settings (BlueCollar)..."),
+        QStringLiteral("tools_menu|Import PDF (BlueCollar)..."),
     };
     QStringList actual;
     for (const PluginMenuLocation &loc : plugin->getCapabilities().menuEntryPoints) {
-        if (loc.menuEntryPoint != QStringLiteral("plugins_menu")) {
-            return fail("menu entry not under plugins_menu: " + loc.menuEntryPoint);
-        }
-        actual << loc.menuEntryActionName;
+        actual << loc.menuEntryPoint + "|" + loc.menuEntryActionName;
     }
     // Element-wise: QList::operator== trips a removed MSVC STL helper in Qt 5.15 headers.
     bool same = actual.size() == expected.size();
@@ -62,10 +60,10 @@ int main(int argc, char **argv) {
         same = actual.at(i) == expected.at(i);
     }
     if (!same) {
-        return fail("unexpected menu entries: " + actual.join(" | "));
+        return fail("unexpected menu entries: " + actual.join(" ; "));
     }
     QTextStream(stdout) << "plugin loaded: " << plugin->name() << "\n"
-                        << "menu: " << actual.join(" | ") << "\n";
+                        << "menu: " << actual.join(" ; ") << "\n";
 
     if (args.size() >= 6 && args.at(2) == QStringLiteral("--e2e")) {
         const QString python = args.at(3);
@@ -84,7 +82,7 @@ int main(int argc, char **argv) {
 
         FakeLibreCadWindow window;
         window.show();
-        plugin->execComm(nullptr, &window, expected.at(0));
+        plugin->execComm(nullptr, &window, QStringLiteral("Import PDF (BlueCollar)..."));
 
         QElapsedTimer clock;
         clock.start();

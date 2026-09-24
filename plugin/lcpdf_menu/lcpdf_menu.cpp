@@ -528,7 +528,9 @@ PluginCapabilities LC_BcLCPdfMenuPlugin::getCapabilities() const {
     caps.menuEntryPoints
         << PluginMenuLocation(QStringLiteral("plugins_menu"), tr(kActionOpen))
         << PluginMenuLocation(QStringLiteral("plugins_menu"), tr(kActionInsert))
-        << PluginMenuLocation(QStringLiteral("plugins_menu"), tr(kActionSettings));
+        << PluginMenuLocation(QStringLiteral("plugins_menu"), tr(kActionSettings))
+        // Also under Tools, where people look for import helpers.
+        << PluginMenuLocation(QStringLiteral("tools_menu"), tr(kActionOpen));
     return caps;
 }
 

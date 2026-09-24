@@ -264,7 +264,7 @@ LibreCAD's **Plugins** menu has:
 
 | Menu entry | What it does |
 |---|---|
-| `Import PDF (BlueCollar)...` | Opens the importer window. Pick the PDF, pages, scale, text mode and DXF version there and press **Convert / Resume**. When the conversion succeeds the DXF opens in a new tab of *this* LibreCAD (the same code path as File > Open) and the importer window closes after you dismiss its Done summary. |
+| `Import PDF (BlueCollar)...` (also under **Tools**) | Opens the importer window. Pick the PDF, pages, scale, text mode and DXF version there and press **Convert / Resume**. When the conversion succeeds the DXF opens in a new tab of *this* LibreCAD (the same code path as File > Open) and the importer window closes after you dismiss its Done summary. |
 | `Import PDF into Current Drawing (BlueCollar)...` | Same, but the DXF is inserted into the open drawing as a block at 0,0 (its layers and blocks come along). |
 | `PDF Importer Settings (BlueCollar)...` | Shows which importer the menu starts; pin another `lcpdf-gui.exe` / `launch_lcpdf_gui.pyw`, or go back to the installed one. |
 
@@ -290,6 +290,12 @@ Limitations:
   DXF back; the plugin then tells you to use File > Open.
 - Diagnostics: start LibreCAD with `BC_LCPDF_PLUGIN_TRACE=1` to log each step
   to `%TEMP%\bc_lcpdf_menu.log`.
+
+The installer keeps exactly one `bc_lcpdf_menu.dll` where LibreCAD looks
+(LibreCAD loads every `*.dll` in its plugin folders, so leftover copies such as
+an old `bc_lcpdf_menu1.dll` or a copy in `%USERPROFILE%\.librecad\plugins` would
+show every entry twice); it removes those and drops a stale path pinned in
+Settings so the freshly installed importer is used.
 
 Uninstall: close LibreCAD and delete `Documents\LibreCAD\plugins\bc_lcpdf_menu.dll`
 and `bc_lcpdf_menu-importer.txt` (or run

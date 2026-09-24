@@ -55,7 +55,7 @@ When `LibreCAD-PDF-Importer-Setup_vX.Y.Z.exe` appears on Releases, double-click 
    **Install LibreCAD menu entry...**. This copies `bc_lcpdf_menu.dll` into
    `Documents\LibreCAD\plugins` (no admin rights) and records where
    `lcpdf-gui.exe` lives.
-3. Start LibreCAD and choose **Plugins > Import PDF (BlueCollar)...**.
+3. Start LibreCAD and choose **Plugins > Import PDF (BlueCollar)...** (also under **Tools**).
 4. In the importer window pick the PDF and options and press **Convert / Resume**.
    The finished DXF opens in LibreCAD automatically.
 
