@@ -55,6 +55,8 @@ ignore = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
+cache_dir = "C:/TMP/pytest_cache/librecad"
 filterwarnings = [
   "ignore::DeprecationWarning:ezdxf.queryparser",
 ]

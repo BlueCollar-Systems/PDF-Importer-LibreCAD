@@ -78,3 +78,42 @@ def test_launch_never_terminates_existing_librecad_sessions(
     assert ok is True
     assert str(executable.resolve()) in message
     popen.assert_called_once_with([str(executable.resolve()), str(dxf_path.resolve())])
+
+
+def test_ensure_librecad_menu_plugin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_appdata = tmp_path / "appdata"
+    fake_home = tmp_path / "home"
+    monkeypatch.setenv("APPDATA", str(fake_appdata))
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    fake_dll = tmp_path / "bc_lcpdf_menu1.dll"
+    fake_dll.write_bytes(b"dummy dll content")
+
+    fake_script = tmp_path / "custom_launcher.pyw"
+    fake_script.write_text("# launcher", encoding="utf-8")
+
+    ok, message = librecad_launcher.ensure_librecad_menu_plugin(
+        script_or_exe_path=str(fake_script),
+        plugin_dll_path=str(fake_dll),
+    )
+
+    assert ok is True
+    assert "LibreCAD plugin installed" in message
+
+    ini_file = fake_appdata / "LibreCAD" / "bc_pdf_importer_plugin.ini"
+    assert ini_file.exists()
+    content = ini_file.read_text(encoding="utf-8")
+    assert "custom_launcher.pyw" in content
+
+    # Verify DLL copies in user plugin paths
+    for target_dir in [
+        fake_home / "Documents" / "LibreCAD" / "plugins",
+        fake_home / "Documents" / "librecad" / "plugins",
+        fake_home / ".librecad" / "plugins",
+    ]:
+        assert (target_dir / "bc_lcpdf_menu1.dll").exists()
+        assert (target_dir / "bc_lcpdf_menu.dll").exists()
+

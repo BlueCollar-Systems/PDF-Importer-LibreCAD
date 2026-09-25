@@ -78,6 +78,12 @@ class Pdf2DxfApp(tk.Tk):
         self._cancel_event = threading.Event()
         self._build_ui()
 
+        try:
+            from librecad_pdf_importer.launchers.librecad_launcher import ensure_librecad_menu_plugin
+            ensure_librecad_menu_plugin()
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
@@ -198,6 +204,8 @@ class Pdf2DxfApp(tk.Tk):
                         variable=self._var_import_text).pack(side=tk.LEFT, padx=6)
         ttk.Checkbutton(opts_frame, text="Open in LibreCAD after convert",
                         variable=self._var_launch_librecad).pack(side=tk.LEFT, padx=6)
+        ttk.Button(opts_frame, text="Install LC Menu Plugin",
+                   command=self._install_menu_plugin).pack(side=tk.RIGHT, padx=6)
 
         # ---- Convert button ----
         action_frame = ttk.Frame(frame)
@@ -238,6 +246,25 @@ class Pdf2DxfApp(tk.Tk):
         # Let the log area expand when the window is resized
         frame.columnconfigure(1, weight=1)
         frame.rowconfigure(14, weight=1)
+
+    # ------------------------------------------------------------------
+    # LibreCAD Plugin Integration
+    # ------------------------------------------------------------------
+    def _install_menu_plugin(self) -> None:
+        try:
+            from librecad_pdf_importer.launchers.librecad_launcher import ensure_librecad_menu_plugin
+            ok, msg = ensure_librecad_menu_plugin()
+            messagebox.showinfo(
+                "LibreCAD Menu Plugin",
+                f"{msg}\n\nRestart LibreCAD. The importer is accessible inside LibreCAD under:\n"
+                "- Plugins > PDF Importer (BlueCollar)...\n"
+                "- Tools > PDF Importer (BlueCollar)...",
+            )
+        except Exception as exc:
+            messagebox.showerror(
+                "LibreCAD Menu Plugin",
+                f"Failed to install LibreCAD menu plugin:\n{exc}",
+            )
 
     # ------------------------------------------------------------------
     # Browse dialogs
