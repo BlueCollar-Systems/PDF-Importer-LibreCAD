@@ -40,6 +40,7 @@ from pdfcadcore.primitive_extractor import (
 )
 from pdfcadcore.primitives import PageData
 from conversion_control import ActivePageCancelled, check_cancel, report_progress
+from .image_soft_mask import align_image_soft_mask
 
 MM_PER_PT = 25.4 / 72.0
 
@@ -1667,33 +1668,8 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
                 # colour pixmap that has an alpha channel, which aborted the
                 # whole import for every text mode, not just raster.
                 mask_pix = fitz.Pixmap(doc, smask)
-                if (
-                    int(base_pix.width) != int(mask_pix.width)
-                    or int(base_pix.height) != int(mask_pix.height)
-                ):
-                    try:
-                        import io
-                        from PIL import Image
-                        img = mask_pix.pil_image()
-                        img_resized = img.convert("L").resize(
-                            (int(base_pix.width), int(base_pix.height)),
-                            Image.Resampling.BILINEAR,
-                        )
-                        bio = io.BytesIO()
-                        img_resized.save(bio, format="PNG")
-                        scaled_mask = fitz.Pixmap(bio.getvalue())
-                        if scaled_mask.colorspace != fitz.csGRAY:
-                            scaled_mask = fitz.Pixmap(fitz.csGRAY, scaled_mask)
-                        mask_pix = scaled_mask
-                    except Exception:
-                        pass
-                if (
-                    int(base_pix.width) == int(mask_pix.width)
-                    and int(base_pix.height) == int(mask_pix.height)
-                ):
-                    pix = fitz.Pixmap(base_pix, mask_pix)
-                else:
-                    pix = base_pix
+                base_pix, mask_pix = align_image_soft_mask(doc, xref, smask, base_pix, mask_pix)
+                pix = fitz.Pixmap(base_pix, mask_pix)
 
             color_space_n = None
             try:
