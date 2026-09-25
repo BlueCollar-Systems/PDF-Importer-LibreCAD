@@ -1671,10 +1671,29 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
                     int(base_pix.width) != int(mask_pix.width)
                     or int(base_pix.height) != int(mask_pix.height)
                 ):
-                    raise ValueError(
-                        "embedded image soft-mask dimensions do not match the source image"
-                    )
-                pix = fitz.Pixmap(base_pix, mask_pix)
+                    try:
+                        import io
+                        from PIL import Image
+                        img = mask_pix.pil_image()
+                        img_resized = img.convert("L").resize(
+                            (int(base_pix.width), int(base_pix.height)),
+                            Image.Resampling.BILINEAR,
+                        )
+                        bio = io.BytesIO()
+                        img_resized.save(bio, format="PNG")
+                        scaled_mask = fitz.Pixmap(bio.getvalue())
+                        if scaled_mask.colorspace != fitz.csGRAY:
+                            scaled_mask = fitz.Pixmap(fitz.csGRAY, scaled_mask)
+                        mask_pix = scaled_mask
+                    except Exception:
+                        pass
+                if (
+                    int(base_pix.width) == int(mask_pix.width)
+                    and int(base_pix.height) == int(mask_pix.height)
+                ):
+                    pix = fitz.Pixmap(base_pix, mask_pix)
+                else:
+                    pix = base_pix
 
             color_space_n = None
             try:
