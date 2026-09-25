@@ -34,7 +34,11 @@ QStringList candidateScripts() {
 
     candidates
         << QDir::cleanPath(appDir + "/../1PDF-Importer-LibreCAD/launch_lcpdf_gui.pyw")
-        << QDir::cleanPath(appDir + "/../1PDF-Importer-LibreCAD/gui.py");
+        << QDir::cleanPath(appDir + "/../1PDF-Importer-LibreCAD/gui.py")
+        << QStringLiteral("C:/1PDF-Importer-LibreCAD/launch_lcpdf_gui.pyw")
+        << QStringLiteral("C:/1PDF-Importer-LibreCAD/gui.py")
+        << QStringLiteral("D:/1PDF-Importer-LibreCAD/launch_lcpdf_gui.pyw")
+        << QStringLiteral("D:/1PDF-Importer-LibreCAD/gui.py");
 
     const QString home = QDir::homePath();
     candidates
@@ -194,7 +198,10 @@ bool launchImporterProcess(const QString &scriptPath, const QString &pythonPath,
         pythonCandidates << envPython;
     }
 
-    pythonCandidates << "pythonw.exe" << "pythonw" << "python.exe" << "python" << "py.exe" << "py";
+    pythonCandidates
+        << "pythonw.exe" << "pythonw" << "python.exe" << "python" << "py.exe" << "py"
+        << QStringLiteral("C:/Program Files/Python312/pythonw.exe")
+        << QStringLiteral("C:/Program Files/Python312/python.exe");
 
     for (const QString &candidate : pythonCandidates) {
         QString program = candidate;

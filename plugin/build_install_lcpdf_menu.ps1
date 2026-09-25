@@ -54,7 +54,9 @@ $docs = [Environment]::GetFolderPath("MyDocuments")
 $targetDirs = @(
     (Join-Path $docs "LibreCAD\plugins"),
     (Join-Path $docs "librecad\plugins"),
-    (Join-Path $env:USERPROFILE ".librecad\plugins")
+    (Join-Path $env:USERPROFILE ".librecad\plugins"),
+    "C:\Program Files\LibreCAD\resources\plugins",
+    "C:\Program Files\LibreCAD\plugins"
 )
 if (-not [string]::IsNullOrWhiteSpace($InstallDir) -and ($targetDirs -notcontains $InstallDir)) {
     $targetDirs += $InstallDir
