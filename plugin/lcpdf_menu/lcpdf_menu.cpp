@@ -34,11 +34,15 @@ QStringList candidateScripts() {
 
     candidates
         << QDir::cleanPath(appDir + "/../1PDF-Importer-LibreCAD/launch_lcpdf_gui.pyw")
-        << QDir::cleanPath(appDir + "/../1PDF-Importer-LibreCAD/gui.py")
-        << QStringLiteral("C:/1PDF-Importer-LibreCAD/launch_lcpdf_gui.pyw")
-        << QStringLiteral("C:/1PDF-Importer-LibreCAD/gui.py")
-        << QStringLiteral("D:/1PDF-Importer-LibreCAD/launch_lcpdf_gui.pyw")
-        << QStringLiteral("D:/1PDF-Importer-LibreCAD/gui.py");
+        << QDir::cleanPath(appDir + "/../1PDF-Importer-LibreCAD/gui.py");
+
+    const QString repoFolder = QStringLiteral("1PDF-Importer-LibreCAD");
+    for (const QFileInfo &drive : QDir::drives()) {
+        const QString root = drive.absoluteFilePath();
+        candidates
+            << QDir::cleanPath(root + repoFolder + "/launch_lcpdf_gui.pyw")
+            << QDir::cleanPath(root + repoFolder + "/gui.py");
+    }
 
     const QString home = QDir::homePath();
     candidates
