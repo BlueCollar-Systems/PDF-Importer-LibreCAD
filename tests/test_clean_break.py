@@ -12,7 +12,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GUI_PY = REPO_ROOT / "gui.py"
 CORE_CONFIG_PY = REPO_ROOT / "pdfcadcore" / "import_config.py"
-PACKAGE_CONFIG_PY = REPO_ROOT / "librecad_pdf_importer" / "core" / "PDFImportConfig.py"
 PLUGIN_MENU_CPP = REPO_ROOT / "plugin" / "lcpdf_menu" / "lcpdf_menu.cpp"
 PDF2DXF_PY = REPO_ROOT / "pdf2dxf.py"
 

@@ -1336,27 +1336,6 @@ def _finite_bbox(value: Any, *, field_name: str) -> Tuple[float, float, float, f
     return bbox
 
 
-def _values_close(
-    expected: Sequence[float],
-    actual: Sequence[float],
-    *,
-    relative_tolerance: float = 1e-8,
-) -> bool:
-    if len(expected) != len(actual):
-        return False
-    scale = max(1.0, *(abs(float(value)) for value in (*expected, *actual)))
-    tolerance = scale * relative_tolerance
-    return all(
-        math.isclose(
-            float(left),
-            float(right),
-            rel_tol=relative_tolerance,
-            abs_tol=tolerance,
-        )
-        for left, right in zip(expected, actual, strict=True)
-    )
-
-
 def _quad_frame(
     quad: Tuple[Tuple[float, float], ...],
 ) -> Tuple[float, float, float]:
