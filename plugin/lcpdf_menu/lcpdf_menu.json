@@ -2,12 +2,11 @@
     "IID": "org.librecad.PluginInterface/1.0",
     "MetaData": {
         "Name": "BlueCollar PDF Importer Menu Plugin",
-        "Description": "Adds a LibreCAD Plugins menu entry that launches the BlueCollar LC PDF importer GUI",
-        "Version": "1.0.0",
+        "Description": "Adds Plugins > Import PDF (BlueCollar)... to LibreCAD: runs the BlueCollar PDF-to-DXF importer GUI and opens the resulting DXF in LibreCAD",
+        "Version": "2.0.0",
         "Author": "BlueCollar-Systems",
         "License": "GPL-2.0-or-later",
         "Category": "Import",
         "Keys": ["bluecollar", "pdf", "dxf", "importer"]
     }
 }
-

@@ -153,13 +153,38 @@ jobs:
         if: steps.preflight.outputs.release == 'true'
         run: python build_release.py
 
+      # LibreCAD 2.2.1.x for Windows is built with Qt 5.15.2 / MSVC x64; the
+      # menu plugin must use the same kit. qtbase only (Core/Gui/Widgets, moc).
+      - name: Install Qt 5.15.2 msvc2019_64 for the LibreCAD plugin
+        if: steps.preflight.outputs.release == 'true'
+        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
+        with:
+          version: '5.15.2'
+          host: windows
+          target: desktop
+          arch: win64_msvc2019_64
+          archives: qtbase
+          dir: ${{ runner.temp }}
+          cache: true
+          setup-python: false
+          set-env: false
+          add-tools-to-path: false
+
+      - name: Build and load-test the LibreCAD plugin
+        if: steps.preflight.outputs.release == 'true'
+        env:
+          LCPDF_QT_ROOT: ${{ runner.temp }}/Qt/5.15.2/msvc2019_64
+        run: python scripts/build_librecad_plugin.py --smoke
+
       - name: Build Windows portable zip
         if: steps.preflight.outputs.release == 'true'
-        run: python build_windows_portable.py
+        env:
+          LCPDF_QT_ROOT: ${{ runner.temp }}/Qt/5.15.2/msvc2019_64
+        run: python build_windows_portable.py --librecad-plugin require
 
       - name: Smoke Windows portable zip
         if: steps.preflight.outputs.release == 'true'
-        run: python scripts/smoke_portable_zip.py "dist/LibreCAD-PDF-Importer-Windows-Portable_v*.zip" --source-zip "dist/LibreCAD-PDF-Importer_v*.zip"
+        run: python scripts/smoke_portable_zip.py "dist/LibreCAD-PDF-Importer-Windows-Portable_v*.zip" --source-zip "dist/LibreCAD-PDF-Importer_v*.zip" --require-librecad-plugin
 
       - name: Write candidate provenance
         if: steps.preflight.outputs.release == 'true'

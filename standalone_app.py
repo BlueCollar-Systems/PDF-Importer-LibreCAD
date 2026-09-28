@@ -29,7 +29,10 @@ def main() -> int:
     # Required so frozen builds don't re-launch the GUI in worker processes.
     multiprocessing.freeze_support()
     from gui import launch_gui
-    launch_gui()
+    from librecad_pdf_importer.librecad_handoff import handoff_path_from_argv
+
+    # LibreCAD's Plugins > Import PDF (BlueCollar)... passes --librecad-handoff.
+    launch_gui(handoff_path_from_argv(sys.argv[1:]))
     return 0
 
 

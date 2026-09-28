@@ -84,14 +84,28 @@ def test_ensure_librecad_menu_plugin(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake_appdata = tmp_path / "appdata"
-    fake_home = tmp_path / "home"
-    monkeypatch.setenv("APPDATA", str(fake_appdata))
-    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    from librecad_pdf_importer import librecad_plugin_install as installer
 
-    fake_dll = tmp_path / "bc_lcpdf_menu1.dll"
+    documents = tmp_path / "Documents"
+    legacy = tmp_path / "home" / ".librecad" / "plugins"
+    ini_file = tmp_path / "appdata" / "LibreCAD" / "bc_pdf_importer_plugin.ini"
+    monkeypatch.setattr(installer, "documents_directory", lambda: documents)
+    monkeypatch.setattr(installer, "librecad_legacy_plugin_directories", lambda: [legacy])
+    monkeypatch.setattr(installer, "plugin_settings_ini", lambda: ini_file)
+
+    # Leftovers from the earlier two-name / three-folder installer.
+    plugins = documents / "LibreCAD" / "plugins"
+    for folder in (plugins, legacy):
+        folder.mkdir(parents=True)
+        (folder / "bc_lcpdf_menu1.dll").write_bytes(b"old")
+    (legacy / "bc_lcpdf_menu.dll").write_bytes(b"old")
+    ini_file.parent.mkdir(parents=True)
+    ini_file.write_text(
+        "[General]\nscript_path=C:/old/launch_lcpdf_gui.pyw\nother=1\n", encoding="utf-8"
+    )
+
+    fake_dll = tmp_path / "bc_lcpdf_menu.dll"
     fake_dll.write_bytes(b"dummy dll content")
-
     fake_script = tmp_path / "custom_launcher.pyw"
     fake_script.write_text("# launcher", encoding="utf-8")
 
@@ -101,19 +115,28 @@ def test_ensure_librecad_menu_plugin(
     )
 
     assert ok is True
-    assert "LibreCAD plugin installed" in message
+    assert "LibreCAD menu plugin installed" in message
+    # Exactly one plugin DLL anywhere LibreCAD scans: a second copy doubles
+    # every menu entry.
+    assert sorted(p.name for p in plugins.iterdir()) == [
+        "bc_lcpdf_menu-importer.txt", "bc_lcpdf_menu.dll",
+    ]
+    assert list(legacy.iterdir()) == []
+    assert (plugins / "bc_lcpdf_menu.dll").read_bytes() == b"dummy dll content"
+    assert "custom_launcher.pyw" in (plugins / "bc_lcpdf_menu-importer.txt").read_text(
+        encoding="utf-8"
+    )
+    # The stale Settings pin is dropped so the recorded launcher is used.
+    assert ini_file.read_text(encoding="utf-8") == "[General]\nother=1\n"
 
-    ini_file = fake_appdata / "LibreCAD" / "bc_pdf_importer_plugin.ini"
-    assert ini_file.exists()
-    content = ini_file.read_text(encoding="utf-8")
-    assert "custom_launcher.pyw" in content
 
-    # Verify DLL copies in user plugin paths
-    for target_dir in [
-        fake_home / "Documents" / "LibreCAD" / "plugins",
-        fake_home / "Documents" / "librecad" / "plugins",
-        fake_home / ".librecad" / "plugins",
-    ]:
-        assert (target_dir / "bc_lcpdf_menu1.dll").exists()
-        assert (target_dir / "bc_lcpdf_menu.dll").exists()
+def test_ensure_librecad_menu_plugin_reports_a_missing_dll(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from librecad_pdf_importer import librecad_plugin_install as installer
 
+    monkeypatch.setattr(installer, "bundled_plugin_dll", lambda: None)
+    monkeypatch.setattr(installer, "documents_directory", lambda: tmp_path)
+    ok, message = librecad_launcher.ensure_librecad_menu_plugin()
+    assert ok is False and "portable ZIP" in message

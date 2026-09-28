@@ -159,3 +159,58 @@ jobs:
 
       - name: Run unit tests with declared dependencies
         run: python -m pytest tests/ -v
+
+  # Builds the LibreCAD "Plugins > Import PDF (BlueCollar)..." DLL against the
+  # same Qt kit as LibreCAD 2.2.1.x for Windows (Qt 5.15.2 msvc2019_64), loads
+  # it through QPluginLoader like LibreCAD does, and runs the full GUI handoff
+  # round trip against a fake importer.
+  librecad-plugin:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12.10'
+          architecture: x64
+
+      - name: Install Qt 5.15.2 msvc2019_64
+        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
+        with:
+          version: '5.15.2'
+          host: windows
+          target: desktop
+          arch: win64_msvc2019_64
+          archives: qtbase
+          dir: ${{ runner.temp }}
+          cache: true
+          setup-python: false
+          set-env: false
+          add-tools-to-path: false
+
+      - name: Build, load-test and round-trip the plugin
+        env:
+          LCPDF_QT_ROOT: ${{ runner.temp }}/Qt/5.15.2/msvc2019_64
+        run: python scripts/build_librecad_plugin.py --smoke
+
+      - name: Rebuild and require byte-identical output
+        env:
+          LCPDF_QT_ROOT: ${{ runner.temp }}/Qt/5.15.2/msvc2019_64
+        run: |
+          sha256sum build/librecad-plugin/bc_lcpdf_menu.dll | tee first.sha
+          python scripts/build_librecad_plugin.py
+          sha256sum -c first.sha
+
+      - name: Plugin installer unit tests
+        run: |
+          python -m pip install -e . pytest
+          python -m pytest tests/test_librecad_menu_plugin.py -v
+

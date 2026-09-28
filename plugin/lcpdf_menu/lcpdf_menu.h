@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// BlueCollar PDF Importer menu plugin for LibreCAD 2.2.x (Qt 5).
 #ifndef BC_LCPDF_MENU_H
 #define BC_LCPDF_MENU_H
 
@@ -17,4 +19,3 @@ public:
 };
 
 #endif
-

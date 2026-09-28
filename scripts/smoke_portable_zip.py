@@ -46,6 +46,18 @@ SOURCE_REQUIRED_MEMBERS = (
     "third_party/fonttools/LICENSE.external",
     "scripts/smoke_portable_zip.py",
 )
+LIBRECAD_PLUGIN_MEMBERS = (
+    "librecad-plugin/bc_lcpdf_menu.dll",
+    "librecad-plugin/README.txt",
+    "librecad-plugin/LICENSE.GPL-2.0.txt",
+)
+# Markers LibreCAD 2.2.x's QPluginLoader needs: the Qt plugin entry points and
+# the LibreCAD plugin interface IID in the embedded metadata.
+LIBRECAD_PLUGIN_MARKERS = (
+    b"qt_plugin_instance",
+    b"qt_plugin_query_metadata",
+    b"org.librecad.PluginInterface/1.0",
+)
 SELF_TEST_TIMEOUT_SECONDS = 120
 CONVERSION_TIMEOUT_SECONDS = 180
 
@@ -105,6 +117,32 @@ def _validate_source_zip(source_zip: Path) -> None:
             "Source ZIP must not contain vendored runtime files: "
             + ", ".join(forbidden[:10])
         )
+
+
+def _validate_librecad_plugin(names: set[str], archive: zipfile.ZipFile) -> None:
+    missing = [name for name in LIBRECAD_PLUGIN_MEMBERS if name not in names]
+    if missing:
+        raise SystemExit(
+            "Portable ZIP is missing the LibreCAD menu plugin: " + ", ".join(missing)
+        )
+    payload = archive.read("librecad-plugin/bc_lcpdf_menu.dll")
+    if not payload.startswith(b"MZ"):
+        raise SystemExit("librecad-plugin/bc_lcpdf_menu.dll is not a Windows DLL")
+    absent = [marker.decode() for marker in LIBRECAD_PLUGIN_MARKERS if marker not in payload]
+    if absent:
+        raise SystemExit(
+            "librecad-plugin/bc_lcpdf_menu.dll is not a LibreCAD Qt plugin (missing "
+            + ", ".join(absent) + ")"
+        )
+    # Plugin DLL names containing ".dll" are all loaded by LibreCAD; nothing
+    # else in the plugin folder may carry that substring.
+    stray = sorted(
+        name for name in names
+        if name.startswith("librecad-plugin/") and ".dll" in name.lower()
+        and name != "librecad-plugin/bc_lcpdf_menu.dll"
+    )
+    if stray:
+        raise SystemExit("Unexpected DLL-like files in librecad-plugin/: " + ", ".join(stray))
 
 
 def _write_tiny_pdf(path: Path) -> None:
@@ -417,6 +455,11 @@ def main() -> int:
         "--source-zip",
         help="Source ZIP path or glob pattern to validate in the same release gate",
     )
+    parser.add_argument(
+        "--require-librecad-plugin",
+        action="store_true",
+        help="fail unless the LibreCAD menu plugin is bundled and well-formed",
+    )
     args = parser.parse_args()
 
     zip_path = _resolve_zip(args.zip_path)
@@ -430,6 +473,10 @@ def main() -> int:
             raise SystemExit(
                 "Portable ZIP is missing required files: " + ", ".join(missing)
             )
+        if args.require_librecad_plugin or any(
+            name.startswith("librecad-plugin/") for name in names
+        ):
+            _validate_librecad_plugin(names, zf)
 
     with tempfile.TemporaryDirectory(prefix="lc_portable_") as tmp:
         with zipfile.ZipFile(zip_path, "r") as zf:
