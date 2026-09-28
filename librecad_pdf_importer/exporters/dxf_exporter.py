@@ -72,6 +72,7 @@ from conversion_control import (
     ActivePageCancelled,
     ImportStopped,
     check_cancel,
+    ensure_output_is_not_source,
     report_progress,
 )
 from librecad_runtime import local_path_for_io, resolve_librecad_installation
@@ -4486,6 +4487,7 @@ def export_to_dxf(
     output_path: str,
     options: Optional[DxfExportOptions] = None,
 ) -> DxfExportResult:
+    ensure_output_is_not_source(extraction.pdf_path, output_path)
     try:
         return _export_to_dxf_once(extraction, output_path, options)
     except _SerializedTextItemMismatch as exc:

@@ -1,6 +1,7 @@
-"""Bounded, user-requested cancellation and progress for long conversions."""
+"""Source protection, cancellation and progress for long conversions."""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable, Optional
 
 
@@ -19,6 +20,25 @@ class ImportStopped(RuntimeError):
     def __init__(self, message: str):
         super().__init__(message)
         self.failure_report_path = ""
+
+
+def ensure_output_is_not_source(input_path: str | Path, output_path: str | Path) -> None:
+    """Reject source aliases before conversion can create or replace any files."""
+    source = Path(input_path).expanduser().resolve()
+    output = Path(output_path).expanduser().resolve()
+    same_source = source == output
+    if not same_source:
+        try:
+            # Resolving catches symlinks; file identity also catches hard links.
+            same_source = source.samefile(output)
+        except FileNotFoundError:
+            # A new DXF destination normally does not exist yet.
+            same_source = False
+    if same_source:
+        raise ImportStopped(
+            "The DXF output points to the source PDF. Choose a different output "
+            "path to preserve the source."
+        )
 
 
 def check_cancel(

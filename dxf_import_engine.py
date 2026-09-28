@@ -32,7 +32,9 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from pdfcadcore.import_config import ImportConfig
-from conversion_control import ActivePageCancelled, ImportStopped, check_cancel
+from conversion_control import (
+    ActivePageCancelled, ImportStopped, check_cancel, ensure_output_is_not_source,
+)
 from librecad_runtime import resolve_librecad_runtime_binding
 
 
@@ -755,6 +757,7 @@ def convert(
     dict
         Statistics: ``pages``, ``entities``, ``text_items``.
     """
+    ensure_output_is_not_source(input_path, output_path)
     if config is None:
         config = ImportConfig.auto()
 
