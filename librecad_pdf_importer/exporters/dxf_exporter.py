@@ -3216,6 +3216,31 @@ def _opaque_rgb_asset(source_path: Path, *, matte_transparency: bool) -> bytes:
     return prepared
 
 
+def _editable_source_pages(extraction: DocumentExtraction) -> set[int]:
+    """Pages whose vectors or text must stay editable host entities."""
+
+    pages: set[int] = set()
+    for page in extraction.pages:
+        data = page.page_data
+        number = int(getattr(data, "page_number", 0) or 0)
+        primitives = list(getattr(data, "primitives", []) or [])
+        text_items = list(getattr(data, "text_items", []) or [])
+        if primitives or text_items:
+            pages.add(number)
+    return pages
+
+
+def _inline_composite_keeps_vectors(placements: Sequence[ImagePlacement],
+                                    editable_pages: set[int]) -> bool:
+    """An images-only composite must not be replaced by a page raster."""
+
+    if not placements:
+        return False
+    if any(str(item.source_kind) != "inline_image_composite" for item in placements):
+        return False
+    return {int(item.page_number) for item in placements}.issubset(editable_pages)
+
+
 def _stage_image_assets(
     extraction: DocumentExtraction,
     asset_root: Path,
@@ -3259,6 +3284,7 @@ def _stage_image_assets(
         Tuple[Tuple[int, int], str, Tuple[int, int, int, int], bool],
     ] = {}
     masked_page_rasters: set[str] = set()
+    editable_pages = _editable_source_pages(extraction)
     for page in extraction.pages:
         for placement in page.images:
             if str(placement.source_kind) in marker_kinds:
@@ -3286,10 +3312,15 @@ def _stage_image_assets(
         )
         if masked_page_raster:
             masked_page_rasters.add(source_key)
+        source_placements = placements_by_source[source_key]
+        keep_vectors = _inline_composite_keeps_vectors(
+            source_placements, editable_pages
+        )
         if alpha_kind == "zero":
             omitted_sources.add(source_key)
         elif (
             not masked_page_raster
+            and not keep_vectors
             and alpha_kind == "rectangular_opaque"
             and (crop_box_px[2] - crop_box_px[0]) * (crop_box_px[3] - crop_box_px[1])
             > RECTANGULAR_CROP_MAX_PIXELS
@@ -3301,20 +3332,21 @@ def _stage_image_assets(
                 alpha_present,
             )
             compositing_pages.update(
-                int(placement.page_number) for placement in placements_by_source[source_key]
+                int(placement.page_number) for placement in source_placements
             )
         elif (
             not masked_page_raster
+            and not keep_vectors
             and alpha_kind == "binary_mask"
             and not all(
                 placement.source_kind == "page_raster"
-                for placement in placements_by_source[source_key]
+                for placement in source_placements
             )
         ):
             compositing_pages.update(
-                int(placement.page_number) for placement in placements_by_source[source_key]
+                int(placement.page_number) for placement in source_placements
             )
-        elif not masked_page_raster and (
+        elif not masked_page_raster and not keep_vectors and (
             alpha_kind == "compositing_required"
             or (
                 alpha_kind == "opaque"
@@ -3323,7 +3355,7 @@ def _stage_image_assets(
             )
         ):
             compositing_pages.update(
-                int(placement.page_number) for placement in placements_by_source[source_key]
+                int(placement.page_number) for placement in source_placements
             )
 
     for source_key in source_paths:
@@ -3368,6 +3400,12 @@ def _stage_image_assets(
             )
             prepared_size_px = size_px
             crop_box_px = (0, 0, size_px[0], size_px[1])
+        elif alpha_kind == "compositing_required" and _inline_composite_keeps_vectors(
+            placements, editable_pages
+        ):
+            prepared = _opaque_rgb_asset(source_path, matte_transparency=True)
+            prepared_size_px = size_px
+            crop_box_px = (0, 0, size_px[0], size_px[1])
         else:
             raise RuntimeError(
                 f"unsupported image alpha classification {alpha_kind}: {source_path}"
@@ -3399,7 +3437,8 @@ def _stage_image_assets(
             source_size_px=size_px,
             crop_box_px=crop_box_px,
             draw_below_editable=bool(
-                alpha_kind == "binary_mask" or source_key in masked_page_rasters
+                alpha_kind in {"binary_mask", "compositing_required"}
+                or source_key in masked_page_rasters
             ),
         )
         staged_by_source[source_key] = staged

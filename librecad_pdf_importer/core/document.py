@@ -826,16 +826,17 @@ def _extract_document_impl(
                     )
                     if inline_source_count:
                         if any(
-                            placement.source_kind
-                            in {
-                                "inline_image_composite",
-                                "inline_image_page_fidelity_required",
-                            }
+                            placement.source_kind == "inline_image_page_fidelity_required"
                             for placement in inline_placements
                         ):
                             delivery_detail = (
                                 "one exact page-fidelity image surface"
                             )
+                        elif any(
+                            placement.source_kind == "inline_image_composite"
+                            for placement in inline_placements
+                        ):
+                            delivery_detail = "one images-only composite"
                         else:
                             delivery_detail = (
                                 f"{len(inline_placements)} individual image placements"
@@ -1443,6 +1444,41 @@ def _extract_inline_images_individually(
     return placements
 
 
+def _images_only_composite_dpi(page: fitz.Page, options: ExtractionOptions) -> int:
+    """DPI for an images-only composite that stays inside the pixel budget.
+
+    A full-page vector bake is not used when the requested DPI would allocate
+    a sheet-sized raster. The floor is 36 DPI even if a caller sets the budget
+    below that, so a vector page still receives the image cluster.
+    """
+
+    requested = max(36, int(getattr(options, "raster_dpi", None) or 200))
+    width = float(page.rect.width)
+    height = float(page.rect.height)
+    if width <= 0.0 or height <= 0.0:
+        return requested
+
+    def pixels(dpi: int) -> int:
+        return (
+            max(1, int(math.ceil(width * dpi / 72.0)))
+            * max(1, int(math.ceil(height * dpi / 72.0)))
+        )
+
+    if pixels(requested) <= INLINE_IMAGE_COMPOSITE_MAX_PIXELS:
+        return requested
+    best = 36
+    low = 36
+    high = requested
+    while low <= high:
+        mid = (low + high) // 2
+        if pixels(mid) <= INLINE_IMAGE_COMPOSITE_MAX_PIXELS:
+            best = mid
+            low = mid + 1
+        else:
+            high = mid - 1
+    return best
+
+
 def _render_inline_image_composite(
     inline_blocks: list[tuple[dict, dict]],
     *,
@@ -1450,6 +1486,7 @@ def _render_inline_image_composite(
     page_number: int,
     options: ExtractionOptions,
     image_dir: Path,
+    dpi: Optional[int] = None,
 ) -> ImagePlacement:
     """Render only inline images through one transparent MuPDF SVG page."""
 
@@ -1492,7 +1529,9 @@ def _render_inline_image_composite(
         f'{_svg_number(width)} {_svg_number(height)}">'
         f'<defs>{"".join(definitions)}</defs>{"".join(uses)}</svg>'
     ).encode("ascii")
-    dpi = max(36, int(options.raster_dpi or 200))
+    if dpi is None:
+        dpi = _images_only_composite_dpi(page, options)
+    dpi = max(36, int(dpi))
     try:
         with fitz.open("svg", svg) as image_document:
             pixmap = image_document[0].get_pixmap(
@@ -1835,30 +1874,16 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
             )
         )
         if use_composite:
-            dpi = max(36, int(options.raster_dpi or 200))
-            projected_pixels = (
-                max(1, int(math.ceil(float(page.rect.width) * dpi / 72.0)))
-                * max(1, int(math.ceil(float(page.rect.height) * dpi / 72.0)))
+            placements.append(
+                _render_inline_image_composite(
+                    inline_blocks,
+                    page=page,
+                    page_number=page_number,
+                    options=options,
+                    image_dir=image_dir,
+                    dpi=_images_only_composite_dpi(page, options),
+                )
             )
-            if projected_pixels > INLINE_IMAGE_COMPOSITE_MAX_PIXELS:
-                placements.append(
-                    _inline_image_page_fidelity_marker(
-                        inline_blocks,
-                        page=page,
-                        page_number=page_number,
-                        options=options,
-                    )
-                )
-            else:
-                placements.append(
-                    _render_inline_image_composite(
-                        inline_blocks,
-                        page=page,
-                        page_number=page_number,
-                        options=options,
-                        image_dir=image_dir,
-                    )
-                )
         else:
             placements.extend(
                 _extract_inline_images_individually(

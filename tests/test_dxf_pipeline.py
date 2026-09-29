@@ -23,6 +23,7 @@ from librecad_pdf_importer.core.document import (
     ExtractionOptions,
     _classify_pixmap_alpha,
     _extract_images,
+    _images_only_composite_dpi,
     extract_document,
 )
 from librecad_pdf_importer.exporters.dxf_exporter import (
@@ -577,7 +578,14 @@ class TestDxfPipeline(unittest.TestCase):
         drawing = ezdxf.readfile(output)
         self.assertEqual(result.image_count, 1)
         self.assertEqual(len(list(drawing.modelspace().query("IMAGE"))), 1)
+        self.assertGreater(len(list(drawing.modelspace().query("LINE"))), 0)
         self.assertTrue(
+            any(
+                item.source_kind == "inline_image_composite"
+                for item in run.config._source_provenance_objects
+            )
+        )
+        self.assertFalse(
             any(
                 item.source_kind == "page_raster_alpha_fidelity_fallback"
                 for item in run.config._source_provenance_objects
@@ -594,7 +602,7 @@ class TestDxfPipeline(unittest.TestCase):
                 alpha=False,
             )
         self.assertFalse(delivered_pixmap.alpha)
-        self.assertEqual(
+        self.assertNotEqual(
             delivered_pixmap.tobytes("png"),
             reference_page.tobytes("png"),
         )
@@ -992,7 +1000,7 @@ class TestDxfPipeline(unittest.TestCase):
             self.assertLessEqual(delivered.width, 64)
             self.assertLessEqual(delivered.height, 64)
 
-    def test_large_inline_composite_uses_lightweight_page_fidelity_marker(self) -> None:
+    def test_oversized_inline_composite_keeps_vector_page_editable(self) -> None:
         source = self.tmp_path / "inline-marker.pdf"
         output = self.tmp_path / "inline-marker.dxf"
         self._build_inline_image_pdf(
@@ -1010,10 +1018,10 @@ class TestDxfPipeline(unittest.TestCase):
                 mode="vector",
                 overrides={"pages": "1", "raster_dpi": 72},
             )
-        marker = run.extraction.pages[0].images[0]
-        self.assertEqual(marker.source_kind, "inline_image_page_fidelity_required")
-        self.assertEqual(marker.path, "")
-        self.assertEqual(marker.alpha_kind, "compositing_required")
+        composite = run.extraction.pages[0].images[0]
+        self.assertEqual(composite.source_kind, "inline_image_composite")
+        self.assertTrue(composite.path)
+        self.assertGreater(len(run.extraction.pages[0].page_data.primitives), 0)
 
         result = export_to_dxf(
             run.extraction,
@@ -1022,6 +1030,7 @@ class TestDxfPipeline(unittest.TestCase):
         )
         self.assertEqual(result.image_count, 1)
         drawing = ezdxf.readfile(output)
+        self.assertGreater(len(list(drawing.modelspace().query("LINE"))), 0)
         delivered = next(iter(drawing.modelspace().query("IMAGE")))
         image_def = drawing.entitydb.get(str(delivered.dxf.image_def_handle))
         actual = fitz.Pixmap(str(_dxf_linked_asset(drawing, image_def)))
@@ -1031,7 +1040,20 @@ class TestDxfPipeline(unittest.TestCase):
                 colorspace=fitz.csRGB,
                 alpha=False,
             )
-        self.assertEqual(actual.tobytes("png"), expected.tobytes("png"))
+        self.assertNotEqual(actual.tobytes("png"), expected.tobytes("png"))
+
+    def test_sheet_sized_images_only_composite_dpi_fits_the_pixel_budget(self) -> None:
+        from librecad_pdf_importer.core.document import (
+            INLINE_IMAGE_COMPOSITE_MAX_PIXELS,
+        )
+
+        page = SimpleNamespace(rect=SimpleNamespace(width=3024.0, height=2160.0))
+        dpi = _images_only_composite_dpi(page, ExtractionOptions(raster_dpi=200))
+        pixels = (
+            math.ceil(3024.0 * dpi / 72.0) * math.ceil(2160.0 * dpi / 72.0)
+        )
+        self.assertLess(dpi, 200)
+        self.assertLessEqual(pixels, INLINE_IMAGE_COMPOSITE_MAX_PIXELS)
 
     def test_tiled_page_surface_matches_monolithic_with_bounded_antialias_delta(
         self,
