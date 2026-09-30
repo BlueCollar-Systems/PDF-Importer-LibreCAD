@@ -399,7 +399,15 @@ def _apply_dxf_framing(
     )
     height = max(1.0, float(max_y) - float(min_y))
     width = max(1.0, float(max_x) - float(min_x))
-    doc.set_modelspace_vport(max(height, width) * 1.1, center=center)
+    # View height is the longer sheet side so a square window still contains
+    # a landscape print. aspect_ratio is width/height of that same sheet, so a
+    # host that honors it frames the page instead of a square leftover.
+    view_height = max(height, width) * 1.1
+    vport = doc.set_modelspace_vport(view_height, center=center)
+    try:
+        vport.dxf.aspect_ratio = width / height
+    except (AttributeError, TypeError, ValueError):
+        pass
 
 
 # ---------------------------------------------------------------------------
