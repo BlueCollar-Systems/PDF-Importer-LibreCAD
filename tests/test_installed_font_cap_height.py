@@ -51,6 +51,7 @@ def item():
 def test_installed_resolution_binds_actual_renderer_metric_and_file(installed_font):
     resolution = builder._resolve_exact_font(item().font_name)
     assert resolution.exact
+    assert Path(resolution.filename) == installed_font.resolve()
     assert resolution.source_cap_height_ratio == pytest.approx(.7)
     assert resolution.asset_sha256 == hashlib.sha256(installed_font.read_bytes()).hexdigest()
 
