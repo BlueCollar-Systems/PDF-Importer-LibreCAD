@@ -88,6 +88,10 @@ class TextCharLayout:
     source_font_ascender: Optional[float] = None
     source_font_descender: Optional[float] = None
     source_writing_mode: Optional[int] = None
+    source_font_program_sha256: str = ""
+    source_font_binding_verified: bool = False
+    source_font_character_codepoint: Optional[int] = None
+    source_glyph_trace_codepoint: Optional[int] = None
 
 
 @dataclass

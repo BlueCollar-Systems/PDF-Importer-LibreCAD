@@ -49,6 +49,7 @@ from pdfcadcore.import_config import ImportConfig
 from pdfcadcore.embedded_fonts import EmbeddedFontFailure
 from pdfcadcore.primitives import NormalizedText, TextCharLayout
 from librecad_runtime import redacted_local_path, resolve_librecad_installation
+from librecad_pdf_importer.core.text_paint import bound_fill_receipt
 
 
 _MTEXT_THRESHOLD = 120
@@ -79,6 +80,7 @@ _canonical_glyph_path_cache: Dict[
     Tuple[Tuple[str, ...], str],
     Optional[Any],
 ] = {}
+_missing_cap_reference_cache: Dict[Tuple[str, ...], Optional[float]] = {}
 _scaled_glyph_geometry_cache: Dict[
     Tuple[Tuple[str, ...], str, float, bool, Tuple[Tuple[str, str], ...]],
     Tuple[List[Any], str],
@@ -251,6 +253,9 @@ class _ExactFontResolution:
     installed_font_failure_reason: str = ""
     proof_category: str = ""
     item_impossibility_proven: bool = False
+    source_binding_method: str = ""
+    source_program_candidates: tuple = ()
+    source_character_bindings: tuple = ()
 
     def evidence(self) -> Dict[str, Any]:
         return {
@@ -278,6 +283,15 @@ class _ExactFontResolution:
                 self.item_impossibility_proven
             ),
             "font_failure_proof_category": self.proof_category or None,
+            "font_source_binding_method": self.source_binding_method or None,
+            "font_source_program_candidates": [
+                {"xref": xref, "resource": resource}
+                for xref, resource in self.source_program_candidates
+            ],
+            "font_source_character_bindings": [
+                {"codepoint": codepoint, "origin_pdf": list(origin), "program_sha256": digest}
+                for codepoint, origin, digest in self.source_character_bindings
+            ],
         }
 
 
@@ -686,6 +700,11 @@ def _resolve_exact_font(font_name: str) -> _ExactFontResolution:
     ratio, font_sha256 = (
         _installed_font_metrics(filename) if exact else (None, "")
     )
+    if exact:
+        # The cache face uses a basename; per-character font inspection needs
+        # the same concrete program already verified by _installed_font_metrics.
+        font = ezdxf_fonts.font_manager.get_ttf_font(_outline_engine_font_name(filename))
+        filename = str(Path(font.reader.file.name).resolve(strict=True))
     return _ExactFontResolution(
         source_name=source,
         family=str(face.family or family),
@@ -797,6 +816,41 @@ def _positioned_empty_font_program_proven(text_item: NormalizedText) -> bool:
     )
 
 
+def _installed_font_rejection_bound_to_item(
+    text_item: NormalizedText, attempt: TextDeliveryAttempt,
+) -> bool:
+    """Accept an observed candidate mismatch, not a font lookup/read failure."""
+    receipt = attempt.evidence.get("installed_font_rejection")
+    if not _positioned_empty_font_program_proven(text_item) or not isinstance(receipt, dict):
+        return False
+    failure = text_item.font_failure
+    digest = receipt.get("font_sha256")
+    observed, resolved = receipt.get("observed_glyph_id"), receipt.get("resolved_glyph_id")
+    index = receipt.get("character_index")
+    if not (
+        receipt.get("schema") == "bcs.installed_font_rejection/1"
+        and receipt.get("reason") == "source_glyph_id_mismatch"
+        and receipt.get("source_id") == attempt.source_id
+        and receipt.get("source_xref") == failure.source_xref
+        and receipt.get("source_page_number") == failure.page_number
+        and receipt.get("span_font_name") == failure.span_font_name
+        and isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)
+        and digest == attempt.evidence.get("font_asset_sha256")
+        and attempt.evidence.get("font_resolution_source") == "installed_exact_font"
+        and all(isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                for value in (observed, resolved, index))
+        and observed != resolved
+    ):
+        return False
+    try:
+        layout = _source_affine_layout(text_item) or _positioned_fraction_layout(text_item)
+        return bool(layout and index < len(layout)
+                    and layout[index].text == receipt.get("character")
+                    and layout[index].glyph_id == observed)
+    except (TypeError, ValueError, _RepresentationImpossible):
+        return False
+
+
 def _resolve_item_font(
     text_item: NormalizedText,
     config: ImportConfig,
@@ -835,7 +889,18 @@ def _resolve_item_font(
             ),
             "asset_id": str(asset.asset_id),
             "asset_sha256": str(asset.usable_sha256),
-            "source_xref": int(asset.source_xref),
+            "source_xref": (
+                None if len(getattr(asset, "source_program_candidates", ())) > 1
+                else int(asset.source_xref)
+            ),
+            "source_binding_method": getattr(asset, "source_binding_method", ""),
+            "source_program_candidates": getattr(asset, "source_program_candidates", ()),
+            "source_character_bindings": tuple(
+                (char.source_font_character_codepoint, char.source_origin_pdf,
+                 char.source_font_program_sha256)
+                for char in getattr(text_item, "source_char_layout", ())
+                if char.source_font_binding_verified
+            ),
             "source_cap_height_ratio": cap_height_ratio,
             "source_sha256": str(getattr(asset, "source_sha256", "") or ""),
             "source_origin": str(
@@ -950,11 +1015,16 @@ def _resolve_item_font(
         proof_category = str(getattr(failure, "proof_category", "") or "")
         installed = _resolve_exact_font(source_name)
         failure_bound = _font_failure_bound_to_item(text_item)
-        installed_may_prove_equivalence = failure_bound and proof_category in {
-            "",
-            "source_font_absent_for_item",
-        }
+        installed_may_prove_equivalence = failure_bound and (
+            proof_category in {"", "source_font_absent_for_item"}
+            or _positioned_empty_font_program_proven(text_item)
+        )
         if installed.exact and installed_may_prove_equivalence:
+            if _positioned_empty_font_program_proven(text_item):
+                return replace(installed, source_xref=failure.source_xref,
+                    source_page_number=failure.page_number,
+                    asset_span_font_name=failure.span_font_name,
+                    pdf_font_failure_reason=failure.detail)
             return installed
         reason = failure_code
         if detail:
@@ -1037,6 +1107,10 @@ def _require_exact_item_font(
     resolution = _resolve_item_font(text_item, config)
     attempt.evidence.update(resolution.evidence())
     if resolution.exact:
+        if (resolution.resolution_source == "installed_exact_font"
+                and _positioned_empty_font_program_proven(text_item)
+                and not Path(resolution.filename).is_file()):
+            raise ValueError("verified installed font program is no longer readable")
         return resolution
     _raise_for_unusable_font(resolution, attempt)
 
@@ -1505,7 +1579,9 @@ def _positioned_fraction_layout(
     return layout
 
 
-def _source_affine_layout(text_item: NormalizedText) -> Optional[Tuple[TextCharLayout, ...]]:
+def _source_affine_layout(
+    text_item: NormalizedText, *, require_original_frame: bool = False,
+) -> Optional[Tuple[TextCharLayout, ...]]:
     """Use source frames where one aggregate glyph run loses physical geometry.
 
     Raw spans can retain genuine baseline shifts, shear and unequal font-X/Y
@@ -1513,7 +1589,7 @@ def _source_affine_layout(text_item: NormalizedText) -> Optional[Tuple[TextCharL
     Plain isotropic collinear strings retain the established native route.
     """
     if (text_item.source_quad_pdf is None
-            or not text_item.requires_individual_positioning):
+            or (not text_item.requires_individual_positioning and not require_original_frame)):
         return None
     layout = tuple(text_item.source_char_layout)
     is_fraction = bool(_POSITIONED_FRACTION_RE.fullmatch(str(text_item.text)))
@@ -1527,7 +1603,7 @@ def _source_affine_layout(text_item: NormalizedText) -> Optional[Tuple[TextCharL
         raise ValueError("raw source character inventory is incomplete")
     if not str(text_item.text).strip():
         return None  # The existing zero-ink ladder handles a wholly blank item.
-    needs_affine = is_fraction
+    needs_affine = is_fraction or require_original_frame
     for char in layout:
         source, target = char.source_quad_pdf, char.target_quad
         # A zero-advance space has no baseline direction. Its exact font program
@@ -3547,7 +3623,13 @@ def _positioned_source_glyph_names(
             "positioned fraction exact font program has no readable asset"
         )
     try:
-        font_program = TTFont(filename, lazy=True, recalcTimestamp=False)
+        if resolution.resolution_source == "installed_exact_font":
+            font_bytes = Path(filename).read_bytes()
+            if hashlib.sha256(font_bytes).hexdigest() != resolution.asset_sha256:
+                raise ValueError("installed font changed after its exact-match proof")
+            font_program = TTFont(BytesIO(font_bytes), lazy=True, recalcTimestamp=False)
+        else:
+            font_program = TTFont(filename, lazy=True, recalcTimestamp=False)
     except Exception as exc:
         raise ValueError(
             "positioned fraction exact font program cannot be inspected"
@@ -3555,7 +3637,7 @@ def _positioned_source_glyph_names(
     try:
         cmap = font_program.getBestCmap() or {}
         glyph_names: List[str] = []
-        for character in layout:
+        for character_index, character in enumerate(layout):
             glyph_id = character.glyph_id
             glyph_name = str(cmap.get(ord(character.text)) or "")
             if character.text.isspace() and glyph_name:
@@ -3596,9 +3678,23 @@ def _positioned_source_glyph_names(
                     "positioned fraction glyph program cannot be resolved"
                 ) from exc
             if resolved_glyph_id != glyph_id:
-                raise _RepresentationImpossible(
+                failure = _RepresentationImpossible(
                     "positioned fraction observed glyph id does not match the exact font"
                 )
+                if resolution.resolution_source == "installed_exact_font":
+                    failure.installed_font_rejection = {
+                        "schema": "bcs.installed_font_rejection/1",
+                        "reason": "source_glyph_id_mismatch",
+                        "font_sha256": resolution.asset_sha256,
+                        "source_xref": resolution.source_xref,
+                        "source_page_number": resolution.source_page_number,
+                        "span_font_name": resolution.asset_span_font_name,
+                        "character_index": character_index,
+                        "character": character.text,
+                        "observed_glyph_id": glyph_id,
+                        "resolved_glyph_id": resolved_glyph_id,
+                    }
+                raise failure
             glyph_names.append(glyph_name)
         return glyph_names
     finally:
@@ -3638,6 +3734,65 @@ def _positioned_character_local_bbox(
     )
 
 
+def _missing_cap_reference_design_paths(resolution, font_identity, layout, glyph_names):
+    """Read exact em outlines when a subset omits the engine's A/x references.
+
+    A PDF subset need only contain the characters it actually draws. ezdxf's
+    cap-height normalization instead measures A relative to x, which can be
+    zero for such a valid subset. Use the unchanged program's design units and
+    original character affine, never an inferred cap height from other ink.
+    """
+    from ezdxf.fonts.ttfonts import PathPen
+    from fontTools.ttLib import TTFont
+
+    program = None
+    try:
+        if font_identity not in _missing_cap_reference_cache:
+            program = TTFont(resolution.filename, lazy=False)
+            glyph_set = program.getGlyphSet()
+            cmap = program.getBestCmap() or {}
+            reference_vertices = []
+            for char in ("x", "A"):
+                pen = PathPen(glyph_set)
+                glyph_set[cmap.get(ord(char), ".notdef")].draw(pen)
+                reference_vertices.append(list(pen.path.control_vertices()))
+            baseline = min((point.y for point in reference_vertices[0]), default=0.0)
+            cap_height = max((point.y for point in reference_vertices[1]), default=0.0) - baseline
+            units = float(program["head"].unitsPerEm)
+            if not math.isfinite(units) or units <= 0.0:
+                raise ValueError("exact source font has invalid design units")
+            _missing_cap_reference_cache[font_identity] = units if cap_height <= 0.0 else None
+        units = _missing_cap_reference_cache[font_identity]
+        if units is None:
+            return None
+        if not all(character.source_font_size_pdf is not None for character in layout):
+            raise ValueError(
+                "missing font cap reference requires complete original character affine"
+            )
+        design_identity = (*font_identity, "original_design_units_per_em", str(units))
+        created = set()
+        for character, glyph_name in zip(layout, glyph_names, strict=True):
+            key = (design_identity, character.text)
+            if key in _canonical_glyph_path_cache:
+                continue
+            created.add(key)
+            if program is None:
+                program = TTFont(resolution.filename, lazy=False)
+            glyph_set = program.getGlyphSet()
+            pen = PathPen(glyph_set)
+            glyph_set[glyph_name].draw(pen)
+            path = pen.path
+            if len(path) == 0:
+                _canonical_glyph_path_cache[key] = None
+                continue
+            path.transform_inplace(Matrix44.scale(1.0 / units, 1.0 / units, 1.0))
+            _canonical_glyph_path_cache[key] = path
+        return design_identity, created
+    finally:
+        if program is not None:
+            program.close()
+
+
 def _positioned_fraction_glyph_run(
     text_item: NormalizedText,
     layout: Sequence[TextCharLayout],
@@ -3655,12 +3810,16 @@ def _positioned_fraction_glyph_run(
             f"outline engine resolved {engine_name} to {face.filename}; "
             "refusing font substitution"
         )
-    font = text2path.get_font(face)
     font_identity = _positioned_font_identity(resolution)
     empty_glyph_names = set()
     glyph_names = _positioned_source_glyph_names(
         layout, resolution, empty_glyph_names=empty_glyph_names,
     )
+    design_paths = _missing_cap_reference_design_paths(
+        resolution, font_identity, layout, glyph_names,
+    )
+    design_identity, design_created = design_paths if design_paths else (None, set())
+    font = None if design_identity else text2path.get_font(face)
     item_insert = tuple(float(value) for value in text_item.insertion[:2])
     attribute_record = tuple(
         (str(key), repr(value)) for key, value in sorted(attribs.items())
@@ -3673,8 +3832,11 @@ def _positioned_fraction_glyph_run(
     rotations: List[float] = []
     source_affine_metrics = []
     for character, glyph_name in zip(layout, glyph_names, strict=True):
-        canonical_key = (font_identity, character.text)
-        if canonical_key not in _canonical_glyph_path_cache:
+        canonical_key = (design_identity or font_identity, character.text)
+        if canonical_key in design_created:
+            design_created.remove(canonical_key)
+            canonical_created_count += 1
+        elif canonical_key not in _canonical_glyph_path_cache:
             character_paths = font.text_glyph_paths(character.text, 1.0, 1.0)
             if len(character_paths) > 1:
                 raise ValueError("outline engine returned multiple paths for one source character")
@@ -3728,9 +3890,9 @@ def _positioned_fraction_glyph_run(
                 character.source_font_descender, character.source_writing_mode,
                 x_axis, y_axis,
             ))
-            _height, cap_ratio = _delivery_cap_height(1.0, resolution)
-            # The canonical outline engine uses cap-height=1. Convert to true
-            # font em geometry, then bake the original complete source affine.
+            cap_ratio = 1.0 if design_identity else _delivery_cap_height(1.0, resolution)[1]
+            # Ordinary engine outlines use cap-height=1; the missing-reference
+            # route already uses original em units. Apply the source affine.
             # Preserve shear/reflection as geometry instead of pretending a DXF
             # INSERT rotation plus X/Y scales can encode either one.
             definition_path.transform_inplace(Matrix44((
@@ -3844,6 +4006,9 @@ def _positioned_fraction_glyph_run(
         "positioned_contour_entities_omitted": True,
         "outline_engine_font_name": engine_name,
         "outline_engine_font_verified": True,
+        "outline_engine_coordinate_basis": (
+            "original_design_units_per_em" if design_identity else "exact_font_cap_height"
+        ),
         "source_character_affine_metrics": source_affine_metrics,
         "source_character_ink_fit_to_advance": False if source_affine_metrics else None,
     }
@@ -3898,6 +4063,7 @@ def _nested_glyph_geometry_from_entity(
     font_identity: Tuple[str, ...],
     is_r12: bool,
     attribs: Dict[str, Any],
+    outline_visible: bool = True,
 ) -> _NestedGlyphRun:
     """Reproduce ezdxf's text path transform as reusable per-glyph INSERTs."""
 
@@ -3980,6 +4146,7 @@ def _nested_glyph_geometry_from_entity(
             round(definition_scale, 12),
             bool(is_r12),
             attribute_record,
+            outline_visible,
         )
         cached_geometry = _scaled_glyph_geometry_cache.get(scaled_cache_key)
         if cached_geometry is None:
@@ -3993,6 +4160,8 @@ def _nested_glyph_geometry_from_entity(
                 is_r12=is_r12,
                 attribs=attribs,
             )
+            if not outline_visible:
+                fingerprint = hashlib.sha256((fingerprint + ":fill-only").encode("ascii")).hexdigest()
             _scaled_glyph_geometry_cache[scaled_cache_key] = (paths, fingerprint)
         else:
             paths, fingerprint = cached_geometry
@@ -4005,6 +4174,7 @@ def _nested_glyph_geometry_from_entity(
                 paths=paths,
                 attribs=dict(attribs),
                 fingerprint=fingerprint,
+                outline_visible=outline_visible,
             )
         )
     return _NestedGlyphRun(
@@ -4264,18 +4434,19 @@ def _commit_outlines(
             )
         return
 
-    if outlines:
+    if outlines or (fill_only and fills):
+        styled_entities = outlines or fills
         block_attribs: Dict[str, Any] = {
-            "layer": str(outlines[0].dxf.layer or "0"),
+            "layer": str(styled_entities[0].dxf.layer or "0"),
         }
         outline_true_color = (
-            int(outlines[0].dxf.true_color)
-            if outlines[0].dxf.hasattr("true_color")
+            int(styled_entities[0].dxf.true_color)
+            if styled_entities[0].dxf.hasattr("true_color")
             else None
         )
         outline_color = (
-            int(outlines[0].dxf.color)
-            if outlines[0].dxf.hasattr("color")
+            int(styled_entities[0].dxf.color)
+            if styled_entities[0].dxf.hasattr("color")
             else None
         )
     else:
@@ -4367,7 +4538,7 @@ def _commit_outlines(
             resolved_bbox[3] - insertion[1],
         )
         if resolved_bbox is not None
-        else _bbox_tuple(outlines)
+        else _bbox_tuple(fills if fill_only else outlines)
     )
     actual_insert = tuple(float(value) for value in tuple(block_ref.dxf.insert)[:2])
     insert_verified = all(
@@ -4562,6 +4733,19 @@ def _attempt_outline_entity(
         font_resolution = _require_exact_item_font(text_item, config, attempt)
         positioned_layout = (_source_affine_layout(text_item)
                              or _positioned_fraction_layout(text_item))
+        if (positioned_layout is None and text_item.font_asset is not None
+                and text_item.source_char_layout):
+            # Even a collinear isotropic string needs its original em frame
+            # when the subset has no reference letters for engine sizing.
+            missing_reference = _missing_cap_reference_design_paths(
+                font_resolution, _positioned_font_identity(font_resolution), (), (),
+            )
+            if missing_reference is not None:
+                positioned_layout = _source_affine_layout(
+                    text_item, require_original_frame=True,
+                )
+                if positioned_layout is None:
+                    raise ValueError("missing cap reference has no original source character frame")
         if positioned_layout is not None:
             attempt.strategy = "positioned_source_glyph_outlines"
             positioned_base_attribs = _base_attributes(
@@ -4747,12 +4931,17 @@ def _attempt_outline_entity(
                 "outline_engine_font_verified": True,
             }
         )
+        fill_receipt = (bound_fill_receipt(text_item, getattr(config, "_source_text_fill_receipts", {}))
+                        if representation == "glyphs" else None)
+        if fill_receipt:
+            attempt.evidence.update(source_text_fill=fill_receipt, source_fill_contours_omitted=True)
         glyph_run = (
             _nested_glyph_geometry_from_entity(
                 source,
                 font_identity=font_cache_identity,
                 is_r12=is_r12,
                 attribs=_outline_attributes(attribs),
+                outline_visible=not bool(fill_receipt),
             )
             if representation == "glyphs"
             else None
@@ -4844,6 +5033,11 @@ def _attempt_outline_entity(
     except Exception as exc:
         attempt.delivery_verified = False
         attempt.reason = f"{type(exc).__name__}: {exc}"
+        receipt = getattr(exc, "installed_font_rejection", None)
+        if isinstance(exc, _RepresentationImpossible) and isinstance(receipt, dict):
+            attempt.evidence["installed_font_rejection"] = dict(receipt, source_id=source_id)
+            if not _installed_font_rejection_bound_to_item(text_item, attempt):
+                del attempt.evidence["installed_font_rejection"]
         if source is not None:
             handle = _handle(source)
             if _delete_entity(msp, source):
@@ -4950,6 +5144,11 @@ def _attempt_outline_string(
             for entity in outlines + fills:
                 entity.translate(insertion[0], insertion[1], 0.0)
         expected_bbox = _bbox_tuple(outlines)
+        fill_receipt = (bound_fill_receipt(text_item, getattr(config, "_source_text_fill_receipts", {}))
+                        if representation == "glyphs" else None)
+        if fill_receipt:
+            outlines = []
+            attempt.evidence.update(source_text_fill=fill_receipt, source_fill_contours_omitted=True)
         attempt.evidence.update(
             {
                 "expected_advance_width": target_width,
@@ -4968,6 +5167,7 @@ def _attempt_outline_string(
             insertion=insertion,
             expected_bbox=expected_bbox,
             is_r12=is_r12,
+            fill_only=bool(fill_receipt),
         )
         if not attempt.type_verified:
             raise ValueError("outline delivery failed type verification")
@@ -5110,6 +5310,31 @@ def _build_delivery(
             final_representation=None,
             verified=False,
             failure_reason=f"unsupported requested representation: {requested}",
+        )
+
+    from pdfcadcore.embedded_fonts import source_control_zero_ink_proof
+    control_proof = source_control_zero_ink_proof(text_item)
+    if control_proof is not None and ladder != ["raster"]:
+        reason = (
+            "original unencoded control has no visible exact-font glyph; "
+            "native text cannot preserve its control code and outlines have no drawable ink"
+        )
+        return TextDeliveryResult(
+            source_id=source_id, requested_representation=requested,
+            final_representation=None, verified=False,
+            terminal_fallback_authorized=True, failure_reason=reason,
+            attempts=[TextDeliveryAttempt(
+                source_id=source_id, requested_representation=requested,
+                attempted_representation=representation,
+                strategy="original_control_zero_ink_structure",
+                outcome="impossible", reason=reason, cleanup_verified=True,
+                evidence={
+                    "original_control_zero_ink": control_proof,
+                    "item_specific_creation_attempted": False,
+                    "source_specific_impossibility_proven": True,
+                    "fallback_authorized_for_this_item": True,
+                },
+            ) for representation in ladder],
         )
 
     attempts: List[TextDeliveryAttempt] = []
@@ -5270,8 +5495,9 @@ def _build_delivery(
         and attempts
         and all(attempt.outcome == "impossible" for attempt in attempts)
         and any(
-            attempt.evidence.get("font_item_impossibility_proven") is True
-            and attempt.evidence.get("font_source_xref") == text_item.font_failure.source_xref
+            (attempt.evidence.get("font_item_impossibility_proven") is True
+             and attempt.evidence.get("font_source_xref") == text_item.font_failure.source_xref)
+            or _installed_font_rejection_bound_to_item(text_item, attempt)
             for attempt in attempts
         )
     )
@@ -5326,6 +5552,7 @@ def reset_text_styles() -> None:
     _staged_font_verification_cache.clear()
     _glyph_block_cache.clear()
     _canonical_glyph_path_cache.clear()
+    _missing_cap_reference_cache.clear()
     _scaled_glyph_geometry_cache.clear()
     _source_outline_bbox_cache.clear()
     _glyph_definition_fingerprint_cache.clear()

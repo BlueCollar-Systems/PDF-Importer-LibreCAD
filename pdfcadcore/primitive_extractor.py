@@ -7,7 +7,7 @@ Rule 1: Parser modules must not know about domain-specific logic.
 """
 from __future__ import annotations
 import math
-from collections import deque
+from collections import Counter, deque
 import re
 from typing import List, NamedTuple, Optional, Tuple
 
@@ -712,6 +712,13 @@ def _trace_glyph_queues(page):
             except (IndexError, TypeError, ValueError):
                 continue
             queues.setdefault((font, codepoint), deque()).append(glyph_id)
+            if codepoint == 0xFFFD and glyph_id == 0 and not isinstance(entry, dict):
+                try:
+                    origin = tuple(float(v) for v in entry[2])
+                    if len(origin) == 2 and all(math.isfinite(v) for v in origin):
+                        queues.setdefault(("replacement_zero", font, *origin), deque()).append(0)
+                except (IndexError, TypeError, ValueError):
+                    pass
     return queues
 
 
@@ -751,9 +758,19 @@ def _character_layout(line, span, font, to_model, glyph_queues):
             source_origin = tuple(quad[3])
         target_quad = tuple(to_model(x, y) for x, y in quad)
         target_origin = to_model(*source_origin)
+        glyph_id = _pop_trace_glyph_id(glyph_queues, font, text)
+        trace_codepoint = None
+        if glyph_id is None and len(text) == 1 and ord(text) < 32 and char.get("source_font_binding_verified") is True:
+            candidates = glyph_queues.get(("replacement_zero", font, *source_origin), ())
+            # An unencoded source control may be exposed as its original byte
+            # by RAWDICT but as U+FFFD/gid0 by texttrace. Only a unique original
+            # origin occurrence establishes that correspondence.
+            if len(candidates) == 1:
+                glyph_id = candidates.popleft()
+                trace_codepoint = 0xFFFD
         layouts.append(TextCharLayout(
             text=text,
-            glyph_id=_pop_trace_glyph_id(glyph_queues, font, text),
+            glyph_id=glyph_id,
             source_origin_pdf=source_origin,
             source_bbox_pdf=source_bbox,
             source_quad_pdf=tuple(quad),
@@ -765,8 +782,56 @@ def _character_layout(line, span, font, to_model, glyph_queues):
             source_font_ascender=char.get("source_font_ascender"),
             source_font_descender=char.get("source_font_descender"),
             source_writing_mode=char.get("source_writing_mode"),
+            source_font_program_sha256=char.get("source_font_program_sha256", ""),
+            source_font_binding_verified=char.get("source_font_binding_verified") is True,
+            source_font_character_codepoint=char.get("source_font_character_codepoint"),
+            source_glyph_trace_codepoint=trace_codepoint,
         ))
     return tuple(layouts)
+
+
+def _source_character_font_digest(native_font, mupdf, cache):
+    """Copy a bounded renderer-owned font buffer without taking its ownership.
+
+    The generated public wrapper API is optional. In particular, never use
+    buffer_extract (which empties it), ctypes, or an owning wrapper around the
+    borrowed pointer. Unavailable evidence cannot disambiguate subset names.
+    """
+    from hashlib import sha256
+    from .embedded_fonts import MAX_EMBEDDED_FONT_BYTES
+
+    try:
+        buffer = native_font.buffer
+        # SWIG repr includes the temporary Python proxy's address, which can
+        # be reused for another program. int(this) is the borrowed native
+        # buffer identity, valid throughout this owning TextPage's lifetime.
+        key = int(buffer.this)
+        if key not in cache:
+            length = int(buffer.len)
+            if not 0 < length <= MAX_EMBEDDED_FONT_BYTES:
+                cache[key] = ""
+            else:
+                data = mupdf.ll_fz_buffer_extract_copy(buffer)
+                cache[key] = sha256(data).hexdigest() if len(data) == length else ""
+        return cache[key]
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return ""
+
+
+def _source_font_occurrence_keys(tdict, queues):
+    """Prove multiplicity and reject coincident occurrences of different fonts."""
+    counts = Counter(
+        (char.get("c", ""), *char.get("origin", ()))
+        for block in tdict.get("blocks", ()) if block.get("type") == 0
+        for line in block.get("lines", ()) for span in line.get("spans", ())
+        for char in span.get("chars", ())
+    )
+    return {
+        key for key, candidates in queues.items()
+        if counts[key] == len(candidates)
+        and len({metrics.get("source_font_program_sha256", "") for _, metrics in candidates}) == 1
+        and all(metrics.get("source_font_program_sha256") for _, metrics in candidates)
+    }
 
 
 def _raw_text_with_source_quads(page):
@@ -787,6 +852,7 @@ def _raw_text_with_source_quads(page):
         textpage = page.get_textpage(flags=fitz.TEXTFLAGS_RAWDICT)
         tdict = textpage.extractRAWDICT()
         queues = {}
+        font_digests = {}
         for block in textpage.this:
             if block.m_internal.type != 0:
                 continue
@@ -812,10 +878,15 @@ def _raw_text_with_source_quads(page):
                         # already obtained genuine source quad. Consumers that
                         # need the full affine frame still require all metrics.
                         metrics = {}
+                    metrics["source_font_program_sha256"] = _source_character_font_digest(
+                        char.font, fitz.mupdf, font_digests
+                    )
+                    metrics["source_font_character_codepoint"] = int(char.c)
                     queues.setdefault(key, deque()).append((quad, metrics))
     except (AttributeError, ImportError, RuntimeError, TypeError, ValueError):
         return page.get_text("rawdict")
 
+    proven_font_keys = _source_font_occurrence_keys(tdict, queues)
     for block in tdict.get("blocks", ()):
         if block.get("type") != 0:
             continue
@@ -826,10 +897,12 @@ def _raw_text_with_source_quads(page):
                     origin = char.get("origin", ())
                     if len(origin) != 2:
                         continue
-                    candidates = queues.get((char.get("c", ""), *origin))
+                    key = (char.get("c", ""), *origin)
+                    candidates = queues.get(key)
                     if candidates:
                         char["quad"], metrics = candidates.popleft()
                         char.update(metrics)
+                        char["source_font_binding_verified"] = key in proven_font_keys
                 # A uniform span's outer corners are original source corners,
                 # not recovered font-metric estimates. Keep the old span box
                 # path for mixed-height or non-collinear positioned text.
@@ -971,11 +1044,9 @@ def _extract_text(
                     advance_width = 0.0
                     glyph_height = 0.0
 
-                font_asset = font_catalog.for_span(font) if font_catalog else None
-                font_failure = (
-                    None
-                    if font_asset is not None
-                    else font_catalog.failure_for_span(font) if font_catalog else None
+                font_asset, font_failure = (
+                    font_catalog.resolve_span(font, raw_chars)
+                    if font_catalog else (None, None)
                 )
 
                 normalized = text.upper().replace("  ", " ").strip()

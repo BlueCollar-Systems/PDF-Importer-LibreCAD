@@ -2134,12 +2134,12 @@ def test_invalid_positioned_fraction_export_tries_raster_then_keeps_visible_text
     assert not output.with_name(f"{output.stem}_assets").exists()
 
 
-def test_empty_embedded_stream_positioned_fraction_authorizes_item_raster() -> None:
-    """An empty font program must be bound to the synthetic item page.
-
-    Glyphs/geometry cannot bind outlines without a font program, and native TEXT
-    cannot keep per-character transforms. Item Raster is the remaining rung.
-    """
+@pytest.mark.parametrize("installed_available", [False, True])
+def test_empty_embedded_stream_uses_installed_proof_before_item_raster(monkeypatch, installed_available) -> None:
+    """A matching installed program can still preserve every source glyph ID."""
+    if not installed_available:
+        monkeypatch.setattr(text_builder, "_resolve_exact_font", lambda name: _ExactFontResolution(
+            source_name=name, exact=False, reason="no installed exact face"))
     item = replace(
         _positioned_fraction("vertical"),
         font_name="BCS Deterministic Test",
@@ -2166,6 +2166,14 @@ def test_empty_embedded_stream_positioned_fraction_authorizes_item_raster() -> N
         return_delivery_result=True,
     )
 
+    if installed_available:
+        assert result.verified and result.final_representation == "glyphs"
+        assert not result.terminal_fallback_authorized
+        assert list(doc.modelspace())
+        evidence = result.attempts[-1].evidence
+        assert evidence["positioned_source_font_glyphs_verified"]
+        assert evidence["positioned_source_glyph_ids"] == list(_GLYPH_IDS)
+        return
     assert result.verified is False
     assert result.final_representation is None
     assert result.terminal_fallback_authorized is True
