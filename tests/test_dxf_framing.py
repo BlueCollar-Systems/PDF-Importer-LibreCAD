@@ -78,6 +78,66 @@ class TestDxfFraming(unittest.TestCase):
         self.assertTrue(active)
         self.assertGreater(float(active[0].dxf.height), 0.0)
 
+    def test_assembled_checkpoints_sets_extents_and_vport(self) -> None:
+        from dxf_import_engine import _assemble_checkpoints
+
+        # Create two checkpoint DXF files
+        cp1 = Path(self.tmp.name) / "page_0001.dxf"
+        cp2 = Path(self.tmp.name) / "page_0002.dxf"
+        doc1 = ezdxf.new("R2010")
+        doc1.modelspace().add_line((0, 0), (100, 50))
+        doc1.saveas(str(cp1))
+
+        doc2 = ezdxf.new("R2010")
+        doc2.modelspace().add_line((0, 0), (200, 100))
+        doc2.saveas(str(cp2))
+
+        out_dxf = Path(self.tmp.name) / "assembled.dxf"
+        _assemble_checkpoints([cp1, cp2], str(out_dxf))
+
+        loaded = ezdxf.readfile(str(out_dxf))
+        self.assertIsNotNone(loaded.header.get("$EXTMIN"))
+        self.assertIsNotNone(loaded.header.get("$EXTMAX"))
+        extmin = tuple(float(v) for v in loaded.header["$EXTMIN"])
+        extmax = tuple(float(v) for v in loaded.header["$EXTMAX"])
+        self.assertLess(extmin[0], extmax[0])
+        self.assertLess(extmin[1], extmax[1])
+
+        active = loaded.viewports.get("*Active")
+        self.assertTrue(active)
+        self.assertGreater(float(active[0].dxf.height), 0.0)
+
+    def test_off_sheet_stroke_does_not_set_zoom_extents(self) -> None:
+        import fitz
+
+        from librecad_pdf_importer.exporters.dxf_exporter import export_to_dxf
+        from librecad_pdf_importer.importer import run_import
+
+        pdf_path = Path(self.tmp.name) / "off-sheet.pdf"
+        dxf_path = Path(self.tmp.name) / "off-sheet.dxf"
+        doc = fitz.open()
+        page = doc.new_page(width=612, height=792)
+        shape = page.new_shape()
+        shape.draw_line(fitz.Point(-760, 400), fitz.Point(1500, 400))
+        shape.finish(color=(0, 0, 0), width=1)
+        shape.commit()
+        doc.save(str(pdf_path))
+        doc.close()
+
+        run = run_import(
+            str(pdf_path),
+            mode="vector",
+            overrides={"pages": "1", "import_text": False},
+        )
+        export_to_dxf(run.extraction, str(dxf_path))
+        loaded = ezdxf.readfile(str(dxf_path))
+        extmin = tuple(float(v) for v in loaded.header["$EXTMIN"])
+        extmax = tuple(float(v) for v in loaded.header["$EXTMAX"])
+        self.assertGreaterEqual(extmin[0], -1.0)
+        self.assertLessEqual(extmax[0], 220.0)
+        self.assertLessEqual(extmax[1], 285.0)
+        self.assertGreater(extmax[0] - extmin[0], 200.0)
+
     def test_geometry_text_exports_outlines_not_text(self) -> None:
         config = ImportConfig.auto()
         config.text_mode = "geometry"

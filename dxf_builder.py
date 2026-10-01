@@ -399,7 +399,13 @@ def _apply_dxf_framing(
     )
     height = max(1.0, float(max_y) - float(min_y))
     width = max(1.0, float(max_x) - float(min_x))
-    doc.set_modelspace_vport(max(height, width) * 1.1, center=center)
+    view_size = max(height, width) * 1.1
+    doc.set_modelspace_vport(view_size, center=center)
+    active = doc.viewports.get("*Active")
+    if active:
+        vp = active[0]
+        vp.dxf.center = center
+        vp.dxf.height = view_size
 
 
 # ---------------------------------------------------------------------------

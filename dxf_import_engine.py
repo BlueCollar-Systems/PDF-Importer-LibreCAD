@@ -231,6 +231,43 @@ def _assemble_checkpoints(checkpoints: list[Path], output_path: str) -> None:
             height = 1.0
         stack_offset += height * 1.2
 
+    if "$INSUNITS" in sources[0].header:
+        target.header["$INSUNITS"] = sources[0].header["$INSUNITS"]
+    target_extents = ezdxf_bbox.extents(
+        (
+            entity
+            for entity in target_msp
+            if not str(entity.dxf.layer).endswith("TEXT_SEARCH")
+        ),
+        fast=False,
+    )
+    if target_extents.has_data:
+        min_x = float(target_extents.extmin.x)
+        min_y = float(target_extents.extmin.y)
+        max_x = float(target_extents.extmax.x)
+        max_y = float(target_extents.extmax.y)
+        if min_x <= max_x and min_y <= max_y:
+            extmin = (min_x, min_y, 0.0)
+            extmax = (max_x, max_y, 0.0)
+            target_msp.dxf.extmin = extmin
+            target_msp.dxf.extmax = extmax
+            target_msp.dxf.limmin = (min_x, min_y)
+            target_msp.dxf.limmax = (max_x, max_y)
+            target.header["$EXTMIN"] = extmin
+            target.header["$EXTMAX"] = extmax
+            target.header["$LIMMIN"] = (min_x, min_y)
+            target.header["$LIMMAX"] = (max_x, max_y)
+            center = ((min_x + max_x) * 0.5, (min_y + max_y) * 0.5)
+            height = max(1.0, max_y - min_y)
+            width = max(1.0, max_x - min_x)
+            view_size = max(height, width) * 1.1
+            target.set_modelspace_vport(view_size, center=center)
+            active = target.viewports.get("*Active")
+            if active:
+                vp = active[0]
+                vp.dxf.center = center
+                vp.dxf.height = view_size
+
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(f".{output.stem}.{uuid.uuid4().hex}.partial{output.suffix}")
     target.saveas(temporary)
