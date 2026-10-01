@@ -247,6 +247,8 @@ def _assemble_checkpoints(checkpoints: list[Path], output_path: str) -> None:
         height = max(1.0, page_bounds[3] - page_bounds[1])
         next_top = placed_bounds[1] - height * 0.2
 
+    if "$INSUNITS" in sources[0].header:
+        target.header["$INSUNITS"] = sources[0].header["$INSUNITS"]
     frame_modelspace(target, drawing_bounds)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(f".{output.stem}.{uuid.uuid4().hex}.partial{output.suffix}")

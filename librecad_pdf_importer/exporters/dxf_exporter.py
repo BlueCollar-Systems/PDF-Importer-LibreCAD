@@ -4800,6 +4800,10 @@ def _export_to_dxf_impl(
     min_y = float("inf")
     max_x = float("-inf")
     max_y = float("-inf")
+    frame_min_x = float("inf")
+    frame_min_y = float("inf")
+    frame_max_x = float("-inf")
+    frame_max_y = float("-inf")
 
     def _track_xy(x: float, y: float) -> None:
         nonlocal min_x, min_y, max_x, max_y
@@ -4811,6 +4815,17 @@ def _export_to_dxf_impl(
             max_x = x
         if y > max_y:
             max_y = y
+
+    def _track_frame(x: float, y: float) -> None:
+        nonlocal frame_min_x, frame_min_y, frame_max_x, frame_max_y
+        if x < frame_min_x:
+            frame_min_x = x
+        if y < frame_min_y:
+            frame_min_y = y
+        if x > frame_max_x:
+            frame_max_x = x
+        if y > frame_max_y:
+            frame_max_y = y
 
     cancel_requested = getattr(opts.provenance_opts, "_cancel_requested", None)
     progress_callback = getattr(opts.provenance_opts, "_progress_callback", None)
@@ -4839,6 +4854,8 @@ def _export_to_dxf_impl(
         # when selected export mode yields no drawable entities on that page.
         _track_xy(0.0, 0.0 + dy)
         _track_xy(page_w, page_h + dy)
+        _track_frame(0.0, 0.0 + dy)
+        _track_frame(page_w, page_h + dy)
 
         page_entity_start = len(msp.entity_space.entities)
         paint_order = getattr(page, "image_paint_order", None)
@@ -5664,7 +5681,19 @@ def _export_to_dxf_impl(
     )
 
     # Persist extents + initial modelspace viewport so hosts open focused on geometry.
-    if min_x <= max_x and min_y <= max_y:
+    # A stroke that runs far past the crop stays in the file, but zoom-extents
+    # and the first view stay on the sheet the way a print is read.
+    if frame_min_x <= frame_max_x and frame_min_y <= frame_max_y:
+        frame_w = float(frame_max_x) - float(frame_min_x)
+        frame_h = float(frame_max_y) - float(frame_min_y)
+        geom_w = float(max_x) - float(min_x)
+        geom_h = float(max_y) - float(min_y)
+        if frame_w > 0.0 and frame_h > 0.0 and (
+            geom_w > 1.5 * frame_w or geom_h > 1.5 * frame_h
+        ):
+            min_x, min_y, max_x, max_y = (
+                frame_min_x, frame_min_y, frame_max_x, frame_max_y
+            )
         frame_modelspace(doc, (min_x, min_y, max_x, max_y))
 
     if has_source_image_order:
