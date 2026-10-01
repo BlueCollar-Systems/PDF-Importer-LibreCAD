@@ -154,7 +154,7 @@ jobs:
 
       - name: Install declared runtime dependencies explicitly
         run: |
-          python -m pip install "numpy==2.5.1" "matplotlib==3.11.1" "PyMuPDF==1.28.0" "ezdxf==1.4.4" "fonttools==4.63.0" pytest
+          python -m pip install "numpy==2.5.1" "matplotlib==3.11.1" "PyMuPDF==1.28.2" "ezdxf==1.4.4" "fonttools==4.63.0" pytest
           python -m pip install --no-deps -e .
 
       - name: Run unit tests with declared dependencies
