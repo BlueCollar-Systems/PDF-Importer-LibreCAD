@@ -270,6 +270,20 @@ def test_real_empty_arial_program_fraction_exports_and_reopens(tmp_path):
     delivery = result.text_deliveries[0]
     assert delivery["verified"] is True
     assert delivery["final_representation"] == "raster"
+    rejections = [attempt for attempt in delivery["attempts"]
+                  if "installed_font_rejection" in attempt["evidence"]]
+    # Hosts without this installed face retain the observed-empty-program route.
+    for attempt in rejections:
+        receipt = attempt["evidence"]["installed_font_rejection"]
+        assert receipt["source_xref"] == font_xref
+        assert receipt["source_page_number"] == 1
+        assert receipt["span_font_name"] == "Arial"
+        assert receipt["source_id"] == delivery["source_id"]
+        assert receipt["font_sha256"] == attempt["evidence"]["font_asset_sha256"]
+        char = fraction.source_char_layout[receipt["character_index"]]
+        assert (receipt["character"], receipt["observed_glyph_id"]) == (char.text, char.glyph_id)
+        assert receipt["resolved_glyph_id"] != char.glyph_id
+    assert all(attempt["outcome"] == "impossible" for attempt in delivery["attempts"][:-1])
     evidence = delivery["attempts"][-1]["evidence"]
     assert evidence["source_pdf_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
     assert evidence["source_bbox_pdf"] == pytest.approx(fraction.source_bbox_pdf)

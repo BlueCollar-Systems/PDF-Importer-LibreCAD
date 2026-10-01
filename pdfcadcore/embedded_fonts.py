@@ -82,6 +82,8 @@ class EmbeddedFontAsset:
     ascender: int = 0
     descender: int = 0
     glyph_advances: tuple[int, ...] = field(default=(), repr=False)
+    source_binding_method: str = ""
+    source_program_candidates: tuple[tuple[int, str], ...] = ()
 
 
 def _without_subset_prefix(name: object) -> str:
@@ -642,11 +644,70 @@ def _page_unicode_glyph_maps(
     return mappings, ambiguous, None
 
 
+def _annotation_font_records(page):
+    """Inventory normal appearance resources omitted by Page.get_fonts.
+
+    Read the original PDF object graph through MuPDF's generated wrappers.
+    These records are only candidates: actual character program SHA equality
+    must bind them before they can disambiguate a text item. No annotation is
+    updated, flattened, or rendered into another source document.
+    """
+    try:
+        import pymupdf as fitz
+        mupdf = fitz.mupdf
+        document = mupdf.PdfDocument(page.parent.this)
+        records = []
+        seen = set()
+        work = [0]
+
+        def visit(obj, depth=0):
+            work[0] += 1
+            if depth > 16 or work[0] > 2048:
+                raise ValueError("annotation font resource traversal exceeds work bound")
+            xref = mupdf.pdf_to_num(obj)
+            if xref:
+                if xref in seen:
+                    return
+                seen.add(xref)
+            if not mupdf.pdf_is_dict(obj):
+                return
+            resources = mupdf.pdf_dict_gets(obj, "Resources")
+            fonts = mupdf.pdf_dict_gets(resources, "Font")
+            for index in range(mupdf.pdf_dict_len(fonts)):
+                font = mupdf.pdf_dict_get_val(fonts, index)
+                font_xref = mupdf.pdf_to_num(font)
+                if font_xref <= 0:
+                    continue  # extract_font requires a genuine PDF source xref.
+                records.append((
+                    font_xref, "", mupdf.pdf_to_name(mupdf.pdf_dict_gets(font, "Subtype")),
+                    mupdf.pdf_to_name(mupdf.pdf_dict_gets(font, "BaseFont")),
+                    mupdf.pdf_to_name(mupdf.pdf_dict_get_key(fonts, index)),
+                    mupdf.pdf_to_name(mupdf.pdf_dict_gets(font, "Encoding")), xref,
+                ))
+            forms = mupdf.pdf_dict_gets(resources, "XObject")
+            for index in range(mupdf.pdf_dict_len(forms)):
+                visit(mupdf.pdf_dict_get_val(forms, index), depth + 1)
+            if mupdf.pdf_to_name(mupdf.pdf_dict_gets(obj, "Subtype")) != "Form":
+                # /AP/N may be a state dictionary whose values are Form streams.
+                for index in range(mupdf.pdf_dict_len(obj)):
+                    visit(mupdf.pdf_dict_get_val(obj, index), depth + 1)
+
+        for annotation in page.annots() or ():
+            obj = mupdf.pdf_load_object(document, annotation.xref)
+            visit(mupdf.pdf_dict_gets(mupdf.pdf_dict_gets(obj, "AP"), "N"))
+        return tuple(records)
+    except (AttributeError, ImportError, RuntimeError, TypeError, ValueError):
+        # Older bindings cannot prove the extra inventory. Character matching
+        # then stays unavailable; it must not substitute an installed font.
+        return ()
+
+
 class EmbeddedFontCatalog:
-    def __init__(self, page_number: int, assets, failures) -> None:
+    def __init__(self, page_number: int, assets, failures, candidates=()) -> None:
         self.page_number = int(page_number)
         self._assets = MappingProxyType(dict(assets))
         self._failures = MappingProxyType(dict(failures))
+        self._candidates = tuple(candidates) or tuple(self._assets.values())
 
     @property
     def assets(self) -> tuple[EmbeddedFontAsset, ...]:
@@ -658,6 +719,59 @@ class EmbeddedFontCatalog:
 
     def for_span(self, span_font_name: str) -> Optional[EmbeddedFontAsset]:
         return self._assets.get(str(span_font_name or ""))
+
+    def resolve_span(self, span_font_name: str, characters):
+        """Bind a complete original TextPage occurrence census to PDF bytes.
+
+        Family names cannot distinguish complementary subsets. The renderer's
+        actual character font buffer can: its SHA must equal an extracted PDF
+        program. A repeated resource for identical bytes is a candidate set,
+        never a claim that one particular resource invocation was recovered.
+        Older wrappers retain the established unique-name path; they cannot
+        resolve a name already proved ambiguous.
+        """
+        name = str(span_font_name or "")
+        original_failure = self.failure_for_span(name)
+        if (self.for_span(name) is None
+                and original_failure.reason == "embedded_font_asset_build_failed"
+                and original_failure.error_type == "ExactFontSourceImpossible"
+                and original_failure.detail == "embedded font stream is empty"
+                and original_failure.proof_category == "source_specific_impossibility"):
+            # A renderer may expose its own substitute for a nonembedded PDF
+            # font. That buffer is not new embedded-source evidence and cannot
+            # erase the original source-specific absence proof (which callers
+            # may use for a separately authenticated exact installed font).
+            return None, original_failure
+        chars = tuple(characters or ())
+        hashes = tuple(str(c.get("source_font_program_sha256", "")) for c in chars)
+        if not any(hashes):
+            asset = self.for_span(name)
+            return asset, None if asset else self.failure_for_span(name)
+        reason = ""
+        if not chars or not all(
+            re.fullmatch(r"[0-9a-f]{64}", digest)
+            and c.get("source_font_binding_verified") is True
+            for c, digest in zip(chars, hashes, strict=True)
+        ):
+            reason = "incomplete_source_font_character_binding"
+        elif len(set(hashes)) != 1:
+            reason = "mixed_source_font_programs_in_span"
+        matches = tuple(a for a in self._candidates if hashes and a.source_sha256 == hashes[0])
+        if not reason and not matches:
+            reason = "source_character_font_program_not_in_pdf_inventory"
+        if not reason and len({a.asset_id for a in matches}) != 1:
+            reason = "ambiguous_source_font_program_delivery"
+        if reason:
+            return None, EmbeddedFontFailure(
+                self.page_number, name, reason,
+                proof_category="source_font_binding_unverified_for_item",
+            )
+        candidates = tuple(sorted({(a.source_xref, a.resource_name) for a in matches}))
+        return replace(
+            matches[0], span_font_name=name,
+            source_binding_method="original_textpage_character_program_sha256",
+            source_program_candidates=candidates,
+        ), None
 
     def failure_for_span(self, span_font_name: str) -> EmbeddedFontFailure:
         name = str(span_font_name or "")
@@ -678,11 +792,13 @@ class EmbeddedFontCatalog:
     def from_page(cls, page, page_number: int) -> "EmbeddedFontCatalog":
         assets: dict[str, EmbeddedFontAsset] = {}
         failures: dict[str, EmbeddedFontFailure] = {}
+        candidates: list[EmbeddedFontAsset] = []
         ambiguous_names: set[str] = set()
         ambiguous_exact_names: set[str] = set()
         glyph_maps, ambiguous_maps, trace_failure = _page_unicode_glyph_maps(page)
         try:
-            records = tuple(page.get_fonts(full=True))
+            page_records = tuple(page.get_fonts(full=True))
+            records = page_records + _annotation_font_records(page)
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
             failures[""] = EmbeddedFontFailure(
                 int(page_number), "", "page_font_inventory_failed", None,
@@ -700,7 +816,7 @@ class EmbeddedFontCatalog:
             return cls(page_number, assets, failures)
 
         document = getattr(page, "parent", None)
-        for record in records:
+        for record_index, record in enumerate(records):
             try:
                 source_type_hint = str(record[2] or "").strip()
                 if source_type_hint.lower() == "type3":
@@ -885,6 +1001,11 @@ class EmbeddedFontCatalog:
                 )
                 continue
             delivery_names = trace_names or (base_name,)
+            candidates.append(asset)
+            if record_index >= len(page_records):
+                # The extra AP inventory is only usable with the original
+                # character program proof, never a new name-only fallback.
+                continue
             for delivery_name in delivery_names:
                 previous = assets.get(delivery_name)
                 if previous is not None and previous.asset_id != asset.asset_id:
@@ -931,7 +1052,79 @@ class EmbeddedFontCatalog:
                 failures.pop(delivery_name, None)
             if base_name not in ambiguous_names:
                 failures.pop(base_name, None)
-        return cls(page_number, assets, failures)
+        return cls(page_number, assets, failures, candidates)
+
+
+def source_control_zero_ink_proof(text_item):
+    """Prove an original unencoded control paints an empty exact glyph zero.
+
+    This is not a whitespace rule. Missing IDs, changed programs, a visible
+    .notdef box, incomplete occurrence evidence, or ordinary visible text all
+    remain unverified. The original semantic control and advance are retained.
+    """
+    text = str(getattr(text_item, "text", "") or "")
+    layout = tuple(getattr(text_item, "source_char_layout", ()) or ())
+    asset = getattr(text_item, "font_asset", None)
+    if (not text or any(ord(c) >= 32 for c in text) or not layout
+            or "".join(c.text for c in layout) != text or asset is None
+            or asset.source_binding_method != "original_textpage_character_program_sha256"
+            or _digest(asset.source_bytes) != asset.source_sha256
+            or _digest(asset.usable_bytes) != asset.usable_sha256):
+        return None
+    if not all(
+        c.glyph_id == 0 and c.source_glyph_trace_codepoint == 0xFFFD
+        and c.source_font_binding_verified
+        and c.source_font_program_sha256 == asset.source_sha256
+        and c.source_font_character_codepoint == ord(c.text)
+        and all(math.isfinite(v) for v in c.source_origin_pdf)
+        and math.isfinite(c.advance_width) and c.advance_width >= 0
+        for c in layout
+    ):
+        return None
+    try:
+        from fontTools.ttLib import TTFont
+        from fontTools.pens.boundsPen import BoundsPen
+        _validate_font_work_bounds(asset.source_bytes)
+        if asset.source_format == "cff":
+            from fontTools.cffLib import CFFFontSet
+            cff = CFFFontSet()
+            cff.decompile(BytesIO(asset.source_bytes), None, isCFF2=False)
+            top = cff.topDictIndex[0]
+            source_name = top.charset[0]
+            source_pen = BoundsPen(top.CharStrings)
+            top.CharStrings[source_name].draw(source_pen)
+            if source_pen.bounds is not None:
+                return None
+        else:
+            with TTFont(BytesIO(asset.source_bytes), lazy=False) as source_font:
+                source_name = source_font.getGlyphOrder()[0]
+                source_glyphs = source_font.getGlyphSet()
+                source_pen = BoundsPen(source_glyphs)
+                source_glyphs[source_name].draw(source_pen)
+                if source_pen.bounds is not None:
+                    return None
+        with TTFont(BytesIO(asset.usable_bytes), lazy=False) as font:
+            name = font.getGlyphOrder()[0]
+            glyphs = font.getGlyphSet()
+            pen = BoundsPen(glyphs)
+            glyphs[name].draw(pen)
+            if pen.bounds is not None:
+                return None
+    except (AttributeError, ImportError, IndexError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+        return None
+    return {
+        "schema": "bcs.original_control_zero_ink/1",
+        "source_program_sha256": asset.source_sha256,
+        "usable_program_sha256": asset.usable_sha256,
+        "source_program_candidates": [list(c) for c in asset.source_program_candidates],
+        "glyph_id": 0, "glyph_name": name, "glyph_bounds": None,
+        "original_glyph_name": source_name, "original_glyph_bounds": None,
+        "original_character_count": len(layout),
+        "characters": [{
+            "codepoint": ord(c.text), "trace_codepoint": c.source_glyph_trace_codepoint,
+            "origin_pdf": list(c.source_origin_pdf), "advance_width": c.advance_width,
+        } for c in layout],
+    }
 
 
 __all__ = ["EmbeddedFontAsset", "EmbeddedFontCatalog", "EmbeddedFontFailure"]

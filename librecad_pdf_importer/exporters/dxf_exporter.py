@@ -43,6 +43,8 @@ from ..core.document import (
 )
 
 from pdfcadcore.import_config import ImportConfig
+from pdfcadcore.embedded_fonts import source_control_zero_ink_proof
+from ..dxf_framing import frame_modelspace
 from pdfcadcore.fitz_loader import safe_open
 from pdfcadcore.primitive_extractor import (
     _page_rotation_transform,
@@ -1523,6 +1525,7 @@ def _verify_serialized_text_deliveries(
     deliveries: List[Dict[str, Any]],
     *,
     trusted_positioned_session: _PositionedVerificationSession,
+    trusted_control_zero_ink: Optional[Mapping[str, str]] = None,
 ) -> None:
     """Reconcile accepted evidence against the candidate and opaque authority.
 
@@ -1697,6 +1700,23 @@ def _verify_serialized_text_deliveries(
             representation == "raster" and final_evidence.get("zero_ink_omitted") is True
         )
         if zero_ink_omitted:
+            control_proof = final_evidence.get("original_control_zero_ink")
+            if control_proof is not None or source_id in (trusted_control_zero_ink or {}):
+                expected = (trusted_control_zero_ink or {}).get(source_id)
+                actual = json.dumps(control_proof, sort_keys=True, separators=(",", ":"))
+                if (expected is None or actual != expected
+                        or final_strategy != "verified_source_zero_ink_omission"
+                        or final_evidence.get("zero_ink_verified") is not True
+                        or final_evidence.get("visible_ink_expected") is not False
+                        or control_proof.get("source_text") != delivery.get("source_text")
+                        or control_proof.get("source_pdf_sha256") != final_evidence.get("source_pdf_sha256")
+                        or control_proof.get("source_page_number") != final_evidence.get("source_page_number")
+                        or any(modelspace_handle_counts.get(str(handle), 0)
+                               for prior in delivery.get("attempts", ())
+                               for handle in prior.get("created_entity_handles", ()))):
+                    raise RuntimeError(
+                        f"serialized text delivery {source_id}: original control zero-ink proof changed"
+                    )
             if entity_handles or support_handles or referenced_handles:
                 raise RuntimeError(
                     f"serialized text delivery {source_id}: zero-ink omission owns entities"
@@ -3962,6 +3982,17 @@ class _RasterRenderSession:
         return self._page, self._display_list
 
 
+def _original_control_omission_proof(source_text, page_number, source_pdf_sha256):
+    proof = source_control_zero_ink_proof(source_text)
+    if proof is None or not re.fullmatch(r"[0-9a-f]{64}", str(source_pdf_sha256 or "")):
+        return None
+    return {
+        **proof, "source_id": _source_id(source_text),
+        "source_text": source_text.text, "source_page_number": int(page_number),
+        "source_pdf_sha256": source_pdf_sha256,
+    }
+
+
 def _attempt_terminal_text_raster(
     delivery: TextDeliveryResult,
     *,
@@ -3996,6 +4027,29 @@ def _attempt_terminal_text_raster(
     try:
         if not delivery.source_id:
             raise ValueError("terminal raster has no stable source identity")
+        control_proof = _original_control_omission_proof(source_text, page_number, source_pdf_sha256)
+        if control_proof is not None:
+            # The exact original glyph program paints nothing. A page crop
+            # would capture unrelated neighbouring ink; retain the source
+            # semantic/advance proof and explicitly certify no IMAGE was made.
+            attempt.strategy = "verified_source_zero_ink_omission"
+            attempt.type_verified = attempt.visual_verified = True
+            attempt.delivery_verified = attempt.cleanup_verified = True
+            attempt.outcome = "verified"
+            attempt.evidence = {
+                "source_id": delivery.source_id,
+                "source_pdf_sha256": source_pdf_sha256,
+                "source_page_number": int(page_number),
+                "original_control_zero_ink": control_proof,
+                "zero_ink_verified": True, "zero_ink_omitted": True,
+                "visible_ink_expected": False, "visible_ink_verified": False,
+                "host_safe_opaque_image_required": False,
+            }
+            return TextDeliveryResult(
+                source_id=delivery.source_id,
+                requested_representation=delivery.requested_representation,
+                final_representation="raster", verified=True, attempts=attempts,
+            ), None
         whitespace_only = not str(getattr(source_text, "text", "") or "").strip()
         requested_raster = _normalized_text_mode(delivery.requested_representation) == "raster"
         if whitespace_only and not requested_raster:
@@ -4588,6 +4642,7 @@ def _export_to_dxf_impl(
     output = Path(output_path).expanduser().resolve()
     source_pdf = Path(extraction.pdf_path).expanduser().resolve()
     source_pdf_sha256: Optional[str] = None
+    source_fill_receipts_present = False
     session_token = uuid.uuid4().hex
     asset_parent = output.with_name(f"{output.stem}_assets")
     asset_root = asset_parent / session_token
@@ -4687,6 +4742,7 @@ def _export_to_dxf_impl(
     delivered_text_entity_counts: Dict[str, int] = {}
     text_deliveries: List[Dict[str, Any]] = []
     positioned_translation_anchors: Dict[str, _PositionedTranslationAnchor] = {}
+    original_control_anchors: Dict[str, str] = {}
     seen_text_source_ids: set[str] = set()
     seen_text_entity_handles: set[str] = set()
     search_text_enabled = bool(
@@ -4864,6 +4920,12 @@ def _export_to_dxf_impl(
             else:
                 _apply_color(attribs, stroke_rgb)
                 _apply_color(fill_attribs, fill_rgb)
+                if stroke_rgb == (1.0, 1.0, 1.0) and fill_rgb == (1.0, 1.0, 1.0):
+                    # A source white-filled and white-stroked annotation box
+                    # paints no black border. Match the non-inverting white
+                    # fill encoding while retaining its editable stroke.
+                    attribs["true_color"] = rgb2int((254, 254, 254))
+                    attribs["color"] = _nearest_r12_aci(stroke_rgb)
                 _apply_lineweight(attribs, primitive.line_width)
 
             source_dash = getattr(page, "source_line_dashes", {}).get(primitive.id)
@@ -5076,6 +5138,20 @@ def _export_to_dxf_impl(
         if opts.include_text and opts.text_mode != "none":
             text_cfg = ImportConfig.auto()
             text_cfg.text_mode = opts.text_mode
+            # Only positive character-bound source paint permits omission of
+            # contour wires. Missing/unreadable trace data keeps prior behavior.
+            text_cfg._source_text_fill_receipts = {}
+            try:
+                from ..core.text_paint import fill_only_text_receipts
+                if source_pdf_sha256 is None:
+                    source_pdf_sha256 = _file_sha256(source_pdf)
+                paint_page, _ = raster_session.page(source_pdf, source_pdf_sha256,
+                                                     int(page.page_data.page_number))
+                text_cfg._source_text_fill_receipts = fill_only_text_receipts(
+                    paint_page, page.page_data.text_items, source_pdf_sha256)
+                source_fill_receipts_present |= bool(text_cfg._source_text_fill_receipts)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                pass
             text_cfg._embedded_font_asset_paths = dict(embedded_font_paths)  # noqa: B010
             # Per-asset environment faults, so an item whose exact font could
             # not be written descends with a reason instead of aborting.
@@ -5231,6 +5307,17 @@ def _export_to_dxf_impl(
                     )
                 seen_text_source_ids.add(delivery.source_id)
                 seen_text_entity_handles.update(delivery.entity_handles)
+                if any("original_control_zero_ink" in attempt.evidence for attempt in delivery.attempts):
+                    original = _original_control_omission_proof(
+                        text, page.page_data.page_number, source_pdf_sha256
+                    )
+                    if original is None:
+                        raise ImportStopped(f"{delivery.source_id}: original control proof unavailable")
+                    # Independent original-source proof, never reconstructed
+                    # from the mutable delivery or serialized report fields.
+                    original_control_anchors[delivery.source_id] = json.dumps(
+                        original, sort_keys=True, separators=(",", ":")
+                    )
                 if positioned_anchor is not None:
                     if delivery.source_id in positioned_translation_anchors:
                         raise ImportStopped(
@@ -5238,6 +5325,12 @@ def _export_to_dxf_impl(
                         )
                     positioned_translation_anchors[delivery.source_id] = positioned_anchor
                 text_deliveries.append(delivery.to_dict())
+                if delivery.source_id in original_control_anchors:
+                    text_deliveries[-1].update(
+                        source_text=text.text,
+                        source_page_number=int(page.page_data.page_number),
+                        no_visible_ink=True,
+                    )
                 if degrade is not None:
                     # Loud by construction: never verified, always a fallback.
                     text_deliveries[-1].update(degrade, verified=False, fallback_used=True)
@@ -5572,25 +5665,7 @@ def _export_to_dxf_impl(
 
     # Persist extents + initial modelspace viewport so hosts open focused on geometry.
     if min_x <= max_x and min_y <= max_y:
-        extmin = (float(min_x), float(min_y), 0.0)
-        extmax = (float(max_x), float(max_y), 0.0)
-        msp.dxf.extmin = extmin
-        msp.dxf.extmax = extmax
-        msp.dxf.limmin = (float(min_x), float(min_y))
-        msp.dxf.limmax = (float(max_x), float(max_y))
-        doc.header["$EXTMIN"] = extmin
-        doc.header["$EXTMAX"] = extmax
-        doc.header["$LIMMIN"] = (float(min_x), float(min_y))
-        doc.header["$LIMMAX"] = (float(max_x), float(max_y))
-        center = ((float(min_x) + float(max_x)) * 0.5, (float(min_y) + float(max_y)) * 0.5)
-        height = max(1.0, float(max_y) - float(min_y))
-        width = max(1.0, float(max_x) - float(min_x))
-        doc.set_modelspace_vport(max(height, width) * 1.1, center=center)
-        active = doc.viewports.get("*Active")
-        if active:
-            vp = active[0]
-            vp.dxf.center = center
-            vp.dxf.height = height * 1.1
+        frame_modelspace(doc, (min_x, min_y, max_x, max_y))
 
     if has_source_image_order:
         background_set = set(background_image_handles)
@@ -5700,6 +5775,7 @@ def _export_to_dxf_impl(
                 candidate,
                 text_deliveries,
                 trusted_positioned_session=trusted_positioned_session,
+                trusted_control_zero_ink=MappingProxyType(original_control_anchors),
             )
         except RuntimeError as exc:
             mismatch_rungs = _serialized_mismatch_rungs(exc, text_deliveries)
@@ -5716,8 +5792,8 @@ def _export_to_dxf_impl(
         verify_capsules(candidate, capsule_expectations)
         from .nontext_composite import verify_display_metadata
         verify_display_metadata(candidate, composite_expectations)
-        if capsule_records and _file_sha256(source_pdf) != source_pdf_sha256:
-            raise RuntimeError('Original PDF changed during source stroke export')
+        if (capsule_records or source_fill_receipts_present or original_control_anchors) and _file_sha256(source_pdf) != source_pdf_sha256:
+            raise RuntimeError('Original PDF changed during source paint export')
         temp_output.replace(output)
     except Exception:
         _sync_text_evidence()  # the failure report names every item's evidence

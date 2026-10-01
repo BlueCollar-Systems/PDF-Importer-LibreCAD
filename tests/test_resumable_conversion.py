@@ -408,6 +408,7 @@ def test_assembly_rebases_image_assets_for_the_requested_output(
     Image.new("RGBA", (3, 2), (10, 20, 30, 255)).save(source_image)
     checkpoint = session / "page_0001.dxf"
     source_doc = ezdxf.new("R2010")
+    source_doc.set_raster_variables(frame=0, quality=1, units="mm")
     image_def = source_doc.add_image_def(
         filename="page_0001_assets/source.png",
         size_in_pixel=(3, 2),
@@ -428,3 +429,7 @@ def test_assembly_rebases_image_assets_for_the_requested_output(
     delivered = (output.parent / definitions[0].dxf.filename).resolve()
     assert delivered.is_file()
     assert delivered.read_bytes() == source_image.read_bytes()
+    raster_variables, = assembled.objects.query("RASTERVARIABLES")
+    assert raster_variables.dxf.frame == 0
+    assert raster_variables.dxf.quality == 1
+    assert raster_variables.dxf.units == 1  # millimetres
