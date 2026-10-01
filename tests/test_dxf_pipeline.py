@@ -1880,8 +1880,11 @@ class TestDxfPipeline(unittest.TestCase):
         vp = active[0]
         self.assertGreater(float(vp.dxf.height), 0.0)
         center = vp.dxf.center
-        self.assertAlmostEqual(float(center[0]), (extmin[0] + extmax[0]) * 0.5, places=1)
-        self.assertAlmostEqual(float(center[1]), (extmin[1] + extmax[1]) * 0.5, places=1)
+        # LibreCAD reads this field as half the visible upper-right corner.
+        self.assertAlmostEqual(2 * float(center[0]) - vp.dxf.height * vp.dxf.aspect_ratio / 2,
+                               (extmin[0] + extmax[0]) * 0.5, places=1)
+        self.assertAlmostEqual(2 * float(center[1]) - vp.dxf.height / 2,
+                               (extmin[1] + extmax[1]) * 0.5, places=1)
 
     def test_extract_page_handles_quad_path_items(self) -> None:
         class _QuadPage:

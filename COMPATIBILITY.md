@@ -33,7 +33,7 @@ Release portable ZIP bundles Python + PyMuPDF + ezdxf + FontTools + Matplotlib +
 | Dependency | Portable ZIP | Source dev |
 |------------|--------------|------------|
 | Python runtime | ✅ 3.12.10 bundled | 3.12+ required |
-| PyMuPDF 1.28.0 | ✅ Bundled | `preflight_check.py --install` |
+| PyMuPDF 1.28.2 | ✅ Bundled | `preflight_check.py --install` |
 | ezdxf 1.4.4 | ✅ Bundled | `preflight_check.py --install` |
 | FontTools 4.63.0 | ✅ Bundled | `preflight_check.py --install` |
 | Matplotlib 3.11.1 | ✅ Bundled | `preflight_check.py --install` |
@@ -75,9 +75,9 @@ Portable users: run `lcpdf-gui.exe` from extracted ZIP — no terminal required.
 
 | LibreCAD | Python (standalone) | ezdxf | PyMuPDF | FontTools | Status |
 |----------|---------------------|-------|---------|-----------|--------|
-| 2.2.x+ | 3.12+ | 1.4.4 | 1.28.0 | 4.63.0 | ✅ Supported |
-| 2.1.x | 3.12+ | 1.4.4 | 1.28.0 | 4.63.0 | ⚠️ Unverified |
-| 2.0.x | 3.12+ | 1.4.4 | 1.28.0 | 4.63.0 | ⚠️ Unverified |
+| 2.2.x+ | 3.12+ | 1.4.4 | 1.28.2 | 4.63.0 | ✅ Supported |
+| 2.1.x | 3.12+ | 1.4.4 | 1.28.2 | 4.63.0 | ⚠️ Unverified |
+| 2.0.x | 3.12+ | 1.4.4 | 1.28.2 | 4.63.0 | ⚠️ Unverified |
 | < 2.0 | | | | | ❌ Not supported |
 
 ### LibreCAD-specific behavior

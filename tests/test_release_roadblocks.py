@@ -29,7 +29,7 @@ def test_ci_clones_optional_corpus_before_tests_and_rechecks_declared_dependenci
 
     assert workflow.index("Optional corpus clone") < workflow.index("Run unit tests")
     assert "declared-dependencies:" in workflow
-    assert '"PyMuPDF==1.28.0"' in workflow
+    assert '"PyMuPDF==1.28.2"' in workflow
     assert '"ezdxf==1.4.4"' in workflow
     assert '"fonttools==4.63.0"' in workflow
     assert '"numpy==2.5.1"' in workflow

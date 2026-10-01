@@ -36,6 +36,7 @@ from conversion_control import (
     ActivePageCancelled, ImportStopped, check_cancel, ensure_output_is_not_source,
 )
 from librecad_runtime import resolve_librecad_runtime_binding
+from librecad_pdf_importer.dxf_framing import finite_bounds, frame_modelspace, union_bounds
 
 
 class ResumeMismatchError(RuntimeError):
@@ -166,8 +167,13 @@ def _assemble_checkpoints(checkpoints: list[Path], output_path: str) -> None:
     sources = [ezdxf.readfile(path) for path in checkpoints]
     target = ezdxf.new(dxfversion=sources[0].dxfversion)
     target.units = sources[0].units
+    # Importer copies image entities/assets, not their document display policy.
+    # Match the checkpoint exporter: frames are not source drawing ink.
+    if target.dxfversion != "AC1009":
+        target.set_raster_variables(frame=0, quality=1, units="mm")
     target_msp = target.modelspace()
-    stack_offset = 0.0
+    next_top = None
+    drawing_bounds = None
     delivered_asset_root = output.with_name(f"{output.stem}_assets") / "resume"
     for checkpoint, source in zip(checkpoints, sources, strict=True):
         for image_definition in source.objects.query("IMAGEDEF"):
@@ -213,61 +219,37 @@ def _assemble_checkpoints(checkpoints: list[Path], output_path: str) -> None:
             ),
             fast=False,
         )
+        # Page frames preserve whitespace and blank pages. Include every visible
+        # entity as well, while frozen search companions never size the drawing.
+        source_msp = source.modelspace()
+        page_bounds = finite_bounds(source_msp.dxf.extmin, source_msp.dxf.extmax)
+        if source_extents.has_data:
+            page_bounds = union_bounds(page_bounds, finite_bounds(
+                source_extents.extmin, source_extents.extmax))
+        if page_bounds is None:
+            page_bounds = (0.0, 0.0, 1.0, 1.0)
+        offset_y = 0.0 if next_top is None else next_top - page_bounds[3]
         load_modelspace(
             source,
             target,
             conflict_policy=ConflictPolicy.XREF_PREFIX,
         )
         added = [entity for entity in target_msp if entity.dxf.handle not in before]
-        if stack_offset:
-            transform = Matrix44.translate(0.0, -stack_offset, 0.0)
+        if offset_y:
+            transform = Matrix44.translate(0.0, offset_y, 0.0)
             for entity in added:
                 transformer = getattr(entity, "transform", None)
                 if callable(transformer):
                     transformer(transform)
-        if source_extents.has_data:
-            height = max(1.0, float(source_extents.extmax.y - source_extents.extmin.y))
-        else:
-            height = 1.0
-        stack_offset += height * 1.2
+        placed_bounds = (page_bounds[0], page_bounds[1] + offset_y,
+                         page_bounds[2], page_bounds[3] + offset_y)
+        drawing_bounds = union_bounds(drawing_bounds, placed_bounds)
+        height = max(1.0, page_bounds[3] - page_bounds[1])
+        next_top = placed_bounds[1] - height * 0.2
 
     if "$INSUNITS" in sources[0].header:
         target.header["$INSUNITS"] = sources[0].header["$INSUNITS"]
-    target_extents = ezdxf_bbox.extents(
-        (
-            entity
-            for entity in target_msp
-            if not str(entity.dxf.layer).endswith("TEXT_SEARCH")
-        ),
-        fast=False,
-    )
-    if target_extents.has_data:
-        min_x = float(target_extents.extmin.x)
-        min_y = float(target_extents.extmin.y)
-        max_x = float(target_extents.extmax.x)
-        max_y = float(target_extents.extmax.y)
-        if min_x <= max_x and min_y <= max_y:
-            extmin = (min_x, min_y, 0.0)
-            extmax = (max_x, max_y, 0.0)
-            target_msp.dxf.extmin = extmin
-            target_msp.dxf.extmax = extmax
-            target_msp.dxf.limmin = (min_x, min_y)
-            target_msp.dxf.limmax = (max_x, max_y)
-            target.header["$EXTMIN"] = extmin
-            target.header["$EXTMAX"] = extmax
-            target.header["$LIMMIN"] = (min_x, min_y)
-            target.header["$LIMMAX"] = (max_x, max_y)
-            center = ((min_x + max_x) * 0.5, (min_y + max_y) * 0.5)
-            height = max(1.0, max_y - min_y)
-            width = max(1.0, max_x - min_x)
-            view_size = max(height, width) * 1.1
-            target.set_modelspace_vport(view_size, center=center)
-            active = target.viewports.get("*Active")
-            if active:
-                vp = active[0]
-                vp.dxf.center = center
-                vp.dxf.height = view_size
-
+    frame_modelspace(target, drawing_bounds)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(f".{output.stem}.{uuid.uuid4().hex}.partial{output.suffix}")
     target.saveas(temporary)

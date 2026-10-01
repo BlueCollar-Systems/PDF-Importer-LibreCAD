@@ -243,7 +243,9 @@ def test_missing_space_glyph_id_requires_exact_font_zero_ink(tmp_path):
     font.save(path)
     font.close()
     char = replace(item.source_char_layout[0], text=" ", glyph_id=None)
-    resolution = builder._ExactFontResolution(source_name="fixture", filename=str(path), exact=True)
+    from hashlib import sha256
+    resolution = builder._ExactFontResolution(source_name="fixture", filename=str(path), exact=True,
+        asset_sha256=sha256(path.read_bytes()).hexdigest())
     with pytest.raises(builder._RepresentationImpossible, match="visible exact-font ink"):
         builder._positioned_source_glyph_names([char], resolution)
 
@@ -303,7 +305,9 @@ def test_valid_id_space_cannot_hide_visible_or_multiple_engine_paths(tmp_path, m
     font.save(font_path)
     font.close()
     char = replace(item.source_char_layout[0], text=" ", glyph_id=glyph_id)
-    resolution = builder._ExactFontResolution(source_name="fixture", filename=str(font_path), exact=True)
+    from hashlib import sha256
+    resolution = builder._ExactFontResolution(source_name="fixture", filename=str(font_path), exact=True,
+        asset_sha256=sha256(font_path.read_bytes()).hexdigest())
     empty = set()
     assert builder._positioned_source_glyph_names([char], resolution, empty_glyph_names=empty) == [name]
     assert (name in empty) is (not visible_space)

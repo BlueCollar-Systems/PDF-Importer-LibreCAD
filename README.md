@@ -42,7 +42,7 @@ See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the full host version matrix (L
 ## Requirements
 
 - Windows release installer or portable ZIP: no separate Python or pip packages.
-- Source/dev install: Python 3.12+, PyMuPDF 1.28.0, ezdxf 1.4.4,
+- Source/dev install: Python 3.12+, PyMuPDF 1.28.2, ezdxf 1.4.4,
   FontTools 4.63.0, Matplotlib 3.11.1, and NumPy 2.5.1. All are free software dependencies.
 
 Release binaries are built with exact CPython 3.12.10 AMD64 and hash-locked

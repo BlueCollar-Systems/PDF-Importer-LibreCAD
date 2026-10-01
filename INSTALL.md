@@ -161,7 +161,7 @@ strings are hidden native `TEXT` on the frozen layer `P###_TEXT_SEARCH`
 ## Requirements
 
 - Standalone installer: no separate Python or pip packages.
-- Source/dev checkout: Python 3.12+, PyMuPDF 1.28.0, ezdxf 1.4.4,
+- Source/dev checkout: Python 3.12+, PyMuPDF 1.28.2, ezdxf 1.4.4,
   FontTools 4.63.0, Matplotlib 3.11.1, and NumPy 2.5.1, either installed into
   your active environment or vendored into `./lib` with
   `tools/fetch_runtime_wheels.ps1`.
