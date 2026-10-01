@@ -30,9 +30,11 @@ def check_pymupdf() -> bool:
     try:
         from pdfcadcore.fitz_loader import import_fitz
 
-        import_fitz(prefer_lib_dir=str(get_lib_dir()))
+        from librecad_pdf_importer.runtime_self_test import require_pymupdf_runtime
+
+        require_pymupdf_runtime(import_fitz(prefer_lib_dir=str(get_lib_dir())))
         return True
-    except ImportError:
+    except (ImportError, RuntimeError):
         return False
 
 

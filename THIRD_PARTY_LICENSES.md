@@ -8,7 +8,7 @@ license.
 | Component | Version | License | Source |
 |---|---|---|---|
 | CPython | 3.12.10 | PSF License | https://www.python.org/ |
-| PyMuPDF (embeds MuPDF) | 1.28.0 | AGPL-3.0 (or Artifex commercial) | https://github.com/pymupdf/PyMuPDF — https://mupdf.com/ |
+| PyMuPDF (embeds MuPDF) | 1.28.2 | AGPL-3.0 (or Artifex commercial) | https://github.com/pymupdf/PyMuPDF — https://mupdf.com/ |
 | ezdxf | 1.4.4 | MIT | https://github.com/mozman/ezdxf |
 | FontTools | 4.63.0 | MIT | https://github.com/fonttools/fonttools |
 | Matplotlib (`ezdxf.addons.text2path` runtime) | 3.11.1 | PSF-based Matplotlib license | https://github.com/matplotlib/matplotlib |
