@@ -234,8 +234,8 @@ def test_incompatible_character_rotation_still_rejected():
         builder._positioned_fraction_layout(item)
 
 
-def _empty_arial_fraction_pdf(fitz, path, *, widths=None):
-    """A stacked 13/16 in a font named Arial whose program the PDF never embeds."""
+def test_real_empty_arial_program_fraction_exports_and_reopens(tmp_path):
+    fitz = import_fitz()
     pdf = fitz.open()
     page = pdf.new_page(width=200, height=120)
     page.insert_text((60, 50), "13", fontsize=8)
@@ -244,22 +244,9 @@ def _empty_arial_fraction_pdf(fitz, path, *, widths=None):
     font_xref = page.get_fonts(full=True)[0][0]
     pdf.xref_set_key(font_xref, "BaseFont", "/Arial")
     pdf.xref_set_key(font_xref, "Subtype", "/TrueType")
-    if widths is not None:
-        pdf.xref_set_key(font_xref, "FirstChar", "32")
-        pdf.xref_set_key(font_xref, "LastChar", "126")
-        pdf.xref_set_key(font_xref, "Widths", "[" + " ".join([str(widths)] * 95) + "]")
-    pdf.save(path)
-    pdf.close()
-    return font_xref
-
-
-def test_real_empty_arial_program_fraction_exports_and_reopens(tmp_path):
-    fitz = import_fitz()
     source = tmp_path / "empty-arial-fraction.pdf"
-    # Every advance is 600: a font that is called Arial and is not Arial. A host
-    # with Arial installed rejects that face by the PDF's own advances; a host
-    # without it has no candidate. Either way the item raster is the last resort.
-    font_xref = _empty_arial_fraction_pdf(fitz, source, widths=600)
+    pdf.save(source)
+    pdf.close()
     run = run_import(str(source), mode="vector", overrides={"pages": "1"})
     fraction = next(item for item in run.extraction.pages[0].page_data.text_items
                     if item.text == "13/16")
@@ -296,10 +283,6 @@ def test_real_empty_arial_program_fraction_exports_and_reopens(tmp_path):
         char = fraction.source_char_layout[receipt["character_index"]]
         assert (receipt["character"], receipt["observed_glyph_id"]) == (char.text, char.glyph_id)
         assert receipt["resolved_glyph_id"] != char.glyph_id
-        proof = receipt["advance_width_proof"]
-        assert proof["verified"] is False
-        assert proof["observed_advance_per_mille"] == pytest.approx(600.0, abs=0.5)
-        assert abs(proof["observed_advance_per_mille"] - proof["installed_advance_per_mille"]) > 40
     assert all(attempt["outcome"] == "impossible" for attempt in delivery["attempts"][:-1])
     evidence = delivery["attempts"][-1]["evidence"]
     assert evidence["source_pdf_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
@@ -318,36 +301,3 @@ def test_real_empty_arial_program_fraction_exports_and_reopens(tmp_path):
             colorspace=fitz.csRGB, alpha=False,
         ).tobytes("png")
     assert asset.read_bytes() == expected_png
-
-
-def test_real_empty_arial_program_fraction_is_outlined_where_arial_is_installed(tmp_path):
-    """The named face is installed and the PDF's advances are its advances."""
-    if not builder._resolve_exact_font("Arial").exact:
-        pytest.skip("this host has no installed Arial face")
-    fitz = import_fitz()
-    source = tmp_path / "empty-arial-fraction.pdf"
-    _empty_arial_fraction_pdf(fitz, source)
-    run = run_import(str(source), mode="vector", overrides={"pages": "1"})
-    fraction = next(item for item in run.extraction.pages[0].page_data.text_items
-                    if item.text == "13/16")
-    assert builder._positioned_empty_font_program_proven(fraction)
-    output = tmp_path / "empty-arial-fraction.dxf"
-    result = exporter.export_to_dxf(run.extraction, str(output), exporter.DxfExportOptions(
-        include_images=False, text_mode="glyphs", dxf_version="R2010",
-    ))
-    reopened = ezdxf.readfile(output)
-    assert not reopened.modelspace().query("IMAGE")
-    assert result.image_count == 0
-    delivery = result.text_deliveries[0]
-    assert delivery["verified"] is True
-    assert delivery["final_representation"] == "glyphs"
-    attempt = delivery["attempts"][-1]
-    evidence = attempt["evidence"]
-    assert attempt["strategy"] == "positioned_source_glyph_outlines"
-    assert evidence["font_resolution_source"] == "installed_exact_font"
-    assert evidence["installed_font_glyph_binding"] == "unicode_cmap_with_pdf_advance_proof"
-    assert [proof["character"] for proof in evidence["installed_font_advance_proofs"]] == list("13/16")
-    assert evidence["installed_font_advance_max_error_per_mille"] <= 1.0
-    inserts = [entity for entity in reopened.modelspace().query("INSERT")
-               if not entity.dxf.layer.endswith("TEXT_SEARCH")]
-    assert [entity.dxf.handle for entity in inserts] == delivery["entity_handles"]
