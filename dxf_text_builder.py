@@ -50,6 +50,7 @@ from pdfcadcore.embedded_fonts import EmbeddedFontFailure
 from pdfcadcore.primitives import NormalizedText, TextCharLayout
 from librecad_runtime import redacted_local_path, resolve_librecad_installation
 from librecad_pdf_importer.core.text_paint import bound_fill_receipt
+from librecad_pdf_importer.ink_color import INK_RULE_NEAR_BLACK, delivered_rgb8
 
 
 _MTEXT_THRESHOLD = 120
@@ -2032,7 +2033,9 @@ def _base_attributes(
         from ezdxf.colors import rgb2int
 
         rgb = tuple(round(float(component) * 255) for component in text_color[:3])
-        attribs["true_color"] = rgb2int(rgb)
+        # Near-black neutral ink is written as exact black, as the vector
+        # exporter does: LibreCAD draws only exact black in its foreground colour.
+        attribs["true_color"] = rgb2int(delivered_rgb8(*rgb))
     attribs["style"] = style_name
     return attribs
 
@@ -2071,21 +2074,25 @@ def _positioned_r12_color_contract(
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Bind positioned R12 ink to a zero-error, context-free ACI mapping."""
 
-    rgb = _source_rgb8(text_item)
-    if rgb is None:
+    observed = _source_rgb8(text_item)
+    if observed is None:
         return {}, {"r12_source_color_encoding": "source_color_absent"}
+    # Near-black neutral ink is bound as exact black (the importer's ink rule);
+    # the ACI match stays zero-error against that delivered ink.
+    rgb = delivered_rgb8(*observed)
     aci = _exact_r12_aci(rgb)
     if aci is None:
         raise _R12ColorImpossible(rgb)
-    return (
-        {"color": aci},
-        {
-            "r12_source_color_encoding": "exact_srgb8_aci_match",
-            "r12_source_color_rgb": list(rgb),
-            "r12_source_color_aci": aci,
-            "r12_source_color_max_channel_error": 0,
-        },
-    )
+    evidence = {
+        "r12_source_color_encoding": "exact_srgb8_aci_match",
+        "r12_source_color_rgb": list(rgb),
+        "r12_source_color_aci": aci,
+        "r12_source_color_max_channel_error": 0,
+    }
+    if rgb != observed:
+        evidence["r12_ink_rule"] = INK_RULE_NEAR_BLACK
+        evidence["r12_observed_source_color_rgb"] = list(observed)
+    return {"color": aci}, evidence
 
 
 def _fit_text_advance(
