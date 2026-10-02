@@ -42,6 +42,7 @@ from librecad_pdf_importer.dxf_framing import (
     sheet_bounds,
     union_bounds,
 )
+from librecad_pdf_importer.ink_color import rule_identity as ink_rule_identity
 
 
 class ResumeMismatchError(RuntimeError):
@@ -145,6 +146,9 @@ def _resume_options_identity(
         "engine_sha256": _engine_sha256(),
         "dxf_version": str(dxf_version),
         "searchable_text": bool(searchable_text),
+        # A page checkpoint written under another ink rule is never resumed:
+        # the rule lives in the exporter, which the engine hash does not cover.
+        "ink_color_rule": ink_rule_identity(),
         "librecad_runtime_binding": librecad_binding.identity_payload(),
         "config": asdict(config),
     }
