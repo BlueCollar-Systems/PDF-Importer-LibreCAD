@@ -139,6 +139,7 @@ def _resume_options_identity(
     searchable_text: bool = True,
 ) -> tuple[str, dict]:
     from pdf2dxf import __version__
+    from dxf_text_builder import installed_font_rule_identity
 
     librecad_binding = resolve_librecad_runtime_binding(librecad_executable)
     payload = {
@@ -149,6 +150,9 @@ def _resume_options_identity(
         # A page checkpoint written under another ink rule is never resumed:
         # the rule lives in the exporter, which the engine hash does not cover.
         "ink_color_rule": ink_rule_identity(),
+        # Likewise the text builder's rule for a font the PDF does not embed:
+        # a page that was given raster patches under another rule is rebuilt.
+        "installed_font_rule": installed_font_rule_identity(),
         "librecad_runtime_binding": librecad_binding.identity_payload(),
         "config": asdict(config),
     }
