@@ -44,7 +44,7 @@ from ..core.document import (
 
 from pdfcadcore.import_config import ImportConfig
 from pdfcadcore.embedded_fonts import source_control_zero_ink_proof
-from ..dxf_framing import frame_modelspace
+from ..dxf_framing import frame_modelspace, sheet_bounds
 from pdfcadcore.fitz_loader import safe_open
 from pdfcadcore.primitive_extractor import (
     _page_rotation_transform,
@@ -5680,21 +5680,15 @@ def _export_to_dxf_impl(
         source_paint_keys=source_paint_keys,
     )
 
-    # Persist extents + initial modelspace viewport so hosts open focused on geometry.
-    # A stroke that runs far past the crop stays in the file, but zoom-extents
-    # and the first view stay on the sheet the way a print is read.
+    # Persist extents + initial modelspace viewport so hosts open on the sheets.
+    # Ink that runs past a page box stays in the file, but zoom-extents and the
+    # first view are the placed page frames, the way a print is read. The
+    # checkpoint assembly reads these saved extents back as the page's sheet.
     if frame_min_x <= frame_max_x and frame_min_y <= frame_max_y:
-        frame_w = float(frame_max_x) - float(frame_min_x)
-        frame_h = float(frame_max_y) - float(frame_min_y)
-        geom_w = float(max_x) - float(min_x)
-        geom_h = float(max_y) - float(min_y)
-        if frame_w > 0.0 and frame_h > 0.0 and (
-            geom_w > 1.5 * frame_w or geom_h > 1.5 * frame_h
-        ):
-            min_x, min_y, max_x, max_y = (
-                frame_min_x, frame_min_y, frame_max_x, frame_max_y
-            )
-        frame_modelspace(doc, (min_x, min_y, max_x, max_y))
+        frame_modelspace(doc, sheet_bounds(
+            (frame_min_x, frame_min_y, frame_max_x, frame_max_y),
+            (min_x, min_y, max_x, max_y),
+        ))
 
     if has_source_image_order:
         background_set = set(background_image_handles)
