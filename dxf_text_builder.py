@@ -50,6 +50,7 @@ from pdfcadcore.embedded_fonts import EmbeddedFontFailure
 from pdfcadcore.primitives import NormalizedText, TextCharLayout
 from librecad_runtime import redacted_local_path, resolve_librecad_installation
 from librecad_pdf_importer.core.text_paint import bound_fill_receipt
+from librecad_pdf_importer.ink_color import INK_RULE_NEAR_BLACK, delivered_rgb8
 
 
 _MTEXT_THRESHOLD = 120
@@ -64,6 +65,11 @@ _POSITIONED_SHEAR_NOISE = 1e-4
 # DXF TEXT height is a cap height; without a verified font program the last
 # visible rung approximates it from the source em size.
 _DEGRADED_TEXT_CAP_HEIGHT_RATIO = 0.72
+# A PDF declares each character's advance in whole 1/1000 em units, and
+# producers round or truncate the font's own value. One unit is the bound
+# pdfcadcore.glyph_code_recovery uses for a declared width as well.
+_INSTALLED_ADVANCE_TOLERANCE_PER_MILLE = 1.0
+_INSTALLED_FONT_RULE = "installed_face_named_by_pdf_bound_by_declared_advance"
 _created_styles: Dict[str, str] = {}
 _embedded_cap_height_cache: Dict[str, float] = {}
 # ezdxf retains loaded fonts across documents. Keep their original file binding
@@ -629,8 +635,51 @@ def _librecad_lff_evidence(
     return _resolve_librecad_unicode_lff(executable, fresh=fresh).evidence(content)
 
 
+def installed_font_rule_identity() -> Dict[str, Any]:
+    """What decides whether an installed face may outline text the PDF does not
+    embed a font for; part of a resume session's identity."""
+
+    return {
+        "rule": _INSTALLED_FONT_RULE,
+        "advance_tolerance_per_mille": _INSTALLED_ADVANCE_TOLERANCE_PER_MILLE,
+        "visible_character_advance_required": True,
+        "original_character_frames_required": True,
+    }
+
+
 def _font_token(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+_REGULAR_FACE_STYLES = frozenset({"regular", "normal", "roman", "book"})
+
+
+def _spaced_family_name(name: str) -> str:
+    """Turn a PDF base-font token (ArialRoundedMTBold) into a family name."""
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(name or ""))
+    spaced = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", spaced)
+    return re.sub(r"[-_,\s]+", " ", spaced).strip()
+
+
+def _installed_face_is_source_equivalent(
+    face: Any, family: str, *, bold: bool, italic: bool,
+) -> bool:
+    """Same family, same slant, and the weight the source name asks for.
+
+    A name without a bold word asks for the family's regular face. That face
+    is heavy when the weight is part of the family itself (Arial Black, whose
+    only face is "Regular" at weight 900); it is still the named font, and a
+    separate "Bold" face of a lighter family never is.
+    """
+    face_style = str(face.style or "").lower()
+    weight = int(face.weight or 400)
+    if _font_token(face.family) != _font_token(family):
+        return False
+    if bool("italic" in face_style or "oblique" in face_style) != italic:
+        return False
+    if bold:
+        return weight >= 600
+    return weight < 600 or _font_token(face_style) in _REGULAR_FACE_STYLES
 
 
 def _resolve_exact_font(font_name: str) -> _ExactFontResolution:
@@ -649,8 +698,10 @@ def _resolve_exact_font(font_name: str) -> _ExactFontResolution:
     bold = "bold" in lower
     italic = "italic" in lower or "oblique" in lower
     style = "Bold Italic" if bold and italic else ("Bold" if bold else ("Italic" if italic else "Regular"))
+    # Windows/GDI producers (PDFsharp, Tekla) write "Family,Style"; PostScript
+    # names write "Family-Style". Both separate the same style suffix.
     family_part = re.sub(
-        r"[-_ ]?(bolditalic|boldoblique|bold|italic|oblique|regular|roman|medium)(mt)?$",
+        r"[-_ ,]*(bolditalic|boldoblique|bold|italic|oblique|regular|roman|medium)(mt)?$",
         "",
         base,
         flags=re.IGNORECASE,
@@ -671,20 +722,41 @@ def _resolve_exact_font(font_name: str) -> _ExactFontResolution:
     token = _font_token(family_part)
     family = aliases.get(token)
     if family is None:
-        family = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", family_part)
-        family = re.sub(r"[-_]+", " ", family).strip()
+        family = _spaced_family_name(family_part)
     if not family:
         return _ExactFontResolution(
             source_name=source,
             style=style,
             reason="source font family could not be normalized",
         )
-    face = ezdxf_fonts.find_best_match(
-        family=family,
-        style=style,
-        weight=700 if bold else 400,
-        italic=italic,
-    )
+    # (family, style, bold, italic) readings of the one source name. A family
+    # whose own name ends in a style word (Arial Rounded MT Bold) has no such
+    # style: the whole name is the family and its regular face is the font.
+    readings = [(family, style, bold, italic)]
+    whole_name = _spaced_family_name(base)
+    if whole_name and _font_token(whole_name) != _font_token(family):
+        readings.append((whole_name, "Regular", False, False))
+    face = None
+    exact = False
+    filename = ""
+    for reading_family, reading_style, reading_bold, reading_italic in readings:
+        candidate = ezdxf_fonts.find_best_match(
+            family=reading_family,
+            style=reading_style,
+            weight=700 if reading_bold else 400,
+            italic=reading_italic,
+        )
+        if candidate is None:
+            continue
+        if face is None:
+            face = candidate
+        candidate_filename = str(candidate.filename or "")
+        if _installed_face_is_source_equivalent(
+            candidate, reading_family, bold=reading_bold, italic=reading_italic,
+        ) and candidate_filename:
+            face, family, style = candidate, reading_family, reading_style
+            exact, filename = True, candidate_filename
+            break
     if face is None:
         return _ExactFontResolution(
             source_name=source,
@@ -692,11 +764,6 @@ def _resolve_exact_font(font_name: str) -> _ExactFontResolution:
             style=style,
             reason="no exact installed source-font family/style match",
         )
-    family_ok = _font_token(face.family) == _font_token(family)
-    weight_ok = int(face.weight or 400) >= 600 if bold else int(face.weight or 400) < 600
-    italic_ok = bool("italic" in str(face.style or "").lower() or "oblique" in str(face.style or "").lower()) == italic
-    filename = str(face.filename or "")
-    exact = bool(family_ok and weight_ok and italic_ok and filename)
     ratio, font_sha256 = (
         _installed_font_metrics(filename) if exact else (None, "")
     )
@@ -829,7 +896,7 @@ def _installed_font_rejection_bound_to_item(
     index = receipt.get("character_index")
     if not (
         receipt.get("schema") == "bcs.installed_font_rejection/1"
-        and receipt.get("reason") == "source_glyph_id_mismatch"
+        and receipt.get("reason") == "source_advance_mismatch"
         and receipt.get("source_id") == attempt.source_id
         and receipt.get("source_xref") == failure.source_xref
         and receipt.get("source_page_number") == failure.page_number
@@ -839,15 +906,34 @@ def _installed_font_rejection_bound_to_item(
         and attempt.evidence.get("font_resolution_source") == "installed_exact_font"
         and all(isinstance(value, int) and not isinstance(value, bool) and value >= 0
                 for value in (observed, resolved, index))
-        and observed != resolved
     ):
         return False
+    from fontTools.ttLib import TTFont, TTLibError
     try:
         layout = _source_affine_layout(text_item) or _positioned_fraction_layout(text_item)
-        return bool(layout and index < len(layout)
-                    and layout[index].text == receipt.get("character")
-                    and layout[index].glyph_id == observed)
-    except (TypeError, ValueError, _RepresentationImpossible):
+        if not (layout and index < len(layout)
+                and layout[index].text == receipt.get("character")
+                and layout[index].glyph_id == observed):
+            return False
+        # Bind the new equal-ID rejection to fresh source-frame and font bytes;
+        # a missing measurement, fabricated mismatch or changed font is not proof.
+        content = Path(attempt.evidence["resolved_font_filename"]).read_bytes()
+        if hashlib.sha256(content).hexdigest() != digest:
+            return False
+        with TTFont(BytesIO(content), lazy=True, recalcTimestamp=False) as program:
+            glyph = (program.getBestCmap() or {}).get(ord(layout[index].text))
+            if not glyph or program.getGlyphID(glyph) != resolved:
+                return False
+            proof = _installed_font_advance_proof(layout[index], program, glyph)
+        proof["character_index"] = index
+        values = [proof.get(key) for key in ("observed_advance_per_mille",
+                  "installed_advance_per_mille", "tolerance_per_mille")]
+        return bool(proof == receipt.get("advance_width_proof")
+                    and proof.get("verified") is False
+                    and all(type(value) in (int, float) and math.isfinite(value)
+                            for value in values)
+                    and values[2] >= 1.0 and abs(values[0] - values[1]) > values[2])
+    except (KeyError, OSError, TypeError, ValueError, TTLibError, _RepresentationImpossible):
         return False
 
 
@@ -1108,9 +1194,13 @@ def _require_exact_item_font(
     attempt.evidence.update(resolution.evidence())
     if resolution.exact:
         if (resolution.resolution_source == "installed_exact_font"
-                and _positioned_empty_font_program_proven(text_item)
-                and not Path(resolution.filename).is_file()):
-            raise ValueError("verified installed font program is no longer readable")
+                and _positioned_empty_font_program_proven(text_item)):
+            if not Path(resolution.filename).is_file():
+                raise ValueError("verified installed font program is no longer readable")
+            if (str(text_item.text).strip()
+                    and _source_affine_layout(text_item) is None
+                    and _positioned_fraction_layout(text_item) is None):
+                raise ValueError("installed-font text has no complete original character frames")
         return resolution
     _raise_for_unusable_font(resolution, attempt)
 
@@ -1586,8 +1676,17 @@ def _source_affine_layout(
 
     Raw spans can retain genuine baseline shifts, shear and unequal font-X/Y
     scale. Font em axes, not advance cells or aggregate ink boxes, define shapes.
-    Plain isotropic collinear strings retain the established native route.
+    An observed absent font program needs the same original character proof
+    for isotropic strings: MuPDF's substitute glyph IDs are not installed-font
+    identity, and whole-string DXF conversion interprets literal controls.
     """
+    if _positioned_empty_font_program_proven(text_item) and str(text_item.text).strip():
+        # Reconstructed stacked fractions own separate authenticated character
+        # frames, not one aggregate raw-span quad. Their existing path checks
+        # the font advance on every character as well.
+        if text_item.source_quad_pdf is None and _positioned_fraction_layout(text_item) is not None:
+            return None
+        require_original_frame = True
     if (text_item.source_quad_pdf is None
             or (not text_item.requires_individual_positioning and not require_original_frame)):
         return None
@@ -2032,7 +2131,9 @@ def _base_attributes(
         from ezdxf.colors import rgb2int
 
         rgb = tuple(round(float(component) * 255) for component in text_color[:3])
-        attribs["true_color"] = rgb2int(rgb)
+        # Near-black neutral ink is written as exact black, as the vector
+        # exporter does: LibreCAD draws only exact black in its foreground colour.
+        attribs["true_color"] = rgb2int(delivered_rgb8(*rgb))
     attribs["style"] = style_name
     return attribs
 
@@ -2071,21 +2172,25 @@ def _positioned_r12_color_contract(
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Bind positioned R12 ink to a zero-error, context-free ACI mapping."""
 
-    rgb = _source_rgb8(text_item)
-    if rgb is None:
+    observed = _source_rgb8(text_item)
+    if observed is None:
         return {}, {"r12_source_color_encoding": "source_color_absent"}
+    # Near-black neutral ink is bound as exact black (the importer's ink rule);
+    # the ACI match stays zero-error against that delivered ink.
+    rgb = delivered_rgb8(*observed)
     aci = _exact_r12_aci(rgb)
     if aci is None:
         raise _R12ColorImpossible(rgb)
-    return (
-        {"color": aci},
-        {
-            "r12_source_color_encoding": "exact_srgb8_aci_match",
-            "r12_source_color_rgb": list(rgb),
-            "r12_source_color_aci": aci,
-            "r12_source_color_max_channel_error": 0,
-        },
-    )
+    evidence = {
+        "r12_source_color_encoding": "exact_srgb8_aci_match",
+        "r12_source_color_rgb": list(rgb),
+        "r12_source_color_aci": aci,
+        "r12_source_color_max_channel_error": 0,
+    }
+    if rgb != observed:
+        evidence["r12_ink_rule"] = INK_RULE_NEAR_BLACK
+        evidence["r12_observed_source_color_rgb"] = list(observed)
+    return {"color": aci}, evidence
 
 
 def _fit_text_advance(
@@ -3607,13 +3712,98 @@ def _positioned_font_identity(
     )
 
 
+def _installed_font_advance_proof(
+    character: TextCharLayout,
+    font_program: Any,
+    glyph_name: str,
+) -> Dict[str, Any]:
+    """Does the PDF's own advance for this character fit the installed glyph?
+
+    A font the PDF does not embed has no glyph ids of its own: the id MuPDF
+    reports belongs to its built-in stand-in face, so it can never name a glyph
+    of the installed program. What the PDF does declare for such a font is the
+    advance of every character (/Widths, in 1/1000 em), and MuPDF lays the
+    character out with exactly that advance. The installed face is the named
+    source font for this character when the two advances agree within one
+    glyph-space unit - the bound the glyph-code recovery already uses for a
+    declared width - plus the float32 budget of the measured character frame.
+    """
+    proof: Dict[str, Any] = {
+        "character": character.text,
+        "verified": False,
+        "tolerance_basis": "one_glyph_space_unit_plus_float32_frame_budget",
+    }
+    try:
+        x_axis, _ = _source_character_affine_axes(character)
+        source = tuple(
+            (float(point[0]), float(point[1])) for point in character.source_quad_pdf
+        )
+        target = tuple(
+            (float(point[0]), float(point[1])) for point in character.target_quad
+        )
+        em_length = math.hypot(*x_axis)
+        target_advance = math.hypot(
+            target[1][0] - target[0][0], target[1][1] - target[0][1]
+        )
+        source_advance = math.hypot(
+            source[1][0] - source[0][0], source[1][1] - source[0][1]
+        )
+        source_height = math.hypot(
+            source[0][0] - source[3][0], source[0][1] - source[3][1]
+        )
+        units = float(font_program["head"].unitsPerEm)
+        installed_units = float(font_program["hmtx"][glyph_name][0])
+    except Exception as exc:
+        proof["reason"] = f"no measurable source advance: {type(exc).__name__}: {exc}"
+        return proof
+    if not (
+        all(
+            math.isfinite(value) and value > 0.0
+            for value in (em_length, target_advance, source_advance, source_height, units)
+        )
+        and math.isfinite(installed_units)
+    ):
+        proof["reason"] = "source advance or installed font metrics are degenerate"
+        return proof
+    observed = target_advance / em_length * 1000.0
+    installed = installed_units * 1000.0 / units
+    magnitude = max(abs(value) for point in source for value in point)
+    coordinate_budget = max(
+        1e-7, 4.0 * math.ldexp(1.0, math.frexp(magnitude)[1] - 24)
+    )
+    # Both ends of the advance and both ends of the em height carry the budget.
+    frame_budget = observed * 2.0 * coordinate_budget * (
+        1.0 / source_advance + 1.0 / source_height
+    )
+    tolerance = _INSTALLED_ADVANCE_TOLERANCE_PER_MILLE + frame_budget
+    proof.update(
+        {
+            "observed_advance_per_mille": observed,
+            "installed_advance_per_mille": installed,
+            "tolerance_per_mille": tolerance,
+            "verified": bool(
+                math.isfinite(tolerance) and abs(observed - installed) <= tolerance
+            ),
+        }
+    )
+    if not proof["verified"]:
+        proof["reason"] = "source advance does not match the installed glyph"
+    return proof
+
+
 def _positioned_source_glyph_names(
     layout: Sequence[TextCharLayout],
     resolution: _ExactFontResolution,
     *,
     empty_glyph_names: Optional[set] = None,
+    advance_proofs: Optional[List[Dict[str, Any]]] = None,
 ) -> List[str]:
-    """Bind every observed PDF glyph id to the exact outline font program."""
+    """Bind every source character to a glyph of the exact outline font program.
+
+    An embedded program is bound by the glyph id the PDF actually painted. An
+    installed face standing in for a program the PDF never embedded is bound
+    by the character's Unicode value plus the PDF's own advance for it.
+    """
 
     from fontTools.ttLib import TTFont
 
@@ -3677,14 +3867,37 @@ def _positioned_source_glyph_names(
                 raise ValueError(
                     "positioned fraction glyph program cannot be resolved"
                 ) from exc
-            if resolved_glyph_id != glyph_id:
+            # A numeric ID from MuPDF's substitute can coincidentally equal an
+            # installed glyph ID. It never replaces the PDF advance binding.
+            if resolution.resolution_source == "installed_exact_font" or resolved_glyph_id != glyph_id:
+                advance_proof = None
+                if resolution.resolution_source == "installed_exact_font":
+                    if character.text.isspace() and glyph_name in (empty_glyph_names or ()):
+                        # A blank installed space draws nothing wherever the
+                        # source put it; word spacing owns its advance.
+                        glyph_names.append(glyph_name)
+                        continue
+                    advance_proof = _installed_font_advance_proof(
+                        character, font_program, glyph_name
+                    )
+                    advance_proof["character_index"] = character_index
+                    if advance_proof["verified"]:
+                        if advance_proofs is not None:
+                            advance_proofs.append(advance_proof)
+                        glyph_names.append(glyph_name)
+                        continue
+                installed = resolution.resolution_source == "installed_exact_font"
                 failure = _RepresentationImpossible(
+                    "positioned fraction source advance does not verify the installed font"
+                    if installed else
                     "positioned fraction observed glyph id does not match the exact font"
                 )
                 if resolution.resolution_source == "installed_exact_font":
                     failure.installed_font_rejection = {
                         "schema": "bcs.installed_font_rejection/1",
-                        "reason": "source_glyph_id_mismatch",
+                        "reason": ("source_advance_mismatch" if advance_proof
+                                   and "observed_advance_per_mille" in advance_proof
+                                   else "source_advance_unavailable"),
                         "font_sha256": resolution.asset_sha256,
                         "source_xref": resolution.source_xref,
                         "source_page_number": resolution.source_page_number,
@@ -3693,6 +3906,7 @@ def _positioned_source_glyph_names(
                         "character": character.text,
                         "observed_glyph_id": glyph_id,
                         "resolved_glyph_id": resolved_glyph_id,
+                        "advance_width_proof": advance_proof,
                     }
                 raise failure
             glyph_names.append(glyph_name)
@@ -3812,8 +4026,10 @@ def _positioned_fraction_glyph_run(
         )
     font_identity = _positioned_font_identity(resolution)
     empty_glyph_names = set()
+    advance_proofs: List[Dict[str, Any]] = []
     glyph_names = _positioned_source_glyph_names(
         layout, resolution, empty_glyph_names=empty_glyph_names,
+        advance_proofs=advance_proofs,
     )
     design_paths = _missing_cap_reference_design_paths(
         resolution, font_identity, layout, glyph_names,
@@ -4012,6 +4228,25 @@ def _positioned_fraction_glyph_run(
         "source_character_affine_metrics": source_affine_metrics,
         "source_character_ink_fit_to_advance": False if source_affine_metrics else None,
     }
+    if advance_proofs:
+        # The PDF embeds no program for this font: its glyph ids are MuPDF's
+        # stand-in face's, so the installed face is bound by declared advance.
+        # (Not "positioned_*": that prefix is the exporter's closed receipt set.)
+        evidence.update(
+            {
+                "installed_font_glyph_binding": (
+                    "unicode_cmap_with_pdf_advance_proof"
+                ),
+                "installed_font_advance_proofs": advance_proofs,
+                "installed_font_advance_max_error_per_mille": max(
+                    abs(
+                        proof["observed_advance_per_mille"]
+                        - proof["installed_advance_per_mille"]
+                    )
+                    for proof in advance_proofs
+                ),
+            }
+        )
     return (
         _NestedGlyphRun(
             geometries=geometries,

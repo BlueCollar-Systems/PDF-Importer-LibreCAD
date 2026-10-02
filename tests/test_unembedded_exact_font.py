@@ -23,17 +23,22 @@ def empty_program_item():
 
 
 @pytest.mark.parametrize("mode", ["text", "labels", "3d_text", "glyphs", "geometry"])
-def test_exact_installed_face_is_attempted_before_item_raster(mode):
+def test_installed_face_without_source_frames_is_not_verified(
+        mode, deterministic_exact_font, monkeypatch):
     builder.reset_text_styles()
     item = empty_program_item()
+    resolution = builder._ExactFontResolution(
+        source_name=item.font_name, family=item.font_name, style="Regular", exact=True,
+        filename=str(deterministic_exact_font), resolution_source="installed_exact_font",
+        source_cap_height_ratio=.7,
+        asset_sha256=hashlib.sha256(deterministic_exact_font.read_bytes()).hexdigest())
+    monkeypatch.setattr(builder, "_resolve_exact_font", lambda _: resolution)
     doc = ezdxf.new("R2010")
     result = builder.build_text(item, doc.modelspace(), "TEXT", ImportConfig(text_mode=mode),
         target_app="librecad", dxf_version="R2010", return_delivery_result=True)
-    assert result.verified
-    expected = "geometry" if mode == "geometry" else "glyphs"
-    assert result.final_representation == expected
+    assert not result.verified
     assert not result.terminal_fallback_authorized
-    assert list(doc.modelspace())
+    assert not list(doc.modelspace())
     assert not any(e.dxftype() == "IMAGE" for e in doc.modelspace())
 
 
@@ -56,8 +61,13 @@ def mismatching_installed_candidate(deterministic_exact_font, monkeypatch):
     item.font_name = "Arial"
     item.font_failure = replace(empty_program_item().font_failure,
         page_number=item.page_number, span_font_name="Arial")
-    item.source_char_layout = (replace(item.source_char_layout[0], glyph_id=999),
-                               *item.source_char_layout[1:])
+    # Real source-frame metrics make this an observed advance mismatch, not
+    # an inference from an unrelated renderer glyph number. PDF advance500,
+    # installed synthetic font advance600, both in1/1000em.
+    layout = tuple(replace(char, source_font_size_pdf=1.0, source_font_ascender=.4,
+                           source_font_descender=-.4, source_writing_mode=0)
+                   for char in item.source_char_layout)
+    item.source_char_layout = (replace(layout[0], glyph_id=999), *layout[1:])
     resolution = builder._ExactFontResolution(
         source_name="Arial", family="Arial", style="Regular", exact=True,
         filename=str(deterministic_exact_font), resolution_source="installed_exact_font",
@@ -115,4 +125,18 @@ def test_candidate_read_failure_does_not_authorize_raster(mismatching_installed_
     result = deliver(item)
     assert not result.terminal_fallback_authorized
     assert any(attempt.outcome == "failed" for attempt in result.attempts), [(a.outcome, a.reason) for a in result.attempts]
+    assert all("installed_font_rejection" not in attempt.evidence for attempt in result.attempts)
+
+
+@pytest.mark.parametrize("mode", ["text", "labels", "3d_text", "glyphs", "geometry"])
+def test_unknown_advance_with_different_substitute_id_never_authorizes_raster(
+        mismatching_installed_candidate, mode):
+    item, _resolution = mismatching_installed_candidate
+    item.source_char_layout = tuple(replace(char, source_font_size_pdf=None,
+                                           source_font_ascender=None,
+                                           source_font_descender=None,
+                                           source_writing_mode=None)
+                                    for char in item.source_char_layout)
+    result = deliver(item, mode)
+    assert not result.verified and not result.terminal_fallback_authorized
     assert all("installed_font_rejection" not in attempt.evidence for attempt in result.attempts)
