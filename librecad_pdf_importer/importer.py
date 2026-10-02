@@ -281,6 +281,9 @@ def write_import_report(
         "clip_fill_delivery": clip_fill_delivery,
         "source_stroke_ink_delivery": list(getattr(run.config, "_source_capsule_deliveries", ()) or ()),
         "source_blend_display_delivery": list(getattr(run.config, "_nontext_composite_deliveries", ()) or ()),
+        # Source colours the exporter delivered as exact black (LibreCAD draws
+        # only exact black in its foreground colour), with counts per page.
+        "ink_color_delivery": list(getattr(run.config, "_ink_color_deliveries", ()) or ()),
         "source_stroke_ink_plan": extraction.summary().get("source_stroke_ink_plan"),
         "model_3d_intent": analyze_model3d_intent(
             text_items,

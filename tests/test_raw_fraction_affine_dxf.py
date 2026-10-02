@@ -307,6 +307,7 @@ def test_valid_id_space_cannot_hide_visible_or_multiple_engine_paths(tmp_path, m
     char = replace(item.source_char_layout[0], text=" ", glyph_id=glyph_id)
     from hashlib import sha256
     resolution = builder._ExactFontResolution(source_name="fixture", filename=str(font_path), exact=True,
+        resolution_source="embedded_pdf_font",
         asset_sha256=sha256(font_path.read_bytes()).hexdigest())
     empty = set()
     assert builder._positioned_source_glyph_names([char], resolution, empty_glyph_names=empty) == [name]
