@@ -36,7 +36,13 @@ from conversion_control import (
     ActivePageCancelled, ImportStopped, check_cancel, ensure_output_is_not_source,
 )
 from librecad_runtime import resolve_librecad_runtime_binding
-from librecad_pdf_importer.dxf_framing import finite_bounds, frame_modelspace, union_bounds
+from librecad_pdf_importer.dxf_framing import (
+    finite_bounds,
+    frame_modelspace,
+    sheet_bounds,
+    union_bounds,
+)
+from librecad_pdf_importer.ink_color import rule_identity as ink_rule_identity
 
 
 class ResumeMismatchError(RuntimeError):
@@ -133,6 +139,7 @@ def _resume_options_identity(
     searchable_text: bool = True,
 ) -> tuple[str, dict]:
     from pdf2dxf import __version__
+    from dxf_text_builder import installed_font_rule_identity
 
     librecad_binding = resolve_librecad_runtime_binding(librecad_executable)
     payload = {
@@ -140,6 +147,12 @@ def _resume_options_identity(
         "engine_sha256": _engine_sha256(),
         "dxf_version": str(dxf_version),
         "searchable_text": bool(searchable_text),
+        # A page checkpoint written under another ink rule is never resumed:
+        # the rule lives in the exporter, which the engine hash does not cover.
+        "ink_color_rule": ink_rule_identity(),
+        # Likewise the text builder's rule for a font the PDF does not embed:
+        # a page that was given raster patches under another rule is rebuilt.
+        "installed_font_rule": installed_font_rule_identity(),
         "librecad_runtime_binding": librecad_binding.identity_payload(),
         "config": asdict(config),
     }
@@ -218,15 +231,19 @@ def _assemble_checkpoints(checkpoints: list[Path], output_path: str) -> None:
             ),
             fast=False,
         )
-        # Page frames preserve whitespace and blank pages. Include every visible
-        # entity as well, while frozen search companions never size the drawing.
+        # The page exporter saves the sheet as the checkpoint's extents, which
+        # preserves whitespace and blank pages. Placement keeps every visible
+        # entity clear of the neighbouring pages (frozen search companions
+        # never size anything); what is framed is decided by sheet_bounds.
         source_msp = source.modelspace()
-        page_bounds = finite_bounds(source_msp.dxf.extmin, source_msp.dxf.extmax)
+        saved_extents = finite_bounds(source_msp.dxf.extmin, source_msp.dxf.extmax)
+        page_bounds = saved_extents
         if source_extents.has_data:
             page_bounds = union_bounds(page_bounds, finite_bounds(
                 source_extents.extmin, source_extents.extmax))
         if page_bounds is None:
             page_bounds = (0.0, 0.0, 1.0, 1.0)
+        framed_bounds = sheet_bounds(saved_extents, page_bounds)
         offset_y = 0.0 if next_top is None else next_top - page_bounds[3]
         load_modelspace(
             source,
@@ -240,11 +257,12 @@ def _assemble_checkpoints(checkpoints: list[Path], output_path: str) -> None:
                 transformer = getattr(entity, "transform", None)
                 if callable(transformer):
                     transformer(transform)
-        placed_bounds = (page_bounds[0], page_bounds[1] + offset_y,
-                         page_bounds[2], page_bounds[3] + offset_y)
-        drawing_bounds = union_bounds(drawing_bounds, placed_bounds)
+        drawing_bounds = union_bounds(drawing_bounds, (
+            framed_bounds[0], framed_bounds[1] + offset_y,
+            framed_bounds[2], framed_bounds[3] + offset_y,
+        ))
         height = max(1.0, page_bounds[3] - page_bounds[1])
-        next_top = placed_bounds[1] - height * 0.2
+        next_top = page_bounds[1] + offset_y - height * 0.2
 
     if "$INSUNITS" in sources[0].header:
         target.header["$INSUNITS"] = sources[0].header["$INSUNITS"]
