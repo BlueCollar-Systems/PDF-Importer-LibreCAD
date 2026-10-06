@@ -90,11 +90,11 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _parse_pages(raw: str | None) -> list[int] | None:
+def _parse_pages(raw: str | None, page_count: int | None = None) -> list[int] | None:
     """Parse ``--pages 1,3,5`` into a zero-indexed list."""
     from page_selection import parse_page_selection
 
-    return parse_page_selection(raw)
+    return parse_page_selection(raw, page_count)
 
 
 def _ensure_stdio_can_carry_paths() -> None:
@@ -173,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     # Open-time gate: reject encrypted/empty/non-PDF cleanly (no traceback).
     from pdf_open_guard import precheck_pdf, PdfOpenError
     try:
-        precheck_pdf(args.input)
+        page_count = precheck_pdf(args.input)
     except PdfOpenError as exc:
         from pdfcadcore.cli_error_copy import cli_error
 
@@ -201,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         config.import_text = bool(args.import_text)
     if args.pages:
         try:
-            config.pages = _parse_pages(args.pages)
+            config.pages = _parse_pages(args.pages, page_count)
         except ValueError as exc:
             print(f"Invalid --pages value: {exc}", file=sys.stderr)
             return 2

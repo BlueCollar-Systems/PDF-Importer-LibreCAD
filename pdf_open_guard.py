@@ -12,13 +12,13 @@ from __future__ import annotations
 from pdfcadcore.fitz_loader import PdfOpenError as PdfOpenError, safe_open
 
 
-def precheck_pdf(path: str) -> None:
+def precheck_pdf(path: str) -> int:
     """Raise :class:`PdfOpenError` with a clean reason if ``path`` cannot be
-    imported; return ``None`` when it looks importable. Opens briefly and
-    closes -- negligible overhead versus the full import."""
+    imported; return its page count when it looks importable. Opens briefly
+    and closes so callers can bound page ranges before allocating them."""
     doc = safe_open(path)
     try:
-        return None
+        return len(doc)
     finally:
         try:
             doc.close()

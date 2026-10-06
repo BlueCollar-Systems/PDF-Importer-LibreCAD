@@ -583,55 +583,22 @@ def _extract_page_keeping_the_rest(page, page_number: int, opts: ExtractionOptio
 
 
 def parse_pages_spec(spec: Optional[Iterable[int] | str], page_count: int) -> List[int]:
+    from page_selection import parse_page_selection, validate_page_indices
+
     if spec is None:
         return list(range(1, page_count + 1))
     if isinstance(spec, str):
-        s = spec.strip().lower()
-        if not s or s in {"1", "first"}:
+        value = spec.strip().lower()
+        if not value or value in {"1", "first"}:
             return [1]
-        if s in {"all", "*", "a"}:
+        if value in {"all", "*", "a"}:
             return list(range(1, page_count + 1))
-        pages: list[int] = []
-        for token in s.split(","):
-            token = token.strip()
-            if not token:
-                continue
-            if "-" in token:
-                left, right = token.split("-", 1)
-                try:
-                    a = int(left)
-                    b = int(right)
-                except ValueError:
-                    continue
-                if a > b:
-                    a, b = b, a
-                pages.extend(range(a, b + 1))
-                continue
-            try:
-                pages.append(int(token))
-            except ValueError:
-                continue
-        uniq = sorted({p for p in pages if 1 <= p <= page_count})
-        if not uniq:
-            raise ValueError(
-                f"The requested page selection is outside this {page_count}-page PDF."
-            )
-        return uniq
-    # ImportConfig.pages is the shared host contract and stores zero-based page
-    # indices.  The extractor loop below intentionally uses human/PDF one-based
-    # page numbers, so translate exactly once at this boundary.
-    out = sorted(
-        {
-            int(index) + 1
-            for index in spec
-            if 0 <= int(index) < page_count
-        }
-    )
-    if not out:
-        raise ValueError(
-            f"The requested page selection is outside this {page_count}-page PDF."
-        )
-    return out
+        indices = parse_page_selection(value, page_count)
+    else:
+        indices = validate_page_indices(spec, page_count)
+    # ImportConfig.pages stores zero-based indices; translate exactly once at
+    # the extraction boundary, after validating the complete request.
+    return [index + 1 for index in indices]
 
 
 def extract_document(
