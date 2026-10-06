@@ -141,6 +141,12 @@ needs the Qt 5.15.2 `msvc2019_64` kit and Visual Studio C++ build tools):
 python scripts\build_librecad_plugin.py --smoke --install
 ```
 
+Enter `All` or an ascending selection such as `1,3-5`. Page selections are
+checked against the PDF's page count before importing.
+A mixed request such as `1,99` for a three-page PDF stops with a clear error
+instead of exporting only page 1. GUI and CLI ranges are bounded before they
+are expanded, and invalid selections preserve any existing resume session.
+
 ## CLI Usage
 
 Basic conversion:

@@ -330,7 +330,12 @@ class Pdf2DxfApp(tk.Tk):
         if not math.isfinite(scale) or scale <= 0:
             raise ValueError("Scale must be a positive, finite number, such as 1.0 or 0.5.")
         raw_pages = self._var_pages.get().strip()
-        pages = parse_page_selection(raw_pages) if raw_pages else None
+        pages = None
+        if raw_pages:
+            from pdf_open_guard import precheck_pdf
+
+            page_count = precheck_pdf(self._var_input.get().strip())
+            pages = parse_page_selection(raw_pages, page_count)
         return ConversionOptions(
             scale=scale,
             import_text=self._var_import_text.get(),
@@ -357,9 +362,11 @@ class Pdf2DxfApp(tk.Tk):
             output_path = os.path.splitext(input_path)[0] + ".dxf"
             self._var_output.set(output_path)
 
+        from pdf_open_guard import PdfOpenError
+
         try:
             options = self._capture_options()
-        except ValueError as exc:
+        except (ValueError, PdfOpenError) as exc:
             messagebox.showwarning("Check conversion settings", str(exc))
             return
 

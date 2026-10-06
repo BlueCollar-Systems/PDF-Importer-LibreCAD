@@ -83,7 +83,12 @@ def _app_without_window(tmp_path):
         "_var_text_mode": next(iter(gui.TEXT_MODES)), "_var_pages": "",
         "_var_dxf_ver": "R2010", "_var_launch_librecad": False,
     }
-    (tmp_path / "drawing.pdf").write_bytes(b"test input; precheck mocked")
+    import pymupdf
+
+    with pymupdf.open() as document:
+        for _ in range(5):
+            document.new_page()
+        document.save(tmp_path / "drawing.pdf")
     app = SimpleNamespace(
         **{key: Mock(get=Mock(return_value=value)) for key, value in values.items()},
         _converting=False, _cancel_event=gui.threading.Event(),
@@ -110,7 +115,7 @@ def test_invalid_scale_never_dispatches_or_clears_the_log(tmp_path, scale):
     assert not app._converting and not app._cancel_event.is_set()
 
 
-@pytest.mark.parametrize("pages", ["0", "5-2", "1,,3", "all"])
+@pytest.mark.parametrize("pages", ["0", "5-2", "1,,3", "1,6", "1-1000000000"])
 def test_invalid_pages_are_rejected_before_dispatch(tmp_path, pages):
     app = _app_without_window(tmp_path)
     app._var_pages.get.return_value = pages
@@ -170,3 +175,9 @@ def test_capture_preserves_text_off_all_pages_and_launch_choice(tmp_path):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+def test_gui_accepts_all_as_written_in_the_validation_message(tmp_path):
+    app = _app_without_window(tmp_path)
+    app._var_pages.get.return_value = " All "
+    assert app._capture_options().pages is None

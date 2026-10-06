@@ -148,16 +148,15 @@ def _resume_options_identity(
 
 
 def _selected_page_indices(input_path: str, config: ImportConfig) -> list[int]:
-    configured = getattr(config, "pages", None)
-    if configured is not None:
-        pages = sorted({int(page) for page in configured if int(page) >= 0})
-        if not pages:
-            raise ValueError("No valid pages were selected.")
-        return pages
     from pdfcadcore.fitz_loader import safe_open
+    from page_selection import validate_page_indices
 
     with safe_open(input_path) as document:
-        return list(range(len(document)))
+        page_count = len(document)
+    configured = getattr(config, "pages", None)
+    if configured is None:
+        return list(range(page_count))
+    return validate_page_indices(configured, page_count)
 
 
 def _assemble_checkpoints(checkpoints: list[Path], output_path: str) -> None:

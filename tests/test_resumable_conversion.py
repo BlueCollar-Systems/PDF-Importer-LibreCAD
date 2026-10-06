@@ -14,6 +14,15 @@ from conversion_control import ActivePageCancelled
 from pdfcadcore.import_config import ImportConfig
 
 
+def _write_source_pdf(path: Path) -> None:
+    import pymupdf
+
+    with pymupdf.open() as document:
+        for _ in range(3):
+            document.new_page()
+        document.save(path)
+
+
 def test_packaged_module_list_includes_resume_control() -> None:
     metadata = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
         encoding="utf-8"
@@ -144,7 +153,7 @@ def test_resumable_conversion_checkpoints_and_skips_certified_pages(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "three-pages.pdf"
-    source.write_bytes(b"%PDF synthetic identity")
+    _write_source_pdf(source)
     output = tmp_path / "assembled.dxf"
     config = ImportConfig.auto()
     config.pages = [0, 1, 2]
@@ -173,7 +182,7 @@ def test_cancel_keeps_certified_pages_and_resume_finishes_remaining_work(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "three-pages.pdf"
-    source.write_bytes(b"%PDF synthetic identity")
+    _write_source_pdf(source)
     output = tmp_path / "assembled.dxf"
     config = ImportConfig.auto()
     config.pages = [0, 1, 2]
@@ -212,7 +221,7 @@ def test_resume_rejects_changed_options_without_destroying_certified_work(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "one-page.pdf"
-    source.write_bytes(b"%PDF synthetic identity")
+    _write_source_pdf(source)
     output = tmp_path / "assembled.dxf"
     config = ImportConfig.auto()
     config.pages = [0]
@@ -237,7 +246,7 @@ def test_corrupt_checkpoint_is_never_treated_as_completed_work(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "one-page.pdf"
-    source.write_bytes(b"%PDF synthetic identity")
+    _write_source_pdf(source)
     output = tmp_path / "assembled.dxf"
     config = ImportConfig.auto()
     config.pages = [0]
@@ -258,7 +267,7 @@ def test_explicit_restart_replaces_only_the_generated_resume_session(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "one-page.pdf"
-    source.write_bytes(b"%PDF synthetic identity")
+    _write_source_pdf(source)
     output = tmp_path / "assembled.dxf"
     unrelated = tmp_path / "keep-me.txt"
     unrelated.write_text("owner data", encoding="utf-8")
@@ -289,7 +298,7 @@ def test_active_page_cancel_rolls_back_only_that_checkpoint(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "two-pages.pdf"
-    source.write_bytes(b"%PDF synthetic identity")
+    _write_source_pdf(source)
     output = tmp_path / "assembled.dxf"
     config = ImportConfig.auto()
     config.pages = [0, 1]
@@ -328,7 +337,7 @@ def test_completed_resume_reuses_the_verified_assembled_output(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "two-pages.pdf"
-    source.write_bytes(b"%PDF synthetic identity")
+    _write_source_pdf(source)
     output = tmp_path / "assembled.dxf"
     config = ImportConfig.auto()
     config.pages = [0, 1]
@@ -355,7 +364,7 @@ def test_missing_external_image_invalidates_certified_page_and_assembled_output(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "one-page.pdf"
-    source.write_bytes(b"%PDF synthetic identity")
+    _write_source_pdf(source)
     output = tmp_path / "assembled.dxf"
     config = ImportConfig.auto()
     config.pages = [0]
