@@ -690,6 +690,8 @@ def _page_program_glyph_maps(page, source_text=None):
     mappings, ambiguous = {}, set()
     for key, chars in characters.items():
         glyphs = occurrences.get(key, ())
+        if len(chars) == 1 and len(glyphs) > 1 and len(set(glyphs)) == 1:
+            glyphs = (glyphs[0],)
         native_synthetic = []
         if key[1] == 32:
             for _, char in chars:
