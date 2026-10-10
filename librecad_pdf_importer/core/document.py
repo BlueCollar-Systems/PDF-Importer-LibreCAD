@@ -1254,7 +1254,7 @@ def _frame_page_unextracted_ink_ratio(page, page_data: PageData, opts) -> float:
         ink = _FRAME_PAGE_INK_LEVEL
         bare = sum(
             1
-            for page_value, cover_value in zip(source.samples, cover.samples)
+            for page_value, cover_value in zip(source.samples, cover.samples, strict=True)
             if page_value < ink and cover_value == 255
         )
         return bare / float(max(1, source.width * source.height))

@@ -371,9 +371,10 @@ does not prove visible/editable 3D text in LibreCAD's 2D parent.
   adds `extra.editable_text` (`chosen`, `item_count`). A word with a character
   LibreCAD's font lacks steps down to exact outlines for that item only and is
   listed. The font comes from your LibreCAD installation; when no LibreCAD is
-  found, every word comes in as outlines and the report says why. The command line offers the same choice as `pdf2dxf.py --editable-text`
-  (with `--text-mode text`, the default, or `labels`). Pages made under one
-  choice are never resumed under the other.
+  found, every word comes in as outlines and the report says why. The command
+  line offers the same choice as `pdf2dxf.py --editable-text` (with
+  `--text-mode text`, the default, or `labels`). Pages made under one choice
+  are never resumed under the other.
 
 **The strings are still in the file: searchable text** (owner decision
 2026-09-19). Every span that ends as Glyphs, Geometry, or a Raster patch, and
@@ -431,7 +432,7 @@ itself: a text search of the file finds every string. In a CAD host, thaw
 | Option | GUI | Verified DXF representation |
 |--------|-----|-----------------------------|
 | **text** | ✅ Exact look (default); Editable text | The native DXF `TEXT` candidate is built and checked (source text or an explicitly reported Unicode compatibility normalization, placement, cap height, rotation, source identity, `unicode` LFF binding, source-width FIT alignment), but LibreCAD's substituted LFF font does not reproduce the source glyphs, so a visible span is never certified as Text: it is delivered as verified Glyphs and reported as that fallback. Only a whitespace-only span ends as native `TEXT`. The exact string is on the frozen `P###_TEXT_SEARCH` layer. With **Editable text** (`--editable-text`) a visible span ends as that native `TEXT` in LibreCAD's font instead, disclosed as substituted. |
-| **labels** | ✅ Labels | DXF exposes no native Label entity. The item-scoped Labels attempt fails loudly without creating a wrong-type alias, the Text rung then refuses the substituted LFF font as above, and the span is delivered as verified Glyphs and reported. The exact string is on the frozen `P###_TEXT_SEARCH` layer. |
+| **labels** | ✅ Labels | DXF exposes no native Label entity. The item-scoped Labels attempt fails loudly without creating a wrong-type alias, the Text rung then refuses the substituted LFF font as above, and the span is delivered as verified Glyphs and reported. The exact string is on the frozen `P###_TEXT_SEARCH` layer. With `--editable-text` the Text rung accepts LibreCAD's font, as for **text**. |
 | **3d_text** | ✅ 3D Text | Attempts DXF `TEXT` with positive thickness and +Z extrusion first. Success additionally requires the parent to verify it as visible/editable 3D text. LibreCAD is 2D, so the exact failed item advances to the flat Text rung, which refuses the substituted LFF font as above, and is delivered as verified Glyphs with that transition reported. The exact string is on the frozen `P###_TEXT_SEARCH` layer. |
 | **glyphs** | ✅ Glyphs | One grouped DXF `INSERT` per source text span with outline entities in its owned block definition. This remains structurally distinct from raw Geometry. |
 | **geometry** | ✅ Geometry | Raw modelspace `LWPOLYLINE`/`POLYLINE` glyph edges. No `TEXT`, `MTEXT`, or `INSERT` is accepted as Geometry. |
