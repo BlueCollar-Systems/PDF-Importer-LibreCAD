@@ -739,13 +739,20 @@ def _extract_document_impl(
                     # content. The page goes to a picture only on evidence that
                     # the extractor missed ink (a cheap coarse render shows
                     # ink no delivered line, text or picture accounts for).
-                    missed_ink = _frame_page_unextracted_ink_ratio(page, page_data, opts)
-                    if missed_ink > FRAME_PAGE_MISSED_INK_RATIO:
+                    if _page_paints_smooth_shading(page):
+                        # A smooth shading is not delivered as lines yet, and a
+                        # vector page holding one cannot be written today: keep
+                        # the picture route such a page always had.
                         effective_mode = "raster"
-                        resolved_reason = (
-                            "Page frame with unextracted ink "
-                            f"({missed_ink:.1%} of the page) -- fallback to raster"
-                        )
+                        resolved_reason = "Page frame with a smooth shading -- fallback to raster"
+                    else:
+                        missed_ink = _frame_page_unextracted_ink_ratio(page, page_data, opts)
+                        if missed_ink > FRAME_PAGE_MISSED_INK_RATIO:
+                            effective_mode = "raster"
+                            resolved_reason = (
+                                "Page frame with unextracted ink "
+                                f"({missed_ink:.1%} of the page) -- fallback to raster"
+                            )
                 if effective_mode == "raster":
                     if _has_viable_vector_content(page_data):
                         retained_content = (list(page_data.primitives), list(page_data.text_items))
@@ -1177,6 +1184,19 @@ FRAME_PAGE_MISSED_INK_RATIO = 0.005
 _FRAME_PAGE_PROBE_DPI = 36
 _FRAME_PAGE_INK_LEVEL = 200      # 8-bit grey below this is ink
 _FRAME_PAGE_COVER_PT = 4.0       # dilation around delivered content, in points
+
+
+def _page_paints_smooth_shading(page) -> bool:
+    """True when the page paints a smooth shading (PDF ``sh``) anywhere.
+
+    If the paint log cannot be read, answer True: that keeps the previous
+    picture route for a frame page.
+    """
+
+    try:
+        return any(row[0] == "fill-shade" for row in page.get_bboxlog())
+    except Exception:  # noqa: BLE001 - no evidence: keep the previous picture route
+        return True
 
 
 def _frame_page_unextracted_ink_ratio(page, page_data: PageData, opts) -> float:
