@@ -37,8 +37,14 @@ IMPORT_MODE_AUTO = "auto"
 # Every requested representation is available in both GUI and CLI. Each item
 # tries that type first; only item-specific, reported impossibility can advance
 # it to the nearest verified visual representation.
+#
+# "Exact look" (the default) draws every word as exact outlines. "Editable
+# text" asks for the same text rung but accepts LibreCAD's own font, so words
+# arrive as TEXT you can edit; it is told apart by its label, not its mode.
+EDITABLE_TEXT_LABEL = "Editable text (LibreCAD font)"
 TEXT_MODES = {
-    "Text (may become outlines)": "text",
+    "Exact look - text as outlines (default)": "text",
+    EDITABLE_TEXT_LABEL: "text",
     "Labels (fallback reported)": "labels",
     "3D Text (LibreCAD is 2D)": "3d_text",
     "Glyphs (grouped outlines)": "glyphs",
@@ -70,6 +76,8 @@ class ConversionOptions:
     launch_librecad: bool
     # The LibreCAD.exe picked with "Locate LibreCAD..." (None: normal lookup).
     librecad_executable: str | None = None
+    # "Editable text (LibreCAD font)": words as editable TEXT in LibreCAD's font.
+    editable_text: bool = False
 
 
 def window_title(handoff: bool, version: str = "", is_dev: bool = False) -> str:
@@ -257,8 +265,11 @@ class Pdf2DxfApp(tk.Tk):
         text_help = ttk.Label(
             frame,
             text=(
-                "Visible Text normally becomes verified outlines because LibreCAD "
-                "substitutes PDF fonts. Labels and 3D Text also have 2D host limits. "
+                "Exact look draws every word as exact outlines; an editable copy is "
+                "kept on the hidden layer ...TEXT_SEARCH. Editable text gives words "
+                "you can edit, drawn in LibreCAD's own font (letter shapes differ "
+                "from the PDF). Characters LibreCAD's font lacks still come in as "
+                "outlines and are listed. "
                 "Any fallback or unverified item is listed in the log and report."
             ),
             wraplength=620,
@@ -451,6 +462,7 @@ class Pdf2DxfApp(tk.Tk):
             librecad_executable=preferred_librecad_executable(
                 getattr(self, "_librecad_choice", None)
             ),
+            editable_text=self._var_text_mode.get() == EDITABLE_TEXT_LABEL,
         )
 
     def _start_conversion(self) -> None:
@@ -530,9 +542,14 @@ class Pdf2DxfApp(tk.Tk):
             t0 = time.perf_counter()
             self._log(f"Starting conversion: {os.path.basename(input_path)}")
             self._log("Import mode: Auto (per-page strategy)")
+            editable_text = bool(options.editable_text and options.import_text)
+            text_setting = (
+                "off"
+                if not options.import_text
+                else ("editable (LibreCAD font)" if editable_text else options.text_mode)
+            )
             self._log(
-                f"Settings: scale={options.scale:g}; text="
-                f"{options.text_mode if options.import_text else 'off'}; DXF={dxf_version}"
+                f"Settings: scale={options.scale:g}; text={text_setting}; DXF={dxf_version}"
             )
             selection = (
                 f"{len(config.pages)} selected page(s)"
@@ -567,6 +584,7 @@ class Pdf2DxfApp(tk.Tk):
                 cancel_requested=self._cancel_event.is_set,
                 restart_on_resume_mismatch=True,
                 librecad_executable=resolved_librecad_executable,
+                editable_text=editable_text,
             )
 
             elapsed = time.perf_counter() - t0
@@ -588,6 +606,14 @@ class Pdf2DxfApp(tk.Tk):
                     items=text_delivery.get("item_count", 0),
                 )
             )
+            if editable_text:
+                editable_count = int(text_delivery.get("editable_text_item_count") or 0)
+                self._log(
+                    f"  Editable text: {editable_count} of "
+                    f"{int(text_delivery.get('item_count') or 0)} text item(s) came in "
+                    "as editable text in LibreCAD's font; the report says how each "
+                    "other one came in and why."
+                )
             self._log(
                 f"  Complete report: {text_delivery.get('report_path', '')}"
             )
@@ -602,6 +628,10 @@ class Pdf2DxfApp(tk.Tk):
             clip_fill_warning = str(stats.get("clip_fill_warning") or "")
             if clip_fill_warning:
                 self._log(clip_fill_warning)
+            # DXF R12 cannot hold pictures: they were left out, never the sheet.
+            r12_picture_warning = str(stats.get("r12_picture_warning") or "")
+            if r12_picture_warning:
+                self._log(r12_picture_warning)
             # Text a font delivered as raw glyph codes: recovered characters
             # came from an installed reference face, not from the PDF, and an
             # unproven span is still on the drawing as raw codes. Either way
@@ -670,6 +700,7 @@ class Pdf2DxfApp(tk.Tk):
                  f"Output: {output_path}"
                 + (f"\n\n{scale_line}" if scale_line else "")
                 + (f"\n\n{clip_fill_warning}" if clip_fill_warning else "")
+                + (f"\n\n{r12_picture_warning}" if r12_picture_warning else "")
                 + (f"\n\n{glyph_code_warning}" if glyph_code_warning else "")
                 + (f"\n\n{search_text_warning}" if search_text_warning else "")
                 + (f"\n\n{launch_message}" if launch_message else ""),

@@ -333,6 +333,21 @@ def write_import_report(
         if raster_delivery_failure is not None
         else None
     ) or next((p.resolved_reason for p in raster_fallback_pages), None)
+    # DXF R12 cannot hold pictures. Each one was left out (its outline drawn on
+    # P###_PICTURES_OMITTED_R12) instead of losing the whole file: a step-down,
+    # so it is a fallback, a warning, and named in the human summary.
+    r12_pictures_omitted = [
+        dict(row) for row in getattr(run.config, "_r12_pictures_omitted", ()) or ()
+    ]
+    r12_picture_count = sum(int(row.get("pictures") or 0) for row in r12_pictures_omitted)
+    if r12_picture_count:
+        from .exporters.dxf_exporter import r12_picture_warning_line
+
+        fallback_used = True
+        r12_reason = "pictures_omitted_r12: " + r12_picture_warning_line(
+            r12_pictures_omitted
+        )
+        fallback_reason = f"{fallback_reason}; {r12_reason}" if fallback_reason else r12_reason
 
     from pdfcadcore.fitz_loader import sample_process_mb
 
@@ -361,6 +376,9 @@ def write_import_report(
         "clip_fill_delivery": clip_fill_delivery,
         "source_stroke_ink_delivery": list(getattr(run.config, "_source_capsule_deliveries", ()) or ()),
         "source_blend_display_delivery": list(getattr(run.config, "_nontext_composite_deliveries", ()) or ()),
+        # Source colours the exporter delivered as exact black (LibreCAD draws
+        # only exact black in its foreground colour), with counts per page.
+        "ink_color_delivery": list(getattr(run.config, "_ink_color_deliveries", ()) or ()),
         "source_stroke_ink_plan": extraction.summary().get("source_stroke_ink_plan"),
         "model_3d_intent": analyze_model3d_intent(
             text_items,
@@ -519,6 +537,23 @@ def write_import_report(
     extra["text_items_degraded_total"] = degraded_text["total"]
     extra["text_items_degraded_truncated"] = degraded_text["truncated"]
     extra["searchable_text_companions"] = search_text
+    if r12_picture_count:
+        extra["pictures_omitted_r12"] = r12_pictures_omitted
+    if getattr(run.config, "_librecad_editable_text", False):
+        # The operator chose "Editable text (LibreCAD font)": say how many
+        # words came in editable and that their letter shapes are LibreCAD's.
+        from .exporters.dxf_exporter import editable_text_item_count
+
+        extra["editable_text"] = {
+            "chosen": True,
+            "item_count": editable_text_item_count(text_representation_deliveries),
+            "font": "LibreCAD unicode",
+            "note": (
+                "Words were delivered as editable text in LibreCAD's own font, so "
+                "letter shapes differ from the PDF. Characters that font lacks came "
+                "in as outlines and are listed per item."
+            ),
+        }
     if glyph_code_delivery["spans_examined"]:
         extra["text_glyph_codes"] = glyph_code_delivery
     if terminal_failure:
@@ -559,6 +594,7 @@ def write_import_report(
             + text_degrade_warnings
             + search_text_warnings
             + glyph_code_warnings
+            + r12_picture_count
         ),
         extra=extra,
     )

@@ -401,3 +401,132 @@ def test_plain_lwpolyline_bbox_matches_ezdxf_on_random_plain_polylines() -> None
         if rng.getrandbits(1):
             ents.append(msp.add_lwpolyline([(rng.uniform(-9, 9), rng.uniform(-9, 9)) for _ in range(3)]))
         assert _plain_lwpolyline_bbox(ents) == _ezdxf_bbox_tuple(ents)
+
+
+# ---- SOLID-only glyph definitions: the fast exact bbox -----------------------
+
+def _fill_only_glyph_doc(tmp_path, deterministic_exact_font):
+    """A real glyph delivery whose definitions are SOLID fills only.
+
+    The PDF paints its glyphs filled (not stroked), so the exporter's source
+    fill receipt lets the builder omit contour wires, as for any such PDF.
+    """
+    import pymupdf
+
+    from librecad_pdf_importer.importer import run_import
+
+    source = tmp_path / "fill_only.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=200, height=100)
+        page.insert_text((20, 50), "EX101", fontsize=20, fontname="BCFixture",
+                         fontfile=str(deterministic_exact_font))
+        pdf.save(source)
+    run = run_import(str(source), mode="vector", overrides={"text_mode": "glyphs"})
+    output = tmp_path / "fill_only.dxf"
+    try:
+        result = export_to_dxf(
+            run.extraction, str(output), DxfExportOptions(text_mode="glyphs")
+        )
+    finally:
+        run.close()
+    assert [d["final_representation"] for d in result.text_deliveries] == ["glyphs"]
+    evidence = result.text_deliveries[0]["attempts"][-1]["evidence"]
+    assert evidence["source_fill_contours_omitted"], "expected a source fill receipt"
+    doc = ezdxf.readfile(output)
+    msp = doc.modelspace()
+    insert = next(
+        e for e in msp
+        if e.dxftype() == "INSERT" and not doc.layers.get(e.dxf.layer).is_frozen()
+    )
+    leaves = list(recursive_decompose([insert]))
+    assert leaves and all(e.dxftype() == "SOLID" for e in leaves)
+    return doc, msp, insert
+
+
+def _ezdxf_bbox_tuple(entities):
+    from ezdxf import bbox as ezdxf_bbox
+
+    box = ezdxf_bbox.extents(entities)
+    if not box.has_data:
+        return None
+    return (float(box.extmin.x), float(box.extmin.y), float(box.extmax.x), float(box.extmax.y))
+
+
+def test_solid_only_glyph_bbox_is_bit_identical_to_ezdxf(tmp_path, deterministic_exact_font):
+    from dxf_text_builder import _plain_solid_bbox
+
+    doc, msp, delivered = _fill_only_glyph_doc(tmp_path, deterministic_exact_font)
+    outer = delivered.dxf.name
+    inserts = [delivered] + [
+        msp.add_blockref(outer, (31.5, -7.25), dxfattribs={"rotation": angle, "xscale": 1.7,
+                                                           "yscale": 1.7})
+        for angle in (0.0, 33.0, 90.0)
+    ]
+    for insert in inserts:
+        entities = list(iter_glyph_outline_entities(insert))
+        assert entities and all(e.dxftype() == "SOLID" for e in entities)
+        expected = _ezdxf_bbox_tuple(entities)
+        assert expected is not None
+        assert _plain_solid_bbox(entities) == expected   # exact, not approx
+        assert _bbox_tuple(entities) == expected
+
+    mirrored = msp.add_blockref(outer, (5.0, 5.0), dxfattribs={"xscale": -1.0, "yscale": 1.0})
+    entities = list(iter_glyph_outline_entities(mirrored))
+    assert entities and any(
+        tuple(e.dxf.extrusion) != (0.0, 0.0, 1.0) for e in entities
+    ), "a mirrored glyph is expected to flip the SOLID extrusion"
+    assert _plain_solid_bbox(entities) is None
+    assert _bbox_tuple(entities) == _ezdxf_bbox_tuple(entities)
+
+
+def _solid(msp, *, extrusion=(0.0, 0.0, 1.0), thickness=0.0, nan=False):
+    first = (float("nan"), 0.0) if nan else (0.0, 0.0)
+    solid = msp.add_solid([first, (2.0, 0.0), (0.0, 1.0), (2.0, 1.0)])
+    solid.dxf.extrusion = extrusion
+    if thickness:
+        solid.dxf.thickness = thickness
+    return solid
+
+
+@pytest.mark.parametrize(
+    "case", ["non_z_extrusion", "mixed_solid_and_line", "empty", "nan_vertex", "thickness"]
+)
+def test_solid_fast_path_falls_back_to_ezdxf_outside_its_shape(case):
+    from dxf_text_builder import _plain_solid_bbox
+
+    doc = ezdxf.new("R2010")
+    msp = doc.modelspace()
+    if case == "non_z_extrusion":
+        entities = [_solid(msp), _solid(msp, extrusion=(0.0, 0.0, -1.0))]
+    elif case == "mixed_solid_and_line":
+        entities = [_solid(msp), msp.add_line((0, 0), (5, 5))]
+    elif case == "empty":
+        entities = []
+    elif case == "nan_vertex":
+        entities = [_solid(msp, nan=True)]
+    else:
+        entities = [_solid(msp, thickness=2.5)]
+    assert _plain_solid_bbox(entities) is None
+    if case != "nan_vertex":
+        assert _bbox_tuple(entities) == _ezdxf_bbox_tuple(entities)
+
+
+def test_solid_fast_path_matches_ezdxf_on_triangles_and_degenerate_fills():
+    from dxf_text_builder import _plain_solid_bbox
+
+    doc = ezdxf.new("R2010")
+    msp = doc.modelspace()
+    entities = [
+        msp.add_solid([(0.1, 0.2), (3.3, 0.2), (1.7, 2.9)]),             # triangle
+        msp.add_solid([(5.0, 5.0), (5.0, 5.0), (5.0, 5.0), (5.0, 5.0)]),  # one point
+        msp.add_solid([(-1.0, 4.0), (0.5, 4.0), (-1.0, 6.25), (0.5, 6.25)]),
+        # A vertex within ezdxf's closeness tolerance of the previous one is
+        # skipped by ezdxf; it must be skipped here too, not widen the box.
+        # (SOLID order is 0, 1, 3, 2, so vtx2 comes last and is the one skipped.)
+        msp.add_solid([(7.0, 1.0), (7.5, 1.0), (7.5 + 5e-13, 2.0), (7.5, 2.0)]),
+    ]
+    assert _plain_solid_bbox(entities) == _ezdxf_bbox_tuple(entities)
+    assert _plain_solid_bbox(entities)[2] == 7.5
+    # ezdxf still counts a fill whose vertices all coincide as that one point.
+    lone_point = [msp.add_solid([(9.0, 9.0), (9.0, 9.0), (9.0, 9.0)])]
+    assert _plain_solid_bbox(lone_point) == _ezdxf_bbox_tuple(lone_point) == (9.0, 9.0, 9.0, 9.0)
