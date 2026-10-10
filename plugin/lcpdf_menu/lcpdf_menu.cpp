@@ -144,17 +144,8 @@ QStringList candidateScripts() {
         << QDir::cleanPath(appDir + "/../LibreCAD-PDF-Importer/launch_lcpdf_gui.pyw")
         << QDir::cleanPath(appDir + "/../LibreCAD-PDF-Importer/gui.py");
 
-    candidates
-        << QDir::cleanPath(appDir + "/../1PDF-Importer-LibreCAD/launch_lcpdf_gui.pyw")
-        << QDir::cleanPath(appDir + "/../1PDF-Importer-LibreCAD/gui.py");
-
-    const QString repoFolder = QStringLiteral("1PDF-Importer-LibreCAD");
-    for (const QFileInfo &drive : QDir::drives()) {
-        const QString root = drive.absoluteFilePath();
-        candidates
-            << QDir::cleanPath(root + repoFolder + "/launch_lcpdf_gui.pyw")
-            << QDir::cleanPath(root + repoFolder + "/gui.py");
-    }
+    // No search for developer checkouts: the menu must never start a folder
+    // someone is editing. Developers point it there with BC_LC_IMPORTER_SCRIPT.
 
     const QString home = QDir::homePath();
     candidates
@@ -408,8 +399,8 @@ HandoffResult waitForHandoff(QWidget *parent, const QString &handoffPath, qint64
     QProgressDialog progress(parent);
     progress.setWindowTitle(QObject::tr("BlueCollar PDF Importer"));
     progress.setLabelText(QObject::tr(
-        "The BlueCollar PDF Importer window is open.\n\n"
-        "Choose the PDF, text mode and options there, then press Convert.\n"
+        "The BlueCollar PDF Importer is starting (the first start can take several seconds)...\n\n"
+        "Choose the PDF, text mode and options in its window, then press Convert.\n"
         "When the conversion finishes, the DXF opens here in LibreCAD."));
     progress.setCancelButtonText(QObject::tr("Stop Waiting"));
     progress.setRange(0, 0);

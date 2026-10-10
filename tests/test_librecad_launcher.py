@@ -92,6 +92,11 @@ def test_ensure_librecad_menu_plugin(
     monkeypatch.setattr(installer, "documents_directory", lambda: documents)
     monkeypatch.setattr(installer, "librecad_legacy_plugin_directories", lambda: [legacy])
     monkeypatch.setattr(installer, "plugin_settings_ini", lambda: ini_file)
+    # Never touch the real LibreCAD program folder from a test.
+    monkeypatch.setattr(
+        installer, "librecad_program_plugin_directories",
+        lambda: [tmp_path / "program" / "plugins"],
+    )
 
     # Leftovers from the earlier two-name / three-folder installer.
     plugins = documents / "LibreCAD" / "plugins"

@@ -111,6 +111,7 @@ def ensure_librecad_menu_plugin(
     """
     from librecad_pdf_importer.librecad_plugin_install import (
         PluginInstallError,
+        blocked_stale_message,
         install_librecad_plugin,
     )
 
@@ -118,7 +119,9 @@ def ensure_librecad_menu_plugin(
         result = install_librecad_plugin(plugin_dll_path, launcher_path=script_or_exe_path)
     except PluginInstallError as exc:
         return False, str(exc)
+    blocked = blocked_stale_message(result.blocked_stale)
     return True, (
         f"LibreCAD menu plugin installed: {result.dll_path} "
         f"(starts {result.launcher_path})."
+        + (f"\n{blocked}" if blocked else "")
     )

@@ -31,17 +31,26 @@ from librecad_pdf_importer.librecad_plugin_install import (  # noqa: E402
 )
 
 PLUGIN_CPP = REPO_ROOT / "plugin" / "lcpdf_menu" / "lcpdf_menu.cpp"
+BUILD_INSTALL_PS1 = REPO_ROOT / "plugin" / "build_install_lcpdf_menu.ps1"
+_REAL_PROGRAM_PLUGIN_DIRECTORIES = librecad_plugin_install.librecad_program_plugin_directories
 
 
 @pytest.fixture(autouse=True)
 def _isolate_user_folders(tmp_path, monkeypatch):
-    """Never touch the real Documents, ~/.librecad or %APPDATA% from tests."""
+    """Never touch the real Documents, ~/.librecad, %APPDATA% or Program Files from tests."""
     monkeypatch.setattr(librecad_plugin_install, "documents_directory",
                         lambda: tmp_path / "iso-documents")
     monkeypatch.setattr(librecad_plugin_install, "librecad_legacy_plugin_directories",
                         lambda: [tmp_path / "iso-home" / ".librecad" / "plugins"])
     monkeypatch.setattr(librecad_plugin_install, "plugin_settings_ini",
                         lambda: tmp_path / "iso-appdata" / "LibreCAD" / "bc_pdf_importer_plugin.ini")
+    monkeypatch.setattr(librecad_plugin_install, "librecad_program_plugin_directories",
+                        lambda: _iso_program_dirs(tmp_path))
+
+
+def _iso_program_dirs(tmp_path):
+    root = tmp_path / "iso-program-files" / "LibreCAD"
+    return [root / "plugins", root / "resources" / "plugins"]
 PLUGIN_SDK = REPO_ROOT / "plugin" / "sdk"
 
 
@@ -109,6 +118,20 @@ def test_plugin_source_matches_python_contract():
     # Same code path as File > Open inside LibreCAD.
     assert '"slotFileOpen(QString)"' in source
     assert "Qt::QueuedConnection" in source
+    # The menu never goes looking for a developer checkout on any drive;
+    # developers point it there with BC_LC_IMPORTER_SCRIPT.
+    assert "1PDF-Importer-LibreCAD" not in source
+    assert "QDir::drives" not in source
+    assert "BC_LC_IMPORTER_SCRIPT" in source
+    # The portable program can take several seconds to start.
+    assert "the first start can take several seconds" in source
+
+
+def test_build_install_script_never_copies_into_program_files():
+    script = BUILD_INSTALL_PS1.read_text(encoding="utf-8")
+    assert "Program Files" not in script
+    assert "Copy-Item" not in script
+    assert "build_librecad_plugin.py" in script and "--install" in script
 
 
 def test_vendored_sdk_headers_are_librecad_2_2_1_interfaces():
@@ -177,6 +200,178 @@ def test_install_removes_duplicate_copies_and_a_stale_pin(tmp_path):
     assert list(legacy.iterdir()) == []
     assert len(result.removed_stale) == 3 and result.cleared_pin
     assert ini.read_text(encoding="utf-8") == "[General]\nkeep=1\n"
+
+
+def _old_program_folder_copies(tmp_path):
+    copies = []
+    for folder in _iso_program_dirs(tmp_path):
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "align1.dll").write_bytes(b"stock LibreCAD plugin")
+        for name in (PLUGIN_DLL_NAME, "bc_lcpdf_menu1.dll"):
+            (folder / name).write_bytes(b"old")
+            copies.append(folder / name)
+    return copies
+
+
+def _deny_unlink_for(monkeypatch, denied):
+    denied = {Path(p) for p in denied}
+    real_unlink = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        if Path(self) in denied:
+            raise PermissionError(13, "Access is denied", str(self))
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+
+def test_install_removes_old_copies_from_the_librecad_program_folder(tmp_path):
+    dll, launcher = _fake_payload(tmp_path)
+    copies = _old_program_folder_copies(tmp_path)
+    result = install_librecad_plugin(dll, launcher_path=launcher)
+    for path in copies:
+        assert not path.exists()
+        assert path in result.removed_stale
+    assert result.blocked_stale == ()
+    # Stock LibreCAD plugins are never touched.
+    for folder in _iso_program_dirs(tmp_path):
+        assert sorted(p.name for p in folder.iterdir()) == ["align1.dll"]
+
+
+def test_install_lists_program_folder_copies_it_may_not_delete(tmp_path, monkeypatch):
+    dll, launcher = _fake_payload(tmp_path)
+    copies = _old_program_folder_copies(tmp_path)
+    _deny_unlink_for(monkeypatch, copies)
+    result = install_librecad_plugin(dll, launcher_path=launcher)
+    # Installed anyway, and the menu still knows which importer to start.
+    assert result.dll_path.read_bytes() == b"MZ fake plugin"
+    assert result.sidecar_path.read_text(encoding="utf-8").splitlines()[1] == str(
+        launcher.resolve()
+    )
+    assert sorted(result.blocked_stale) == sorted(copies) and len(copies) == 4
+    assert all(path.exists() for path in copies)
+    message = librecad_plugin_install.blocked_stale_message(result.blocked_stale)
+    assert "administrator" in message and "twice" in message
+    for path in copies:
+        assert str(path) in message
+
+
+def test_uninstall_reports_blocked_program_folder_copies(tmp_path, monkeypatch):
+    dll, launcher = _fake_payload(tmp_path)
+    plugins = tmp_path / "p"
+    install_librecad_plugin(dll, launcher_path=launcher, plugin_directory=plugins)
+    copies = _old_program_folder_copies(tmp_path)
+    _deny_unlink_for(monkeypatch, copies[:2])
+    removed = uninstall_librecad_plugin(plugins)
+    assert sorted(p.name for p in removed if p.parent == plugins) == sorted(
+        [PLUGIN_DLL_NAME, SIDECAR_NAME]
+    )
+    assert set(copies[2:]) <= set(removed)
+    assert sorted(removed.blocked_stale) == sorted(copies[:2])
+
+
+def test_user_folder_lock_still_says_close_librecad(tmp_path, monkeypatch):
+    dll, launcher = _fake_payload(tmp_path)
+    legacy = tmp_path / "iso-home" / ".librecad" / "plugins"
+    legacy.mkdir(parents=True)
+    (legacy / "bc_lcpdf_menu1.dll").write_bytes(b"old")
+    _deny_unlink_for(monkeypatch, [legacy / "bc_lcpdf_menu1.dll"])
+    with pytest.raises(PluginInstallError, match="Close LibreCAD"):
+        install_librecad_plugin(dll, launcher_path=launcher, plugin_directory=tmp_path / "p")
+
+
+def test_install_cli_warns_about_blocked_copies(tmp_path, monkeypatch, capsys):
+    dll, launcher = _fake_payload(tmp_path)
+    copies = _old_program_folder_copies(tmp_path)
+    _deny_unlink_for(monkeypatch, copies)
+    code = librecad_plugin_install.main(
+        ["--dll", str(dll), "--launcher", str(launcher), "--plugin-dir", str(tmp_path / "p")]
+    )
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "WARNING: Old copies of the menu add-on" in captured.err
+    assert str(copies[0]) in captured.err
+
+
+def test_program_plugin_directories_follow_the_librecad_found(tmp_path, monkeypatch):
+    exe = tmp_path / "Portable LibreCAD" / "LibreCAD.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"fake")
+    monkeypatch.setenv("BCS_LIBRECAD_EXECUTABLE", str(exe))
+    root = exe.parent.resolve()
+    assert _REAL_PROGRAM_PLUGIN_DIRECTORIES() == [
+        root / "plugins", root / "resources" / "plugins",
+    ]
+    # Nothing found: the standard program folder.
+    monkeypatch.setenv("BCS_LIBRECAD_EXECUTABLE", str(tmp_path / "missing.exe"))
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "PF"))
+    assert _REAL_PROGRAM_PLUGIN_DIRECTORIES() == [
+        tmp_path / "PF" / "LibreCAD" / "plugins",
+        tmp_path / "PF" / "LibreCAD" / "resources" / "plugins",
+    ]
+
+
+def test_gui_install_names_the_files_that_need_an_administrator(tmp_path, monkeypatch):
+    gui = pytest.importorskip("gui")
+    blocked = tuple(_old_program_folder_copies(tmp_path))
+    result = librecad_plugin_install.PluginInstallResult(
+        dll_path=tmp_path / PLUGIN_DLL_NAME, sidecar_path=tmp_path / SIDECAR_NAME,
+        launcher_path=tmp_path / "lcpdf-gui.exe", replaced_existing=False,
+        blocked_stale=blocked,
+    )
+    monkeypatch.setattr(librecad_plugin_install, "install_librecad_plugin", lambda: result)
+    with patch.object(gui.messagebox, "showwarning") as warning, patch.object(
+        gui.messagebox, "showinfo",
+    ) as info:
+        gui.Pdf2DxfApp._install_librecad_menu(SimpleNamespace())
+    info.assert_not_called()
+    text = warning.call_args.args[1]
+    assert "Installed the LibreCAD menu entry." in text
+    assert "Old copies of the menu add-on are in LibreCAD's program folder" in text
+    for path in blocked:
+        assert str(path) in text
+
+    clean = librecad_plugin_install.PluginInstallResult(
+        dll_path=tmp_path / PLUGIN_DLL_NAME, sidecar_path=tmp_path / SIDECAR_NAME,
+        launcher_path=tmp_path / "lcpdf-gui.exe", replaced_existing=False,
+    )
+    monkeypatch.setattr(librecad_plugin_install, "install_librecad_plugin", lambda: clean)
+    with patch.object(gui.messagebox, "showwarning") as warning, patch.object(
+        gui.messagebox, "showinfo",
+    ) as info:
+        gui.Pdf2DxfApp._install_librecad_menu(SimpleNamespace())
+    warning.assert_not_called()
+    assert "administrator" not in info.call_args.args[1]
+
+
+@pytest.mark.parametrize(
+    ("handoff", "version", "is_dev", "expected"),
+    [
+        (False, "", False, "PDF to DXF Converter - BlueCollar-Systems"),
+        (False, "1.0.104", False, "PDF to DXF Converter - BlueCollar-Systems v1.0.104"),
+        (True, "1.0.104", False,
+         "PDF to DXF Converter - BlueCollar-Systems v1.0.104 (for LibreCAD)"),
+        (True, "1.0.104", True,
+         "PDF to DXF Converter - BlueCollar-Systems v1.0.104 (for LibreCAD) - development copy"),
+        (False, "1.0.104", True,
+         "PDF to DXF Converter - BlueCollar-Systems v1.0.104 - development copy"),
+    ],
+)
+def test_window_title_names_version_and_development_copy(handoff, version, is_dev, expected):
+    gui = pytest.importorskip("gui")
+    assert gui.window_title(handoff, version, is_dev) == expected
+
+
+def test_development_copy_is_a_source_tree_with_git_and_never_a_frozen_build(
+    tmp_path, monkeypatch,
+):
+    gui = pytest.importorskip("gui")
+    monkeypatch.setattr(gui, "_PROJECT_ROOT", str(tmp_path))
+    assert gui._running_from_development_copy() is False
+    (tmp_path / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")  # a worktree
+    assert gui._running_from_development_copy() is True
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert gui._running_from_development_copy() is False
 
 
 def test_install_without_a_bundled_dll_explains_where_to_get_it(tmp_path, monkeypatch):

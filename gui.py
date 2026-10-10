@@ -72,6 +72,37 @@ class ConversionOptions:
     librecad_executable: str | None = None
 
 
+def window_title(handoff: bool, version: str = "", is_dev: bool = False) -> str:
+    """The window title: which version is running, and whether it is a release.
+
+    A source checkout with git history is the copy developers edit every day;
+    saying so keeps it from being mistaken for a tested release.
+    """
+    title = "PDF to DXF Converter - BlueCollar-Systems"
+    if version:
+        title += f" v{version}"
+    if handoff:
+        title += " (for LibreCAD)"
+    if is_dev:
+        title += " - development copy"
+    return title
+
+
+def _importer_version() -> str:
+    try:
+        from pdf2dxf import __version__
+    except Exception:  # noqa: BLE001 - a title must never stop the window
+        return ""
+    return str(__version__ or "")
+
+
+def _running_from_development_copy() -> bool:
+    """Not a frozen release build, and a .git sits next to gui.py."""
+    if getattr(sys, "frozen", False):
+        return False
+    return os.path.exists(os.path.join(_PROJECT_ROOT, ".git"))
+
+
 def _file_sha256(path: str) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -127,10 +158,9 @@ class Pdf2DxfApp(tk.Tk):
         # this window: the finished DXF path is handed back to that LibreCAD.
         self._handoff_path = handoff_path
         self._handoff_delivered = False
-        self.title(
-            "PDF to DXF Converter - BlueCollar-Systems"
-            + (" (for LibreCAD)" if handoff_path else "")
-        )
+        self.title(window_title(
+            bool(handoff_path), _importer_version(), _running_from_development_copy(),
+        ))
         self.resizable(True, True)
         self.minsize(560, 620)
 
@@ -773,6 +803,7 @@ class Pdf2DxfApp(tk.Tk):
         from librecad_pdf_importer.librecad_plugin_install import (
             TARGET_LIBRECAD,
             PluginInstallError,
+            blocked_stale_message,
             install_librecad_plugin,
         )
 
@@ -781,14 +812,18 @@ class Pdf2DxfApp(tk.Tk):
         except PluginInstallError as exc:
             messagebox.showerror("Install LibreCAD menu entry", str(exc))
             return
-        messagebox.showinfo(
+        blocked = blocked_stale_message(getattr(result, "blocked_stale", ()))
+        # Installed either way; old program-folder copies make it a warning.
+        show = messagebox.showwarning if blocked else messagebox.showinfo
+        show(
             "Install LibreCAD menu entry",
             "Installed the LibreCAD menu entry.\n\n"
             f"Plugin: {result.dll_path}\n"
             f"Starts: {result.launcher_path}\n\n"
             "Restart LibreCAD, then use:\n"
             "Plugins > Import PDF (BlueCollar)...\n\n"
-            f"Built for {TARGET_LIBRECAD}.",
+            f"Built for {TARGET_LIBRECAD}."
+            + (f"\n\n{blocked}" if blocked else ""),
         )
 
 
