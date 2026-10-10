@@ -1984,8 +1984,68 @@ def _plain_lwpolyline_bbox(
     return (float(min_x), float(min_y), float(max_x), float(max_y))
 
 
+def _plain_solid_bbox(
+    entities: Sequence[Any],
+) -> Optional[Tuple[float, float, float, float]]:
+    """Exact bbox of flat, thickness-less, WCS-plane SOLIDs, or None.
+
+    Glyph fills are SOLIDs. For a SOLID, ezdxf's ``bbox.extents`` builds
+    ``path.from_vertices(solid.wcs_vertices(), close=True)`` and takes the
+    precise bbox of its LINE_TO points -- the min/max of the very same vertex
+    floats, after the generic primitive machinery. This walks the same vertex
+    list with the same "drop a vertex that is close to the previous one" rule,
+    so the result is identical by construction, only much cheaper. Anything
+    else (another entity type, a non-Z extrusion such as a mirrored glyph,
+    thickness, a non-finite vertex, an empty list) returns None and the
+    caller falls back to ezdxf.
+    """
+    if not entities:
+        return None
+    min_x = min_y = math.inf
+    max_x = max_y = -math.inf
+    for entity in entities:
+        if entity.dxftype() != "SOLID":
+            return None
+        try:
+            ex, ey, ez = tuple(entity.dxf.get("extrusion", (0.0, 0.0, 1.0)))
+            if (float(ex), float(ey), float(ez)) != (0.0, 0.0, 1.0):
+                return None
+            if float(entity.dxf.get("thickness", 0.0) or 0.0) != 0.0:
+                return None
+            vertices = list(entity.wcs_vertices())
+        except Exception:
+            return None
+        if len(vertices) < 2:
+            continue  # ezdxf: an empty path, no bbox contribution
+        # path.from_vertices: skip a vertex close to the path's end. Its
+        # close() then adds the start again, so even a fill whose vertices all
+        # coincide still contributes that one point.
+        kept = [vertices[0]]
+        for vertex in vertices[1:]:
+            if not kept[-1].isclose(vertex):
+                kept.append(vertex)
+        for vertex in kept:
+            x, y = vertex.x, vertex.y
+            if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(vertex.z)):
+                return None
+            if x < min_x:
+                min_x = x
+            if x > max_x:
+                max_x = x
+            if y < min_y:
+                min_y = y
+            if y > max_y:
+                max_y = y
+    if min_x > max_x or min_y > max_y:
+        return None  # nothing contributed: let ezdxf say so
+    return (float(min_x), float(min_y), float(max_x), float(max_y))
+
+
 def _bbox_tuple(entities: Sequence[Any]) -> Optional[Tuple[float, float, float, float]]:
     plain = _plain_lwpolyline_bbox(entities)
+    if plain is not None:
+        return plain
+    plain = _plain_solid_bbox(entities)
     if plain is not None:
         return plain
     box = ezdxf_bbox.extents(entities)
