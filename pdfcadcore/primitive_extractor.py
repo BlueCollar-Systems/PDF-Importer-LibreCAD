@@ -759,6 +759,9 @@ def _character_layout(line, span, font, to_model, glyph_queues):
         target_quad = tuple(to_model(x, y) for x, y in quad)
         target_origin = to_model(*source_origin)
         glyph_id = _pop_trace_glyph_id(glyph_queues, font, text)
+        bound_glyph = char.get("source_trace_glyph_id")
+        if char.get("source_font_binding_verified") is True and isinstance(bound_glyph, int):
+            glyph_id = bound_glyph
         trace_codepoint = None
         if glyph_id is None and len(text) == 1 and ord(text) < 32 and char.get("source_font_binding_verified") is True:
             candidates = glyph_queues.get(("replacement_zero", font, *source_origin), ())
@@ -966,7 +969,7 @@ def _extract_text(
     try:
         from .embedded_fonts import EmbeddedFontCatalog
 
-        font_catalog = EmbeddedFontCatalog.from_page(page, page_num)
+        font_catalog = EmbeddedFontCatalog.from_page(page, page_num, source_text=tdict)
     except (ImportError, RuntimeError, TypeError, ValueError):
         font_catalog = None
     glyph_queues = _trace_glyph_queues(page)

@@ -644,6 +644,65 @@ def _page_unicode_glyph_maps(
     return mappings, ambiguous, None
 
 
+def _page_program_glyph_maps(page, source_text=None):
+    """Separate identically named programs using verified character occurrences.
+
+    The exact font buffer SHA and exact Unicode/origin occurrence must agree.
+    A family name alone cannot distinguish a subset from a Form's Base14 font.
+    """
+    try:
+        if source_text is None:
+            from .primitive_extractor import _raw_text_with_source_quads
+
+            source_text = _raw_text_with_source_quads(page)
+        traces = page.get_texttrace()
+    except (AttributeError, ImportError, RuntimeError, TypeError, ValueError):
+        return {}, set()
+    occurrences = {}
+    for trace in traces or ():
+        name = _without_subset_prefix(trace.get("font"))
+        for record in trace.get("chars") or ():
+            try:
+                codepoint, glyph = int(record[0]), int(record[1])
+                origin = (float(record[2][0]), float(record[2][1]))
+            except (IndexError, KeyError, TypeError, ValueError):
+                continue
+            occurrences.setdefault((name, codepoint, *origin), []).append(glyph)
+    characters = {}
+    for block in source_text.get("blocks", ()):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", ()):
+            for span in line.get("spans", ()):
+                name = _without_subset_prefix(span.get("font"))
+                for char in span.get("chars", ()):
+                    digest = char.get("source_font_program_sha256", "")
+                    if char.get("source_font_binding_verified") is not True or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                        continue
+                    try:
+                        codepoint = int(char["source_font_character_codepoint"])
+                        origin = tuple(float(v) for v in char["origin"])
+                        if len(origin) != 2:
+                            continue
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    characters.setdefault((name, codepoint, *origin), []).append((digest, char))
+    mappings, ambiguous = {}, set()
+    for key, chars in characters.items():
+        glyphs = occurrences.get(key, ())
+        if len(chars) != len(glyphs) or len({digest for digest, _ in chars}) != 1:
+            continue
+        for (digest, char), glyph in zip(chars, glyphs, strict=True):
+            codepoint = key[1]
+            mapping = mappings.setdefault(digest, {})
+            if codepoint in mapping and mapping[codepoint] != glyph:
+                ambiguous.add(digest)
+            else:
+                mapping[codepoint] = glyph
+                char["source_trace_glyph_id"] = glyph
+    return mappings, ambiguous
+
+
 def _annotation_font_records(page):
     """Inventory normal appearance resources omitted by Page.get_fonts.
 
@@ -789,13 +848,14 @@ class EmbeddedFontCatalog:
         )
 
     @classmethod
-    def from_page(cls, page, page_number: int) -> "EmbeddedFontCatalog":
+    def from_page(cls, page, page_number: int, source_text=None) -> "EmbeddedFontCatalog":
         assets: dict[str, EmbeddedFontAsset] = {}
         failures: dict[str, EmbeddedFontFailure] = {}
         candidates: list[EmbeddedFontAsset] = []
         ambiguous_names: set[str] = set()
         ambiguous_exact_names: set[str] = set()
         glyph_maps, ambiguous_maps, trace_failure = _page_unicode_glyph_maps(page)
+        program_maps, ambiguous_programs = _page_program_glyph_maps(page, source_text)
         try:
             page_records = tuple(page.get_fonts(full=True))
             records = page_records + _annotation_font_records(page)
@@ -928,12 +988,24 @@ class EmbeddedFontCatalog:
                     name_aliases.add(extracted_base)
                 source_format = str(extracted_format or source_format).lower().lstrip(".")
                 source_type = str(extracted_type or source_type)
-                unicode_map, trace_names = _merged_trace_glyph_map(
-                    name_aliases,
-                    glyph_maps,
-                    ambiguous_maps,
-                    inventory_name=base_name,
-                )
+                source_sha = _digest(source_bytes)
+                if source_sha in ambiguous_programs:
+                    raise ExactFontSourceImpossible(
+                        "PDF Unicode maps one character to multiple glyph ids in its source program"
+                    )
+                if source_sha in program_maps:
+                    unicode_map = program_maps[source_sha]
+                    trace_names = (
+                        (base_name,) if base_name in glyph_maps
+                        else tuple(sorted(name for name in name_aliases if name in glyph_maps))
+                    )
+                else:
+                    unicode_map, trace_names = _merged_trace_glyph_map(
+                        name_aliases,
+                        glyph_maps,
+                        ambiguous_maps,
+                        inventory_name=base_name,
+                    )
                 usable_format, usable_bytes, cmap_installed = _usable_font(
                     source_bytes,
                     source_format,

@@ -91,7 +91,7 @@ def _app_without_window(tmp_path):
         document.save(tmp_path / "drawing.pdf")
     app = SimpleNamespace(
         **{key: Mock(get=Mock(return_value=value)) for key, value in values.items()},
-        _converting=False, _cancel_event=gui.threading.Event(),
+        _converting=False, _close_when_finished=False, _cancel_event=gui.threading.Event(),
         _btn_convert=Mock(), _btn_cancel=Mock(), _progress=Mock(), _log_text=Mock(),
         _log=Mock(), after=lambda _ms, callback: callback(), _finish_conversion=Mock(),
     )
@@ -181,3 +181,24 @@ def test_gui_accepts_all_as_written_in_the_validation_message(tmp_path):
     app = _app_without_window(tmp_path)
     app._var_pages.get.return_value = " All "
     assert app._capture_options().pages is None
+
+
+def test_window_close_waits_for_the_active_checkpoint(tmp_path):
+    app = _app_without_window(tmp_path)
+    app._converting = True
+    app._request_cancel = lambda: gui.Pdf2DxfApp._request_cancel(app)
+    app._close_from_librecad_handoff = Mock()
+    gui.Pdf2DxfApp._request_close(app)
+    assert app._close_when_finished and app._cancel_event.is_set()
+    app._close_from_librecad_handoff.assert_not_called()
+    gui.Pdf2DxfApp._finish_conversion(app)
+    assert not app._converting
+    app._close_from_librecad_handoff.assert_called_once()
+
+
+def test_idle_window_closes_immediately(tmp_path):
+    app = _app_without_window(tmp_path)
+    app._close_from_librecad_handoff = Mock()
+    gui.Pdf2DxfApp._request_close(app)
+    assert not app._cancel_event.is_set()
+    app._close_from_librecad_handoff.assert_called_once()
