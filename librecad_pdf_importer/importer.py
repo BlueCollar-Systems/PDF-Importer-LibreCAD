@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import math
+import re
 import sys
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -172,6 +175,93 @@ def _text_mode_fallback_for_report(config: ImportConfig, text_source_spans: int)
     }
 
 
+def _resolved_scale_record(rs: Any) -> Optional[Dict[str, Any]]:
+    if not rs:
+        return None
+    return {
+        "factor": rs.factor,
+        "notation": rs.notation,
+        "source": rs.source,
+        "confidence": rs.confidence,
+        "fallback_reason": rs.fallback_reason,
+    }
+
+
+def most_confident_scale(candidates: Iterable[Any]) -> Optional[Dict[str, Any]]:
+    """The first, most confident resolved-scale record (confidence > 0), or None.
+
+    Records that are missing or malformed (for example a page record written
+    before the scale was kept) are skipped.
+    """
+    best: Optional[Dict[str, Any]] = None
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping):
+            continue
+        try:
+            confidence = float(candidate.get("confidence") or 0)
+        except (TypeError, ValueError):
+            continue
+        if confidence > 0 and (
+            best is None or confidence > float(best.get("confidence", 0) or 0)
+        ):
+            best = dict(candidate)
+    return best
+
+
+def best_resolved_scale(pages: Iterable[Any]) -> Optional[Dict[str, Any]]:
+    """The scale the import report carries: the most confident page's."""
+    return most_confident_scale(
+        _resolved_scale_record(page.page_data.resolved_scale) for page in pages
+    )
+
+
+# Below this the scale is reported but not offered to the user (README rule).
+SCALE_TRUST_CONFIDENCE = 0.70
+_SCALE_LABEL_PREFIX = re.compile(r"^\s*(?:SCALE|SCL\.?|SC\.?)\s*[:=]?\s*", re.I)
+
+
+def drawing_scale_line(
+    resolved_scale: Any,
+    user_scale: float,
+    how_to_rescale: str = "put {factor} in Scale and convert again",
+) -> str:
+    """One plain line about the drawing scale found on the sheet, or ''.
+
+    Said only for a trusted scale (confidence >= 0.70) that is not 1:1. The DXF
+    is drawn in millimetres at paper size times *user_scale*.
+    """
+    if not isinstance(resolved_scale, Mapping):
+        return ""
+    try:
+        factor = float(resolved_scale.get("factor") or 0)
+        confidence = float(resolved_scale.get("confidence") or 0)
+        user = float(user_scale)
+    except (TypeError, ValueError):
+        return ""
+    if (
+        confidence < SCALE_TRUST_CONFIDENCE
+        or str(resolved_scale.get("fallback_reason") or "") == "no_scale_detected"
+        or not math.isfinite(factor)
+        or factor <= 0
+        or math.isclose(factor, 1.0, rel_tol=1e-9)
+    ):
+        return ""
+    notation = _SCALE_LABEL_PREFIX.sub("", str(resolved_scale.get("notation") or "")).strip()
+    found = (
+        f"Drawing scale found: {notation or f'1:{factor:g}'} "
+        f"({min(confidence, 1.0) * 100:.0f}% sure)."
+    )
+    if math.isclose(user, factor, rel_tol=1e-6):
+        return f"{found} Scale is {user:g}, so this DXF is at real size (millimetres)."
+    advice = how_to_rescale.format(factor=f"{factor:g}")
+    if math.isclose(user, 1.0, rel_tol=1e-9):
+        return f"{found} This DXF is at paper size (millimetres); to draw at real size {advice}."
+    return (
+        f"{found} This DXF is at {user:g} times paper size (millimetres); "
+        f"to draw at real size {advice}."
+    )
+
+
 def write_import_report(
     run: ImportRun,
     output_path: str,
@@ -193,7 +283,7 @@ def write_import_report(
     artifact_stem = report_path.stem
     pages = extraction.pages
     layer_names: set[str] = set()
-    resolved_scale = None
+    resolved_scale = best_resolved_scale(pages)
     scale_hints = {
         "title_block_detected": False,
         "dimension_count": 0,
@@ -203,16 +293,6 @@ def write_import_report(
     for page in pages:
         layer_names.update(page.page_data.layers or [])
         rs = page.page_data.resolved_scale
-        if rs and rs.confidence > 0 and (
-            resolved_scale is None or rs.confidence > resolved_scale.get("confidence", 0)
-        ):
-            resolved_scale = {
-                "factor": rs.factor,
-                "notation": rs.notation,
-                "source": rs.source,
-                "confidence": rs.confidence,
-                "fallback_reason": rs.fallback_reason,
-            }
         if rs and rs.factor and rs.confidence > 0:
             alternate_factors.add(float(rs.factor))
         profile = getattr(page, "profile", None)

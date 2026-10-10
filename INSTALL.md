@@ -33,8 +33,13 @@ with `text_mode`, `resolved_scale`, `peak_mb`, and raster fallback telemetry.
 
 **Offline install:** The portable ZIP works without internet after download. Source ZIP dev installs may run `preflight_check.py --install` once if `lib/` is empty.
 
-**Scale trust:** use `extra.resolved_scale.factor` only when `confidence >= 0.70` and
-`fallback_reason` is not `no_scale_detected`; otherwise set scale manually in your CAD app.
+**Scale trust:** the report holds the scale read from the sheet as
+`extra.resolved_scale` (single run) or top-level `resolved_scale` (resumable
+run: the GUI and `--resume`). Use its `factor` only when `confidence >= 0.70`
+and `fallback_reason` is not `no_scale_detected`; otherwise set scale manually
+in your CAD app. A trusted scale is also named in the GUI log, the Done box and
+the `pdf2dxf` summary, with the number to put in `Scale` (or `--scale`) for a
+real-size drawing.
 
 **Bad-PDF gate:** LibreCAD converter refuses encrypted/non-PDF/truncated files at open
 (**fail closed**). SketchUp shows the same messages but may proceed on rare gate errors
@@ -160,7 +165,7 @@ strings are hidden native `TEXT` on the frozen layer `P###_TEXT_SEARCH`
 
 ## Requirements
 
-- Standalone installer: no separate Python or pip packages.
+- Portable ZIP (the Windows download; no standalone installer has been published yet): no separate Python or pip packages.
 - Source/dev checkout: Python 3.12+, PyMuPDF 1.28.2, ezdxf 1.4.4,
   FontTools 4.63.0, Matplotlib 3.11.1, and NumPy 2.5.1, either installed into
   your active environment or vendored into `./lib` with
@@ -202,6 +207,15 @@ item-specific parent-font incompatibility, inspect the automatic fallback; do
 not remove its gate or relabel parent-native rendering as source-font-exact.
 Keep any same-representation font substitution or Unicode compatibility
 normalization visible in the report.
+
+**The window says "LibreCAD was not found"?** Press `Locate LibreCAD...`
+(it appears next to `Cancel` after the lookup fails) and pick `LibreCAD.exe`
+once. The choice is remembered for your Windows user in
+`%LOCALAPPDATA%\BlueCollarSystems\LibreCAD-PDF-Importer\settings.json`.
+Script and command-line users can instead set the `BCS_LIBRECAD_EXECUTABLE`
+environment variable to the full path of `LibreCAD.exe`; while it is set it
+wins over the remembered choice. `python -m librecad_pdf_importer.cli` also
+takes `--librecad-exe <path>`.
 
 **Plugin menu says launcher not found?** Install the portable ZIP or source
 package, then use `Plugins > PDF Importer Settings...` to point at

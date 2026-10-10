@@ -181,3 +181,281 @@ def test_gui_accepts_all_as_written_in_the_validation_message(tmp_path):
     app = _app_without_window(tmp_path)
     app._var_pages.get.return_value = " All "
     assert app._capture_options().pages is None
+
+
+# --- The output follows the PDF, and an existing drawing is never replaced silently ---
+
+
+class _Var:
+    """A tk.StringVar stand-in for window-less tests."""
+
+    def __init__(self, value: str = "") -> None:
+        self.value = value
+
+    def get(self) -> str:
+        return self.value
+
+    def set(self, value: str) -> None:
+        self.value = value
+
+
+def _browse_app(input_value: str = "", output_value: str = ""):
+    return SimpleNamespace(_var_input=_Var(input_value), _var_output=_Var(output_value))
+
+
+def test_output_follows_each_newly_browsed_pdf(tmp_path):
+    first = (tmp_path / "D042" / "EX101.pdf").as_posix()
+    second = (tmp_path / "D100" / "MXT-100.pdf").as_posix()
+    app = _browse_app()
+    with patch.object(gui.filedialog, "askopenfilename", return_value=first):
+        gui.Pdf2DxfApp._browse_input(app)
+    assert app._var_output.get() == (tmp_path / "D042" / "EX101.dxf").as_posix()
+    with patch.object(gui.filedialog, "askopenfilename", return_value=second):
+        gui.Pdf2DxfApp._browse_input(app)
+    assert app._var_input.get() == second
+    assert app._var_output.get() == (tmp_path / "D100" / "MXT-100.dxf").as_posix()
+
+
+def test_output_the_user_picked_stays_when_another_pdf_is_browsed(tmp_path):
+    first = (tmp_path / "D042" / "EX101.pdf").as_posix()
+    second = (tmp_path / "D100" / "MXT-100.pdf").as_posix()
+    custom = (tmp_path / "out" / "combined.dxf").as_posix()
+    app = _browse_app()
+    with patch.object(gui.filedialog, "askopenfilename", return_value=first):
+        gui.Pdf2DxfApp._browse_input(app)
+    with patch.object(gui.filedialog, "asksaveasfilename", return_value=custom):
+        gui.Pdf2DxfApp._browse_output(app)
+    with patch.object(gui.filedialog, "askopenfilename", return_value=second):
+        gui.Pdf2DxfApp._browse_input(app)
+    assert app._var_input.get() == second
+    assert app._var_output.get() == custom
+
+
+def test_cancelled_browse_changes_nothing(tmp_path):
+    app = _browse_app("C:/jobs/D042/EX101.pdf", "C:/jobs/D042/EX101.dxf")
+    with patch.object(gui.filedialog, "askopenfilename", return_value=""):
+        gui.Pdf2DxfApp._browse_input(app)
+    assert app._var_input.get() == "C:/jobs/D042/EX101.pdf"
+    assert app._var_output.get() == "C:/jobs/D042/EX101.dxf"
+
+
+def _write_session(output: Path, *, source_sha256: str, output_sha256: str | None) -> None:
+    import json
+
+    session = output.with_name(f"{output.stem}_resume")
+    session.mkdir(parents=True, exist_ok=True)
+    manifest = {"schema": "bcs.librecad_resume/1.0", "source_sha256": source_sha256}
+    if output_sha256 is not None:
+        manifest["assembled"] = {"output_sha256": output_sha256}
+    (session / "session.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def _sha(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_existing_drawing_without_session_asks_and_no_keeps_it(tmp_path):
+    app = _app_without_window(tmp_path)
+    output = tmp_path / "drawing.dxf"
+    output.write_bytes(b"0\nSECTION\n999\nUSER EDIT KEEP ME\n0\nEOF\n")
+    before = output.read_bytes()
+    with patch.object(gui.threading, "Thread") as thread, patch.object(
+        gui.messagebox, "askyesno", return_value=False,
+    ) as ask:
+        gui.Pdf2DxfApp._start_conversion(app)
+    ask.assert_called_once()
+    assert ask.call_args.args[0] == "Replace drawing?"
+    assert "drawing.dxf already exists. Replace it?" in ask.call_args.args[1]
+    thread.assert_not_called()
+    app._log_text.delete.assert_not_called()
+    assert not app._converting
+    assert output.read_bytes() == before
+
+
+def test_existing_drawing_yes_replaces_it(tmp_path):
+    app = _app_without_window(tmp_path)
+    (tmp_path / "drawing.dxf").write_bytes(b"old drawing")
+    with patch.object(gui.threading, "Thread") as thread, patch.object(
+        gui.messagebox, "askyesno", return_value=True,
+    ) as ask:
+        gui.Pdf2DxfApp._start_conversion(app)
+    ask.assert_called_once()
+    thread.return_value.start.assert_called_once()
+    assert app._converting
+
+
+def test_untouched_output_of_the_same_pdf_resumes_without_asking(tmp_path):
+    app = _app_without_window(tmp_path)
+    output = tmp_path / "drawing.dxf"
+    output.write_bytes(b"assembled by the importer")
+    _write_session(
+        output,
+        source_sha256=_sha(tmp_path / "drawing.pdf"),
+        output_sha256=_sha(output),
+    )
+    assert gui.output_replace_reason(str(tmp_path / "drawing.pdf"), str(output)) is None
+    with patch.object(gui.threading, "Thread") as thread, patch.object(
+        gui.messagebox, "askyesno",
+    ) as ask:
+        gui.Pdf2DxfApp._start_conversion(app)
+    ask.assert_not_called()
+    thread.return_value.start.assert_called_once()
+
+
+def test_output_made_from_a_different_pdf_asks(tmp_path):
+    app = _app_without_window(tmp_path)
+    output = tmp_path / "drawing.dxf"
+    output.write_bytes(b"assembled from another PDF")
+    _write_session(output, source_sha256="0" * 64, output_sha256=_sha(output))
+    with patch.object(gui.threading, "Thread") as thread, patch.object(
+        gui.messagebox, "askyesno", return_value=False,
+    ) as ask:
+        gui.Pdf2DxfApp._start_conversion(app)
+    ask.assert_called_once()
+    assert "drawing.dxf was made from a different PDF" in ask.call_args.args[1]
+    thread.assert_not_called()
+
+
+def test_output_edited_after_import_asks(tmp_path):
+    output = tmp_path / "drawing.dxf"
+    app = _app_without_window(tmp_path)
+    output.write_bytes(b"assembled by the importer")
+    _write_session(
+        output,
+        source_sha256=_sha(tmp_path / "drawing.pdf"),
+        output_sha256=_sha(output),
+    )
+    output.write_bytes(b"assembled by the importer\nUSER EDIT KEEP ME\n")
+    assert (
+        gui.output_replace_reason(str(tmp_path / "drawing.pdf"), str(output))
+        == "was changed after it was imported"
+    )
+
+
+def test_missing_output_never_asks(tmp_path):
+    assert gui.output_replace_reason(
+        str(tmp_path / "drawing.pdf"), str(tmp_path / "missing.dxf"),
+    ) is None
+
+
+# --- LibreCAD not found: plain advice and a "Locate LibreCAD..." button ---
+
+
+def _run_with_launch(app, tmp_path, *, found, launch_result):
+    app._var_launch_librecad.get.return_value = True
+    app._btn_locate_librecad = Mock(winfo_manager=Mock(return_value=""))
+    options = gui.Pdf2DxfApp._capture_options(app)
+    with patch("dxf_import_engine.convert", return_value={}), patch(
+        "pdf_open_guard.precheck_pdf",
+    ), patch(
+        "librecad_pdf_importer.launchers.librecad_launcher.find_librecad_executable",
+        return_value=found,
+    ), patch(
+        "librecad_pdf_importer.launchers.librecad_launcher.launch_librecad",
+        return_value=launch_result,
+    ), patch.object(gui.messagebox, "showinfo") as info, patch.object(
+        gui.messagebox, "showerror",
+    ) as error:
+        gui.Pdf2DxfApp._run_conversion(
+            app, str(tmp_path / "drawing.pdf"), str(tmp_path / "drawing.dxf"), options,
+        )
+    error.assert_not_called()
+    logged = [str(call.args[0]) for call in app._log.call_args_list]
+    return logged, info.call_args.args[1]
+
+
+def test_librecad_not_found_gives_plain_advice_and_shows_locate_button(tmp_path):
+    app = _app_without_window(tmp_path)
+    logged, done_text = _run_with_launch(
+        app, tmp_path, found=None, launch_result=(False, "LibreCAD executable not found."),
+    )
+    assert gui.LIBRECAD_NOT_FOUND_TIP in logged
+    assert "Locate LibreCAD..." in gui.LIBRECAD_NOT_FOUND_TIP
+    assert not any("librecad_launcher" in line for line in logged)
+    assert not any(line.startswith("Tip:") for line in logged)
+    assert gui.LIBRECAD_NOT_FOUND_TIP in done_text
+    app._btn_locate_librecad.pack.assert_called()
+
+
+def test_librecad_found_but_not_started_says_so(tmp_path):
+    app = _app_without_window(tmp_path)
+    logged, done_text = _run_with_launch(
+        app, tmp_path, found="C:/LC/LibreCAD.exe",
+        launch_result=(False, "Failed to launch LibreCAD: access denied"),
+    )
+    assert gui.LIBRECAD_START_FAILED_TIP in logged
+    assert gui.LIBRECAD_NOT_FOUND_TIP not in logged
+    assert gui.LIBRECAD_START_FAILED_TIP in done_text
+    app._btn_locate_librecad.pack.assert_called()
+
+
+def test_locate_button_stays_hidden_when_librecad_opens(tmp_path):
+    app = _app_without_window(tmp_path)
+    logged, _done_text = _run_with_launch(
+        app, tmp_path, found="C:/LC/LibreCAD.exe",
+        launch_result=(True, "Launched LibreCAD: C:/LC/LibreCAD.exe"),
+    )
+    assert "Launched LibreCAD: C:/LC/LibreCAD.exe" in logged
+    app._btn_locate_librecad.pack.assert_not_called()
+
+
+def test_locate_librecad_remembers_the_choice_and_next_run_uses_it(tmp_path, monkeypatch):
+    from librecad_pdf_importer.launchers import librecad_launcher
+
+    monkeypatch.delenv("BCS_LIBRECAD_EXECUTABLE", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    exe = tmp_path / "Tools" / "LibreCAD" / "LibreCAD.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"fake LibreCAD")
+    app = _app_without_window(tmp_path)
+    app._librecad_choice = None
+    app._btn_locate_librecad = Mock()
+    with patch.object(gui.filedialog, "askopenfilename", return_value=exe.as_posix()):
+        gui.Pdf2DxfApp._locate_librecad(app)
+    assert app._librecad_choice == str(exe.resolve())
+    assert librecad_launcher.load_saved_librecad_executable() == str(exe.resolve())
+    app._btn_locate_librecad.pack_forget.assert_called_once()
+    assert "remembered for next time" in app._log.call_args_list[-1].args[0]
+
+    # A new window (no choice in memory) captures the remembered LibreCAD.
+    fresh = _app_without_window(tmp_path)
+    assert gui.Pdf2DxfApp._capture_options(fresh).librecad_executable == str(exe.resolve())
+
+
+def test_locate_librecad_rejects_a_missing_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    app = _app_without_window(tmp_path)
+    app._librecad_choice = None
+    app._btn_locate_librecad = Mock()
+    with patch.object(
+        gui.filedialog, "askopenfilename", return_value=(tmp_path / "nope.exe").as_posix(),
+    ), patch.object(gui.messagebox, "showwarning") as warning:
+        gui.Pdf2DxfApp._locate_librecad(app)
+    warning.assert_called_once()
+    assert app._librecad_choice is None
+    assert not (tmp_path / "local").exists()
+
+
+def test_failed_lookup_without_launch_explains_the_button_once(tmp_path):
+    app = _app_without_window(tmp_path)
+    app._btn_locate_librecad = Mock(winfo_manager=Mock(return_value=""))
+    options = gui.Pdf2DxfApp._capture_options(app)
+    with patch("dxf_import_engine.convert", return_value={}), patch(
+        "pdf_open_guard.precheck_pdf",
+    ), patch(
+        "librecad_pdf_importer.launchers.librecad_launcher.find_librecad_executable",
+        return_value=None,
+    ), patch(
+        "librecad_pdf_importer.launchers.librecad_launcher.launch_librecad",
+    ) as launch, patch.object(gui.messagebox, "showinfo") as info:
+        gui.Pdf2DxfApp._run_conversion(
+            app, str(tmp_path / "drawing.pdf"), str(tmp_path / "drawing.dxf"), options,
+        )
+    launch.assert_not_called()
+    logged = [str(call.args[0]) for call in app._log.call_args_list]
+    assert logged.count(gui.LIBRECAD_NOT_FOUND_TIP) == 1
+    # Not something the user asked for, so the Done box stays about the drawing.
+    assert gui.LIBRECAD_NOT_FOUND_TIP not in info.call_args.args[1]
+    app._btn_locate_librecad.pack.assert_called()

@@ -30,10 +30,17 @@ must substitute descends automatically to visually verified glyph outlines.
 
 ## Import report / scale trust
 
-Conversions write `<output>_import_report.json` with optional `extra.resolved_scale`.
+Every conversion writes `<output>_import_report.json` beside the DXF, and it
+carries the drawing scale read from the sheet: `extra.resolved_scale` for a
+single run, top-level `resolved_scale` for a resumable run (the GUI and
+`--resume`). It is `null` when no scale was found.
 
 - Use `factor` only when `confidence >= 0.70` and `fallback_reason` is not `no_scale_detected`.
 - Otherwise treat scale as unknown in your CAD workflow.
+- When the scale is trusted, the GUI log, the Done box and the `pdf2dxf`
+  summary say it in plain words, for example
+  `Drawing scale found: 1/4" = 1'-0" (98% sure). This DXF is at paper size (millimetres); to draw at real size put 48 in Scale and convert again.`
+  The DXF itself is not rescaled: it stays at paper size times `Scale`.
 
 ## Compatibility
 
@@ -41,7 +48,7 @@ See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the full host version matrix (L
 
 ## Requirements
 
-- Windows release installer or portable ZIP: no separate Python or pip packages.
+- Windows portable ZIP (the Windows download; no installer has been published yet): no separate Python or pip packages.
 - Source/dev install: Python 3.12+, PyMuPDF 1.28.2, ezdxf 1.4.4,
   FontTools 4.63.0, Matplotlib 3.11.1, and NumPy 2.5.1. All are free software dependencies.
 
@@ -93,11 +100,11 @@ LibreCAD 2.2.1.5. Install it once:
 
 See [LibreCAD Menu Integration](#librecad-menu-integration) for how it works.
 
-**Offline install:** The portable ZIP and published installer work without internet after download. Source ZIP dev installs may run `preflight_check.py --install` once if `lib/` is empty (requires network for that step only).
+**Offline install:** The portable ZIP works without internet after download. Source ZIP dev installs may run `preflight_check.py --install` once if `lib/` is empty (requires network for that step only).
 
 ## Upgrading / skipping versions
 
-Extract a newer portable ZIP over your folder (or run the latest installer).
+Extract a newer portable ZIP over your folder.
 Skipping versions (for example, 1.0.40 → 1.0.80) is supported. Before shop
 use, run the bundled `pdf2dxf.exe` on one of your own representative PDFs,
 open the resulting DXF in LibreCAD, and review its adjacent import report.
@@ -297,11 +304,16 @@ Limitations:
 - Diagnostics: start LibreCAD with `BC_LCPDF_PLUGIN_TRACE=1` to log each step
   to `%TEMP%\bc_lcpdf_menu.log`.
 
-The installer keeps exactly one `bc_lcpdf_menu.dll` where LibreCAD looks
-(LibreCAD loads every `*.dll` in its plugin folders, so leftover copies such as
-an old `bc_lcpdf_menu1.dll` or a copy in `%USERPROFILE%\.librecad\plugins` would
-show every entry twice); it removes those and drops a stale path pinned in
-Settings so the freshly installed importer is used.
+**Install LibreCAD menu entry...** keeps exactly one `bc_lcpdf_menu.dll` where
+LibreCAD looks (LibreCAD loads every `*.dll` in its plugin folders, so leftover
+copies such as an old `bc_lcpdf_menu1.dll` or a copy in
+`%USERPROFILE%\.librecad\plugins` would show every entry twice); it removes those
+and drops a stale path pinned in Settings so the freshly installed importer is
+used. It also removes old copies from LibreCAD's program folder
+(`C:\Program Files\LibreCAD\plugins` and `...\resources\plugins`). Windows only
+lets an administrator delete files there, so when it cannot, the result box
+lists them: close LibreCAD and have someone with administrator rights delete
+those files.
 
 Uninstall: close LibreCAD and delete `Documents\LibreCAD\plugins\bc_lcpdf_menu.dll`
 and `bc_lcpdf_menu-importer.txt` (or run
