@@ -762,6 +762,8 @@ def _character_layout(line, span, font, to_model, glyph_queues):
         bound_glyph = char.get("source_trace_glyph_id")
         if char.get("source_font_binding_verified") is True and isinstance(bound_glyph, int):
             glyph_id = bound_glyph
+        elif char.get("source_font_program_sha256") and len(text) == 1 and ord(text) >= 32:
+            glyph_id = None
         trace_codepoint = None
         if glyph_id is None and len(text) == 1 and ord(text) < 32 and char.get("source_font_binding_verified") is True:
             candidates = glyph_queues.get(("replacement_zero", font, *source_origin), ())

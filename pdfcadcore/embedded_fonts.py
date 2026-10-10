@@ -691,6 +691,12 @@ def _page_program_glyph_maps(page, source_text=None):
     for key, chars in characters.items():
         glyphs = occurrences.get(key, ())
         if len(chars) != len(glyphs) or len({digest for digest, _ in chars}) != 1:
+            for _, char in chars:
+                # Printable characters without a complete trace occurrence
+                # must not borrow a same-family program's glyph later. The
+                # independently bound unencoded-control/gid0 path is separate.
+                if key[1] >= 32:
+                    char["source_font_binding_verified"] = False
             continue
         for (digest, char), glyph in zip(chars, glyphs, strict=True):
             codepoint = key[1]
