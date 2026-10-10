@@ -1,5 +1,6 @@
-"""LibreCAD inverts white ink to black (white-on-white would be invisible on its default
-background). That inversion must be limited to genuinely white ink: pdfcadcore now
+"""The LibreCAD exporter writes white ink as exact black (LibreCAD's default canvas is
+black and it draws exact black in its foreground colour; pure white would vanish on a
+white paper background). That inversion must be limited to genuinely white ink: pdfcadcore now
 composites constant alpha against the page, so a 5 % black wash arrives as 242 grey and
 a 30 % yellow highlight as (255, 255, 178) -- a luminance threshold turned those solid
 black, the opposite of what the PDF viewer shows."""

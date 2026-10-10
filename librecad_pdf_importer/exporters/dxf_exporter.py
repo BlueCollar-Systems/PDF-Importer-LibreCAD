@@ -6265,9 +6265,11 @@ def _apply_color(attribs: dict, rgb) -> None:
     if rgb is None:
         return
     r, g, b = rgb8(rgb)
-    # Invert (near-)white to black so white-on-white geometry is visible on
-    # LibreCAD's default white background. Only genuinely white ink qualifies
-    # (every channel >= 250): a luminance threshold used to turn pale tints --
+    # Write genuinely white ink as exact black. LibreCAD's default drawing
+    # canvas is black, not white; it draws an exact-black pen in its foreground
+    # colour, so this ink stays visible there and on any viewer with a white
+    # paper background, where pure white would vanish. Only genuinely white
+    # ink qualifies (every channel >= 250): a luminance threshold used to turn pale tints --
     # light-grey lines, pale-yellow highlights, and every translucent colour that
     # pdfcadcore now composites against the page (a 5 % black wash is 242 grey) --
     # into solid black, which is not what the PDF viewer shows.
