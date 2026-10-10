@@ -442,6 +442,21 @@ def write_import_report(
     extra["text_items_degraded_total"] = degraded_text["total"]
     extra["text_items_degraded_truncated"] = degraded_text["truncated"]
     extra["searchable_text_companions"] = search_text
+    if getattr(run.config, "_librecad_editable_text", False):
+        # The operator chose "Editable text (LibreCAD font)": say how many
+        # words came in editable and that their letter shapes are LibreCAD's.
+        from .exporters.dxf_exporter import editable_text_item_count
+
+        extra["editable_text"] = {
+            "chosen": True,
+            "item_count": editable_text_item_count(text_representation_deliveries),
+            "font": "LibreCAD unicode",
+            "note": (
+                "Words were delivered as editable text in LibreCAD's own font, so "
+                "letter shapes differ from the PDF. Characters that font lacks came "
+                "in as outlines and are listed per item."
+            ),
+        }
     if glyph_code_delivery["spans_examined"]:
         extra["text_glyph_codes"] = glyph_code_delivery
     if terminal_failure:

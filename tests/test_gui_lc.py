@@ -46,13 +46,25 @@ class TestLcGuiProfessionalImport(unittest.TestCase):
         self.assertIn('"Geometry (raw outlines)": "geometry"', self.source)
         self.assertIn('"Raster (exact item pixels)": "raster"', self.source)
 
+    def test_editable_text_choice_is_offered(self) -> None:
+        # Owner ruling 2026-10-05: an Editable text choice, Exact look stays default.
+        self.assertEqual(gui.EDITABLE_TEXT_LABEL, "Editable text (LibreCAD font)")
+        self.assertEqual(gui.TEXT_MODES[gui.EDITABLE_TEXT_LABEL], "text")
+        self.assertNotIn("Text (may become outlines)", self.source)
+
     def test_default_request_remains_text(self) -> None:
         self.assertEqual(gui.TEXT_MODES[gui.DEFAULT_TEXT_LABEL], "text")
+        self.assertEqual(
+            gui.DEFAULT_TEXT_LABEL, "Exact look - text as outlines (default)"
+        )
+        self.assertNotEqual(gui.DEFAULT_TEXT_LABEL, gui.EDITABLE_TEXT_LABEL)
         self.assertIn('tk.StringVar(value=DEFAULT_TEXT_LABEL)', self.source)
 
     def test_librecad_2d_disclaimer_present(self) -> None:
         self.assertIn("LibreCAD is 2D", self.source)
-        self.assertIn("Visible Text normally becomes verified outlines", self.source)
+        self.assertIn("Exact look draws every word as exact outlines", self.source)
+        self.assertIn("letter shapes differ", self.source)
+        self.assertIn("Characters LibreCAD's font lacks still come in as", self.source)
         self.assertIn("Any fallback or unverified item is listed", self.source)
 
     def test_explicit_geometry_selection_has_no_confirmation_roadblock(self) -> None:
@@ -163,6 +175,51 @@ def test_worker_keeps_requested_settings_and_never_reads_tk_values(tmp_path, mod
     assert convert.call_args.kwargs["dxf_version"] == "R2010"
     launch.assert_not_called()
     app._finish_conversion.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("label", "editable"),
+    [(gui.DEFAULT_TEXT_LABEL, False), (gui.EDITABLE_TEXT_LABEL, True)],
+    ids=["exact-look", "editable-text"],
+)
+def test_worker_passes_the_editable_text_choice_and_logs_the_count(
+    tmp_path, label, editable
+):
+    app = _app_without_window(tmp_path)
+    app._var_text_mode.get.return_value = label
+    options = app._capture_options()
+    assert options.text_mode == "text" and options.editable_text is editable
+    stats = {
+        "text_delivery": {
+            "requested": "text", "delivered": "mixed", "item_count": 3,
+            "editable_text_item_count": 2,
+        }
+    }
+    with patch("dxf_import_engine.convert", return_value=stats) as convert, patch(
+        "pdf_open_guard.precheck_pdf",
+    ), patch(
+        "librecad_pdf_importer.launchers.librecad_launcher.find_librecad_executable",
+        return_value=None,
+    ), patch.object(gui.messagebox, "showinfo"), patch.object(
+        gui.messagebox, "showerror",
+    ) as error:
+        app._run_conversion(
+            str(tmp_path / "drawing.pdf"), str(tmp_path / "drawing.dxf"), options
+        )
+    error.assert_not_called()
+    assert convert.call_args.kwargs["editable_text"] is editable
+    assert convert.call_args.kwargs["config"].text_mode == "text"
+    logged = [call.args[0] for call in app._log.call_args_list]
+    editable_lines = [line for line in logged if "Editable text:" in line]
+    if editable:
+        assert editable_lines == [
+            "  Editable text: 2 of 3 text item(s) came in as editable text in "
+            "LibreCAD's font; the report says how each other one came in and why."
+        ]
+        assert any("text=editable (LibreCAD font)" in line for line in logged)
+    else:
+        assert editable_lines == []
+        assert any("text=text;" in line for line in logged)
 
 
 def test_capture_preserves_text_off_all_pages_and_launch_choice(tmp_path):

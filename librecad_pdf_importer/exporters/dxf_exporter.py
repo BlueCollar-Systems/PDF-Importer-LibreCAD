@@ -254,6 +254,11 @@ class DxfExportOptions:
     # outlined / rastered / dropped span as native TEXT on the frozen layer
     # P###_TEXT_SEARCH, so the drawing is searchable. Outlines stay the truth.
     searchable_text: bool = True
+    # "Editable text (LibreCAD font)": visible words are delivered as native
+    # TEXT in LibreCAD's own font (letter shapes differ from the PDF) instead
+    # of exact outlines. Characters that font lacks still step down to
+    # outlines. Off by default: "Exact look" stays the default.
+    librecad_editable_text: bool = False
 
 
 class TextRepresentationDeliveryError(ImportStopped):
@@ -1113,6 +1118,7 @@ def summarize_text_delivery(
         "fallback_used": fallback_count > 0,
         "fallback_item_count": fallback_count,
         "item_count": len(items),
+        "editable_text_item_count": editable_text_item_count(items),
         "entity_count": entity_count,
         "failed_source_ids": failures,
         "degraded_item_count": degraded["total"],
@@ -1120,6 +1126,37 @@ def summarize_text_delivery(
         "degraded_items_truncated": degraded["truncated"],
         "report_path": str(report_path),
     }
+
+
+def editable_text_item_count(deliveries: Sequence[Any]) -> int:
+    """Visible words delivered as editable TEXT in LibreCAD's own font.
+
+    Counts verified, non-degraded items whose final attempt accepted the
+    disclosed LibreCAD font substitution ("Editable text") for real content;
+    a whitespace-only span is not a word anyone edits.
+    """
+
+    count = 0
+    for item in deliveries or []:
+        if not isinstance(item, dict) or item.get("verified") is not True:
+            continue
+        if item.get("degraded") is True:
+            continue
+        if _normalized_text_mode(str(item.get("final_representation") or "")) not in {
+            "text", "labels",
+        }:
+            continue
+        attempts = item.get("attempts") or []
+        final = attempts[-1] if attempts and isinstance(attempts[-1], dict) else {}
+        evidence = final.get("evidence") if isinstance(final, dict) else None
+        if (
+            isinstance(evidence, dict)
+            and final.get("outcome") == "verified"
+            and evidence.get("parent_native_font_substitution_accepted") is True
+            and evidence.get("source_content_whitespace_only") is not True
+        ):
+            count += 1
+    return count
 
 
 def degraded_text_items(
@@ -4773,6 +4810,9 @@ def _export_to_dxf_impl(
         opts.provenance_opts._source_capsule_deliveries = []  # noqa: B010
         opts.provenance_opts._nontext_composite_deliveries = []  # noqa: B010
         opts.provenance_opts._ink_color_deliveries = []  # noqa: B010
+        opts.provenance_opts._librecad_editable_text = bool(  # noqa: B010
+            opts.librecad_editable_text
+        )
         opts.provenance_opts._result_status = "pending_export"  # noqa: B010
 
     def _sync_text_evidence() -> None:
@@ -5179,6 +5219,9 @@ def _export_to_dxf_impl(
         if opts.include_text and opts.text_mode != "none":
             text_cfg = ImportConfig.auto()
             text_cfg.text_mode = opts.text_mode
+            text_cfg._librecad_editable_text = bool(  # noqa: B010
+                opts.librecad_editable_text
+            )
             # Only positive character-bound source paint permits omission of
             # contour wires. Missing/unreadable trace data keeps prior behavior.
             text_cfg._source_text_fill_receipts = {}

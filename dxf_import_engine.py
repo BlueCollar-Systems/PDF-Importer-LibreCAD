@@ -137,6 +137,7 @@ def _resume_options_identity(
     dxf_version: str,
     librecad_executable: Optional[str] = None,
     searchable_text: bool = True,
+    editable_text: bool = False,
 ) -> tuple[str, dict]:
     from pdf2dxf import __version__
 
@@ -146,6 +147,9 @@ def _resume_options_identity(
         "engine_sha256": _engine_sha256(),
         "dxf_version": str(dxf_version),
         "searchable_text": bool(searchable_text),
+        # Pages certified as exact outlines are never mixed with pages
+        # delivered as editable LibreCAD-font text, or the other way round.
+        "editable_text": bool(editable_text),
         # A page checkpoint written under another ink rule is never resumed:
         # the rule lives in the exporter, which the engine hash does not cover.
         "ink_color_rule": ink_rule_identity(),
@@ -435,6 +439,7 @@ def _convert_resumable(
     restart_on_resume_mismatch: bool,
     librecad_executable: Optional[str],
     searchable_text: bool = True,
+    editable_text: bool = False,
 ) -> Dict[str, Any]:
     from librecad_pdf_importer.core.document import (
         clip_fill_warning_line,
@@ -452,6 +457,7 @@ def _convert_resumable(
         dxf_version,
         librecad_executable,
         searchable_text,
+        editable_text,
     )
     selected_pages = _selected_page_indices(str(source), config)
     manifest: Dict[str, Any] = {
@@ -520,6 +526,7 @@ def _convert_resumable(
                 cancel_requested=cancel_requested,
                 librecad_executable=librecad_executable,
                 searchable_text=searchable_text,
+                editable_text=editable_text,
             )
         except ActivePageCancelled as exc:
             checkpoint.unlink(missing_ok=True)
@@ -571,6 +578,9 @@ def _convert_resumable(
             "delivered": next(iter(delivered)) if len(delivered) == 1 else "mixed",
             "fallback_used": any(bool(item.get("fallback_used")) for item in deliveries),
             "item_count": sum(int(item.get("item_count", 0)) for item in deliveries),
+            "editable_text_item_count": sum(
+                int(item.get("editable_text_item_count", 0)) for item in deliveries
+            ),
             "verified": all(item.get("verified", True) is True for item in deliveries),
             "degraded_item_count": degraded_text["total"],
             "degraded_items": degraded_text["items"],
@@ -585,6 +595,8 @@ def _convert_resumable(
             record.get("text_glyph_codes") or {} for record in records
         ),
         "searchable_text_warning": searchable_text_warning_line(_search_text_block(records)),
+        # The same counts a single-shot run returns, merged across the pages.
+        "searchable_text_companions": _search_text_block(records),
     }
 
 
@@ -602,6 +614,7 @@ def _convert_via_package(
     cancel_requested: Optional[Callable[[], bool]] = None,
     librecad_executable: Optional[str] = None,
     searchable_text: bool = True,
+    editable_text: bool = False,
 ) -> Dict[str, Any]:
     """Full BCS-ARCH-001 pipeline (auto/raster/hybrid + raster pages)."""
     from librecad_pdf_importer.exporters.dxf_exporter import (
@@ -663,6 +676,7 @@ def _convert_via_package(
                     librecad_executable=librecad_executable,
                     provenance_opts=run.config,
                     searchable_text=bool(searchable_text),
+                    librecad_editable_text=bool(editable_text),
                 ),
             )
         except ActivePageCancelled:
@@ -768,6 +782,7 @@ def convert(
     restart_on_resume_mismatch: bool = False,
     librecad_executable: Optional[str] = None,
     searchable_text: bool = True,
+    editable_text: bool = False,
 ) -> Dict[str, Any]:
     """Convert a PDF file to DXF.
 
@@ -783,6 +798,9 @@ def convert(
         Target DXF version (``"R12"`` through ``"R2018"``).
     progress_callback:
         Optional callable receiving status strings during processing.
+    editable_text:
+        "Editable text (LibreCAD font)": deliver visible words as native TEXT
+        drawn in LibreCAD's own font instead of exact outlines. Off by default.
 
     Returns
     -------
@@ -810,6 +828,7 @@ def convert(
             restart_on_resume_mismatch,
             librecad_executable,
             searchable_text,
+            editable_text,
         )
     return _convert_via_package(
         input_path,
@@ -820,4 +839,5 @@ def convert(
         cancel_requested=cancel_requested,
         librecad_executable=librecad_executable,
         searchable_text=searchable_text,
+        editable_text=editable_text,
     )

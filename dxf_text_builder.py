@@ -182,11 +182,19 @@ class TextDeliveryResult:
 
     def to_dict(self) -> Dict[str, Any]:
         for attempt in self.attempts:
+            # The one verified attempt that may lack visual proof: native TEXT
+            # the operator chose to have drawn in LibreCAD's own font
+            # ("Editable text"). Its letter shapes are disclosed as substituted
+            # and stay visual_verified=False; every other proof is required.
+            substitution_accepted = (
+                attempt.evidence.get("parent_native_font_substitution_accepted")
+                is True
+            )
             if attempt.outcome == "verified" and not all(
                 (
                     attempt.type_verified,
                     attempt.delivery_verified,
-                    attempt.visual_verified,
+                    attempt.visual_verified or substitution_accepted,
                     attempt.cleanup_verified,
                 )
             ):
@@ -2465,14 +2473,20 @@ def _attempt_labels(
             str(getattr(text_item, "text", "") or "").strip()
         )
         # A substituted LFF can preserve editable structure, but it cannot
-        # prove the source glyph appearance for visible text.  Only a zero-ink
-        # whitespace span can terminate on this native rung; visible content
-        # must descend to exact outlines (or the next finite fallback).
+        # prove the source glyph appearance for visible text.  By default
+        # only a zero-ink whitespace span can terminate on this native rung;
+        # visible content descends to exact outlines (or the next finite
+        # fallback).  "Editable text (LibreCAD font)" is the operator's
+        # explicit choice to accept LibreCAD's font for visible words: the
+        # substitution stays disclosed per item, never certified as the look.
         accept_librecad_font_substitution = bool(
             parent == "librecad"
             and requested in {"text", "labels"}
             and not is_3d_text
-            and source_content_whitespace_only
+            and (
+                source_content_whitespace_only
+                or bool(getattr(config, "_librecad_editable_text", False))
+            )
         )
         if parent == "librecad":
             lff_evidence = _librecad_lff_evidence(
