@@ -47,6 +47,14 @@ TEXT_MODES = {
 }
 
 DXF_VERSIONS = ("R12", "R2000", "R2004", "R2007", "R2010", "R2013", "R2018")
+LIBRECAD_NOT_FOUND_TIP = (
+    "LibreCAD was not found. Use Locate LibreCAD... to pick LibreCAD.exe once; "
+    "it is remembered."
+)
+LIBRECAD_START_FAILED_TIP = (
+    "LibreCAD could not be started. Use Locate LibreCAD... to pick the right "
+    "LibreCAD.exe; it is remembered."
+)
 DEFAULT_TEXT_LABEL = next(label for label, mode in TEXT_MODES.items() if mode == "text")
 
 
@@ -60,6 +68,8 @@ class ConversionOptions:
     pages: tuple[int, ...] | None
     dxf_version: str
     launch_librecad: bool
+    # The LibreCAD.exe picked with "Locate LibreCAD..." (None: normal lookup).
+    librecad_executable: str | None = None
 
 
 def _file_sha256(path: str) -> str:
@@ -129,6 +139,8 @@ class Pdf2DxfApp(tk.Tk):
 
         self._converting = False
         self._cancel_event = threading.Event()
+        # "Locate LibreCAD..." choice, used even when it could not be saved.
+        self._librecad_choice: str | None = None
         self._build_ui()
         if handoff_path:
             self.protocol("WM_DELETE_WINDOW", self._close_from_librecad_handoff)
@@ -288,6 +300,10 @@ class Pdf2DxfApp(tk.Tk):
             state=tk.DISABLED,
         )
         self._btn_cancel.pack(side=tk.LEFT, padx=4)
+        # Shown only after LibreCAD was not found or could not be started.
+        self._btn_locate_librecad = ttk.Button(
+            action_frame, text="Locate LibreCAD...", command=self._locate_librecad,
+        )
 
         # ---- Progress bar ----
         self._progress = ttk.Progressbar(
@@ -377,6 +393,9 @@ class Pdf2DxfApp(tk.Tk):
     # ------------------------------------------------------------------
     def _capture_options(self) -> ConversionOptions:
         """Read Tk variables once, on the main thread, and reject invalid inputs."""
+        from librecad_pdf_importer.launchers.librecad_launcher import (
+            preferred_librecad_executable,
+        )
         from page_selection import parse_page_selection
 
         try:
@@ -399,6 +418,9 @@ class Pdf2DxfApp(tk.Tk):
             pages=tuple(pages) if pages is not None else None,
             dxf_version=self._var_dxf_ver.get(),
             launch_librecad=self._var_launch_librecad.get(),
+            librecad_executable=preferred_librecad_executable(
+                getattr(self, "_librecad_choice", None)
+            ),
         )
 
     def _start_conversion(self) -> None:
@@ -499,7 +521,12 @@ class Pdf2DxfApp(tk.Tk):
                 find_librecad_executable,
             )
 
-            resolved_librecad_executable = find_librecad_executable() or ""
+            resolved_librecad_executable = (
+                find_librecad_executable(options.librecad_executable) or ""
+            )
+            if not resolved_librecad_executable:
+                # Unbound call: tests drive this worker with a window-less namespace.
+                self.after(0, lambda: Pdf2DxfApp._show_locate_librecad(self))
             stats = convert(
                 input_path=input_path,
                 output_path=output_path,
@@ -568,13 +595,19 @@ class Pdf2DxfApp(tk.Tk):
                     output_path,
                     executable=resolved_librecad_executable,
                 )
-                launch_message = launch_status
-                self._log(launch_status)
-                if not launch_ok:
-                    self._log(
-                        "Tip: Install LibreCAD or set the executable path in "
-                        "librecad_pdf_importer.launchers.librecad_launcher.",
+                if launch_ok:
+                    launch_message = launch_status
+                    self._log(launch_status)
+                else:
+                    launch_message = (
+                        LIBRECAD_START_FAILED_TIP
+                        if resolved_librecad_executable
+                        else LIBRECAD_NOT_FOUND_TIP
                     )
+                    if resolved_librecad_executable:
+                        self._log(launch_status)
+                    self._log(launch_message)
+                    self.after(0, lambda: Pdf2DxfApp._show_locate_librecad(self))
 
             # The sheet exported, so this is a warning, never an error box.
             show_done = messagebox.showwarning if degraded_count else messagebox.showinfo
@@ -682,6 +715,51 @@ class Pdf2DxfApp(tk.Tk):
             except OSError:
                 pass  # the plugin also notices the process exit
         self.destroy()
+
+    def _show_locate_librecad(self) -> None:
+        """Offer "Locate LibreCAD..." once a lookup or a launch failed."""
+        button = getattr(self, "_btn_locate_librecad", None)
+        if button is not None and not button.winfo_manager():
+            button.pack(side=tk.LEFT, padx=4)
+
+    def _locate_librecad(self) -> None:
+        """Let the user point at LibreCAD.exe once; the choice is remembered."""
+        from librecad_pdf_importer.launchers.librecad_launcher import (
+            find_librecad_executable,
+            save_librecad_executable,
+        )
+
+        path = filedialog.askopenfilename(
+            title="Locate LibreCAD.exe",
+            filetypes=[
+                ("LibreCAD program", "LibreCAD.exe"),
+                ("Programs", "*.exe"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        found = find_librecad_executable(path)
+        if not found:
+            messagebox.showwarning(
+                "Locate LibreCAD",
+                f"That file could not be used as LibreCAD:\n{path}",
+            )
+            return
+        self._librecad_choice = found
+        if save_librecad_executable(found):
+            self._log(f"LibreCAD set to {found}. It is remembered for next time.")
+        else:
+            self._log(
+                f"LibreCAD set to {found} for this window. It could not be "
+                "remembered for next time."
+            )
+        if os.environ.get("BCS_LIBRECAD_EXECUTABLE", "").strip():
+            self._log(
+                "Note: the BCS_LIBRECAD_EXECUTABLE setting on this PC still "
+                "chooses LibreCAD while it is set."
+            )
+        self._btn_locate_librecad.pack_forget()
 
     def _install_librecad_menu(self) -> None:
         from librecad_pdf_importer.librecad_plugin_install import (

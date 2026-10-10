@@ -140,3 +140,112 @@ def test_ensure_librecad_menu_plugin_reports_a_missing_dll(
     monkeypatch.setattr(installer, "documents_directory", lambda: tmp_path)
     ok, message = librecad_launcher.ensure_librecad_menu_plugin()
     assert ok is False and "portable ZIP" in message
+
+
+# --- "Locate LibreCAD..." choice: remembered per user, never breaks a run ---
+
+
+def _no_automatic_librecad(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point every automatic lookup place at empty folders."""
+    import librecad_runtime
+
+    monkeypatch.delenv("BCS_LIBRECAD_EXECUTABLE", raising=False)
+    for variable in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
+        folder = tmp_path / ("empty-" + variable.replace("(", "").replace(")", ""))
+        folder.mkdir(exist_ok=True)
+        monkeypatch.setenv(variable, str(folder))
+    monkeypatch.setattr(librecad_runtime.shutil, "which", lambda _name: None)
+
+
+def test_saved_librecad_choice_round_trips_under_localappdata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    assert librecad_launcher.load_saved_librecad_executable() is None
+    assert librecad_launcher.save_librecad_executable("D:/Tools/LibreCAD/LibreCAD.exe")
+    settings = (
+        tmp_path / "local" / "BlueCollarSystems" / "LibreCAD-PDF-Importer" / "settings.json"
+    )
+    assert librecad_launcher.settings_path() == settings
+    assert settings.is_file()
+    assert (
+        librecad_launcher.load_saved_librecad_executable()
+        == "D:/Tools/LibreCAD/LibreCAD.exe"
+    )
+    # Written atomically: no temporary file is left next to it.
+    assert sorted(p.name for p in settings.parent.iterdir()) == ["settings.json"]
+
+
+@pytest.mark.parametrize(
+    "content", ["{not json", "[1, 2]", '{"librecad_executable": 7}', ""],
+)
+def test_corrupt_settings_file_is_ignored(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    content: str,
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    settings = librecad_launcher.settings_path()
+    settings.parent.mkdir(parents=True)
+    settings.write_text(content, encoding="utf-8")
+    assert librecad_launcher.load_saved_librecad_executable() is None
+    # Saving over a corrupt file repairs it.
+    assert librecad_launcher.save_librecad_executable("C:/LC/LibreCAD.exe")
+    assert librecad_launcher.load_saved_librecad_executable() == "C:/LC/LibreCAD.exe"
+
+
+def test_unwritable_settings_never_raise(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file where the settings folder should be", encoding="utf-8")
+    monkeypatch.setenv("LOCALAPPDATA", str(blocker))
+    assert librecad_launcher.save_librecad_executable("C:/LC/LibreCAD.exe") is False
+    assert librecad_launcher.load_saved_librecad_executable() is None
+
+
+def test_saved_librecad_is_found_when_no_automatic_place_has_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_automatic_librecad(tmp_path, monkeypatch)
+    assert librecad_launcher.find_librecad_executable() is None
+    saved = _fake_executable(tmp_path, "unusual-place")
+    assert librecad_launcher.save_librecad_executable(str(saved))
+
+    preferred = librecad_launcher.preferred_librecad_executable()
+    assert librecad_launcher.find_librecad_executable(preferred) == str(saved.resolve())
+
+    popen = Mock()
+    monkeypatch.setattr(librecad_launcher.subprocess, "Popen", popen)
+    dxf_path = tmp_path / "EX101.dxf"
+    dxf_path.write_text("0\nEOF\n", encoding="ascii")
+    ok, _message = librecad_launcher.launch_librecad(str(dxf_path), executable=preferred)
+    assert ok is True
+    popen.assert_called_once_with([str(saved.resolve()), str(dxf_path.resolve())])
+
+
+def test_environment_setting_still_wins_over_the_saved_choice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_automatic_librecad(tmp_path, monkeypatch)
+    saved = _fake_executable(tmp_path, "saved")
+    configured = _fake_executable(tmp_path, "configured")
+    assert librecad_launcher.save_librecad_executable(str(saved))
+    monkeypatch.setenv("BCS_LIBRECAD_EXECUTABLE", str(configured))
+
+    preferred = librecad_launcher.preferred_librecad_executable(str(saved))
+    assert preferred is None
+    assert librecad_launcher.find_librecad_executable(preferred) == str(configured.resolve())
+
+
+def test_stale_saved_choice_falls_back_to_the_normal_lookup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_automatic_librecad(tmp_path, monkeypatch)
+    assert librecad_launcher.save_librecad_executable(str(tmp_path / "gone" / "LibreCAD.exe"))
+    assert librecad_launcher.preferred_librecad_executable() is None

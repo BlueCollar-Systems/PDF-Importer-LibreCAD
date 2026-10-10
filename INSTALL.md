@@ -203,6 +203,15 @@ not remove its gate or relabel parent-native rendering as source-font-exact.
 Keep any same-representation font substitution or Unicode compatibility
 normalization visible in the report.
 
+**The window says "LibreCAD was not found"?** Press `Locate LibreCAD...`
+(it appears next to `Cancel` after the lookup fails) and pick `LibreCAD.exe`
+once. The choice is remembered for your Windows user in
+`%LOCALAPPDATA%\BlueCollarSystems\LibreCAD-PDF-Importer\settings.json`.
+Script and command-line users can instead set the `BCS_LIBRECAD_EXECUTABLE`
+environment variable to the full path of `LibreCAD.exe`; while it is set it
+wins over the remembered choice. `python -m librecad_pdf_importer.cli` also
+takes `--librecad-exe <path>`.
+
 **Plugin menu says launcher not found?** Install the portable ZIP or source
 package, then use `Plugins > PDF Importer Settings...` to point at
 `LibreCAD-PDF-Importer.exe`, `lcpdf-gui.exe`, or `launch_lcpdf_gui.pyw`. Set

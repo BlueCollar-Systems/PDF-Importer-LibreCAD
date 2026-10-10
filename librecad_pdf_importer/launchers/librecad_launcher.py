@@ -1,11 +1,81 @@
 """Locate and launch LibreCAD for generated DXF files."""
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 import subprocess
+import uuid
 from typing import Optional, Tuple
 
 from librecad_runtime import resolve_librecad_installation
+
+# Per-user settings of the converter window ("Locate LibreCAD..." choice).
+SETTINGS_FOLDER = ("BlueCollarSystems", "LibreCAD-PDF-Importer")
+SETTINGS_FILE = "settings.json"
+_LIBRECAD_EXECUTABLE_KEY = "librecad_executable"
+
+
+def settings_path() -> Path:
+    """``%LOCALAPPDATA%\\BlueCollarSystems\\LibreCAD-PDF-Importer\\settings.json``."""
+    base = str(os.environ.get("LOCALAPPDATA", "") or "").strip()
+    if not base:
+        base = str(Path.home() / ("AppData/Local" if os.name == "nt" else ".config"))
+    return Path(base).joinpath(*SETTINGS_FOLDER, SETTINGS_FILE)
+
+
+def _load_settings() -> dict:
+    try:
+        data = json.loads(settings_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_saved_librecad_executable() -> Optional[str]:
+    """The LibreCAD.exe the user picked with "Locate LibreCAD...", or None.
+
+    A missing, unreadable or corrupt settings file never stops a run.
+    """
+    value = _load_settings().get(_LIBRECAD_EXECUTABLE_KEY)
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def save_librecad_executable(executable: str) -> bool:
+    """Remember *executable* for later runs; False when it could not be saved."""
+    path = settings_path()
+    settings = _load_settings()
+    settings[_LIBRECAD_EXECUTABLE_KEY] = str(executable)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(
+            json.dumps(settings, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    except OSError:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def preferred_librecad_executable(session_choice: Optional[str] = None) -> Optional[str]:
+    """The LibreCAD.exe the window should use, or None for the normal lookup.
+
+    ``BCS_LIBRECAD_EXECUTABLE`` always wins (None here lets the lookup read it).
+    Otherwise a choice made in this window, then the remembered choice, as
+    long as that file still exists; a stale choice falls back to the normal
+    lookup instead of hiding an installed LibreCAD.
+    """
+    if str(os.environ.get("BCS_LIBRECAD_EXECUTABLE", "") or "").strip():
+        return None
+    for candidate in (session_choice, load_saved_librecad_executable()):
+        if candidate and Path(candidate).expanduser().is_file():
+            return str(candidate)
+    return None
 
 
 def find_librecad_executable(executable: Optional[str] = None) -> Optional[str]:
