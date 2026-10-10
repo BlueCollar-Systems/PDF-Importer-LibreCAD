@@ -33,8 +33,13 @@ with `text_mode`, `resolved_scale`, `peak_mb`, and raster fallback telemetry.
 
 **Offline install:** The portable ZIP works without internet after download. Source ZIP dev installs may run `preflight_check.py --install` once if `lib/` is empty.
 
-**Scale trust:** use `extra.resolved_scale.factor` only when `confidence >= 0.70` and
-`fallback_reason` is not `no_scale_detected`; otherwise set scale manually in your CAD app.
+**Scale trust:** the report holds the scale read from the sheet as
+`extra.resolved_scale` (single run) or top-level `resolved_scale` (resumable
+run: the GUI and `--resume`). Use its `factor` only when `confidence >= 0.70`
+and `fallback_reason` is not `no_scale_detected`; otherwise set scale manually
+in your CAD app. A trusted scale is also named in the GUI log, the Done box and
+the `pdf2dxf` summary, with the number to put in `Scale` (or `--scale`) for a
+real-size drawing.
 
 **Bad-PDF gate:** LibreCAD converter refuses encrypted/non-PDF/truncated files at open
 (**fail closed**). SketchUp shows the same messages but may proceed on rare gate errors

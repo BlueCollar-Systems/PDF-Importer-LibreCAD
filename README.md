@@ -30,10 +30,17 @@ must substitute descends automatically to visually verified glyph outlines.
 
 ## Import report / scale trust
 
-Conversions write `<output>_import_report.json` with optional `extra.resolved_scale`.
+Every conversion writes `<output>_import_report.json` beside the DXF, and it
+carries the drawing scale read from the sheet: `extra.resolved_scale` for a
+single run, top-level `resolved_scale` for a resumable run (the GUI and
+`--resume`). It is `null` when no scale was found.
 
 - Use `factor` only when `confidence >= 0.70` and `fallback_reason` is not `no_scale_detected`.
 - Otherwise treat scale as unknown in your CAD workflow.
+- When the scale is trusted, the GUI log, the Done box and the `pdf2dxf`
+  summary say it in plain words, for example
+  `Drawing scale found: 1/4" = 1'-0" (98% sure). This DXF is at paper size (millimetres); to draw at real size put 48 in Scale and convert again.`
+  The DXF itself is not rescaled: it stays at paper size times `Scale`.
 
 ## Compatibility
 

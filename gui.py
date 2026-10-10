@@ -561,6 +561,13 @@ class Pdf2DxfApp(tk.Tk):
             self._log(
                 f"  Complete report: {text_delivery.get('report_path', '')}"
             )
+            # The scale read from the title block: the DXF is paper size in mm
+            # unless Scale says otherwise, so tell the fitter the multiplier.
+            from librecad_pdf_importer.importer import drawing_scale_line
+
+            scale_line = drawing_scale_line(stats.get("resolved_scale"), options.scale)
+            if scale_line:
+                self._log(scale_line)
             # Said once, at completion, pages certified by an earlier run included.
             clip_fill_warning = str(stats.get("clip_fill_warning") or "")
             if clip_fill_warning:
@@ -628,6 +635,7 @@ class Pdf2DxfApp(tk.Tk):
                  f"{'yes' if text_delivery.get('fallback_used') else 'no'}\n"
                  f"Complete report: {text_delivery.get('report_path', '')}\n"
                  f"Output: {output_path}"
+                + (f"\n\n{scale_line}" if scale_line else "")
                 + (f"\n\n{clip_fill_warning}" if clip_fill_warning else "")
                 + (f"\n\n{glyph_code_warning}" if glyph_code_warning else "")
                 + (f"\n\n{search_text_warning}" if search_text_warning else "")

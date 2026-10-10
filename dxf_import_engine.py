@@ -313,6 +313,7 @@ def _write_resumable_summary(
         merge_clip_fill_deliveries,
         merge_glyph_code_deliveries,
     )
+    from librecad_pdf_importer.importer import most_confident_scale
 
     output = Path(output_path).expanduser().resolve()
     summary_path = output.with_name(f"{output.stem}_import_report.json")
@@ -367,6 +368,11 @@ def _write_resumable_summary(
         "text_glyph_codes": glyph_code_delivery,
         # What a search-text warning is about; the page reports name the items.
         "searchable_text_companions": search_text,
+        # The drawing scale read from the sheet (most confident page), as the
+        # single-run report's extra.resolved_scale; null when none was found.
+        "resolved_scale": most_confident_scale(
+            record.get("resolved_scale") for record in page_records
+        ),
         "output": str(output),
     }
     _atomic_json(summary_path, payload)
@@ -427,6 +433,7 @@ def _convert_resumable(
         glyph_code_warning_line,
     )
     from librecad_pdf_importer.exporters.dxf_exporter import searchable_text_warning_line
+    from librecad_pdf_importer.importer import most_confident_scale
 
     source = Path(input_path).expanduser().resolve()
     output = Path(output_path).expanduser().resolve()
@@ -530,6 +537,8 @@ def _convert_resumable(
             "searchable_text_companions": dict(
                 page_stats.get("searchable_text_companions") or {}
             ),
+            # Older manifests lack it; such a page reads as "no scale found".
+            "resolved_scale": page_stats.get("resolved_scale"),
             "assets": _dxf_asset_inventory(checkpoint, session_dir),
         }
         _atomic_json(manifest_path, manifest)
@@ -571,6 +580,8 @@ def _convert_resumable(
             record.get("text_glyph_codes") or {} for record in records
         ),
         "searchable_text_warning": searchable_text_warning_line(_search_text_block(records)),
+        # The drawing scale read from the sheet, pages resumed from an earlier run included.
+        "resolved_scale": most_confident_scale(record.get("resolved_scale") for record in records),
     }
 
 
@@ -598,6 +609,7 @@ def _convert_via_package(
         summarize_text_delivery,
     )
     from librecad_pdf_importer.importer import (
+        best_resolved_scale,
         failure_import_report_path,
         run_import,
         terminal_failure_record,
@@ -737,6 +749,8 @@ def _convert_via_package(
             "searchable_text_warning": searchable_text_warning_line(
                 export.searchable_text_companions
             ),
+            # The drawing scale read from the sheet; the report's extra.resolved_scale.
+            "resolved_scale": best_resolved_scale(run.extraction.pages),
         }
     finally:
         run.close()
