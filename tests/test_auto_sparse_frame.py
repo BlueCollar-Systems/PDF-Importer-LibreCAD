@@ -121,3 +121,56 @@ def test_unextracted_ink_on_a_frame_page_still_falls_back_to_raster(tmp_path, mo
         assert page.resolved_mode == "raster"
         assert len(_page_rasters(page)) == 1
         assert "unextracted ink" in str(page.resolved_reason)
+
+
+def _frame_sheet_with_smooth_shading(path: Path) -> Path:
+    """Border + one line + a real smooth shading (PDF ``sh``), no text."""
+
+    document = pymupdf.open()
+    page = document.new_page(width=W, height=H)
+    shape = page.new_shape()
+    shape.draw_rect(pymupdf.Rect(18, 18, W - 18, H - 18))
+    shape.finish(color=(0, 0, 0), width=1)
+    shape.draw_line((72, 200), (540, 200))
+    shape.finish(color=(0, 0, 0), width=0.5)
+    shape.commit()
+    page.clean_contents()
+    shading = document.get_new_xref()
+    document.update_object(
+        shading,
+        "<< /ShadingType 2 /ColorSpace /DeviceGray /Coords [60 0 540 0]"
+        " /Function << /FunctionType 2 /Domain [0 1] /C0 [0.2] /C1 [0.7] /N 1 >>"
+        " /Extend [false false] >>",
+    )
+    document.xref_set_key(page.xref, "Resources/Shading", f"<< /Sh1 {shading} 0 R >>")
+    [contents] = page.get_contents()
+    document.update_stream(
+        contents, document.xref_stream(contents) + b"\nq 60 92 480 280 re W n /Sh1 sh Q\n"
+    )
+    document.save(str(path))
+    document.close()
+    return path
+
+
+def test_a_frame_page_with_a_smooth_shading_keeps_its_picture_and_is_written(tmp_path):
+    """A smooth shading is not delivered as lines yet; a vector page holding
+    one cannot be written, so such a frame page keeps the picture it always
+    got instead of failing the whole file."""
+
+    import pdf2dxf
+    from librecad_pdf_importer.core.document import _page_paints_smooth_shading
+
+    path = _frame_sheet_with_smooth_shading(tmp_path / "shade.pdf")
+    with pymupdf.open(str(path)) as document:
+        assert _page_paints_smooth_shading(document[0])
+    with pymupdf.open(str(_sheet(tmp_path / "plain.pdf"))) as document:
+        assert not _page_paints_smooth_shading(document[0])
+
+    with _extract(path) as extraction:
+        page = extraction.pages[0]
+        assert page.resolved_mode == "raster"
+        assert "smooth shading" in str(page.resolved_reason)
+
+    output = tmp_path / "shade.dxf"
+    assert pdf2dxf.main([str(path), str(output)]) == 0
+    assert output.is_file()
