@@ -11,7 +11,7 @@ import re
 import shutil
 import traceback
 from types import MappingProxyType
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import uuid
 import weakref
 
@@ -62,6 +62,7 @@ from pdfcadcore.primitives import TextCharLayout
 from dxf_text_builder import (
     TextDeliveryAttempt,
     TextDeliveryResult,
+    _RepresentationImpossible,
     _attempt_degraded_text,
     _bbox_tuple,
     _glyph_definition_geometry_fingerprint,
@@ -314,6 +315,8 @@ class DxfExportResult:
     nontext_composites: List[Dict[str, Any]] = field(default_factory=list)
     searchable_text_companions: Dict[str, Any] = field(default_factory=dict)
     ink_color_deliveries: List[Dict[str, Any]] = field(default_factory=list)
+    # DXF R12 has no IMAGE entity: pictures left out, one row per page.
+    r12_pictures_omitted: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -4293,6 +4296,10 @@ def _attempt_terminal_text_raster(
                 None,
             )
 
+        if doc.dxfversion == "AC1009":
+            # Item-scoped, before anything is written: this one item steps
+            # down its ladder (degraded, reported); the page is never stopped.
+            raise _RepresentationImpossible(R12_PICTURES_IMPOSSIBLE)
         safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", delivery.source_id)
         asset_path = asset_root / f"{safe_id}.png"
         image_def = doc.add_image_def(
@@ -4418,7 +4425,9 @@ def _attempt_terminal_text_raster(
                 pass
         attempt.entity_handles = []
         attempt.support_entity_handles = []
-        attempt.outcome = "failed"
+        attempt.outcome = (
+            "impossible" if isinstance(exc, _RepresentationImpossible) else "failed"
+        )
         attempt.cleanup_verified = all(
             doc.entitydb.get(handle) is None
             or not getattr(doc.entitydb.get(handle), "is_alive", True)
@@ -4704,9 +4713,12 @@ def _export_to_dxf_impl(
         if opts.include_text
         else {}
     )
+    # DXF R12 has no IMAGE entity: no picture is staged (no PNG written) and no
+    # page is composited into tiles; each picture steps down to its outline.
+    is_r12_export = _normalize_dxf_version(opts.dxf_version) == "R12"
     staged_image_assets, omitted_image_sources, compositing_pages = (
         _stage_image_assets(extraction, asset_root, asset_transaction)
-        if opts.include_images
+        if opts.include_images and not is_r12_export
         else ({}, set(), set())
     )
     terminal_page_tiles: Dict[int, List[ImagePlacement]] = {}
@@ -4810,6 +4822,7 @@ def _export_to_dxf_impl(
         opts.provenance_opts._source_capsule_deliveries = []  # noqa: B010
         opts.provenance_opts._nontext_composite_deliveries = []  # noqa: B010
         opts.provenance_opts._ink_color_deliveries = []  # noqa: B010
+        opts.provenance_opts._r12_pictures_omitted = []  # noqa: B010
         opts.provenance_opts._librecad_editable_text = bool(  # noqa: B010
             opts.librecad_editable_text
         )
@@ -4887,6 +4900,8 @@ def _export_to_dxf_impl(
     final_paint_expectations = []
     final_paint_stroke_handles = set()
     ink_remaps: Dict[Tuple[int, Tuple[int, int, int]], Dict[str, int]] = {}
+    r12_pictures_omitted: List[Dict[str, Any]] = []
+    r12_invisible_pictures: Dict[str, bool] = {}
     source_paint_keys = {}
     has_source_image_order = False
     for page_position, page in enumerate(extraction.pages, start=1):
@@ -4909,7 +4924,8 @@ def _export_to_dxf_impl(
 
         page_entity_start = len(msp.entity_space.entities)
         paint_order = getattr(page, "image_paint_order", None)
-        if not opts.include_images:
+        if not opts.include_images or is_r12:
+            # R12 holds no picture and no redraw-order table: nothing to order.
             paint_order = None
         if not is_r12:
             capsule_order = (page.capsule_paint_order if opts.include_images else page.capsule_vector_paint_order)
@@ -5525,7 +5541,35 @@ def _export_to_dxf_impl(
                             )
                         )
 
-        if opts.include_images:
+        if opts.include_images and is_r12 and page.images:
+            # Step down, never stop: R12 cannot hold a picture, so each one is
+            # left out and its placed bounds are drawn as a closed outline the
+            # operator can see, counted and reported. Lines and text stay.
+            page_number = int(page.page_data.page_number)
+            omitted_layer = _layer_name(page_number, R12_PICTURES_OMITTED_LAYER, None, opts)
+            omitted_here = 0
+            for placement in page.images:
+                check_cancel(cancel_requested, "active page image build")
+                if _picture_paints_nothing(placement, r12_invisible_pictures):
+                    continue
+                omitted_here += 1
+                corners = _placement_outline_corners(placement, dy)
+                if corners is None:
+                    continue
+                _ensure_layer(doc, omitted_layer, None)
+                msp.add_polyline2d(corners, close=True, dxfattribs={"layer": omitted_layer})
+                for px, py in corners:
+                    _track_xy(px, py)
+                entity_count += 1
+            if omitted_here:
+                r12_pictures_omitted.append(
+                    {
+                        "source_page_number": page_number,
+                        "pictures": omitted_here,
+                        "layer": omitted_layer,
+                    }
+                )
+        elif opts.include_images:
             page_number = int(page.page_data.page_number)
             image_placements = terminal_page_tiles.get(page_number, page.images)
             for image_index, placement in enumerate(image_placements, start=1):
@@ -5923,6 +5967,9 @@ def _export_to_dxf_impl(
         opts.provenance_opts._source_capsule_deliveries = capsule_records  # noqa: B010
         opts.provenance_opts._nontext_composite_deliveries = composite_records  # noqa: B010
         opts.provenance_opts._ink_color_deliveries = _ink_remap_records(ink_remaps)  # noqa: B010
+        opts.provenance_opts._r12_pictures_omitted = [  # noqa: B010
+            dict(row) for row in r12_pictures_omitted
+        ]
         opts.provenance_opts._result_status = "success"  # noqa: B010
         _sync_text_evidence()
 
@@ -5953,7 +6000,72 @@ def _export_to_dxf_impl(
             text_deliveries, enabled=search_text_enabled
         ),
         ink_color_deliveries=_ink_remap_records(ink_remaps),
+        r12_pictures_omitted=[dict(row) for row in r12_pictures_omitted],
     )
+
+
+R12_PICTURES_OMITTED_LAYER = "PICTURES_OMITTED_R12"
+R12_PICTURES_IMPOSSIBLE = "DXF R12 cannot hold pictures"
+
+
+def r12_picture_warning_line(rows: Iterable[Mapping[str, Any]]) -> str:
+    """One line when DXF R12 left pictures out, else ``''``."""
+
+    count = sum(int(row.get("pictures") or 0) for row in rows or ())
+    if not count:
+        return ""
+    return (
+        f"{R12_PICTURES_IMPOSSIBLE}: {count} picture(s) left out; their outlines are "
+        f"on layer P###_{R12_PICTURES_OMITTED_LAYER}. Choose R2010 (the default) "
+        "or newer to keep them."
+    )
+
+
+def _placement_outline_corners(
+    placement: ImagePlacement, page_offset_y: float
+) -> Optional[List[Tuple[float, float]]]:
+    """The four model-space corners a picture would cover, uncropped.
+
+    The same placement an IMAGE gets from ``_image_geometry`` with its whole
+    source pixel grid: insert, insert+U, insert+U+V, insert+V.
+    """
+
+    if placement.affine_model is not None:
+        ix, iy, ux, uy, vx, vy = (float(value) for value in placement.affine_model)
+        iy += page_offset_y
+        corners = [
+            (ix, iy), (ix + ux, iy + uy), (ix + ux + vx, iy + uy + vy), (ix + vx, iy + vy),
+        ]
+    else:
+        x0 = float(placement.x_mm)
+        y0 = float(placement.y_mm) + page_offset_y
+        x1 = x0 + float(placement.width_mm)
+        y1 = y0 + float(placement.height_mm)
+        corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    if not all(math.isfinite(value) for corner in corners for value in corner):
+        return None
+    return corners
+
+
+def _picture_paints_nothing(
+    placement: ImagePlacement, cache: Dict[str, bool]
+) -> bool:
+    """True only for a picture whose pixels are all fully transparent.
+
+    Such a picture is left out of every DXF version (its asset is never
+    staged), so it is not a picture R12 lost either.
+    """
+
+    source_key = _normalized_image_source_path(str(placement.path))
+    if source_key not in cache:
+        try:
+            _size, alpha_kind, _crop, _alpha = _placement_alpha_profile(
+                Path(source_key), [placement]
+            )
+            cache[source_key] = alpha_kind == "zero"
+        except Exception:  # noqa: BLE001 - unreadable: count it as a lost picture
+            cache[source_key] = False
+    return cache[source_key]
 
 
 def _layer_name(

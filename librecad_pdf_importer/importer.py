@@ -253,6 +253,21 @@ def write_import_report(
         if raster_delivery_failure is not None
         else None
     ) or next((p.resolved_reason for p in raster_fallback_pages), None)
+    # DXF R12 cannot hold pictures. Each one was left out (its outline drawn on
+    # P###_PICTURES_OMITTED_R12) instead of losing the whole file: a step-down,
+    # so it is a fallback, a warning, and named in the human summary.
+    r12_pictures_omitted = [
+        dict(row) for row in getattr(run.config, "_r12_pictures_omitted", ()) or ()
+    ]
+    r12_picture_count = sum(int(row.get("pictures") or 0) for row in r12_pictures_omitted)
+    if r12_picture_count:
+        from .exporters.dxf_exporter import r12_picture_warning_line
+
+        fallback_used = True
+        r12_reason = "pictures_omitted_r12: " + r12_picture_warning_line(
+            r12_pictures_omitted
+        )
+        fallback_reason = f"{fallback_reason}; {r12_reason}" if fallback_reason else r12_reason
 
     from pdfcadcore.fitz_loader import sample_process_mb
 
@@ -442,6 +457,8 @@ def write_import_report(
     extra["text_items_degraded_total"] = degraded_text["total"]
     extra["text_items_degraded_truncated"] = degraded_text["truncated"]
     extra["searchable_text_companions"] = search_text
+    if r12_picture_count:
+        extra["pictures_omitted_r12"] = r12_pictures_omitted
     if getattr(run.config, "_librecad_editable_text", False):
         # The operator chose "Editable text (LibreCAD font)": say how many
         # words came in editable and that their letter shapes are LibreCAD's.
@@ -497,6 +514,7 @@ def write_import_report(
             + text_degrade_warnings
             + search_text_warnings
             + glyph_code_warnings
+            + r12_picture_count
         ),
         extra=extra,
     )

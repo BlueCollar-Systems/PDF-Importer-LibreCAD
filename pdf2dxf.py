@@ -330,6 +330,8 @@ def main(argv: list[str] | None = None) -> int:
             )
     if stats.get("clip_fill_warning"):
         _safe_print(str(stats["clip_fill_warning"]), file=sys.stderr)
+    if stats.get("r12_picture_warning"):
+        _safe_print(str(stats["r12_picture_warning"]), file=sys.stderr)
     # The DXF was written (exit code 0), but a degraded text item must be loud.
     text_delivery = dict(stats.get("text_delivery") or {})
     if text_delivery.get("degraded_item_count"):

@@ -497,6 +497,10 @@ class Pdf2DxfApp(tk.Tk):
             clip_fill_warning = str(stats.get("clip_fill_warning") or "")
             if clip_fill_warning:
                 self._log(clip_fill_warning)
+            # DXF R12 cannot hold pictures: they were left out, never the sheet.
+            r12_picture_warning = str(stats.get("r12_picture_warning") or "")
+            if r12_picture_warning:
+                self._log(r12_picture_warning)
             # Text a font delivered as raw glyph codes: recovered characters
             # came from an installed reference face, not from the PDF, and an
             # unproven span is still on the drawing as raw codes. Either way
@@ -555,6 +559,7 @@ class Pdf2DxfApp(tk.Tk):
                  f"Complete report: {text_delivery.get('report_path', '')}\n"
                  f"Output: {output_path}"
                 + (f"\n\n{clip_fill_warning}" if clip_fill_warning else "")
+                + (f"\n\n{r12_picture_warning}" if r12_picture_warning else "")
                 + (f"\n\n{glyph_code_warning}" if glyph_code_warning else "")
                 + (f"\n\n{search_text_warning}" if search_text_warning else "")
                 + (f"\n\n{launch_message}" if launch_message else ""),

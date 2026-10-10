@@ -560,7 +560,10 @@ paint and Normal-blend proof; it does not provide general PDF compositing.
 
 ## DXF Compatibility
 
-- **R12**: Maximum compatibility. No true-color, limited linetypes.
+- **R12**: Maximum compatibility. No true-color, limited linetypes, and no
+  pictures: each picture is left out, its outline is drawn on layer
+  `P###_PICTURES_OMITTED_R12`, and one warning line (log, stderr, report
+  `extra.pictures_omitted_r12`) says how many. The rest of the drawing is kept.
 - **R2000 - R2004**: True-color support, standard linetypes.
 - **R2007 - R2018**: Full feature set including lineweights.
 

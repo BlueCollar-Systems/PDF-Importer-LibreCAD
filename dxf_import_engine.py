@@ -311,6 +311,15 @@ def _search_text_block(page_records: list[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _r12_pictures_rows(page_records: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    """Pictures DXF R12 left out, one row per page, pages resumed included."""
+    return [
+        dict(row)
+        for record in page_records
+        for row in record.get("r12_pictures_omitted") or ()
+    ]
+
+
 def _page_progress(position: int, total: int, record: Dict[str, Any]) -> str:
     """A checkpointed page is announced as certified only when all its text is."""
     degraded = _page_degraded_text_items(record)
@@ -354,6 +363,9 @@ def _write_resumable_summary(
     text_degrade_warnings = int(degraded_text["total"])
     search_text = _search_text_block(page_records)
     search_text_warnings = search_text["failed"] + search_text["mismatch"]
+    # DXF R12 cannot hold pictures: each one left out is a step-down warning.
+    r12_rows = _r12_pictures_rows(page_records)
+    r12_pictures = sum(int(row.get("pictures") or 0) for row in r12_rows)
     payload = {
         "schema": "bcs.resumable_import_report/1.0",
         "result": "complete" if len(page_records) == len(selected_pages) else "cancelled",
@@ -379,12 +391,13 @@ def _write_resumable_summary(
         # proved.
         "warnings": (
             clip_fill_warnings + text_degrade_warnings + search_text_warnings
-            + glyph_code_warnings
+            + glyph_code_warnings + r12_pictures
         ),
         "clip_fill_delivery": clip_fill_delivery,
         "text_glyph_codes": glyph_code_delivery,
         # What a search-text warning is about; the page reports name the items.
         "searchable_text_companions": search_text,
+        "pictures_omitted_r12": {"pictures": r12_pictures, "pages": r12_rows},
         "output": str(output),
     }
     _atomic_json(summary_path, payload)
@@ -445,7 +458,10 @@ def _convert_resumable(
         clip_fill_warning_line,
         glyph_code_warning_line,
     )
-    from librecad_pdf_importer.exporters.dxf_exporter import searchable_text_warning_line
+    from librecad_pdf_importer.exporters.dxf_exporter import (
+        r12_picture_warning_line,
+        searchable_text_warning_line,
+    )
 
     source = Path(input_path).expanduser().resolve()
     output = Path(output_path).expanduser().resolve()
@@ -551,6 +567,9 @@ def _convert_resumable(
             "searchable_text_companions": dict(
                 page_stats.get("searchable_text_companions") or {}
             ),
+            "r12_pictures_omitted": [
+                dict(row) for row in page_stats.get("r12_pictures_omitted") or ()
+            ],
             "assets": _dxf_asset_inventory(checkpoint, session_dir),
         }
         _atomic_json(manifest_path, manifest)
@@ -597,6 +616,8 @@ def _convert_resumable(
         "searchable_text_warning": searchable_text_warning_line(_search_text_block(records)),
         # The same counts a single-shot run returns, merged across the pages.
         "searchable_text_companions": _search_text_block(records),
+        "r12_pictures_omitted": _r12_pictures_rows(records),
+        "r12_picture_warning": r12_picture_warning_line(_r12_pictures_rows(records)),
     }
 
 
@@ -621,6 +642,7 @@ def _convert_via_package(
         DxfExportOptions,
         degraded_text_items,
         export_to_dxf,
+        r12_picture_warning_line,
         searchable_text_warning_line,
         summarize_text_delivery,
     )
@@ -765,6 +787,9 @@ def _convert_via_package(
             "searchable_text_warning": searchable_text_warning_line(
                 export.searchable_text_companions
             ),
+            # DXF R12 cannot hold pictures: what was left out, and one line.
+            "r12_pictures_omitted": [dict(row) for row in export.r12_pictures_omitted],
+            "r12_picture_warning": r12_picture_warning_line(export.r12_pictures_omitted),
         }
     finally:
         run.close()
