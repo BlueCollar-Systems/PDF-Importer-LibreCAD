@@ -436,3 +436,26 @@ def test_locate_librecad_rejects_a_missing_file(tmp_path, monkeypatch):
     warning.assert_called_once()
     assert app._librecad_choice is None
     assert not (tmp_path / "local").exists()
+
+
+def test_failed_lookup_without_launch_explains_the_button_once(tmp_path):
+    app = _app_without_window(tmp_path)
+    app._btn_locate_librecad = Mock(winfo_manager=Mock(return_value=""))
+    options = gui.Pdf2DxfApp._capture_options(app)
+    with patch("dxf_import_engine.convert", return_value={}), patch(
+        "pdf_open_guard.precheck_pdf",
+    ), patch(
+        "librecad_pdf_importer.launchers.librecad_launcher.find_librecad_executable",
+        return_value=None,
+    ), patch(
+        "librecad_pdf_importer.launchers.librecad_launcher.launch_librecad",
+    ) as launch, patch.object(gui.messagebox, "showinfo") as info:
+        gui.Pdf2DxfApp._run_conversion(
+            app, str(tmp_path / "drawing.pdf"), str(tmp_path / "drawing.dxf"), options,
+        )
+    launch.assert_not_called()
+    logged = [str(call.args[0]) for call in app._log.call_args_list]
+    assert logged.count(gui.LIBRECAD_NOT_FOUND_TIP) == 1
+    # Not something the user asked for, so the Done box stays about the drawing.
+    assert gui.LIBRECAD_NOT_FOUND_TIP not in info.call_args.args[1]
+    app._btn_locate_librecad.pack.assert_called()

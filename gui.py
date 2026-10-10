@@ -645,6 +645,9 @@ class Pdf2DxfApp(tk.Tk):
                         self._log(launch_status)
                     self._log(launch_message)
                     self.after(0, lambda: Pdf2DxfApp._show_locate_librecad(self))
+            if not resolved_librecad_executable and not launch_message:
+                # No launch was asked for, but the button that appeared needs a reason.
+                self._log(LIBRECAD_NOT_FOUND_TIP)
 
             # The sheet exported, so this is a warning, never an error box.
             show_done = messagebox.showwarning if degraded_count else messagebox.showinfo
