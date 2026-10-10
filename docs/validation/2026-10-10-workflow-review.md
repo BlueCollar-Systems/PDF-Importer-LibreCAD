@@ -19,9 +19,14 @@ and font binding. No publication or installed portable release was changed.
   Same-family subsets with different glyph IDs no longer invalidate one another.
   Character glyph IDs retain their occurrence-bound trace identity. Source
   absence, incomplete occurrence evidence and ambiguity remain explicit failures.
-  The two shared modules and their manifests were synchronized with Blender and
+  The three shared modules and their manifests were synchronized with Blender and
   FreeCAD; their regression tests include distinct programs painting the same
   Unicode character in a normal page and inside a Form.
+- Native inferred spaces retain their original layout without inventing a
+  painted glyph ID. This requires native synthetic-space flags, no matching
+  painted occurrence, an exact original font binding, and an empty original
+  U+0020 glyph. Positive and negative tests cover original SFNT and raw CFF
+  programs, visible spaces, missing encoding, and incomplete occurrence evidence.
 
 ## Validation
 
@@ -33,6 +38,12 @@ and font binding. No publication or installed portable release was changed.
   **78 passed, 6 skipped**.
 - Wider text representation, fractions, control-glyph and font environment
   checks: **382 passed, 7 skipped, 9 subtests passed**.
+- Final source binding, native source quads, zero-ink control glyphs and
+  positioned-fraction delivery: **202 passed** after the synthetic-space and
+  original CFF proof refinements, including rejection of a competing painted
+  space even when its trace count matches the inferred occurrence. Additional
+  final font/fallback/environment
+  checks: **223 passed, 6 skipped**.
 - Ruff, whitespace checks, runtime self-test and shared-core synchronization passed.
 
 ## Real-input findings and boundaries
@@ -44,12 +55,17 @@ source bytes before the font repair. That run truthfully marked the page
 degraded: 289 text items used raster patches because same-name Helvetica
 programs collided. After the repair, source extraction bound **340 of 340 text
 spans** to their actual font programs with zero font failures. Complete repaired
-DXF delivery completed in **368.74 seconds**: page 1 certified, **339 spans
+DXF delivery initially completed in **368.74 seconds**. The settled export after
+partial-census, original CFF, and competing-paint proof refinements completed in **195.72
+seconds**: page 1 certified, **339 spans
 delivered as editable Glyphs and one as native Text**, zero degraded or
-unverified text items, and unchanged source SHA-256. The increased time relative
-to the degraded baseline reflects real vector delivery rather than raster
-patches; this repair makes no speedup claim. This is converter/reopen evidence,
-not a complete native LibreCAD/PDF visual comparison.
+unverified text items, and unchanged source SHA-256. Timing varies with system
+load and this repair makes no speedup claim. Real vector delivery costs more
+than raster patches on this sample. This is converter/reopen evidence,
+not a complete native LibreCAD/PDF visual comparison. The final DXF reopened
+with 12,867 modelspace entities including searchable companions; its audit had
+zero errors and zero repairs. A sanitized snapshot is in
+[`2026-10-10-large-page-probe.json`](2026-10-10-large-page-probe.json).
 
 A different 103,902-byte sheet exceeded a 300-second conversion bound. A bounded
 stack probe located outline construction and geometry-bound checks; file size

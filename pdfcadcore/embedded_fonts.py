@@ -690,7 +690,31 @@ def _page_program_glyph_maps(page, source_text=None):
     mappings, ambiguous = {}, set()
     for key, chars in characters.items():
         glyphs = occurrences.get(key, ())
+        native_synthetic = []
+        if key[1] == 32:
+            for _, char in chars:
+                flags = char.get("source_stext_flags")
+                if (char.get("c") == " " and isinstance(flags, int)
+                        and not isinstance(flags, bool) and flags & 4):
+                    native_synthetic.append(char)
+        if native_synthetic and glyphs:
+            # Native inferred spacing did not paint. A competing paint at the
+            # same identity/origin cannot become its glyph, even when raw and
+            # trace census counts happen to match one-to-one.
+            for _, char in chars:
+                char["source_font_binding_verified"] = False
+                char["source_synthetic_spacing"] = False
+                char.pop("source_trace_glyph_id", None)
+            continue
         if len(chars) != len(glyphs) or len({digest for digest, _ in chars}) != 1:
+            if len(chars) == 1 and not glyphs and native_synthetic:
+                char = chars[0][1]
+                # MuPDF explicitly marked this as inferred spacing, not
+                # painted text. Retain its semantic gap and original quad,
+                # without inventing a trace glyph ID. Host builders still
+                # require the exact font's space to have no visible ink.
+                char["source_synthetic_spacing"] = True
+                continue
             for _, char in chars:
                 # Printable characters without a complete trace occurrence
                 # must not borrow a same-family program's glyph later. The
@@ -773,6 +797,38 @@ class EmbeddedFontCatalog:
         self._assets = MappingProxyType(dict(assets))
         self._failures = MappingProxyType(dict(failures))
         self._candidates = tuple(candidates) or tuple(self._assets.values())
+        self._empty_space_proofs = {}
+
+    def _original_space_is_empty(self, asset):
+        digest = asset.source_sha256
+        if digest not in self._empty_space_proofs:
+            verified = False
+            try:
+                from fontTools.ttLib import TTFont
+                from fontTools.pens.boundsPen import BoundsPen
+
+                if str(asset.source_format).lower().lstrip(".") == "cff":
+                    # Wrap only the original CFF encoding/charstrings. The
+                    # general usable-font path requires a PDF Unicode census
+                    # for raw CFF, which an unpainted synthetic space lacks.
+                    original = _cff_to_otf(asset.source_bytes, asset.base_font_name)
+                else:
+                    _, original, _ = _usable_font(
+                        asset.source_bytes, asset.source_format, asset.base_font_name, {}
+                    )
+                with TTFont(BytesIO(original), lazy=False) as font:
+                    name = (font.getBestCmap() or {}).get(32)
+                    if name:
+                        glyphs = font.getGlyphSet()
+                        pen = BoundsPen(glyphs)
+                        glyphs[name].draw(pen)
+                        advance = float(font["hmtx"].metrics[name][0])
+                        verified = pen.bounds is None and math.isfinite(advance) and advance >= 0
+            except (AssertionError, AttributeError, ImportError, KeyError, OSError,
+                    RuntimeError, TypeError, ValueError, struct.error):
+                pass
+            self._empty_space_proofs[digest] = verified
+        return self._empty_space_proofs[digest]
 
     @property
     def assets(self) -> tuple[EmbeddedFontAsset, ...]:
@@ -829,6 +885,15 @@ class EmbeddedFontCatalog:
         if reason:
             return None, EmbeddedFontFailure(
                 self.page_number, name, reason,
+                proof_category="source_font_binding_unverified_for_item",
+            )
+        synthetic = tuple(c for c in chars if c.get("source_synthetic_spacing") is True)
+        if synthetic and not self._original_space_is_empty(matches[0]):
+            for char in synthetic:
+                char["source_synthetic_spacing"] = False
+                char["source_font_binding_verified"] = False
+            return None, EmbeddedFontFailure(
+                self.page_number, name, "synthetic_space_zero_ink_unverified",
                 proof_category="source_font_binding_unverified_for_item",
             )
         candidates = tuple(sorted({(a.source_xref, a.resource_name) for a in matches}))

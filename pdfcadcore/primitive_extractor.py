@@ -791,6 +791,8 @@ def _character_layout(line, span, font, to_model, glyph_queues):
             source_font_binding_verified=char.get("source_font_binding_verified") is True,
             source_font_character_codepoint=char.get("source_font_character_codepoint"),
             source_glyph_trace_codepoint=trace_codepoint,
+            source_stext_flags=char.get("source_stext_flags"),
+            source_synthetic_spacing=char.get("source_synthetic_spacing") is True,
         ))
     return tuple(layouts)
 
@@ -887,6 +889,8 @@ def _raw_text_with_source_quads(page):
                         char.font, fitz.mupdf, font_digests
                     )
                     metrics["source_font_character_codepoint"] = int(char.c)
+                    if hasattr(char, "flags"):
+                        metrics["source_stext_flags"] = int(char.flags)
                     queues.setdefault(key, deque()).append((quad, metrics))
     except (AttributeError, ImportError, RuntimeError, TypeError, ValueError):
         return page.get_text("rawdict")

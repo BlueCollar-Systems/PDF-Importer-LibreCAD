@@ -92,6 +92,8 @@ class TextCharLayout:
     source_font_binding_verified: bool = False
     source_font_character_codepoint: Optional[int] = None
     source_glyph_trace_codepoint: Optional[int] = None
+    source_stext_flags: Optional[int] = None
+    source_synthetic_spacing: bool = False
 
 
 @dataclass
