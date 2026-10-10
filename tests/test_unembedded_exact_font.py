@@ -30,7 +30,11 @@ def test_exact_installed_face_is_attempted_before_item_raster(mode):
     result = builder.build_text(item, doc.modelspace(), "TEXT", ImportConfig(text_mode=mode),
         target_app="librecad", dxf_version="R2010", return_delivery_result=True)
     assert result.verified
-    expected = "geometry" if mode == "geometry" else "glyphs"
+    expected = (
+        "text" if mode in {"text", "labels", "3d_text"}
+        else "geometry" if mode == "geometry"
+        else "glyphs"
+    )
     assert result.final_representation == expected
     assert not result.terminal_fallback_authorized
     assert list(doc.modelspace())

@@ -639,7 +639,7 @@ def test_sheet_without_a_failing_item_is_unchanged(tmp_path, text_mode) -> None:
         assert set(delivery) - {"search_text"} == _PRE_CHANGE_DELIVERY_KEYS
         assert delivery["verified"] is True
         assert all(attempt["outcome"] != "degraded" for attempt in delivery["attempts"])
-    expected_type = {"text": "INSERT", "glyphs": "INSERT", "raster": "IMAGE"}.get(text_mode)
+    expected_type = {"text": "TEXT", "glyphs": "INSERT", "raster": "IMAGE"}.get(text_mode)
     text_entities = [
         entity for entity in drawing.modelspace() if entity.dxf.layer == "P001_TEXT"
     ]
@@ -1094,9 +1094,8 @@ def test_unwritable_failure_report_never_hides_the_original_failure_or_its_exit_
 def test_report_carries_the_rescue_reason_code_beside_the_sheets_verified_fallbacks(
     tmp_path,
 ) -> None:
-    # LibreCAD's default Text mode: every visible item is a VERIFIED text -> glyphs
-    # fallback, and fallback.text describes those. The rescued item's reason code
-    # must reach the report all the same, or scoring cannot tell the two apart.
+    # Default Text mode keeps the other spans as editable text. The rescued
+    # item's reason code must still reach the report on its own.
     pdf_path = _write_pdf(tmp_path / "D042-mixed.pdf")
     result, report, _drawing, ids = _export(
         tmp_path, "mixed", pdf_path, text_mode="text", faults=[_fail_one_item(raises=True)]
@@ -1105,9 +1104,7 @@ def test_report_carries_the_rescue_reason_code_beside_the_sheets_verified_fallba
     rescued = {"requested": "text", "delivered": "raster",
                "reason": "item_degraded_after_unproven_failure", "count": 1}
     assert report["fallback"]["used"] is True
-    assert report["fallback"]["text"] == {
-        "requested": "text", "delivered": "glyphs",
-        "reason": "requested_representation_failed_verification", "count": 2}
+    assert report["fallback"]["text"] == rescued
     assert report["fallback"]["text_items_degraded"] == [rescued]
     assert rescued in result.text_fallbacks
     [entry] = report["extra"]["text_items_degraded"]
@@ -1115,16 +1112,13 @@ def test_report_carries_the_rescue_reason_code_beside_the_sheets_verified_fallba
     records = {item["source_id"]: item
                for item in report["extra"]["text_representation_delivery"]["items"]}
     assert records[ids[_TARGET]]["fallback_reason_code"] == rescued["reason"]
-    # A verified fallback is not a rescue and carries no rescue code.
+    # Editable text is not a rescue and carries no rescue code.
     assert "fallback_reason_code" not in records[ids["D042 SAMPLE"]]
-    # The one-sentence reason and the human summary name the rescue too: APPENDED
-    # to the verified fallbacks' wording, which this default mode always has.
     assert report["fallback"]["reason"] == (
-        "text_mode_fallback: text -> glyphs (requested_representation_failed_verification); "
+        "text_mode_fallback: text -> raster (item_degraded_after_unproven_failure); "
         "text_items_degraded: 1 x text -> raster (item_degraded_after_unproven_failure)"
     )
     summary = report["extra"]["human_summary"]
-    assert "text mode fallback: text -> glyphs" in summary
     assert "1 x text -> raster (item degraded after unproven failure)" in summary
 
 
@@ -1136,10 +1130,10 @@ def test_default_text_mode_summary_says_that_an_item_was_dropped(tmp_path) -> No
         faults=[_fail_one_item(unrepresentable), _no_item_raster()],
     )
 
-    assert report["fallback"]["text"]["delivered"] == "glyphs"  # the verified fallbacks
-    assert report["fallback"]["reason"].startswith("text_mode_fallback: text -> glyphs (")
-    assert report["fallback"]["reason"].endswith(
-        "; text_items_degraded: 1 x text -> none (item_degraded_after_unproven_failure)"
+    assert report["fallback"]["text"]["delivered"] == "none"
+    assert report["fallback"]["reason"] == (
+        "text_mode_fallback: text -> none (item_degraded_after_unproven_failure); "
+        "text_items_degraded: 1 x text -> none (item_degraded_after_unproven_failure)"
         "; 1 dropped from the drawing"
     )
     summary = report["extra"]["human_summary"]

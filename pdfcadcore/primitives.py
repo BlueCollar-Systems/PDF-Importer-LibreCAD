@@ -60,6 +60,9 @@ class Primitive:
     # counters. They are never independent faces or circle-fit candidates.
     clip_fill_group_id: Optional[str] = None
     clip_fill_even_odd: bool = False
+    # PDF even-odd fill of one drawing (a donut, a letter counter). Subpaths
+    # that share source_draw_order must be one fill, not stacked solid faces.
+    fill_even_odd: bool = False
     # Original PDF paint survives separately from legacy RGB composited on white.
     # Native compositors need these values when later paint overlaps earlier ink.
     source_stroke_color: Optional[Tuple[float, float, float]] = None

@@ -42,7 +42,7 @@ class TestLcGuiProfessionalImport(unittest.TestCase):
         )
         self.assertNotIn("editable native TEXT", self.source)
         self.assertNotIn("3D Text (TEXT with thickness)", self.source)
-        self.assertIn('"Glyphs (grouped outlines)": "glyphs"', self.source)
+        self.assertIn('"Match PDF letter shapes": "glyphs"', self.source)
         self.assertIn('"Geometry (raw outlines)": "geometry"', self.source)
         self.assertIn('"Raster (exact item pixels)": "raster"', self.source)
 
@@ -52,8 +52,9 @@ class TestLcGuiProfessionalImport(unittest.TestCase):
 
     def test_librecad_2d_disclaimer_present(self) -> None:
         self.assertIn("LibreCAD is 2D", self.source)
-        self.assertIn("Visible Text normally becomes verified outlines", self.source)
-        self.assertIn("Any fallback or unverified item is listed", self.source)
+        self.assertIn("become editable LibreCAD text", self.source)
+        self.assertIn("Match PDF letter shapes", self.source)
+        self.assertIn("the report says so", self.source)
 
     def test_explicit_geometry_selection_has_no_confirmation_roadblock(self) -> None:
         self.assertNotIn("messagebox.askokcancel(", self.source)

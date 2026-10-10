@@ -670,6 +670,11 @@ def _extract_document_impl(
                 if auto_type in {"glyph_flood", "fill_art", "raster_candidate"}:
                     effective_mode = "raster"
                     resolved_reason = f"{auto_type}: {auto_decision.get('reason','')}"
+                elif auto_type == "empty":
+                    # A blank sheet is not a scan. Images, if any, are placed
+                    # below; visible ink with no vectors still falls back later.
+                    effective_mode = "vector"
+                    resolved_reason = auto_decision.get("reason") or "No vector drawings"
                 else:
                     effective_mode = "vector"
                     resolved_reason = auto_decision.get("reason") or "Standard vector content"
@@ -815,7 +820,14 @@ def _extract_document_impl(
                         )
                     has_text = bool(page_data.text_items)
                     vector_empty = not page_data.primitives and not has_text
-                    if opts.raster_fallback and (vector_empty or _looks_like_page_frame_only(page_data)) and not images:
+                    blank_page = (
+                        vector_empty
+                        and not _looks_like_page_frame_only(page_data)
+                        and not _page_has_visible_ink(page)
+                    )
+                    if blank_page:
+                        resolved_reason = "Blank page -- nothing to draw"
+                    elif opts.raster_fallback and (vector_empty or _looks_like_page_frame_only(page_data)) and not images:
                         rendered, raster_failure_detail = _render_page_raster_safely(
                             page,
                             page_number,
@@ -1074,7 +1086,7 @@ def _classify_auto_page(
     if not drawings:
         if text_blocks_count > 0 or text_words_count > 0:
             return {"type": "text_only", "reason": "No vector drawings; preserving extractable text."}
-        return {"type": "raster_candidate", "reason": "No vector drawings."}
+        return {"type": "empty", "reason": "No vector drawings."}
 
     total = len(drawings)
     has_fill = 0
@@ -1178,6 +1190,25 @@ def _primitive_bbox_area_ratio(prim, page_area_mm2: float) -> float:
     except (TypeError, ValueError):
         return 0.0
     return 0.0
+
+
+def _page_has_visible_ink(page) -> bool:
+    """True when a low-resolution render is not blank paper.
+
+    Used only after vector extraction found nothing and no image was placed.
+    A blank sheet stays a blank sheet. A scan or a page whose vectors could
+    not be read still becomes a raster. Missing pixmap support fails open so
+    older bindings keep the previous fallback.
+    """
+    get_pixmap = getattr(page, "get_pixmap", None)
+    if not callable(get_pixmap):
+        return True
+    try:
+        pixmap = get_pixmap(dpi=18, alpha=False, colorspace=fitz.csGRAY)
+        samples = pixmap.samples
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return True
+    return any(sample < 250 for sample in samples)
 
 
 def _looks_like_page_frame_only(page_data: PageData) -> bool:

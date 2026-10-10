@@ -4,6 +4,9 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
+- Editable text stays text. Choosing Text, Labels, or 3D Text now writes LibreCAD TEXT that you can edit, using LibreCAD's own font. The report says the font was substituted. Letter shapes that must match the PDF are still available as Match PDF letter shapes. Symbol fonts and characters LibreCAD cannot draw stay outlines.
+- A rectangular clip now cuts the lines and curves drawn inside it. An even-odd fill with a hole stays empty in the middle. A blank page stays blank instead of becoming a full-page picture. Smooth open curves are stored as splines.
+
 - LibreCAD menu entry: the Windows portable ZIP ships `librecad-plugin/bc_lcpdf_menu.dll` (LibreCAD 2.2.x, Qt 5.15.2 MSVC x64). The GUI's **Install LibreCAD menu entry...** copies it to `Documents\LibreCAD\plugins`; LibreCAD then shows **Plugins > Import PDF (BlueCollar)...**, which runs the unchanged importer GUI and opens the finished DXF in that LibreCAD (or inserts it into the current drawing). New `--librecad-handoff` GUI mode; conversion output is unchanged. CI builds, load-tests (QPluginLoader) and round-trips the plugin and requires reproducible bytes.
 
 ## 1.0.103 - 2026-09-22

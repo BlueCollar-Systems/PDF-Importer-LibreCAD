@@ -88,6 +88,9 @@ def test_real_pdf_clip_removes_only_invisible_stroke_and_preserves_source(rotati
         raw = page.get_drawings(extended=True)
         retained = get_clip_aware_drawings(page)
         assert [row["seqno"] for row in retained] == [1, 2]
-        partial = next(row for row in raw if row.get("seqno") == 1)
-        assert retained[0]["items"] == partial["items"]
+        # The line that crosses the rectangle is cut to that rectangle.
+        # The line drawn after the clip ends is kept as written.
+        assert retained[0]["bcs_stroke_clipped_to"] == "rectangle"
+        outside = next(row for row in raw if row.get("seqno") == 2)
+        assert retained[1]["items"] == outside["items"]
     assert hashlib.sha256(original).hexdigest() == digest

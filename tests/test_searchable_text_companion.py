@@ -1,10 +1,9 @@
 """Owner decision 2026-09-19: LibreCAD importer output is SEARCHABLE.
 
-The v1.0.81 guarantee stands: a visibly substituted LibreCAD LFF font is never
-certified as delivered Text -- glyph outlines are the visual truth. So every
-span whose string is not in the file (outlines, raw geometry, raster patch,
-reported drop) gets ONE hidden native TEXT with the exact source string on the
-frozen, non-plotting layer ``P###_TEXT_SEARCH``. The companion certifies
+Editable Text, Labels, and flat 3D Text already carry the source string, so
+they need no hidden companion. Outlines, raw geometry, a raster patch, or a
+reported drop still get ONE hidden native TEXT with the exact source string
+on the frozen, non-plotting layer ``P###_TEXT_SEARCH``. The companion certifies
 nothing: no delivery field, count or TEXTMODE-1 bucket changes, and a companion
 that fails costs that companion only (a warning), never the item or the sheet.
 
@@ -272,22 +271,20 @@ def test_each_outlined_or_rastered_span_gets_one_hidden_text_and_certifies_nothi
     assert on.report["extra"]["import_contract_ready"]["ready"] is True
 
 
-def test_default_text_mode_keeps_outlines_as_the_truth_and_adds_the_search_layer(tmp_path) -> None:
-    # Text mode still descends to outlines (v1.0.81); "labels" no longer means
-    # "nothing searchable". Whitespace is already a TEXT: no companion.
+def test_text_and_labels_are_editable_text_so_they_need_no_search_companion(tmp_path) -> None:
+    # The string is already a visible TEXT entity. The frozen search layer is
+    # for outlines, geometry, and raster, which glyphs mode still exercises.
     pdf_path = _write_pdf(tmp_path / "D042-text.pdf", (*_LINES, "   "))
     for text_mode in ("text", "labels"):
         sheet = _export(tmp_path / text_mode, pdf_path, text_mode=text_mode)
-        assert sorted(entity.dxf.text for entity in _companions(sheet.drawing)) == sorted(_LINES)
-        for text in _LINES:
-            assert sheet.by_text[text]["final_representation"] == "glyphs"
-            assert sheet.by_text[text]["verified"] is True
-        whitespace = sheet.by_text["   "]
-        assert whitespace["final_representation"] == "text"
-        assert whitespace["search_text"] == {
-            "status": "not_needed", "handle": None, "layer": None, "content": "   ",
-        }
-        assert sheet.result.searchable_text_companions["written"] == 3
+        assert _companions(sheet.drawing) == []
+        for text in (*_LINES, "   "):
+            delivery = sheet.by_text[text]
+            assert delivery["final_representation"] == "text"
+            assert delivery["verified"] is True
+            assert delivery["search_text"]["status"] == "not_needed"
+            assert delivery["search_text"]["content"] == text
+        assert sheet.result.searchable_text_companions["written"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -890,7 +887,8 @@ def test_lost_companion_is_a_warning_in_batch_and_qa_smoke_and_fails_neither(
         batch_code = batch_cli.main()
         batch_err = capsys.readouterr().err
         monkeypatch.setattr(sys, "argv", [
-            "qa_smoke", str(pdf_path), "--mode", "vector", "--json", str(tmp_path / "qa.json"),
+            "qa_smoke", str(pdf_path), "--mode", "vector", "--text-mode", "glyphs",
+            "--json", str(tmp_path / "qa.json"),
         ])
         qa_code = qa_smoke.main()
         capsys.readouterr()

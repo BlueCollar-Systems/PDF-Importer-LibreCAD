@@ -504,6 +504,7 @@ def extract_page(
                 area=area, page_number=page_num,
                 clip_fill_group_id=clip_fill_group,
                 clip_fill_even_odd=bool(clip_fill_group and path_group.get("even_odd", False)),
+                fill_even_odd=bool(path_group.get("even_odd", False)),
                 source_stroke_color=source_stroke,
                 source_fill_color=source_fill,
                 stroke_opacity=_source_paint_opacity(path_group.get("stroke_opacity")),
