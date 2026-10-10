@@ -181,3 +181,160 @@ def test_gui_accepts_all_as_written_in_the_validation_message(tmp_path):
     app = _app_without_window(tmp_path)
     app._var_pages.get.return_value = " All "
     assert app._capture_options().pages is None
+
+
+# --- The output follows the PDF, and an existing drawing is never replaced silently ---
+
+
+class _Var:
+    """A tk.StringVar stand-in for window-less tests."""
+
+    def __init__(self, value: str = "") -> None:
+        self.value = value
+
+    def get(self) -> str:
+        return self.value
+
+    def set(self, value: str) -> None:
+        self.value = value
+
+
+def _browse_app(input_value: str = "", output_value: str = ""):
+    return SimpleNamespace(_var_input=_Var(input_value), _var_output=_Var(output_value))
+
+
+def test_output_follows_each_newly_browsed_pdf(tmp_path):
+    first = (tmp_path / "D042" / "EX101.pdf").as_posix()
+    second = (tmp_path / "D100" / "MXT-100.pdf").as_posix()
+    app = _browse_app()
+    with patch.object(gui.filedialog, "askopenfilename", return_value=first):
+        gui.Pdf2DxfApp._browse_input(app)
+    assert app._var_output.get() == (tmp_path / "D042" / "EX101.dxf").as_posix()
+    with patch.object(gui.filedialog, "askopenfilename", return_value=second):
+        gui.Pdf2DxfApp._browse_input(app)
+    assert app._var_input.get() == second
+    assert app._var_output.get() == (tmp_path / "D100" / "MXT-100.dxf").as_posix()
+
+
+def test_output_the_user_picked_stays_when_another_pdf_is_browsed(tmp_path):
+    first = (tmp_path / "D042" / "EX101.pdf").as_posix()
+    second = (tmp_path / "D100" / "MXT-100.pdf").as_posix()
+    custom = (tmp_path / "out" / "combined.dxf").as_posix()
+    app = _browse_app()
+    with patch.object(gui.filedialog, "askopenfilename", return_value=first):
+        gui.Pdf2DxfApp._browse_input(app)
+    with patch.object(gui.filedialog, "asksaveasfilename", return_value=custom):
+        gui.Pdf2DxfApp._browse_output(app)
+    with patch.object(gui.filedialog, "askopenfilename", return_value=second):
+        gui.Pdf2DxfApp._browse_input(app)
+    assert app._var_input.get() == second
+    assert app._var_output.get() == custom
+
+
+def test_cancelled_browse_changes_nothing(tmp_path):
+    app = _browse_app("C:/jobs/D042/EX101.pdf", "C:/jobs/D042/EX101.dxf")
+    with patch.object(gui.filedialog, "askopenfilename", return_value=""):
+        gui.Pdf2DxfApp._browse_input(app)
+    assert app._var_input.get() == "C:/jobs/D042/EX101.pdf"
+    assert app._var_output.get() == "C:/jobs/D042/EX101.dxf"
+
+
+def _write_session(output: Path, *, source_sha256: str, output_sha256: str | None) -> None:
+    import json
+
+    session = output.with_name(f"{output.stem}_resume")
+    session.mkdir(parents=True, exist_ok=True)
+    manifest = {"schema": "bcs.librecad_resume/1.0", "source_sha256": source_sha256}
+    if output_sha256 is not None:
+        manifest["assembled"] = {"output_sha256": output_sha256}
+    (session / "session.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def _sha(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_existing_drawing_without_session_asks_and_no_keeps_it(tmp_path):
+    app = _app_without_window(tmp_path)
+    output = tmp_path / "drawing.dxf"
+    output.write_bytes(b"0\nSECTION\n999\nUSER EDIT KEEP ME\n0\nEOF\n")
+    before = output.read_bytes()
+    with patch.object(gui.threading, "Thread") as thread, patch.object(
+        gui.messagebox, "askyesno", return_value=False,
+    ) as ask:
+        gui.Pdf2DxfApp._start_conversion(app)
+    ask.assert_called_once()
+    assert ask.call_args.args[0] == "Replace drawing?"
+    assert "drawing.dxf already exists. Replace it?" in ask.call_args.args[1]
+    thread.assert_not_called()
+    app._log_text.delete.assert_not_called()
+    assert not app._converting
+    assert output.read_bytes() == before
+
+
+def test_existing_drawing_yes_replaces_it(tmp_path):
+    app = _app_without_window(tmp_path)
+    (tmp_path / "drawing.dxf").write_bytes(b"old drawing")
+    with patch.object(gui.threading, "Thread") as thread, patch.object(
+        gui.messagebox, "askyesno", return_value=True,
+    ) as ask:
+        gui.Pdf2DxfApp._start_conversion(app)
+    ask.assert_called_once()
+    thread.return_value.start.assert_called_once()
+    assert app._converting
+
+
+def test_untouched_output_of_the_same_pdf_resumes_without_asking(tmp_path):
+    app = _app_without_window(tmp_path)
+    output = tmp_path / "drawing.dxf"
+    output.write_bytes(b"assembled by the importer")
+    _write_session(
+        output,
+        source_sha256=_sha(tmp_path / "drawing.pdf"),
+        output_sha256=_sha(output),
+    )
+    assert gui.output_replace_reason(str(tmp_path / "drawing.pdf"), str(output)) is None
+    with patch.object(gui.threading, "Thread") as thread, patch.object(
+        gui.messagebox, "askyesno",
+    ) as ask:
+        gui.Pdf2DxfApp._start_conversion(app)
+    ask.assert_not_called()
+    thread.return_value.start.assert_called_once()
+
+
+def test_output_made_from_a_different_pdf_asks(tmp_path):
+    app = _app_without_window(tmp_path)
+    output = tmp_path / "drawing.dxf"
+    output.write_bytes(b"assembled from another PDF")
+    _write_session(output, source_sha256="0" * 64, output_sha256=_sha(output))
+    with patch.object(gui.threading, "Thread") as thread, patch.object(
+        gui.messagebox, "askyesno", return_value=False,
+    ) as ask:
+        gui.Pdf2DxfApp._start_conversion(app)
+    ask.assert_called_once()
+    assert "drawing.dxf was made from a different PDF" in ask.call_args.args[1]
+    thread.assert_not_called()
+
+
+def test_output_edited_after_import_asks(tmp_path):
+    output = tmp_path / "drawing.dxf"
+    app = _app_without_window(tmp_path)
+    output.write_bytes(b"assembled by the importer")
+    _write_session(
+        output,
+        source_sha256=_sha(tmp_path / "drawing.pdf"),
+        output_sha256=_sha(output),
+    )
+    output.write_bytes(b"assembled by the importer\nUSER EDIT KEEP ME\n")
+    assert (
+        gui.output_replace_reason(str(tmp_path / "drawing.pdf"), str(output))
+        == "was changed after it was imported"
+    )
+
+
+def test_missing_output_never_asks(tmp_path):
+    assert gui.output_replace_reason(
+        str(tmp_path / "drawing.pdf"), str(tmp_path / "missing.dxf"),
+    ) is None

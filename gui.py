@@ -8,6 +8,8 @@ converter.  Uses *ttk* widgets for a modern look.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import math
 import re
@@ -16,6 +18,7 @@ import threading
 import time
 import tkinter as tk
 from dataclasses import dataclass
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 # Ensure project root is on sys.path
@@ -57,6 +60,49 @@ class ConversionOptions:
     pages: tuple[int, ...] | None
     dxf_version: str
     launch_librecad: bool
+
+
+def _file_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def output_replace_reason(input_path: str, output_path: str) -> str | None:
+    """Why converting would replace a drawing the user may want to keep.
+
+    ``None`` when the output does not exist yet, or when it is the untouched
+    result of importing this same PDF (Convert / Resume of that job stays one
+    click). Otherwise a short plain reason that follows the file name, e.g.
+    ``"EX101.dxf was made from a different PDF"``. The resume session sits next
+    to the output exactly as dxf_import_engine names it.
+    """
+    try:
+        output = Path(output_path).expanduser().resolve()
+        if not output.is_file():
+            return None
+    except OSError:
+        return None
+    manifest_path = output.with_name(f"{output.stem}_resume") / "session.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "already exists"
+    if not isinstance(manifest, dict):
+        return "already exists"
+    try:
+        source_sha256 = _file_sha256(str(Path(input_path).expanduser().resolve()))
+        output_sha256 = _file_sha256(str(output))
+    except OSError:
+        return "already exists"
+    if manifest.get("source_sha256") != source_sha256:
+        return "was made from a different PDF"
+    assembled = manifest.get("assembled")
+    if not isinstance(assembled, dict) or assembled.get("output_sha256") != output_sha256:
+        return "was changed after it was imported"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -277,9 +323,19 @@ class Pdf2DxfApp(tk.Tk):
             filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
         )
         if path:
+            old_input = self._var_input.get().strip()
+            output = self._var_output.get().strip()
             self._var_input.set(path)
-            # Auto-populate output if empty
-            if not self._var_output.get():
+            # The output follows the PDF while it still holds the name filled in
+            # for the previous PDF; a name the user picked or typed stays put.
+            auto_output = (
+                os.path.splitext(old_input)[0] + ".dxf" if old_input else ""
+            )
+            if not output or (
+                auto_output
+                and os.path.normcase(os.path.normpath(output))
+                == os.path.normcase(os.path.normpath(auto_output))
+            ):
                 self._var_output.set(os.path.splitext(path)[0] + ".dxf")
 
     def _browse_output(self) -> None:
@@ -368,6 +424,17 @@ class Pdf2DxfApp(tk.Tk):
             options = self._capture_options()
         except (ValueError, PdfOpenError) as exc:
             messagebox.showwarning("Check conversion settings", str(exc))
+            return
+
+        # Never write over another drawing, or over edits saved into this one,
+        # without asking first.
+        replace_reason = output_replace_reason(input_path, output_path)
+        if replace_reason and not messagebox.askyesno(
+            "Replace drawing?",
+            f"{os.path.basename(output_path)} {replace_reason}. Replace it?\n\n"
+            "Choose No to keep it, then pick another name with the Browse... "
+            "button next to Output DXF.",
+        ):
             return
 
         self._converting = True
