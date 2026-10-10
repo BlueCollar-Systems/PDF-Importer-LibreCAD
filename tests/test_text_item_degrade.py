@@ -560,7 +560,10 @@ def test_post_write_verification_rejects_a_dropped_record_that_owns_a_live_entit
 
     dropped = next(item for item in deliveries if item.get("dropped"))
     live = _by_id(result)[ids["D042 SAMPLE"]]["entity_handles"][0]
-    dropped["attempts"] = [dict(dropped["attempts"][0], created_entity_handles=[live])]
+    original_attempt = dict(dropped["attempts"][0])
+    dropped["attempts"] = [dict(original_attempt, referenced_entity_handles=["STYLE"])]
+    real_verify(drawing, deliveries, trusted_positioned_session=sessions[-1])
+    dropped["attempts"] = [dict(original_attempt, created_entity_handles=[live])]
     with pytest.raises(RuntimeError, match="dropped item owns live handles"):
         real_verify(drawing, deliveries, trusted_positioned_session=sessions[-1])
 

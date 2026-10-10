@@ -1153,12 +1153,15 @@ def _row_bounds(row):
 
 
 def apply_rectangular_stroke_clips(rows):
-    """Cut stroked (and unresolved filled) paths to active rectangular clips.
+    """Cut stroked paths to active rectangular clips.
 
     PyMuPDF reports the clip and the unclipped path as separate rows. A line
     or curve drawn inside a rectangular clip was imported at full length, so
-    ink appeared outside the window. Non-rectangular clips are left unchanged:
-    clipping them to the scissor box would invent a different shape.
+    ink appeared outside the window. Filled paths are left for the fill
+    resolver. Replacing a rectangle fill with line segments drops the fill
+    and can hand the extractor endpoints it cannot read. Non-rectangular
+    clips are left unchanged: clipping them to the scissor box would invent
+    a different shape.
     """
     active = []
     output = []
@@ -1170,6 +1173,9 @@ def apply_rectangular_stroke_clips(rows):
                 active.append((level, None))
             else:
                 active.append((level, _rectangular_clip_path(row)))
+            output.append(row)
+            continue
+        if row.get("type") != "s":
             output.append(row)
             continue
         if (

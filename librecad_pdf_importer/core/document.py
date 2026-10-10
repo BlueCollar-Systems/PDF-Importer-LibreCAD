@@ -644,7 +644,15 @@ def _extract_document_impl(
                 opts.progress_callback,
                 f"Extracting source page {page_number} ({page_position}/{len(pages)})",
             )
-            page = doc.load_page(page_number - 1)
+            try:
+                page = doc.load_page(page_number - 1)
+            except Exception as exc:
+                if "cycle in page tree" in str(exc).lower():
+                    raise ValueError(
+                        "This PDF's page list refers to itself in a loop, "
+                        f"so page {page_number} cannot be read."
+                    ) from exc
+                raise
             effective_mode = mode
             resolved_reason = ""
             # Every mode fetches the rows here (still once per page), so a clipped
@@ -1659,6 +1667,44 @@ def _inline_image_page_fidelity_marker(
     )
 
 
+def _image_mask_rgba(gray):
+    """Turn a decoded image mask into black ink with a transparent background.
+
+    PDF image masks paint where the sample is 0 and leave the page alone
+    otherwise. Hosts that cannot stencil still get a transparent picture,
+    and a binary mask sends the page through the existing page-picture path.
+    """
+    width, height = int(gray.width), int(gray.height)
+    stride = int(getattr(gray, "stride", width) or width)
+    raw = memoryview(gray.samples)
+    out = bytearray(width * height * 4)
+    for y in range(height):
+        row = raw[y * stride: y * stride + width]
+        for x, sample in enumerate(row):
+            if sample == 0:
+                out[(y * width + x) * 4 + 3] = 255
+    return fitz.Pixmap(fitz.csRGB, width, height, bytes(out), True)
+
+
+def _pixmap_for_xobject(doc: fitz.Document, xref: int):
+    """Load one image, including a stencil whose pixmap has no color space."""
+    pixmap = fitz.Pixmap(doc, xref)
+    if getattr(pixmap, "colorspace", None) is not None:
+        return pixmap
+    extracted = doc.extract_image(xref)
+    image_bytes = extracted.get("image") if isinstance(extracted, dict) else None
+    if not image_bytes:
+        raise RuntimeError("image has no colorspace and no decoded bytes")
+    decoded = fitz.Pixmap(bytes(image_bytes))
+    if (
+        int(decoded.n) == 1
+        and not decoded.alpha
+        and getattr(decoded, "colorspace", None) is not None
+    ):
+        return _image_mask_rgba(decoded)
+    return decoded
+
+
 def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
                     options: ExtractionOptions, image_dir: Optional[Path]) -> List[ImagePlacement]:
     placements: list[ImagePlacement] = []
@@ -1693,7 +1739,7 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
         seen.add(image_key)
 
         try:
-            base_pix = fitz.Pixmap(doc, xref)
+            base_pix = _pixmap_for_xobject(doc, xref)
             pix = base_pix
             if smask > 0 and not base_pix.alpha:
                 # Only merge when PyMuPDF handed back an opaque image. When the

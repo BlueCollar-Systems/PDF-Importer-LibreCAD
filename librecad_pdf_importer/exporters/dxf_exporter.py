@@ -139,6 +139,26 @@ _POSITIONED_GEOMETRY_PROOF_FIELDS = frozenset(
 _SOURCE_DASH_APPID = "BCS_SOURCE_DASH"
 
 
+def _visible_ink_attribs(doc, attribs):
+    """Keep a dashed stroke on a layer the drawing actually shows.
+
+    White knockout fills share a layer that is turned off so they do not cover
+    a dark canvas. A dash on that same layer is real ink (its color is already
+    rewritten to black) and must not be hidden, or the whole import stops.
+    """
+    layer_name = str(attribs.get("layer") or "")
+    if not layer_name or not doc.layers.has_entry(layer_name):
+        return attribs
+    layer = doc.layers.get(layer_name)
+    if not layer.is_off() and not layer.is_frozen():
+        return attribs
+    visible_name = f"{layer_name}_INK"[:255]
+    _ensure_layer(doc, visible_name, (0.0, 0.0, 0.0))
+    updated = dict(attribs)
+    updated["layer"] = visible_name
+    return updated
+
+
 def _add_source_dash_block(doc, layout, primitive, proof, attribs, dy):
     name = f"BCS_DASH_{primitive.page_number}_{primitive.id}"
     if name in doc.blocks:
@@ -1598,29 +1618,27 @@ def _verify_serialized_text_deliveries(
         source_ids.add(source_id)
         degraded = delivery.get("degraded") is True
         if degraded and delivery.get("dropped") is True:
-            # A dropped item is reported, not delivered: it must own nothing.
+            # A dropped item is reported, not delivered. A failed attempt may
+            # still name a shared text style. That style is not ink. What must
+            # not remain is a modelspace entity this item created.
             attempts = [
                 attempt
                 for attempt in delivery.get("attempts") or []
                 if isinstance(attempt, dict)
             ]
-            if (
-                representation
-                or any(
-                    owner.get(key)
-                    for owner in (delivery, *attempts)
-                    for key in (
-                        "entity_handles",
-                        "support_entity_handles",
-                        "referenced_entity_handles",
-                    )
+            live_handles = [
+                str(handle)
+                for owner in (delivery, *attempts)
+                for key in (
+                    "entity_handles",
+                    "support_entity_handles",
+                    "referenced_entity_handles",
+                    "created_entity_handles",
                 )
-                or any(
-                    modelspace_handle_counts.get(str(handle), 0)
-                    for attempt in attempts
-                    for handle in attempt.get("created_entity_handles") or []
-                )
-            ):
+                for handle in owner.get(key) or []
+                if modelspace_handle_counts.get(str(handle), 0)
+            ]
+            if representation or live_handles:
                 raise RuntimeError(
                     f"serialized text delivery {source_id}: dropped item owns live handles"
                 )
@@ -4960,6 +4978,7 @@ def _export_to_dxf_impl(
 
             source_dash = getattr(page, "source_line_dashes", {}).get(primitive.id)
             if opts.map_dashes and source_dash is not None and (not source_dash.dots_model or not is_r12):
+                attribs = _visible_ink_attribs(doc, attribs)
                 expected = _add_source_dash_block(doc, msp, primitive, source_dash, attribs, dy)
                 source_dash_expectations.append(expected)
                 for point in primitive.points:

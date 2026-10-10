@@ -71,6 +71,51 @@ class TestPdfOpenGate(unittest.TestCase):
             finally:
                 doc.close()
 
+    def test_blank_password_encryption_is_still_locked(self) -> None:
+        import pymupdf as fitz
+
+        with tempfile.TemporaryDirectory(prefix="lc_open_gate_") as tmp:
+            path = Path(tmp) / "locked.pdf"
+            document = fitz.open()
+            document.new_page()
+            document.save(
+                path,
+                encryption=fitz.PDF_ENCRYPT_AES_256,
+                owner_pw="owner-secret",
+                user_pw="",
+            )
+            document.close()
+            with self.assertRaises(PdfOpenError) as ctx:
+                safe_open(str(path))
+            self.assertEqual(ctx.exception.reason, "password_protected")
+            self.assertIn("password-protected", str(ctx.exception))
+
+    def test_page_list_loop_is_a_plain_error(self) -> None:
+        import pymupdf as fitz
+
+        from librecad_pdf_importer.core.document import ExtractionOptions, extract_document
+
+        with tempfile.TemporaryDirectory(prefix="lc_open_gate_") as tmp:
+            path = Path(tmp) / "cycle.pdf"
+            document = fitz.open()
+            document.new_page(width=100, height=100)
+            document.save(path)
+            document.close()
+            document = fitz.open(path)
+            parent = int(document.xref_get_key(document[0].xref, "Parent")[1].split()[0])
+            document.update_object(
+                parent,
+                f"<< /Type /Pages /Kids [{parent} 0 R] /Count 1 >>",
+            )
+            cycled = Path(tmp) / "cycled.pdf"
+            document.save(cycled, garbage=0, deflate=False, incremental=False)
+            document.close()
+            path = cycled
+            with self.assertRaises(ValueError) as ctx:
+                extract_document(str(path), ExtractionOptions(import_images=False, import_text=False))
+            self.assertIn("page list refers to itself", str(ctx.exception))
+            self.assertNotIn("FzErrorFormat", str(ctx.exception))
+
     def test_safe_open_reads_only_the_header_before_path_delegation(self) -> None:
         with tempfile.TemporaryDirectory(prefix="lc_open_gate_") as tmp:
             path = Path(tmp) / "large—drawing.pdf"
