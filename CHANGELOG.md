@@ -4,6 +4,8 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
+- Current main is included with the control-audit fixes. Identical coincident font-trace passes still bind that glyph. A partial census whose traces disagree still refuses to borrow another program's glyph. The installed-wheel check builds with the setuptools backend named in the project file.
+
 - Drawings that used to stop now come through, on top of the control-audit fixes. A shaded fill stays a picture instead of aborting the file. A rectangular clip cuts lines and leaves solid fills as fills. An even-odd fill keeps its hole. A smooth open curve is stored as a spline. A scan made of a photo plus a stencil mask comes in. A page list that loops on itself is reported in plain language. A PDF that opens only because its password is blank is still reported as locked. One character that shares a painted position with the next letter no longer rejects the whole sheet. A dashed line on a hidden white mask layer is moved to a visible layer. A word that cannot be drawn no longer rejects the sheet just because the attempt mentioned a shared text style. Editable text still leaves a symbol font as outlines.
 
 - LibreCAD menu entry: the Windows portable ZIP ships `librecad-plugin/bc_lcpdf_menu.dll` (LibreCAD 2.2.x, Qt 5.15.2 MSVC x64). The GUI's **Install LibreCAD menu entry...** copies it to `Documents\LibreCAD\plugins`; LibreCAD then shows **Plugins > Import PDF (BlueCollar)...**, which runs the unchanged importer GUI and opens the finished DXF in that LibreCAD (or inserts it into the current drawing). New `--librecad-handoff` GUI mode; conversion output is unchanged. CI builds, load-tests (QPluginLoader) and round-trips the plugin and requires reproducible bytes.
