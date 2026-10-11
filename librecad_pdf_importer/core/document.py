@@ -476,6 +476,9 @@ class ExtractionOptions:
     image_dir: Optional[str] = None
     cancel_requested: Optional[Callable[[], bool]] = None
     progress_callback: Optional[Callable[[str], None]] = None
+    # False when the target file cannot hold pictures (DXF R12): Auto then
+    # keeps a page's lines instead of sending the page to a picture alone.
+    pictures_supported: bool = True
 
 
 def _prepare_vector_page_data(page_data: PageData, options: ExtractionOptions) -> None:
@@ -732,27 +735,28 @@ def _extract_document_impl(
                 and not preserve_requested_text
             ):
                 if _looks_like_text_cloud_page(len(page_data.primitives), len(page_data.text_items)):
-                    effective_mode = "raster"
-                    resolved_reason = "Text-cloud page -- fallback to raster"
-                elif _looks_like_page_frame_only(page_data):
-                    # A border near the paper edge is perfectly good vector
-                    # content. The page goes to a picture only on evidence that
-                    # the extractor missed ink (a cheap coarse render shows
-                    # ink no delivered line, text or picture accounts for).
-                    if _page_paints_smooth_shading(page):
-                        # A smooth shading is not delivered as lines yet, and a
-                        # vector page holding one cannot be written today: keep
-                        # the picture route such a page always had.
+                    if opts.pictures_supported:
                         effective_mode = "raster"
-                        resolved_reason = "Page frame with a smooth shading -- fallback to raster"
+                        resolved_reason = "Text-cloud page -- fallback to raster"
                     else:
-                        missed_ink = _frame_page_unextracted_ink_ratio(page, page_data, opts)
-                        if missed_ink > FRAME_PAGE_MISSED_INK_RATIO:
-                            effective_mode = "raster"
-                            resolved_reason = (
-                                "Page frame with unextracted ink "
-                                f"({missed_ink:.1%} of the page) -- fallback to raster"
-                            )
+                        # The target (DXF R12) cannot hold the page picture,
+                        # so a picture-only page would arrive as an empty
+                        # outline. Keep its lines; the picture is still
+                        # offered, and the exporter outlines and reports it.
+                        effective_mode = "hybrid"
+                        resolved_reason = (
+                            "Text-cloud page -- fallback: the target cannot hold a "
+                            "page picture, so the page's lines are kept"
+                        )
+                elif _looks_like_page_frame_only(page_data) and _page_paints_smooth_shading(page):
+                    # A smooth shading is not delivered as lines yet, and a
+                    # vector page holding one cannot be written today: keep
+                    # the picture route such a page always had. Any other
+                    # frame page stays lines (and text); the vector branch
+                    # below lays a page picture under them only on evidence
+                    # that the extractor missed ink.
+                    effective_mode = "raster"
+                    resolved_reason = "Page frame with a smooth shading -- fallback to raster"
                 if effective_mode == "raster":
                     if _has_viable_vector_content(page_data):
                         retained_content = (list(page_data.primitives), list(page_data.text_items))
@@ -831,9 +835,21 @@ def _extract_document_impl(
                         )
                     has_text = bool(page_data.text_items)
                     vector_empty = not page_data.primitives and not has_text
-                    # Only an empty page gets a page picture here: on a page
-                    # with lines or text it would just duplicate them.
-                    if opts.raster_fallback and vector_empty and not images:
+                    # A page picture here goes to an empty page, or under the
+                    # lines and text of a frame page (a border near the paper
+                    # edge plus a few items) that shows ink the extractor
+                    # missed -- e.g. a pattern fill: a cheap coarse render is
+                    # the evidence. Otherwise it would just duplicate them.
+                    missed_ink = 0.0
+                    if (
+                        opts.raster_fallback
+                        and not vector_empty
+                        and not images
+                        and _looks_like_page_frame_only(page_data)
+                    ):
+                        missed_ink = _frame_page_unextracted_ink_ratio(page, page_data, opts)
+                    frame_missed_ink = missed_ink > FRAME_PAGE_MISSED_INK_RATIO
+                    if opts.raster_fallback and (vector_empty or frame_missed_ink) and not images:
                         rendered, raster_failure_detail = _render_page_raster_safely(
                             page,
                             page_number,
@@ -863,9 +879,21 @@ def _extract_document_impl(
                             else:
                                 page_raster_job_pixels += rendered_pixels
                                 images.append(rendered)
-                                effective_mode = "raster"
-                                resolved_reason = "Vector empty -- raster fallback"
                                 raster_failure_detail = ""
+                                if vector_empty:
+                                    effective_mode = "raster"
+                                    resolved_reason = "Vector empty -- raster fallback"
+                                else:
+                                    # The lines and text stay editable; the
+                                    # picture under them carries what they miss.
+                                    # "fallback" in the reason marks the step-down
+                                    # for the import report.
+                                    effective_mode = "hybrid"
+                                    resolved_reason = (
+                                        "Page frame with unextracted ink "
+                                        f"({missed_ink:.1%} of the page) -- fallback: "
+                                        "page picture kept under the lines and text"
+                                    )
             elif effective_mode in {"raster", "hybrid"}:
                 raster_failure_detail = "image delivery disabled"
 

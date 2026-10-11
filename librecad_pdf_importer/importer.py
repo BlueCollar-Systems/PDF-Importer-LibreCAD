@@ -241,12 +241,14 @@ def write_import_report(
     raster_fallback_pages = [
         page
         for page in pages
-        if (page.resolved_mode or "") == "raster"
+        if (page.resolved_mode or "") in {"raster", "hybrid"}
         and "fallback" in str(page.resolved_reason or "").lower()
     ]
     # Raster is an exact outcome when the user requested Raster or Auto chose
     # it as the appropriate page strategy. It is a fallback only when the
-    # extraction record identifies a real failed/secondary transition.
+    # extraction record identifies a real failed/secondary transition. A
+    # hybrid page counts too when a page picture was laid under its lines
+    # because the extractor missed ink (its reason says "fallback").
     fallback_used = bool(raster_fallback_pages) or raster_delivery_failure is not None
     fallback_reason = (
         getattr(raster_delivery_failure, "resolved_reason", None)
@@ -661,6 +663,7 @@ def run_import(pdf_path: str, mode: str = "auto",
         arc_sampling_pts=cfg.arc_sampling_pts,
         cancel_requested=cfg._cancel_requested,
         progress_callback=cfg._progress_callback,
+        pictures_supported=bool(incoming.get("_pictures_supported", True)),
     )
 
     extraction = extract_document(pdf_path, opts)

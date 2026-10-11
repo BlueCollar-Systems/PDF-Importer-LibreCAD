@@ -565,6 +565,11 @@ paint and Normal-blend proof; it does not provide general PDF compositing.
   pictures: each picture is left out, its outline is drawn on layer
   `P###_PICTURES_OMITTED_R12`, and one warning line (log, stderr, report
   `extra.pictures_omitted_r12`) says how many. The rest of the drawing is kept.
+  A bordered sheet with ink the importer cannot turn into lines (for example a
+  pattern fill) keeps its lines and text in every version, with a page picture
+  laid under them for the missing ink; at R12 that picture is the one left out.
+  A sheet with a smooth colour shading still comes in as a page picture only,
+  so at R12 it is just the outline.
 - **R2000 - R2004**: True-color support, standard linetypes.
 - **R2007 - R2018**: Full feature set including lineweights.
 

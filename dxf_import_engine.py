@@ -672,6 +672,8 @@ def _convert_via_package(
         "import_report_path": report_path,
         "_cancel_requested": cancel_requested,
         "_progress_callback": progress_callback,
+        # DXF R12 cannot hold pictures: Auto keeps a page's lines instead.
+        "_pictures_supported": str(dxf_version or "").strip().upper() != "R12",
     }
     t0 = time.perf_counter()
     _log(f"Using package pipeline for mode={config.import_mode}...")
