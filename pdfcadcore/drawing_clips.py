@@ -1008,6 +1008,243 @@ def summarize_clip_fill_issues(issues):
     return "; ".join(parts) + f" (drawing order {seqnos}" + (f" and {more} more" if more > 0 else "") + ")"
 
 
+def _clip_segment(start, end, box):
+    """Liang-Barsky clip of one segment to an axis-aligned rectangle."""
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    parameters = ((-dx, start[0] - box[0]), (dx, box[2] - start[0]),
+                  (-dy, start[1] - box[1]), (dy, box[3] - start[1]))
+    u0, u1 = 0.0, 1.0
+    for direction, distance in parameters:
+        if abs(direction) < 1e-15:
+            if distance < 0.0:
+                return None
+            continue
+        t = distance / direction
+        if direction < 0.0:
+            if t > u1:
+                return None
+            if t > u0:
+                u0 = t
+        else:
+            if t < u0:
+                return None
+            if t < u1:
+                u1 = t
+    return (
+        (start[0] + u0 * dx, start[1] + u0 * dy),
+        (start[0] + u1 * dx, start[1] + u1 * dy),
+    )
+
+
+def _clip_open_chain(points, box):
+    """Clip an open polyline. A gap starts a new piece."""
+    pieces = []
+    current = []
+    for start, end in zip(points, points[1:], strict=False):
+        clipped = _clip_segment(start, end, box)
+        if clipped is None:
+            if len(current) >= 2:
+                pieces.append(current)
+            current = []
+            continue
+        left, right = clipped
+        if current and math.hypot(current[-1][0] - left[0], current[-1][1] - left[1]) > 1e-6:
+            pieces.append(current)
+            current = [left, right]
+        elif not current:
+            current = [left, right]
+        else:
+            current.append(right)
+    if len(current) >= 2:
+        pieces.append(current)
+    return pieces
+
+
+def _stroke_chains(items):
+    """Open chains in drawing order. None when an item cannot be clipped safely."""
+    chains = []
+    current = []
+
+    def flush():
+        nonlocal current
+        if len(current) >= 2:
+            chains.append(current)
+        current = []
+
+    for item in items:
+        kind = item[0]
+        if kind == "re":
+            flush()
+            box = _rect(item[1])
+            if box is None:
+                return None
+            chains.append([
+                (box[0], box[1]), (box[2], box[1]), (box[2], box[3]),
+                (box[0], box[3]), (box[0], box[1]),
+            ])
+            continue
+        if kind == "l" and len(item) >= 3:
+            points = [_xy(item[1]), _xy(item[2])]
+        elif kind == "c" and len(item) >= 5:
+            start = _xy(item[1])
+            points = [start, *_flatten_cubic(start, _xy(item[2]), _xy(item[3]), _xy(item[4]))]
+        else:
+            return None
+        if current and current[-1] != points[0]:
+            flush()
+        if not current:
+            current.extend(points)
+        else:
+            current.extend(points[1:])
+    flush()
+    return chains
+
+
+def _stroke_sample_point(items):
+    for item in items:
+        for part in item[1:]:
+            if hasattr(part, "x") and not isinstance(part, (tuple, list)):
+                return part
+    return None
+
+
+def _line_items(points, sample=None):
+    """Line items whose points match the source row's point type."""
+
+    def point(xy):
+        if sample is None:
+            return (float(xy[0]), float(xy[1]))
+        return _like_point(sample, float(xy[0]), float(xy[1]))
+
+    return [
+        ("l", point(points[index]), point(points[index + 1]))
+        for index in range(len(points) - 1)
+    ]
+
+
+def _bounds_of_points(chains):
+    xs, ys = [], []
+    for chain in chains:
+        for x, y in chain:
+            xs.append(x)
+            ys.append(y)
+    if not xs:
+        return None
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _rectangular_clip_path(row):
+    """A single rectangle clip, or None when the clip shape is not a rectangle."""
+    items = row.get("items") or []
+    if len(items) == 1 and items[0][0] == "re":
+        return _rect(row.get("scissor")) or _rect(items[0][1])
+    return None
+
+
+def _row_bounds(row):
+    rect = _rect(row.get("rect"))
+    if rect is not None:
+        return rect
+    chains = _stroke_chains(row.get("items") or [])
+    if not chains:
+        return None
+    return _bounds_of_points(chains)
+
+
+def apply_rectangular_stroke_clips(rows):
+    """Cut stroked paths to active rectangular clips.
+
+    PyMuPDF reports the clip and the unclipped path as separate rows. A line
+    or curve drawn inside a rectangular clip was imported at full length, so
+    ink appeared outside the window. Filled paths are left for the fill
+    resolver. Replacing a rectangle fill with line segments drops the fill
+    and can hand the extractor endpoints it cannot read. Non-rectangular
+    clips are left unchanged: clipping them to the scissor box would invent
+    a different shape.
+    """
+    active = []
+    output = []
+    for row in rows:
+        level = int(row.get("level") or 0)
+        active = [(clip_level, window) for clip_level, window in active if clip_level < level]
+        if row.get("type") == "clip":
+            if any(window is None for _, window in active):
+                active.append((level, None))
+            else:
+                active.append((level, _rectangular_clip_path(row)))
+            output.append(row)
+            continue
+        if row.get("type") != "s":
+            output.append(row)
+            continue
+        if (
+            not active
+            or row.get("bcs_compound_clip_fill")
+            or row.get("bcs_clip_fill_resolution")
+            or (row.get("color") is None and row.get("fill") is None)
+        ):
+            output.append(row)
+            continue
+        if any(window is None for _, window in active):
+            output.append(row)
+            continue
+        window = None
+        for _, rect in active:
+            window = rect if window is None else _intersection(window, rect)
+            if window is None:
+                break
+        if window is None:
+            continue
+        bounds = _row_bounds(row)
+        if bounds is not None and _contains(window, bounds, tolerance=_COVER_TOLERANCE):
+            output.append(row)
+            continue
+        items = row.get("items") or []
+        sample_point = _stroke_sample_point(items)
+        closed = bool(row.get("closePath")) or row.get("fill") is not None or any(
+            item[0] == "re" for item in items
+        )
+        if closed:
+            try:
+                contours, _curved = _contours(items)
+            except (TypeError, ValueError, IndexError):
+                output.append(row)
+                continue
+            pieces = []
+            for contour in contours:
+                clipped = _clip_contour(list(contour), window)
+                if len(clipped) >= 3:
+                    ring = list(clipped)
+                    if ring[0] != ring[-1]:
+                        ring.append(ring[0])
+                    pieces.append(ring)
+        else:
+            chains = _stroke_chains(items)
+            if chains is None:
+                output.append(row)
+                continue
+            pieces = []
+            for chain in chains:
+                pieces.extend(_clip_open_chain(chain, window))
+        if not pieces:
+            continue
+        new_items = []
+        for piece in pieces:
+            new_items.extend(_line_items(piece, sample_point))
+        if not new_items:
+            continue
+        replacement = dict(row)
+        replacement["items"] = new_items
+        replacement["rect"] = _like_rect(row.get("rect") or row.get("scissor"), _bounds_of_points(pieces))
+        replacement["closePath"] = bool(closed and len(pieces) == 1 and pieces[0][0] == pieces[0][-1])
+        replacement["bcs_stroke_clipped_to"] = "rectangle"
+        output.append(replacement)
+    if isinstance(rows, ClipAwareDrawings):
+        return ClipAwareDrawings(output, rows.clip_fill_issues)
+    return output
+
+
 def get_clip_aware_drawings(page):
     """Fetch extended drawing rows once, including the PDF clipping context."""
     extended = True
@@ -1022,4 +1259,11 @@ def get_clip_aware_drawings(page):
         extended = False
     from .page_paint_bounds import page_visible_drawings
     # page_visible_drawings removes paint rows only; every clip and group row survives it.
-    return resolve_covered_clip_fills(page_visible_drawings(page, rows), rows_from_page=extended)
+    # Stroke clipping has to run while those clip rows are still present.
+    # resolve_covered_clip_fills then uses the same rows for filled clips and
+    # drops the structural clip rows from the paint list.
+    visible = page_visible_drawings(page, rows)
+    return resolve_covered_clip_fills(
+        apply_rectangular_stroke_clips(visible),
+        rows_from_page=extended,
+    )

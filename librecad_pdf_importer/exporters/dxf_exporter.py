@@ -147,6 +147,26 @@ _POSITIONED_GEOMETRY_PROOF_FIELDS = frozenset(
 _SOURCE_DASH_APPID = "BCS_SOURCE_DASH"
 
 
+def _visible_ink_attribs(doc, attribs):
+    """Keep a dashed stroke on a layer the drawing actually shows.
+
+    White knockout fills share a layer that is turned off so they do not cover
+    a dark canvas. A dash on that same layer is real ink (its color is already
+    rewritten to black) and must not be hidden, or the whole import stops.
+    """
+    layer_name = str(attribs.get("layer") or "")
+    if not layer_name or not doc.layers.has_entry(layer_name):
+        return attribs
+    layer = doc.layers.get(layer_name)
+    if not layer.is_off() and not layer.is_frozen():
+        return attribs
+    visible_name = f"{layer_name}_INK"[:255]
+    _ensure_layer(doc, visible_name, (0.0, 0.0, 0.0))
+    updated = dict(attribs)
+    updated["layer"] = visible_name
+    return updated
+
+
 def _add_source_dash_block(doc, layout, primitive, proof, attribs, dy):
     name = f"BCS_DASH_{primitive.page_number}_{primitive.id}"
     if name in doc.blocks:
@@ -1646,29 +1666,27 @@ def _verify_serialized_text_deliveries(
         source_ids.add(source_id)
         degraded = delivery.get("degraded") is True
         if degraded and delivery.get("dropped") is True:
-            # A dropped item is reported, not delivered: it must own nothing.
+            # A dropped item is reported, not delivered. A failed attempt may
+            # still name a shared text style. That style is not ink. What must
+            # not remain is a modelspace entity this item created.
             attempts = [
                 attempt
                 for attempt in delivery.get("attempts") or []
                 if isinstance(attempt, dict)
             ]
-            if (
-                representation
-                or any(
-                    owner.get(key)
-                    for owner in (delivery, *attempts)
-                    for key in (
-                        "entity_handles",
-                        "support_entity_handles",
-                        "referenced_entity_handles",
-                    )
+            live_handles = [
+                str(handle)
+                for owner in (delivery, *attempts)
+                for key in (
+                    "entity_handles",
+                    "support_entity_handles",
+                    "referenced_entity_handles",
+                    "created_entity_handles",
                 )
-                or any(
-                    modelspace_handle_counts.get(str(handle), 0)
-                    for attempt in attempts
-                    for handle in attempt.get("created_entity_handles") or []
-                )
-            ):
+                for handle in owner.get(key) or []
+                if modelspace_handle_counts.get(str(handle), 0)
+            ]
+            if representation or live_handles:
                 raise RuntimeError(
                     f"serialized text delivery {source_id}: dropped item owns live handles"
                 )
@@ -4968,11 +4986,25 @@ def _export_to_dxf_impl(
                     source_paint_keys[str(entity.dxf.handle)] = (_page, key)
 
         clip_fill_groups = {}
+        even_odd_fills = {}
         for primitive in page.page_data.primitives:
             group_id = getattr(primitive, "clip_fill_group_id", None)
             if group_id:
                 clip_fill_groups.setdefault(group_id, []).append(primitive)
+            delivered_fill = delivered_ink(primitive.fill_color)
+            if (
+                getattr(primitive, "fill_even_odd", False)
+                and not group_id
+                and delivered_fill is not None
+                and primitive.closed
+                and primitive.source_draw_order is not None
+            ):
+                even_odd_fills.setdefault(
+                    (primitive.source_draw_order, tuple(delivered_fill)),
+                    [],
+                ).append(primitive)
         emitted_clip_fills = set()
+        emitted_even_odd_fills = set()
         clip_fill_rows = None  # source rows by group id, built on the first failed fill
         page.clip_fill_build_drops = []  # this export's own; an earlier export's are stale
         for primitive_index, primitive in enumerate(page.page_data.primitives, start=1):
@@ -5018,6 +5050,7 @@ def _export_to_dxf_impl(
 
             source_dash = getattr(page, "source_line_dashes", {}).get(primitive.id)
             if opts.map_dashes and source_dash is not None and (not source_dash.dots_model or not is_r12):
+                attribs = _visible_ink_attribs(doc, attribs)
                 expected = _add_source_dash_block(doc, msp, primitive, source_dash, attribs, dy)
                 source_dash_expectations.append(expected)
                 _note_ink_remap(ink_remaps, page.page_data.page_number, "strokes", source_stroke_rgb)
@@ -5155,6 +5188,33 @@ def _export_to_dxf_impl(
                 page_width=page_w,
                 page_height=page_h,
             )
+            even_odd_key = (
+                (primitive.source_draw_order, tuple(fill_rgb))
+                if (
+                    fill_rgb is not None
+                    and getattr(primitive, "fill_even_odd", False)
+                    and primitive.source_draw_order is not None
+                )
+                else None
+            )
+            even_odd_members = even_odd_fills.get(even_odd_key) if even_odd_key else None
+            if even_odd_members and len(even_odd_members) > 1:
+                if even_odd_key not in emitted_even_odd_fills:
+                    emitted_even_odd_fills.add(even_odd_key)
+                    rings = []
+                    for member in even_odd_members:
+                        ring = [_ofs(point) for point in (member.points or [])]
+                        if _filled_path_has_visible_area(ring):
+                            rings.append(ring)
+                    fills = _add_even_odd_filled_paths(
+                        msp, rings, fill_rgb, fill_attribs, is_r12=is_r12,
+                    )
+                    if not fills:
+                        raise RuntimeError(
+                            f"even-odd fill {even_odd_key[0]} produced no fill entities"
+                        )
+                    entity_count += len(fills)
+                fill_rgb = None
             if (
                 fill_rgb is not None
                 and not page_background_fill
@@ -5211,7 +5271,17 @@ def _export_to_dxf_impl(
                 _track_xy(float(center[0]) + radius, float(center[1]) + radius)
                 entity_count += 1
             elif primitive.points and len(primitive.points) >= 2:
-                if is_r12:
+                if (
+                    not is_r12
+                    and not primitive.closed
+                    and "linetype" not in attribs
+                    and _open_polyline_is_curve(offset_pts)
+                ):
+                    msp.add_spline(
+                        [(float(x), float(y), 0.0) for x, y in offset_pts],
+                        dxfattribs=attribs,
+                    )
+                elif is_r12:
                     msp.add_polyline2d(
                         offset_pts,
                         close=bool(primitive.closed),
@@ -6229,6 +6299,44 @@ def _compound_clip_regions(contours):
         (points, [rings[child][0] for child,parent in enumerate(parents) if parent == index])
         for index,(points,_area) in enumerate(rings) if depths[index] % 2 == 0
     ]
+
+
+def _open_polyline_is_curve(points) -> bool:
+    """True when an open polyline is a flattened curve, not a few corners.
+
+    Fit-point splines stay editable as one curve. Straight polylines and
+    dashed strokes stay LWPOLYLINE so LibreCAD's linetypes keep working.
+    """
+    if len(points) < 8:
+        return False
+    bends = 0
+    for index in range(1, len(points) - 1):
+        ax = float(points[index][0]) - float(points[index - 1][0])
+        ay = float(points[index][1]) - float(points[index - 1][1])
+        bx = float(points[index + 1][0]) - float(points[index][0])
+        by = float(points[index + 1][1]) - float(points[index][1])
+        len_a = math.hypot(ax, ay)
+        len_b = math.hypot(bx, by)
+        if len_a <= 0.01 or len_b <= 0.01:
+            continue
+        if abs(ax * by - ay * bx) / (len_a * len_b) > 0.1:
+            bends += 1
+            if bends >= 3:
+                return True
+    return False
+
+
+def _add_even_odd_filled_paths(msp, rings, fill_rgb, attribs, *, is_r12: bool):
+    """One even-odd fill with a hole, as SOLID triangles.
+
+    A multi-path HATCH is the editable ideal, but LibreCAD draws connectors
+    between separate hatch contours and fills the counter. The same SOLID
+    triangulation already used for clipped counters keeps the hole empty in
+    every DXF version this importer writes.
+    """
+    return _add_compound_filled_paths(
+        msp, rings, fill_rgb, attribs, is_r12=is_r12, even_odd=True,
+    )
 
 
 def _add_compound_filled_paths(

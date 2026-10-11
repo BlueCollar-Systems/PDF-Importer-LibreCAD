@@ -54,6 +54,24 @@ from librecad_pdf_importer.ink_color import INK_RULE_NEAR_BLACK, delivered_rgb8
 
 
 _MTEXT_THRESHOLD = 120
+# Names that mean "these glyphs are symbols, not letters". unicode.lff would
+# draw a different character, so those spans stay outlines.
+_SYMBOL_FONT_MARKERS = (
+    "symbol",
+    "dingbat",
+    "wingding",
+    "webding",
+    "zapfding",
+    "defaultmarker",
+    "fontawesome",
+    "esri",
+    "glyphicon",
+)
+
+
+def _source_font_is_symbolic(text_item: NormalizedText) -> bool:
+    name = str(getattr(text_item, "font_name", "") or "").casefold()
+    return any(marker in name for marker in _SYMBOL_FONT_MARKERS)
 _POSITIONED_FRACTION_RE = re.compile(r"^[0-9]+/[0-9]+$")
 # E2's recovered float32 quads reach 1.45e-5 angular noise. Bound that
 # dimensionless error independently of drawing units; retain original quads.
@@ -2539,13 +2557,17 @@ def _attempt_labels(
         # fallback).  "Editable text (LibreCAD font)" is the operator's
         # explicit choice to accept LibreCAD's font for visible words: the
         # substitution stays disclosed per item, never certified as the look.
+        # A symbol font stays outlines: unicode.lff would draw a different character.
         accept_librecad_font_substitution = bool(
             parent == "librecad"
             and requested in {"text", "labels"}
             and not is_3d_text
             and (
                 source_content_whitespace_only
-                or bool(getattr(config, "_librecad_editable_text", False))
+                or (
+                    bool(getattr(config, "_librecad_editable_text", False))
+                    and not _source_font_is_symbolic(text_item)
+                )
             )
         )
         if parent == "librecad":

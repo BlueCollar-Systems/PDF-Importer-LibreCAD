@@ -25,9 +25,9 @@ def test_installed_wheel_opens_and_converts_without_checkout_modules(tmp_path):
         shutil.copytree(root / name, source / name, ignore=shutil.ignore_patterns("__pycache__"))
     wheels = tmp_path / "wheels"
     built = subprocess.run(
-        [sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "--no-build-isolation",
+        [sys.executable, "-m", "pip", "wheel", ".", "--no-deps",
          "--wheel-dir", str(wheels)],
-        cwd=source, capture_output=True, text=True, timeout=120,
+        cwd=source, capture_output=True, text=True, timeout=180,
     )
     assert built.returncode == 0, built.stdout + built.stderr
     installed = tmp_path / "installed"

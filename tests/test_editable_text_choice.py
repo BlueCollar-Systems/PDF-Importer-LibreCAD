@@ -176,6 +176,37 @@ def test_a_character_librecads_font_lacks_steps_down_for_that_item_only(tmp_path
     assert stats["text_delivery"]["editable_text_item_count"] == 1
 
 
+def test_editable_text_leaves_a_symbol_font_as_outlines(tmp_path):
+    """A marker font must not become LibreCAD letters when Editable text is on."""
+    folder = tmp_path / "symbol"
+    folder.mkdir()
+    source = folder / "marks.pdf"
+    document = pymupdf.open()
+    page = document.new_page(width=612, height=396)
+    page.insert_text((72, 90), "D042 EX101", fontname="helv", fontsize=12)
+    xref = page.get_fonts(full=True)[0][0]
+    font_object = document.xref_object(xref)
+    document.update_object(xref, font_object.replace("/Helvetica", "/ESRIDefaultMarker"))
+    document.save(str(source))
+    document.close()
+    output = folder / "marks.dxf"
+    config = ImportConfig.auto()
+    config.import_text = True
+    config.text_mode = "text"
+    stats = dxf_import_engine.convert(
+        str(source), str(output), config=config, dxf_version="R2010", editable_text=True,
+    )
+    report = json.loads(Path(stats["import_report_path"]).read_text(encoding="utf-8"))
+    items = _items(report)
+    assert items
+    assert all(item["final_representation"] != "text" for item in items)
+    assert all(
+        attempt["evidence"].get("parent_native_font_substitution_accepted") is not True
+        for item in items
+        for attempt in item["attempts"]
+    )
+
+
 def test_a_page_made_under_one_choice_is_never_resumed_under_the_other():
     config = ImportConfig.auto()
     exact, _ = _resume_options_identity(config, "R2010", None, True, False)
