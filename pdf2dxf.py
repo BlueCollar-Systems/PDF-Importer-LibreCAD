@@ -291,12 +291,14 @@ def main(argv: list[str] | None = None) -> int:
     report_path = stats.get("import_report_path")
     if report_path:
         _safe_print(f"  import_report:   {report_path}")
-    from librecad_pdf_importer.importer import drawing_scale_line
+    from librecad_pdf_importer.importer import SPLIT_BY_SCALE_CLI, drawing_scale_line
 
     scale_line = drawing_scale_line(
         stats.get("resolved_scale"),
         args.scale,
         how_to_rescale="add --scale {factor} and convert again",
+        page_scales=stats.get("resolved_scales_by_page"),
+        how_to_split=SPLIT_BY_SCALE_CLI,
     )
     if scale_line:
         _safe_print(scale_line)

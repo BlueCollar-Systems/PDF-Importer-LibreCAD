@@ -41,6 +41,11 @@ single run, top-level `resolved_scale` for a resumable run (the GUI and
   summary say it in plain words, for example
   `Drawing scale found: 1/4" = 1'-0" (98% sure). This DXF is at paper size (millimetres); to draw at real size put 48 in Scale and convert again.`
   The DXF itself is not rescaled: it stays at paper size times `Scale`.
+- When the sheets of one PDF carry different scales, the line lists each scale
+  with its pages (`Drawing scales differ by sheet: ...`) and says to convert
+  each scale's pages on their own (Pages box or `--pages`) with that Scale;
+  it never calls the whole DXF real size then. The report's `resolved_scale`
+  is still the most confident page's; each page report has its own.
 
 ## Compatibility
 

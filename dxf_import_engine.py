@@ -582,6 +582,15 @@ def _convert_resumable(
         "searchable_text_warning": searchable_text_warning_line(_search_text_block(records)),
         # The drawing scale read from the sheet, pages resumed from an earlier run included.
         "resolved_scale": most_confident_scale(record.get("resolved_scale") for record in records),
+        # Each page's own scale: sheets of one set often differ, and one Scale
+        # value then draws only some of them at real size.
+        "resolved_scales_by_page": [
+            {
+                "page": int(record.get("page_number") or page + 1),
+                "resolved_scale": record.get("resolved_scale"),
+            }
+            for page, record in zip(selected_pages, records)
+        ],
     }
 
 
@@ -611,6 +620,7 @@ def _convert_via_package(
     from librecad_pdf_importer.importer import (
         best_resolved_scale,
         failure_import_report_path,
+        page_resolved_scales,
         run_import,
         terminal_failure_record,
         write_import_report,
@@ -751,6 +761,8 @@ def _convert_via_package(
             ),
             # The drawing scale read from the sheet; the report's extra.resolved_scale.
             "resolved_scale": best_resolved_scale(run.extraction.pages),
+            # Each page's own scale, for a set whose sheets differ.
+            "resolved_scales_by_page": page_resolved_scales(run.extraction.pages),
         }
     finally:
         run.close()

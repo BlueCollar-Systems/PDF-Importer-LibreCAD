@@ -595,7 +595,12 @@ class Pdf2DxfApp(tk.Tk):
             # unless Scale says otherwise, so tell the fitter the multiplier.
             from librecad_pdf_importer.importer import drawing_scale_line
 
-            scale_line = drawing_scale_line(stats.get("resolved_scale"), options.scale)
+            # Each page's own scale too: one Scale value cannot fit sheets that differ.
+            scale_line = drawing_scale_line(
+                stats.get("resolved_scale"),
+                options.scale,
+                page_scales=stats.get("resolved_scales_by_page"),
+            )
             if scale_line:
                 self._log(scale_line)
             # Said once, at completion, pages certified by an earlier run included.

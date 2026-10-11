@@ -215,50 +215,187 @@ def best_resolved_scale(pages: Iterable[Any]) -> Optional[Dict[str, Any]]:
     )
 
 
+def page_resolved_scales(pages: Iterable[Any]) -> list[Dict[str, Any]]:
+    """Each extracted page's one-based number and its scale record (None when none).
+
+    A set often mixes scales from sheet to sheet, so one "best" scale cannot
+    say which sheets a Scale value draws at real size; this list can.
+    """
+    return [
+        {
+            "page": int(page.page_data.page_number),
+            "resolved_scale": _resolved_scale_record(page.page_data.resolved_scale),
+        }
+        for page in pages
+    ]
+
+
 # Below this the scale is reported but not offered to the user (README rule).
 SCALE_TRUST_CONFIDENCE = 0.70
 _SCALE_LABEL_PREFIX = re.compile(r"^\s*(?:SCALE|SCL\.?|SC\.?)\s*[:=]?\s*", re.I)
+# How to draw each scale's sheets at real size when the sheets differ.
+SPLIT_BY_SCALE_GUI = (
+    "convert each scale's pages on their own: put those pages in the Pages box "
+    "and that number in Scale, and pick a new Output DXF name"
+)
+SPLIT_BY_SCALE_CLI = (
+    "convert each scale's pages on their own with --pages and that --scale "
+    "number, into a new output file"
+)
+# Page ranges named in one scale line; the rest are counted (each page report has its scale).
+_MAX_PAGE_RANGES = 12
+
+
+def _trusted_scale(resolved_scale: Any) -> Optional[tuple[float, float, str]]:
+    """(factor, confidence, notation) of a scale worth telling the user, else None.
+
+    Trusted means confidence >= 0.70, a real scale (not 1:1) and not the
+    no-scale fallback.
+    """
+    if not isinstance(resolved_scale, Mapping):
+        return None
+    try:
+        factor = float(resolved_scale.get("factor") or 0)
+        confidence = float(resolved_scale.get("confidence") or 0)
+    except (TypeError, ValueError):
+        return None
+    if (
+        not math.isfinite(confidence)
+        or confidence < SCALE_TRUST_CONFIDENCE
+        or str(resolved_scale.get("fallback_reason") or "") == "no_scale_detected"
+        or not math.isfinite(factor)
+        or factor <= 0
+        or math.isclose(factor, 1.0, rel_tol=1e-9)
+    ):
+        return None
+    notation = _SCALE_LABEL_PREFIX.sub("", str(resolved_scale.get("notation") or "")).strip()
+    return factor, min(confidence, 1.0), notation or f"1:{factor:g}"
+
+
+def _page_list(pages: list[int]) -> str:
+    """'page 3' or 'pages 1-3, 5', written the way the Pages box takes them."""
+    ranges: list[list[int]] = []
+    for page in sorted(set(pages)):
+        if ranges and page == ranges[-1][1] + 1:
+            ranges[-1][1] = page
+        else:
+            ranges.append([page, page])
+    parts = [str(first) if first == last else f"{first}-{last}" for first, last in ranges]
+    text = ", ".join(parts[:_MAX_PAGE_RANGES])
+    if len(parts) > _MAX_PAGE_RANGES:
+        shown = sum(last - first + 1 for first, last in ranges[:_MAX_PAGE_RANGES])
+        text += f" and {len(set(pages)) - shown} more"
+    return ("page " if len(set(pages)) == 1 else "pages ") + text
+
+
+def _is_or_are(pages: list[int]) -> str:
+    return "is" if len(set(pages)) == 1 else "are"
+
+
+def _scale_groups(entries: list[tuple[Any, Any]]) -> tuple[list[Dict[str, Any]], bool]:
+    """Trusted scales grouped by factor (first page first), and whether every page has one."""
+    groups: list[Dict[str, Any]] = []
+    trusted_pages = 0
+    for page, record in entries:
+        trusted = _trusted_scale(record)
+        if trusted is None:
+            continue
+        trusted_pages += 1
+        factor, confidence, notation = trusted
+        group = next(
+            (item for item in groups if math.isclose(item["factor"], factor, rel_tol=1e-6)),
+            None,
+        )
+        if group is None:
+            group = {"factor": factor, "confidence": 0.0, "notation": notation, "pages": []}
+            groups.append(group)
+        if confidence > group["confidence"]:
+            group["confidence"], group["notation"] = confidence, notation
+        if isinstance(page, int) and not isinstance(page, bool):
+            group["pages"].append(page)
+    return groups, trusted_pages == len(entries)
 
 
 def drawing_scale_line(
     resolved_scale: Any,
     user_scale: float,
     how_to_rescale: str = "put {factor} in Scale and convert again",
+    page_scales: Optional[Iterable[Any]] = None,
+    how_to_split: str = SPLIT_BY_SCALE_GUI,
 ) -> str:
-    """One plain line about the drawing scale found on the sheet, or ''.
+    """One plain line about the drawing scale found on the sheets, or ''.
 
     Said only for a trusted scale (confidence >= 0.70) that is not 1:1. The DXF
-    is drawn in millimetres at paper size times *user_scale*.
+    is drawn in millimetres at paper size times *user_scale*, the same for
+    every page. *page_scales* (``{"page", "resolved_scale"}`` per converted
+    page) lets the line name the pages a scale was found on, and say so
+    plainly when the sheets differ: then no single Scale draws the whole DXF
+    at real size, and the line never claims it does. Without it,
+    *resolved_scale* is taken to be every page's scale.
     """
-    if not isinstance(resolved_scale, Mapping):
-        return ""
     try:
-        factor = float(resolved_scale.get("factor") or 0)
-        confidence = float(resolved_scale.get("confidence") or 0)
         user = float(user_scale)
     except (TypeError, ValueError):
         return ""
-    if (
-        confidence < SCALE_TRUST_CONFIDENCE
-        or str(resolved_scale.get("fallback_reason") or "") == "no_scale_detected"
-        or not math.isfinite(factor)
-        or factor <= 0
-        or math.isclose(factor, 1.0, rel_tol=1e-9)
-    ):
+    if page_scales is None:
+        entries: list[tuple[Any, Any]] = [(None, resolved_scale)]
+    else:
+        entries = [
+            (entry.get("page"), entry.get("resolved_scale"))
+            for entry in page_scales
+            if isinstance(entry, Mapping)
+        ]
+    groups, every_page_trusted = _scale_groups(entries)
+    if not groups:
         return ""
-    notation = _SCALE_LABEL_PREFIX.sub("", str(resolved_scale.get("notation") or "")).strip()
-    found = (
-        f"Drawing scale found: {notation or f'1:{factor:g}'} "
-        f"({min(confidence, 1.0) * 100:.0f}% sure)."
-    )
-    if math.isclose(user, factor, rel_tol=1e-6):
-        return f"{found} Scale is {user:g}, so this DXF is at real size (millimetres)."
-    advice = how_to_rescale.format(factor=f"{factor:g}")
     if math.isclose(user, 1.0, rel_tol=1e-9):
-        return f"{found} This DXF is at paper size (millimetres); to draw at real size {advice}."
+        size = "paper size"
+    else:
+        size = f"{user:g} times paper size"
+
+    if len(groups) == 1:
+        group = groups[0]
+        factor, pages = group["factor"], group["pages"]
+        # Name the pages when some converted pages have no trusted scale.
+        named = not every_page_trusted and bool(pages)
+        where = f" on {_page_list(pages)}" if named else ""
+        found = (
+            f"Drawing scale found{where}: {group['notation']} "
+            f"({group['confidence'] * 100:.0f}% sure)."
+        )
+        if math.isclose(user, factor, rel_tol=1e-6):
+            subject = f"{_page_list(pages)} {_is_or_are(pages)}" if named else "this DXF is"
+            return f"{found} Scale is {user:g}, so {subject} at real size (millimetres)."
+        advice = how_to_rescale.format(factor=f"{factor:g}")
+        target = f"to draw {_page_list(pages)} at real size" if named else "to draw at real size"
+        return f"{found} This DXF is at {size} (millimetres); {target} {advice}."
+
+    # Sheets at different scales: one Scale value cannot fit them all.
+    found = "; ".join(
+        f"{group['notation']}"
+        + (f" on {_page_list(group['pages'])}" if group["pages"] else "")
+        + f" (Scale {group['factor']:g})"
+        for group in groups
+    )
+    head = f"Drawing scales differ by sheet: {found}."
+    matching = next(
+        (group for group in groups if math.isclose(user, group["factor"], rel_tol=1e-6)),
+        None,
+    )
+    if matching is not None:
+        pages = matching["pages"]
+        which = (
+            f"{_page_list(pages)} {_is_or_are(pages)}"
+            if pages
+            else f"the {matching['notation']} sheets are"
+        )
+        return (
+            f"{head} Scale is {user:g}, so only {which} at real size (millimetres). "
+            f"To draw the other sheets at real size, {how_to_split}."
+        )
     return (
-        f"{found} This DXF is at {user:g} times paper size (millimetres); "
-        f"to draw at real size {advice}."
+        f"{head} This DXF is at {size} (millimetres). "
+        f"To draw the sheets at real size, {how_to_split}."
     )
 
 
