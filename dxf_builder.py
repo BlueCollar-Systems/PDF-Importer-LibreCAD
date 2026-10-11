@@ -212,50 +212,18 @@ def _add_line(msp, prim: Primitive, attribs: dict) -> int:
     return 1
 
 
-def _has_curvature(points, threshold=0.1) -> bool:
-    """Check if a polyline has significant curvature (not just straight segments).
-
-    Returns True if at least 3 consecutive-segment angle changes exceed
-    *threshold* (~6 degrees), indicating the polyline likely originated
-    from Bezier linearisation rather than straight-line geometry.
-    """
-    if len(points) < 4:
-        return False
-    angle_changes = 0
-    for i in range(1, len(points) - 1):
-        dx1 = points[i][0] - points[i - 1][0]
-        dy1 = points[i][1] - points[i - 1][1]
-        dx2 = points[i + 1][0] - points[i][0]
-        dy2 = points[i + 1][1] - points[i][1]
-        len1 = math.hypot(dx1, dy1)
-        len2 = math.hypot(dx2, dy2)
-        if len1 > 0.01 and len2 > 0.01:
-            cross = dx1 * dy2 - dy1 * dx2
-            sin_angle = cross / (len1 * len2)
-            if abs(sin_angle) > threshold:  # >~6 degrees
-                angle_changes += 1
-    return angle_changes >= 3  # At least 3 direction changes = curved
-
-
 def _add_polyline(msp, prim: Primitive, attribs: dict) -> int:
-    """Add an LWPOLYLINE, or a SPLINE for curved polylines. Returns 1."""
-    # For open, dense polylines with curvature, use SPLINE for better
-    # Bezier fidelity in downstream CAD programs.
+    """Keep the extracted editable path, without refitting its vertices."""
     pts = _xy_points(prim.points)
     if not pts:
         return 0
-    if not prim.closed and len(pts) >= 8 and _has_curvature(pts):
-        try:
-            points_3d = [(x, y, 0) for x, y in pts]
-            msp.add_spline(points_3d, dxfattribs=attribs)
-            return 1
-        except Exception:
-            pass  # Fall through to LWPOLYLINE
-    msp.add_lwpolyline(
-        pts,
-        close=prim.closed,
-        dxfattribs=attribs,
-    )
+    # These are sampled path points, not original Bezier controls. LibreCAD
+    # reads a FIT-point SPLINE as control points and saves a different curve.
+    # A polyline retains this bounded source approximation across save/reopen.
+    if msp.doc.dxfversion == "AC1009":
+        msp.add_polyline2d(pts, close=prim.closed, dxfattribs=attribs)
+    else:
+        msp.add_lwpolyline(pts, close=prim.closed, dxfattribs=attribs)
     return 1
 
 

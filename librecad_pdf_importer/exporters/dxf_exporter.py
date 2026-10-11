@@ -5283,17 +5283,11 @@ def _export_to_dxf_impl(
                 _track_xy(float(center[0]) + radius, float(center[1]) + radius)
                 entity_count += 1
             elif primitive.points and len(primitive.points) >= 2:
-                if (
-                    not is_r12
-                    and not primitive.closed
-                    and "linetype" not in attribs
-                    and _open_polyline_is_curve(offset_pts)
-                ):
-                    msp.add_spline(
-                        [(float(x), float(y), 0.0) for x, y in offset_pts],
-                        dxfattribs=attribs,
-                    )
-                elif is_r12:
+                # The primitive carries sampled vertices, not source Bezier
+                # controls. Refitting them as a FIT-point SPLINE deforms the
+                # path when LibreCAD interprets/saves them as control points.
+                # Preserve the existing editable approximation and its dashes.
+                if is_r12:
                     msp.add_polyline2d(
                         offset_pts,
                         close=bool(primitive.closed),
@@ -6316,31 +6310,6 @@ def _compound_clip_regions(contours):
         (points, [rings[child][0] for child,parent in enumerate(parents) if parent == index])
         for index,(points,_area) in enumerate(rings) if depths[index] % 2 == 0
     ]
-
-
-def _open_polyline_is_curve(points) -> bool:
-    """True when an open polyline is a flattened curve, not a few corners.
-
-    Fit-point splines stay editable as one curve. Straight polylines and
-    dashed strokes stay LWPOLYLINE so LibreCAD's linetypes keep working.
-    """
-    if len(points) < 8:
-        return False
-    bends = 0
-    for index in range(1, len(points) - 1):
-        ax = float(points[index][0]) - float(points[index - 1][0])
-        ay = float(points[index][1]) - float(points[index - 1][1])
-        bx = float(points[index + 1][0]) - float(points[index][0])
-        by = float(points[index + 1][1]) - float(points[index][1])
-        len_a = math.hypot(ax, ay)
-        len_b = math.hypot(bx, by)
-        if len_a <= 0.01 or len_b <= 0.01:
-            continue
-        if abs(ax * by - ay * bx) / (len_a * len_b) > 0.1:
-            bends += 1
-            if bends >= 3:
-                return True
-    return False
 
 
 def _add_even_odd_filled_paths(msp, rings, fill_rgb, attribs, *, is_r12: bool):
