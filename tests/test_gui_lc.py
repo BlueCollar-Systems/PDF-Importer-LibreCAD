@@ -177,13 +177,14 @@ def test_worker_keeps_requested_settings_and_never_reads_tk_values(tmp_path, mod
     app._finish_conversion.assert_called_once()
 
 
+@pytest.mark.parametrize("editable_count", [2, 3], ids=["some-editable", "all-editable"])
 @pytest.mark.parametrize(
     ("label", "editable"),
     [(gui.DEFAULT_TEXT_LABEL, False), (gui.EDITABLE_TEXT_LABEL, True)],
     ids=["exact-look", "editable-text"],
 )
 def test_worker_passes_the_editable_text_choice_and_logs_the_count(
-    tmp_path, label, editable
+    tmp_path, label, editable, editable_count
 ):
     app = _app_without_window(tmp_path)
     app._var_text_mode.get.return_value = label
@@ -192,7 +193,7 @@ def test_worker_passes_the_editable_text_choice_and_logs_the_count(
     stats = {
         "text_delivery": {
             "requested": "text", "delivered": "mixed", "item_count": 3,
-            "editable_text_item_count": 2,
+            "editable_text_item_count": editable_count,
         }
     }
     with patch("dxf_import_engine.convert", return_value=stats) as convert, patch(
@@ -211,11 +212,18 @@ def test_worker_passes_the_editable_text_choice_and_logs_the_count(
     assert convert.call_args.kwargs["config"].text_mode == "text"
     logged = [call.args[0] for call in app._log.call_args_list]
     editable_lines = [line for line in logged if "Editable text:" in line]
-    if editable:
+    if editable and editable_count == 2:
         assert editable_lines == [
             "  Editable text: 2 of 3 text item(s) came in as editable text in "
             "LibreCAD's font; the report says how each other one came in and why."
         ]
+    if editable and editable_count == 3:
+        # Every word came in editable: no "each other one" to look up.
+        assert editable_lines == [
+            "  Editable text: 3 of 3 text item(s) came in as editable text in "
+            "LibreCAD's font."
+        ]
+    if editable:
         assert any("text=editable (LibreCAD font)" in line for line in logged)
     else:
         assert editable_lines == []

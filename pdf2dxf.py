@@ -329,10 +329,14 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         if args.editable_text:
+            editable_count = int(delivery.get("editable_text_item_count") or 0)
+            item_count = int(delivery.get("item_count") or 0)
+            # Point at the report only when some words did not come in editable.
             _safe_print(
-                f"  Editable text:   {int(delivery.get('editable_text_item_count') or 0)}"
-                f" of {int(delivery.get('item_count') or 0)} text item(s) in "
-                "LibreCAD's font; the report says how each other one came in"
+                f"  Editable text:   {editable_count} of {item_count} text item(s) in "
+                "LibreCAD's font"
+                + ("; the report says how each other one came in"
+                   if editable_count < item_count else "")
             )
         companions = dict(stats.get("searchable_text_companions") or {})
         if int(companions.get("written") or 0):

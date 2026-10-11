@@ -195,6 +195,8 @@ def test_command_line_offers_the_same_choice_and_says_what_it_delivered(
     printed = capsys.readouterr().out
     assert "Text delivery: requested=text; delivered=text; fallback=no" in printed
     assert "Editable text:   2 of 2 text item(s) in LibreCAD's font" in printed
+    # Both words came in editable, so there is no "other one" to look up.
+    assert "each other one" not in printed
     assert "Editable copies" not in printed
     msp = ezdxf.readfile(editable_out).modelspace()
     assert len([e for e in msp if e.dxftype() == "TEXT" and e.dxf.layer == "P001_TEXT"]) == 2

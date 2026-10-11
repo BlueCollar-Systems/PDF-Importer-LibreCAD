@@ -635,12 +635,15 @@ class Pdf2DxfApp(tk.Tk):
             )
             if editable_text:
                 editable_count = int(text_delivery.get("editable_text_item_count") or 0)
-                self._log(
-                    f"  Editable text: {editable_count} of "
-                    f"{int(text_delivery.get('item_count') or 0)} text item(s) came in "
-                    "as editable text in LibreCAD's font; the report says how each "
-                    "other one came in and why."
+                item_count = int(text_delivery.get("item_count") or 0)
+                editable_line = (
+                    f"  Editable text: {editable_count} of {item_count} text item(s) "
+                    "came in as editable text in LibreCAD's font"
                 )
+                # Point at the report only when some words did not come in editable.
+                if editable_count < item_count:
+                    editable_line += "; the report says how each other one came in and why"
+                self._log(editable_line + ".")
             # Words drawn as outlines keep an editable copy on a hidden layer;
             # say where, so a worker who needs to edit one can find it.
             companions = dict(stats.get("searchable_text_companions") or {})
