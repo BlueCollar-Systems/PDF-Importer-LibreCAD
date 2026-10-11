@@ -20,9 +20,10 @@ USAGE
     python scripts/prepare_release.py --check    # verify they agree
     python scripts/prepare_release.py --current  # print the current version
 
-Then commit and push. auto-release sees a version with no tag and mints it. A
-push whose version is unchanged is skipped, not failed -- that is the normal
-state for ordinary product commits.
+Then commit and push for CI. Build the exact candidate with the build-candidate
+workflow, complete its source/asset/native acceptance gates, and explicitly
+dispatch auto-release after all current work is complete. Ordinary pushes do
+not publish. The release workflow skips a version whose tag already exists.
 """
 from __future__ import annotations
 

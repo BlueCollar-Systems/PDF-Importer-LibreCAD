@@ -1,18 +1,7 @@
 name: auto-release
 
 on:
-  push:
-    branches: [main, master]
-    # Docs-only pushes do not mint a release (board Q-08-a / ANS-09-1).
-    # Release-pipeline workflow edits under .github/ are NOT ignored: they must
-    # rebuild --latest assets. The job if: guard skips chore: bump version to
-    # commits, so there is no release loop.
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - "_archived/**"
-      - "dist/_archived/**"
-      - "dev_logs/**"
+  # Publishing is explicit after source and native acceptance finish.
   workflow_dispatch:
 
 env:
@@ -35,7 +24,7 @@ concurrency:
 
 jobs:
   release:
-    if: "!startsWith(github.event.head_commit.message, 'chore: bump version to') && !contains(github.event.head_commit.message, 'automation/version-bump') && !contains(github.event.head_commit.message, '[skip release]')"
+    if: github.event_name == 'workflow_dispatch'
     outputs:
       version: ${{ steps.version.outputs.version }}
       release_target: ${{ steps.target.outputs.sha }}
@@ -240,7 +229,7 @@ jobs:
     # A release job whose steps were all skipped still reports "success", so the
     # explicit decision is required too; otherwise the publisher runs against
     # artifacts that were never built.
-    if: needs.release.result == 'success' && needs.release.outputs.release == 'true'
+    if: github.event_name == 'workflow_dispatch' && needs.release.result == 'success' && needs.release.outputs.release == 'true'
     permissions:
       actions: read
       contents: write

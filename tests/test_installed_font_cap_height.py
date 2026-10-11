@@ -9,10 +9,12 @@ from ezdxf import bbox
 from ezdxf.fonts import fonts
 from fontTools.ttLib import TTFont
 import pytest
+import pymupdf as fitz
 
 import dxf_text_builder as builder
 from pdfcadcore.import_config import ImportConfig
 from pdfcadcore.primitives import NormalizedText
+from pdfcadcore.primitive_extractor import extract_page, MM_PER_PT
 
 
 @pytest.fixture
@@ -61,8 +63,25 @@ def test_saved_delivery_preserves_source_em_not_em_sized_capitals(
     installed_font, tmp_path, mode,
 ):
     doc = ezdxf.new("R2010")
+    # Exact outlines need a genuine original-font binding. A made-up span with
+    # only a family name cannot certify contours, even if this installed file
+    # happens to have the intended cap-height metric.
+    source = tmp_path / "source-metric.pdf"
+    with fitz.open() as document:
+        page = document.new_page(width=100, height=100)
+        page.insert_font(fontname="source", fontfile=str(installed_font))
+        page.insert_text((12/MM_PER_PT, 100-24/MM_PER_PT), "AH",
+                         fontname="source", fontsize=10/MM_PER_PT)
+        document.save(source)
+    with fitz.open(source) as document:
+        [source_item] = extract_page(document[0], 1).text_items
+    assert all(c.source_font_binding_verified is True
+               and c.source_font_program_sha256 == hashlib.sha256(installed_font.read_bytes()).hexdigest()
+               for c in source_item.source_char_layout)
+    source_item.font_asset = None
+    source_item.font_failure = None
     result = builder.build_text(
-        item(), doc.modelspace(), "TEXT", ImportConfig(text_mode=mode),
+        source_item, doc.modelspace(), "TEXT", ImportConfig(text_mode=mode),
         target_app="generic", return_delivery_result=True,
     )
     assert result.verified and result.final_representation == mode

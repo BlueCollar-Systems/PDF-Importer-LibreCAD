@@ -40,7 +40,7 @@ def alpha_pdf():
 
 
 def _close(a, b, tol=1e-3):
-    return all(abs(x - y) <= tol for x, y in zip(a, b))
+    return len(a) == len(b) and all(abs(x - y) <= tol for x, y in zip(a, b, strict=True))
 
 
 def test_fill_alpha_is_composited_against_the_white_page(alpha_pdf):
