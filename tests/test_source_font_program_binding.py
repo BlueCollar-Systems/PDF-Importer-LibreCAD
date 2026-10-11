@@ -304,7 +304,7 @@ def test_partial_trace_census_never_borrows_another_same_name_program_glyph():
     # Two different glyph ids at one origin are a partial census. They must
     # not collapse, and the letter must not borrow the other program's glyph.
     trace = {"font": "Same", "chars": [(65, 8, (0, 0)), (65, 3, (10, 0)),
-                                             (65, 9, (10, 0)), (66, 4, (20, 0))]}
+                                             (65, 7, (10, 0)), (66, 4, (20, 0))]}
     page = SimpleNamespace(get_texttrace=lambda: [trace])
     maps, ambiguous = _page_program_glyph_maps(page, raw)
     assert maps == {"a" * 64: {66: 4}, "b" * 64: {65: 8}}
@@ -317,6 +317,32 @@ def test_partial_trace_census_never_borrows_another_same_name_program_glyph():
     catalog = EmbeddedFontCatalog(1, {}, {})
     asset, failure = catalog.resolve_span("Same", [unresolved])
     assert asset is None and failure.reason == "incomplete_source_font_character_binding"
+
+
+def test_identical_coincident_trace_glyphs_keep_the_original_program_binding():
+    from pdfcadcore.embedded_fonts import _page_program_glyph_maps
+    from pdfcadcore.primitive_extractor import _character_layout, _trace_glyph_queues
+
+    def char(text, x, digest):
+        return {"c": text, "origin": (x, 0), "bbox": (x, 0, x + 2, 10),
+                "quad": ((x, 0), (x + 2, 0), (x + 2, 10), (x, 10)),
+                "source_font_program_sha256": digest,
+                "source_font_binding_verified": True,
+                "source_font_character_codepoint": ord(text)}
+
+    own = char("A", 10, "a" * 64)
+    other = char("A", 0, "b" * 64)
+    span = {"font": "Same", "chars": [own, other]}
+    raw = {"blocks": [{"type": 0, "lines": [{"spans": [span]}]}]}
+    trace = {"font": "Same", "chars": [(65, 8, (0, 0)), (65, 3, (10, 0)), (65, 3, (10, 0))]}
+    page = SimpleNamespace(get_texttrace=lambda: [trace])
+    maps, ambiguous = _page_program_glyph_maps(page, raw)
+    assert maps == {"a" * 64: {65: 3}, "b" * 64: {65: 8}}
+    assert not ambiguous and own["source_font_binding_verified"] is True
+    layouts = _character_layout({}, span, "Same", lambda x, y: (x, y), _trace_glyph_queues(page))
+    assert [char.glyph_id for char in layouts] == [3, 8]
+    assert all(char.source_font_binding_verified for char in layouts)
+    assert [char.source_font_program_sha256 for char in layouts] == ["a" * 64, "b" * 64]
 
 
 def test_coincident_identical_trace_passes_bind_that_glyph():
