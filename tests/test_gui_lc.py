@@ -459,3 +459,73 @@ def test_failed_lookup_without_launch_explains_the_button_once(tmp_path):
     # Not something the user asked for, so the Done box stays about the drawing.
     assert gui.LIBRECAD_NOT_FOUND_TIP not in info.call_args.args[1]
     app._btn_locate_librecad.pack.assert_called()
+
+
+def _locate_app(tmp_path, monkeypatch):
+    monkeypatch.delenv("BCS_LIBRECAD_EXECUTABLE", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    app = _app_without_window(tmp_path)
+    app._librecad_choice = None
+    app._btn_locate_librecad = Mock()
+    return app
+
+
+def test_locate_librecad_asks_before_keeping_a_program_that_is_not_librecad(
+    tmp_path, monkeypatch,
+):
+    from librecad_pdf_importer.launchers import librecad_launcher
+
+    installer = tmp_path / "Downloads" / "LibreCAD-2.2.1-installer.exe"
+    installer.parent.mkdir(parents=True)
+    installer.write_bytes(b"fake installer")
+    app = _locate_app(tmp_path, monkeypatch)
+    with patch.object(
+        gui.filedialog, "askopenfilename", return_value=installer.as_posix(),
+    ), patch.object(gui.messagebox, "askyesno", return_value=False) as ask:
+        gui.Pdf2DxfApp._locate_librecad(app)
+    ask.assert_called_once()
+    assert "LibreCAD-2.2.1-installer.exe is not LibreCAD.exe. Use it anyway?" in (
+        ask.call_args.args[1]
+    )
+    assert ask.call_args.kwargs.get("default") == gui.messagebox.NO
+    # No: nothing is kept, nothing is saved, and the button stays to try again.
+    assert app._librecad_choice is None
+    assert librecad_launcher.load_saved_librecad_executable() is None
+    assert not (tmp_path / "local").exists()
+    app._btn_locate_librecad.pack_forget.assert_not_called()
+
+    # Yes: the user meant it, so it is used and remembered.
+    with patch.object(
+        gui.filedialog, "askopenfilename", return_value=installer.as_posix(),
+    ), patch.object(gui.messagebox, "askyesno", return_value=True):
+        gui.Pdf2DxfApp._locate_librecad(app)
+    assert app._librecad_choice == str(installer.resolve())
+    assert librecad_launcher.load_saved_librecad_executable() == str(installer.resolve())
+
+
+def test_locate_librecad_takes_librecad_exe_in_any_case_without_asking(tmp_path, monkeypatch):
+    exe = tmp_path / "Tools" / "librecad.EXE"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"fake LibreCAD")
+    app = _locate_app(tmp_path, monkeypatch)
+    with patch.object(
+        gui.filedialog, "askopenfilename", return_value=exe.as_posix(),
+    ), patch.object(gui.messagebox, "askyesno") as ask:
+        gui.Pdf2DxfApp._locate_librecad(app)
+    ask.assert_not_called()
+    assert app._librecad_choice == str(exe.resolve())
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("C:/Program Files/LibreCAD/LibreCAD.exe", True),
+        ("C:/x/LIBRECAD.EXE", True),
+        ("/usr/bin/librecad", True),
+        ("C:/Downloads/LibreCAD-2.2.1-installer.exe", False),
+        ("C:/x/notepad.exe", False),
+        ("", False),
+    ],
+)
+def test_librecad_program_name(name, expected):
+    assert gui.is_librecad_program_name(name) is expected

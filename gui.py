@@ -111,6 +111,11 @@ def _file_sha256(path: str) -> str:
     return digest.hexdigest()
 
 
+def is_librecad_program_name(path: str) -> bool:
+    """True for LibreCAD's own program file name (LibreCAD.exe, or librecad), any case."""
+    return os.path.basename(str(path or "")).lower() in {"librecad.exe", "librecad"}
+
+
 def output_replace_reason(input_path: str, output_path: str) -> str | None:
     """Why converting would replace a drawing the user may want to keep.
 
@@ -791,6 +796,17 @@ class Pdf2DxfApp(tk.Tk):
                 "Locate LibreCAD",
                 f"That file could not be used as LibreCAD:\n{path}",
             )
+            return
+        # Every later run opens the DXF with the remembered program, so a
+        # wrong pick (an installer, another app) is only kept when confirmed.
+        if not is_librecad_program_name(found) and not messagebox.askyesno(
+            "Locate LibreCAD",
+            f"{os.path.basename(found)} is not LibreCAD.exe. Use it anyway?\n\n"
+            "It would open every converted drawing from now on. Choose No and "
+            "pick LibreCAD.exe, usually in C:\\Program Files\\LibreCAD.",
+            icon=messagebox.WARNING,
+            default=messagebox.NO,
+        ):
             return
         self._librecad_choice = found
         if save_librecad_executable(found):
