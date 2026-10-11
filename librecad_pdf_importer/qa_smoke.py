@@ -25,6 +25,12 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["auto", "vector", "raster", "hybrid"],
                    help="Import mode (BCS-ARCH-001)")
     p.add_argument("--pages", default="1", help="Page spec")
+    p.add_argument(
+        "--text-mode",
+        default="text",
+        choices=["text", "labels", "3d_text", "glyphs", "geometry", "raster"],
+        help="How text is delivered. Editable text is the default.",
+    )
     p.add_argument("--min-entities", type=int, default=1, help="Minimum entity count to pass")
     p.add_argument("--json", default=None, help="Write JSON report")
     return p
@@ -44,9 +50,17 @@ def main() -> int:
         for pdf in pdfs:
             run = None
             try:
-                run = run_import(str(pdf), mode=args.mode, overrides={"pages": args.pages})
+                run = run_import(
+                    str(pdf),
+                    mode=args.mode,
+                    overrides={"pages": args.pages, "text_mode": args.text_mode},
+                )
                 out_dxf = td_path / f"{pdf.stem}.dxf"
-                export = export_to_dxf(run.extraction, str(out_dxf), DxfExportOptions())
+                export = export_to_dxf(
+                    run.extraction,
+                    str(out_dxf),
+                    DxfExportOptions(text_mode=args.text_mode),
+                )
                 # This is a QA gate: a degraded text item still exports its sheet,
                 # but it must keep failing here exactly as the old abort did.
                 degraded = degraded_text_items(export.text_deliveries)["total"]

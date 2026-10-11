@@ -47,7 +47,7 @@ def _empty_program_item(*, positioned=True):
     )
 
 
-def _deliver(item, mode="glyphs", config=None):
+def _deliver(item, mode="glyphs", config=None, *, allow_text=False):
     builder.reset_text_styles()
     doc = ezdxf.new("R2010")
     with patch.object(builder, "_resolve_exact_font", return_value=builder._ExactFontResolution(
@@ -57,7 +57,8 @@ def _deliver(item, mode="glyphs", config=None):
             item, doc.modelspace(), "TEXT", config or ImportConfig(text_mode=mode),
             target_app="librecad", dxf_version="R2010", return_delivery_result=True,
         )
-    assert list(doc.modelspace()) == []
+    if not allow_text:
+        assert list(doc.modelspace()) == []
     return result
 
 
@@ -65,7 +66,17 @@ def _deliver(item, mode="glyphs", config=None):
 @pytest.mark.parametrize("positioned", [False, True])
 def test_observed_empty_program_authorizes_source_bound_raster(mode, positioned):
     item = _empty_program_item(positioned=positioned)
-    result = _deliver(item, mode)
+    # Ordinary letters can still be editable text in LibreCAD's font. A
+    # positioned fraction cannot, and neither can an outline request, so those
+    # stay on the raster rung.
+    editable = mode in {"text", "labels", "3d_text"} and not positioned
+    result = _deliver(item, mode, allow_text=editable)
+    if editable:
+        assert result.verified
+        assert result.final_representation == "text"
+        assert not result.terminal_fallback_authorized
+        assert result.attempts[-1].evidence["parent_native_font_substitution_accepted"] is True
+        return
     assert not result.verified
     assert result.terminal_fallback_authorized
     assert all(attempt.outcome == "impossible" for attempt in result.attempts)
@@ -81,9 +92,14 @@ def test_runtime_and_invalid_inventory_never_authorize_raster(category, position
         item.font_failure, reason="font_inventory_unavailable", error_type="RuntimeError",
         detail="injected runtime failure", proof_category=category,
     )
-    result = _deliver(item, mode)
+    editable = mode in {"text", "labels", "3d_text"} and not positioned
+    result = _deliver(item, mode, allow_text=editable)
     assert not result.terminal_fallback_authorized
-    assert any(attempt.outcome == "failed" for attempt in result.attempts)
+    if editable:
+        assert result.verified
+        assert result.final_representation == "text"
+    else:
+        assert any(attempt.outcome == "failed" for attempt in result.attempts)
     assert all(attempt.attempted_representation != "raster" for attempt in result.attempts)
 
 

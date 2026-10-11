@@ -35,12 +35,12 @@ IMPORT_MODE_AUTO = "auto"
 # tries that type first; only item-specific, reported impossibility can advance
 # it to the nearest verified visual representation.
 TEXT_MODES = {
-    "Text (may become outlines)": "text",
-    "Labels (fallback reported)": "labels",
-    "3D Text (LibreCAD is 2D)": "3d_text",
-    "Glyphs (grouped outlines)": "glyphs",
+    "Text (editable)": "text",
+    "Labels (editable text)": "labels",
+    "3D Text (flat; LibreCAD is 2D)": "3d_text",
+    "Match PDF letter shapes": "glyphs",
     "Geometry (raw outlines)": "geometry",
-    "Raster (exact item pixels)": "raster",
+    "Raster (picture of the letters)": "raster",
 }
 
 DXF_VERSIONS = ("R12", "R2000", "R2004", "R2007", "R2010", "R2013", "R2018")
@@ -169,9 +169,11 @@ class Pdf2DxfApp(tk.Tk):
         text_help = ttk.Label(
             frame,
             text=(
-                "Visible Text normally becomes verified outlines because LibreCAD "
-                "substitutes PDF fonts. Labels and 3D Text also have 2D host limits. "
-                "Any fallback or unverified item is listed in the log and report."
+                "Text, Labels, and 3D Text become editable LibreCAD text. "
+                "The letters use LibreCAD's font, so they may not match the PDF font. "
+                "Choose Match PDF letter shapes when the drawing must look the same "
+                "and does not need to be edited as text. Symbol fonts and missing "
+                "characters stay as outlines, and the report says so."
             ),
             wraplength=620,
         )

@@ -4,6 +4,10 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
+- Real drawings that used to stop the import now come through. A shaded fill is kept as a picture instead of aborting the file. A rectangular clip no longer turns a solid fill into broken line pieces. A scan made of a photo plus a stencil mask comes in. A page list that loops on itself is reported in plain language. A PDF that opens only because its password is blank is still reported as locked. One character that shares a painted position with the next letter no longer rejects the whole sheet. A dashed line on a hidden white mask layer is moved to a visible layer instead of stopping the import. A word that cannot be drawn no longer rejects the sheet just because the attempt mentioned a shared text style.
+- Editable text stays text. Choosing Text, Labels, or 3D Text now writes LibreCAD TEXT that you can edit, using LibreCAD's own font. The report says the font was substituted. Letter shapes that must match the PDF are still available as Match PDF letter shapes. Symbol fonts and characters LibreCAD cannot draw stay outlines.
+- A rectangular clip now cuts the lines and curves drawn inside it. An even-odd fill with a hole stays empty in the middle. A blank page stays blank instead of becoming a full-page picture. Smooth open curves are stored as splines.
+
 - LibreCAD menu entry: the Windows portable ZIP ships `librecad-plugin/bc_lcpdf_menu.dll` (LibreCAD 2.2.x, Qt 5.15.2 MSVC x64). The GUI's **Install LibreCAD menu entry...** copies it to `Documents\LibreCAD\plugins`; LibreCAD then shows **Plugins > Import PDF (BlueCollar)...**, which runs the unchanged importer GUI and opens the finished DXF in that LibreCAD (or inserts it into the current drawing). New `--librecad-handoff` GUI mode; conversion output is unchanged. CI builds, load-tests (QPluginLoader) and round-trips the plugin and requires reproducible bytes.
 
 ## 1.0.103 - 2026-09-22

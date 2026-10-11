@@ -378,9 +378,9 @@ def extract_page(
                 current_pts = [(px, py)]
 
             elif kind == "l":
-                if len(data) >= 2 and hasattr(data[0], "x") and hasattr(data[1], "x"):
-                    x0, y0 = _xy(data[0])
-                    x1, y1 = _xy(data[1])
+                endpoints = _line_endpoints(data)
+                if endpoints is not None:
+                    (x0, y0), (x1, y1) = endpoints
                     p0 = to_model(x0, y0)
                     p1 = to_model(x1, y1)
                     # PyMuPDF records a move only as the next segment's start
@@ -504,6 +504,7 @@ def extract_page(
                 area=area, page_number=page_num,
                 clip_fill_group_id=clip_fill_group,
                 clip_fill_even_odd=bool(clip_fill_group and path_group.get("even_odd", False)),
+                fill_even_odd=bool(path_group.get("even_odd", False)),
                 source_stroke_color=source_stroke,
                 source_fill_color=source_fill,
                 stroke_opacity=_source_paint_opacity(path_group.get("stroke_opacity")),
@@ -1920,11 +1921,42 @@ def _to_mm(
     return x * MM_PER_PT * scale, y * MM_PER_PT * scale
 
 
+def _as_xy(value):
+    """One point, as a PyMuPDF point or a pair of numbers. None if it is neither."""
+    if hasattr(value, "x") and hasattr(value, "y") and not isinstance(value, (tuple, list, str, bytes)):
+        return _xy(value)
+    if isinstance(value, (tuple, list)) and len(value) >= 2:
+        try:
+            return float(value[0]), float(value[1])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _line_endpoints(data):
+    """Both ends of a line item, including plain numeric pairs."""
+    if len(data) < 2:
+        return None
+    start, end = _as_xy(data[0]), _as_xy(data[1])
+    if start is None or end is None:
+        return None
+    return start, end
+
+
 def _parse_point(data):
-    if len(data) >= 1 and hasattr(data[0], "x"):
-        return _xy(data[0])
+    if len(data) >= 1:
+        point = _as_xy(data[0])
+        if point is not None and not (
+            isinstance(data[0], (tuple, list)) and len(data) >= 2 and _as_xy(data[1]) is not None
+        ):
+            return point
     if len(data) >= 2:
-        return float(data[0]), float(data[1])
+        try:
+            return float(data[0]), float(data[1])
+        except (TypeError, ValueError):
+            point = _as_xy(data[0])
+            if point is not None:
+                return point
     return 0.0, 0.0
 
 

@@ -3,7 +3,12 @@ from types import SimpleNamespace
 import pymupdf as fitz
 import pytest
 
-from librecad_pdf_importer.core.document import _inline_image_blocks, _inline_delivery_image_bytes, _InlineImageDecodeIncomplete
+from librecad_pdf_importer.core.document import (
+    _image_mask_rgba,
+    _inline_delivery_image_bytes,
+    _inline_image_blocks,
+    _InlineImageDecodeIncomplete,
+)
 
 
 def source_pair():
@@ -16,6 +21,16 @@ def source_pair():
     info = dict(common, number=77, xref=0, digest=pixels.digest)
     block = dict(common, number=76, type=1, image=pixels.tobytes("png"), mask=mask.tobytes("png"))
     return info, block
+
+
+def test_image_mask_sample_zero_paints_and_the_rest_stays_clear():
+    gray = fitz.Pixmap(fitz.csGRAY, fitz.IRect(0, 0, 2, 1), False)
+    gray.set_pixel(0, 0, (0,))
+    gray.set_pixel(1, 0, (255,))
+    rgba = _image_mask_rgba(gray)
+    assert rgba.alpha == 1
+    assert rgba.pixel(0, 0)[3] == 255
+    assert rgba.pixel(1, 0)[3] == 0
 
 
 def test_annotation_image_numbers_may_differ_but_pixels_transform_and_mask_survive():

@@ -53,6 +53,25 @@ from librecad_pdf_importer.core.text_paint import bound_fill_receipt
 
 
 _MTEXT_THRESHOLD = 120
+# Names that mean "these glyphs are symbols, not letters". unicode.lff would
+# draw a different character, so those spans stay outlines.
+_SYMBOL_FONT_MARKERS = (
+    "symbol",
+    "dingbat",
+    "wingding",
+    "webding",
+    "zapfding",
+    "defaultmarker",
+    "fontawesome",
+    "esri",
+    "glyphicon",
+)
+
+
+def _source_font_is_symbolic(text_item: NormalizedText) -> bool:
+    name = str(getattr(text_item, "font_name", "") or "").casefold()
+    return any(marker in name for marker in _SYMBOL_FONT_MARKERS)
+
 _POSITIONED_FRACTION_RE = re.compile(r"^[0-9]+/[0-9]+$")
 # E2's recovered float32 quads reach 1.45e-5 angular noise. Bound that
 # dimensionless error independently of drawing units; retain original quads.
@@ -181,13 +200,8 @@ class TextDeliveryResult:
 
     def to_dict(self) -> Dict[str, Any]:
         for attempt in self.attempts:
-            if attempt.outcome == "verified" and not all(
-                (
-                    attempt.type_verified,
-                    attempt.delivery_verified,
-                    attempt.visual_verified,
-                    attempt.cleanup_verified,
-                )
+            if attempt.outcome == "verified" and not _attempt_has_terminal_proof(
+                attempt
             ):
                 raise RuntimeError(
                     "verified attempt is missing terminal proof: "
@@ -2218,6 +2232,34 @@ def _verify_label(
     }
 
 
+def _attempt_has_terminal_proof(attempt: TextDeliveryAttempt) -> bool:
+    """A verified attempt must prove type, delivery, cleanup, and appearance.
+
+    LibreCAD text that the user asked to keep editable is the exception: the
+    letters are real TEXT, and the report says the font is a substitute. That
+    disclosure is the appearance proof. A verified attempt with no such
+    disclosure still has to prove the pixels.
+    """
+    structural = all(
+        (
+            attempt.type_verified,
+            attempt.delivery_verified,
+            attempt.cleanup_verified,
+        )
+    )
+    if not structural:
+        return False
+    if attempt.visual_verified:
+        return True
+    evidence = attempt.evidence or {}
+    return bool(
+        evidence.get("parent_native_font_substitution_accepted") is True
+        and evidence.get("parent_visual_fidelity_verified") is False
+        and evidence.get("parent_visual_fidelity_limited_by_font_substitution")
+        is True
+    )
+
+
 def _verify_parent_native_text_delivery(
     *,
     target_app: str,
@@ -2457,15 +2499,20 @@ def _attempt_labels(
         source_content_whitespace_only = not bool(
             str(getattr(text_item, "text", "") or "").strip()
         )
-        # A substituted LFF can preserve editable structure, but it cannot
-        # prove the source glyph appearance for visible text.  Only a zero-ink
-        # whitespace span can terminate on this native rung; visible content
-        # must descend to exact outlines (or the next finite fallback).
+        # LibreCAD draws TEXT with its own LFF fonts. That is still the text
+        # the user asked for: editable, placed, and reported as a substituted
+        # font. Outlines are the next rung only when this TEXT cannot carry the
+        # item (missing LFF glyphs, a symbol font, or content TEXT would change).
+        # A symbol font such as ESRIDefaultMarker must not become unicode.lff
+        # letters; those shapes stay outlines.
         accept_librecad_font_substitution = bool(
             parent == "librecad"
-            and requested in {"text", "labels"}
             and not is_3d_text
-            and source_content_whitespace_only
+            and requested in {"text", "labels", "3d_text"}
+            and (
+                source_content_whitespace_only
+                or not _source_font_is_symbolic(text_item)
+            )
         )
         if parent == "librecad":
             lff_evidence = _librecad_lff_evidence(

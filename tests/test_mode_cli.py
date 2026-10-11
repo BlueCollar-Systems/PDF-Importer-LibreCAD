@@ -82,7 +82,7 @@ class TestModeCli(unittest.TestCase):
             self.assertIn("text_source_spans", report["extra"])
             delivery = data["export"]["text_delivery"]
             self.assertEqual(delivery["requested"], "3d_text")
-            self.assertEqual(delivery["delivered"], "glyphs")
+            self.assertEqual(delivery["delivered"], "text")
             self.assertTrue(delivery["verified"])
             self.assertTrue(delivery["fallback_used"])
             self.assertEqual(delivery["item_count"], 1)
@@ -152,12 +152,13 @@ class TestModeCli(unittest.TestCase):
             attempt = item["attempts"][0]
             evidence = attempt["evidence"]
             self.assertEqual(attempt["attempted_representation"], "text")
-            self.assertEqual(attempt["outcome"], "impossible")
-            self.assertFalse(attempt["delivery_verified"])
+            self.assertEqual(attempt["outcome"], "verified")
+            self.assertTrue(attempt["delivery_verified"])
             self.assertFalse(attempt["visual_verified"])
             self.assertTrue(attempt["cleanup_verified"])
-            self.assertEqual(item["final_representation"], "glyphs")
-            self.assertEqual(item["attempts"][-1]["attempted_representation"], "glyphs")
+            self.assertTrue(evidence["parent_native_font_substitution_accepted"])
+            self.assertEqual(item["final_representation"], "text")
+            self.assertEqual(item["attempts"][-1]["attempted_representation"], "text")
             self.assertEqual(item["attempts"][-1]["outcome"], "verified")
             username = str(os.environ.get("USERNAME", "") or "")
             if username:
@@ -217,17 +218,17 @@ class TestModeCli(unittest.TestCase):
             self.assertIn("reason", first)
             self.assertIsInstance(block.get("summary"), str)
 
-    def test_cli_uses_terminal_raster_when_source_font_and_outlines_are_unavailable(self) -> None:
+    def test_cli_keeps_flat_text_when_the_source_font_name_is_unavailable(self) -> None:
         with tempfile.TemporaryDirectory(prefix="lc_mode_cli_3d_fallback_") as tmp:
             tmp_path = Path(tmp)
             pdf_path = tmp_path / "sample.pdf"
             out_dxf = tmp_path / "out.dxf"
             accepted_report = tmp_path / "out_import_report.json"
             _write_sample_pdf(pdf_path)
-            # Make the exact source font unavailable. LibreCAD's renderable LFF
-            # substitute is not source-font equivalent. Corrupting the PDF font
-            # declaration also makes exact outlines unavailable, so the verified
-            # ladder must reach its visual-preserving raster endpoint.
+            # The PDF font name is gone, so exact outlines cannot be built.
+            # LibreCAD is 2D, so the thickness rung fails. The letters are
+            # still ordinary text that unicode.lff can draw, so the import
+            # keeps them as editable TEXT and says the font was substituted.
             pdf = fitz.open(str(pdf_path))
             font_xref = pdf[0].get_fonts(full=True)[0][0]
             font_object = pdf.xref_object(font_xref)
@@ -270,7 +271,7 @@ class TestModeCli(unittest.TestCase):
             self.assertTrue(accepted_report.is_file())
             summary = json.loads(result.stdout)
             self.assertEqual(summary["export"]["text_delivery"]["requested"], "3d_text")
-            self.assertEqual(summary["export"]["text_delivery"]["delivered"], "raster")
+            self.assertEqual(summary["export"]["text_delivery"]["delivered"], "text")
             self.assertTrue(summary["export"]["text_delivery"]["fallback_used"])
             report = json.loads(accepted_report.read_text(encoding="utf-8"))
             delivery = report["extra"]["text_representation_delivery"]
@@ -279,20 +280,19 @@ class TestModeCli(unittest.TestCase):
                 delivery["items"][0]["requested_representation"], "3d_text"
             )
             item = delivery["items"][0]
-            self.assertEqual(item["final_representation"], "raster")
+            self.assertEqual(item["final_representation"], "text")
             self.assertTrue(delivery["items"][0]["fallback_used"])
             native = next(
                 attempt
                 for attempt in item["attempts"]
                 if attempt["attempted_representation"] == "text"
             )
-            self.assertEqual(native["outcome"], "impossible")
+            self.assertEqual(native["outcome"], "verified")
             self.assertFalse(native["visual_verified"])
+            self.assertTrue(native["evidence"]["parent_native_font_substitution_accepted"])
             self.assertTrue(native["cleanup_verified"])
-            terminal = item["attempts"][-1]
-            self.assertEqual(terminal["attempted_representation"], "raster")
-            self.assertEqual(terminal["outcome"], "verified")
-            self.assertTrue(terminal["visual_verified"])
+            self.assertEqual(item["attempts"][0]["attempted_representation"], "3d_text")
+            self.assertEqual(item["attempts"][0]["outcome"], "impossible")
 
 
 if __name__ == "__main__":

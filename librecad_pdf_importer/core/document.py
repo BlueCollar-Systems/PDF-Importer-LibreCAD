@@ -644,7 +644,15 @@ def _extract_document_impl(
                 opts.progress_callback,
                 f"Extracting source page {page_number} ({page_position}/{len(pages)})",
             )
-            page = doc.load_page(page_number - 1)
+            try:
+                page = doc.load_page(page_number - 1)
+            except Exception as exc:
+                if "cycle in page tree" in str(exc).lower():
+                    raise ValueError(
+                        "This PDF's page list refers to itself in a loop, "
+                        f"so page {page_number} cannot be read."
+                    ) from exc
+                raise
             effective_mode = mode
             resolved_reason = ""
             # Every mode fetches the rows here (still once per page), so a clipped
@@ -670,6 +678,11 @@ def _extract_document_impl(
                 if auto_type in {"glyph_flood", "fill_art", "raster_candidate"}:
                     effective_mode = "raster"
                     resolved_reason = f"{auto_type}: {auto_decision.get('reason','')}"
+                elif auto_type == "empty":
+                    # A blank sheet is not a scan. Images, if any, are placed
+                    # below; visible ink with no vectors still falls back later.
+                    effective_mode = "vector"
+                    resolved_reason = auto_decision.get("reason") or "No vector drawings"
                 else:
                     effective_mode = "vector"
                     resolved_reason = auto_decision.get("reason") or "Standard vector content"
@@ -815,7 +828,14 @@ def _extract_document_impl(
                         )
                     has_text = bool(page_data.text_items)
                     vector_empty = not page_data.primitives and not has_text
-                    if opts.raster_fallback and (vector_empty or _looks_like_page_frame_only(page_data)) and not images:
+                    blank_page = (
+                        vector_empty
+                        and not _looks_like_page_frame_only(page_data)
+                        and not _page_has_visible_ink(page)
+                    )
+                    if blank_page:
+                        resolved_reason = "Blank page -- nothing to draw"
+                    elif opts.raster_fallback and (vector_empty or _looks_like_page_frame_only(page_data)) and not images:
                         rendered, raster_failure_detail = _render_page_raster_safely(
                             page,
                             page_number,
@@ -1074,7 +1094,7 @@ def _classify_auto_page(
     if not drawings:
         if text_blocks_count > 0 or text_words_count > 0:
             return {"type": "text_only", "reason": "No vector drawings; preserving extractable text."}
-        return {"type": "raster_candidate", "reason": "No vector drawings."}
+        return {"type": "empty", "reason": "No vector drawings."}
 
     total = len(drawings)
     has_fill = 0
@@ -1178,6 +1198,25 @@ def _primitive_bbox_area_ratio(prim, page_area_mm2: float) -> float:
     except (TypeError, ValueError):
         return 0.0
     return 0.0
+
+
+def _page_has_visible_ink(page) -> bool:
+    """True when a low-resolution render is not blank paper.
+
+    Used only after vector extraction found nothing and no image was placed.
+    A blank sheet stays a blank sheet. A scan or a page whose vectors could
+    not be read still becomes a raster. Missing pixmap support fails open so
+    older bindings keep the previous fallback.
+    """
+    get_pixmap = getattr(page, "get_pixmap", None)
+    if not callable(get_pixmap):
+        return True
+    try:
+        pixmap = get_pixmap(dpi=18, alpha=False, colorspace=fitz.csGRAY)
+        samples = pixmap.samples
+    except (RuntimeError, TypeError, ValueError, AttributeError):
+        return True
+    return any(sample < 250 for sample in samples)
 
 
 def _looks_like_page_frame_only(page_data: PageData) -> bool:
@@ -1628,6 +1667,44 @@ def _inline_image_page_fidelity_marker(
     )
 
 
+def _image_mask_rgba(gray):
+    """Turn a decoded image mask into black ink with a transparent background.
+
+    PDF image masks paint where the sample is 0 and leave the page alone
+    otherwise. Hosts that cannot stencil still get a transparent picture,
+    and a binary mask sends the page through the existing page-picture path.
+    """
+    width, height = int(gray.width), int(gray.height)
+    stride = int(getattr(gray, "stride", width) or width)
+    raw = memoryview(gray.samples)
+    out = bytearray(width * height * 4)
+    for y in range(height):
+        row = raw[y * stride: y * stride + width]
+        for x, sample in enumerate(row):
+            if sample == 0:
+                out[(y * width + x) * 4 + 3] = 255
+    return fitz.Pixmap(fitz.csRGB, width, height, bytes(out), True)
+
+
+def _pixmap_for_xobject(doc: fitz.Document, xref: int):
+    """Load one image, including a stencil whose pixmap has no color space."""
+    pixmap = fitz.Pixmap(doc, xref)
+    if getattr(pixmap, "colorspace", None) is not None:
+        return pixmap
+    extracted = doc.extract_image(xref)
+    image_bytes = extracted.get("image") if isinstance(extracted, dict) else None
+    if not image_bytes:
+        raise RuntimeError("image has no colorspace and no decoded bytes")
+    decoded = fitz.Pixmap(bytes(image_bytes))
+    if (
+        int(decoded.n) == 1
+        and not decoded.alpha
+        and getattr(decoded, "colorspace", None) is not None
+    ):
+        return _image_mask_rgba(decoded)
+    return decoded
+
+
 def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
                     options: ExtractionOptions, image_dir: Optional[Path]) -> List[ImagePlacement]:
     placements: list[ImagePlacement] = []
@@ -1662,7 +1739,7 @@ def _extract_images(doc: fitz.Document, page: fitz.Page, page_number: int,
         seen.add(image_key)
 
         try:
-            base_pix = fitz.Pixmap(doc, xref)
+            base_pix = _pixmap_for_xobject(doc, xref)
             pix = base_pix
             if smask > 0 and not base_pix.alpha:
                 # Only merge when PyMuPDF handed back an opaque image. When the

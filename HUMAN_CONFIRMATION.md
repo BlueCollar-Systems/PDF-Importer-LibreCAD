@@ -15,7 +15,7 @@ For each representative shop drawing you import:
 
 | Check | Pass |
 |-------|------|
-| **Text** → visible text is drawn as exact Glyph outlines (a substituted LFF font is never certified as Text) and the report says requested Text, delivered Glyphs; only whitespace spans are native TEXT | ☐ |
+| **Text** → visible notes and dimensions are editable LibreCAD TEXT (the report says the font was substituted). Symbol fonts and missing characters are outlines, and the report says so | ☐ |
 | **Labels** → explicit no-native-DXF-Label evidence, then the same Text path: delivered as Glyph outlines with both transitions reported | ☐ |
 | **3D Text** → parent visibly/structurally verifies native 3D text, or report proves the item-specific failure and the nearest verified fallback is faithful | ☐ |
 | **Glyphs** → grouped outline block per source span | ☐ |
