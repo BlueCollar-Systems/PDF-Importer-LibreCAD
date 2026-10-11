@@ -1,19 +1,14 @@
 name: auto-release
 
 on:
-  push:
-    branches: [main, master]
-    # Docs-only pushes do not mint a release (board Q-08-a / ANS-09-1).
-    # Release-pipeline workflow edits under .github/ are NOT ignored: they must
-    # rebuild --latest assets. The job if: guard skips chore: bump version to
-    # commits, so there is no release loop.
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - "_archived/**"
-      - "dist/_archived/**"
-      - "dev_logs/**"
+  # Publishing is explicit after source and native acceptance finish.
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish verified releases after all current work is complete
+        type: boolean
+        required: true
+        default: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -35,7 +30,7 @@ concurrency:
 
 jobs:
   release:
-    if: "!startsWith(github.event.head_commit.message, 'chore: bump version to') && !contains(github.event.head_commit.message, 'automation/version-bump') && !contains(github.event.head_commit.message, '[skip release]')"
+    if: github.event_name == 'workflow_dispatch'
     outputs:
       version: ${{ steps.version.outputs.version }}
       release_target: ${{ steps.target.outputs.sha }}
@@ -43,6 +38,7 @@ jobs:
       # steps were all skipped still reports "success", so without it the
       # publisher would run against artifacts that were never built.
       release: ${{ steps.preflight.outputs.release }}
+      verified_artifact: ${{ steps.candidate.outputs.verified_artifact }}
     # The image label is explicit; the accepted-artifact SHA gate below remains
     # authoritative because GitHub-hosted image contents can still evolve.
     runs-on: windows-2025
@@ -92,6 +88,11 @@ jobs:
           else
             echo "::notice::Skipping release: committed version is still ${version}, and ${tag} already points at ${tagged}. This commit changes the product without preparing a release, which is normal. To cut one, run scripts/prepare_release.py <new-version> and push that commit."
           fi
+
+      - name: Record producer artifact identity
+        if: steps.preflight.outputs.release == 'true'
+        id: candidate
+        run: echo "verified_artifact=verified-release-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         if: steps.preflight.outputs.release == 'true'
@@ -227,7 +228,7 @@ jobs:
         if: steps.preflight.outputs.release == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: verified-release-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ steps.candidate.outputs.verified_artifact }}
           path: |
             dist/LibreCAD-PDF-Importer-Windows-Portable_v*.zip
             dist/LibreCAD-PDF-Importer_v*.zip
@@ -240,7 +241,7 @@ jobs:
     # A release job whose steps were all skipped still reports "success", so the
     # explicit decision is required too; otherwise the publisher runs against
     # artifacts that were never built.
-    if: needs.release.result == 'success' && needs.release.outputs.release == 'true'
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release == true && needs.release.result == 'success' && needs.release.outputs.release == 'true'
     permissions:
       actions: read
       contents: write
@@ -256,10 +257,11 @@ jobs:
       - name: Download verified release archives
         env:
           GH_TOKEN: ${{ github.token }}
+          VERIFIED_ARTIFACT: ${{ needs.release.outputs.verified_artifact }}
         run: |
           gh run download "${GITHUB_RUN_ID}" \
             --repo "${GITHUB_REPOSITORY}" \
-            --name "verified-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --name "$VERIFIED_ARTIFACT" \
             --dir dist
 
       - name: Reverify transferred release bytes

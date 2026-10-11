@@ -837,7 +837,7 @@ def test_malformed_name_table_struct_error_does_not_escape_font_readers():
     malformed = _truncated_name_table_fixture()
 
     with pytest.raises(struct.error):
-        TTFont(BytesIO(malformed), lazy=False, recalcTimestamp=False)["name"].names
+        _ = TTFont(BytesIO(malformed), lazy=False, recalcTimestamp=False)["name"].names
 
     assert embedded_fonts._font_program_name_aliases(malformed, "ttf") == set()
     assert embedded_fonts._fonttools_loadable(malformed) is False

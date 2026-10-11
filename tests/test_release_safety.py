@@ -587,9 +587,12 @@ class ReleaseSafetyTest:
         assert '--head "$GITHUB_SHA"' in workflow
         assert "--mode release" in workflow
         assert '--summary "$GITHUB_STEP_SUMMARY"' in workflow
-        audit_at = workflow.index("release_safety.py audit-existing-tag")
-        false_at = workflow.rfind('echo "minted=false"', 0, audit_at)
-        assert false_at >= 0
+        audit = workflow.split("- name: Audit existing release tag", 1)[1].split("- name:", 1)[0]
+        create = workflow.split("- name: Create release", 1)[1].split("- name:", 1)[0]
+        assert "if: steps.release_state.outputs.exists == 'true'" in audit
+        assert "release_safety.py audit-existing-tag" in audit
+        assert "if: steps.release_state.outputs.exists != 'true'" in create
+        assert 'echo "minted=true"' in create
         token_at = workflow.index("- name: Check website dispatch token secret")
         token_block = workflow[token_at : workflow.index("- name:", token_at + 8)]
         assert "if: steps.mint.outputs.minted == 'true'" in token_block

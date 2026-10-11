@@ -178,7 +178,7 @@ def test_extraction_is_deterministic(cubic_pdf):
     a = _extract(cubic_pdf, detect_arcs=True)
     b = _extract(cubic_pdf, detect_arcs=True)
     assert len(a.primitives) == len(b.primitives)
-    for pa, pb in zip(a.primitives, b.primitives):
+    for pa, pb in zip(a.primitives, b.primitives, strict=True):
         assert pa.type == pb.type
         assert pa.points == pb.points
         assert pa.radius == pb.radius
