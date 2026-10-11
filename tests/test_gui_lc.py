@@ -222,6 +222,40 @@ def test_worker_passes_the_editable_text_choice_and_logs_the_count(
         assert any("text=text;" in line for line in logged)
 
 
+@pytest.mark.parametrize("written", [0, 4], ids=["no-copies", "copies-written"])
+def test_completion_log_names_the_hidden_editable_copies_layer(tmp_path, written):
+    """Words drawn as outlines keep an editable copy on a hidden layer: the
+    window log says where, as the command line does."""
+
+    app = _app_without_window(tmp_path)
+    options = app._capture_options()
+    stats = {
+        "text_delivery": {"requested": "text", "delivered": "glyphs", "item_count": 4},
+        "searchable_text_companions": {"enabled": True, "written": written},
+    }
+    with patch("dxf_import_engine.convert", return_value=stats), patch(
+        "pdf_open_guard.precheck_pdf",
+    ), patch(
+        "librecad_pdf_importer.launchers.librecad_launcher.find_librecad_executable",
+        return_value=None,
+    ), patch.object(gui.messagebox, "showinfo"), patch.object(
+        gui.messagebox, "showerror",
+    ) as error:
+        app._run_conversion(
+            str(tmp_path / "drawing.pdf"), str(tmp_path / "drawing.dxf"), options
+        )
+    error.assert_not_called()
+    logged = [call.args[0] for call in app._log.call_args_list]
+    copies = [line for line in logged if "Editable copies" in line]
+    if written:
+        assert copies == [
+            "  Editable copies: on the hidden layer whose name ends in "
+            "_TEXT_SEARCH (thaw it in the layer list to edit)"
+        ]
+    else:
+        assert copies == []
+
+
 def test_capture_preserves_text_off_all_pages_and_launch_choice(tmp_path):
     app = _app_without_window(tmp_path)
     app._var_import_text.get.return_value = False

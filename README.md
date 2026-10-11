@@ -364,7 +364,11 @@ does not prove visible/editable 3D text in LibreCAD's 2D parent.
   LibreCAD. Each visible word is delivered as native `TEXT` on the visible,
   plotting layer `P###_TEXT`, drawn in LibreCAD's own `unicode` LFF font, so the
   letter shapes differ from the PDF while the string, anchor, cap height,
-  rotation and width match. No outline block, picture or hidden copy is written
+  rotation and width match. Each word keeps the PDF word's width (Fit
+  alignment): if you edit a word to make it longer, LibreCAD squeezes the
+  letters into the original width (a shorter word is stretched). To let an
+  edited word take its natural width, change its alignment from Fit to another
+  one in the text's properties. No outline block, picture or hidden copy is written
   for those words, so the file is also much smaller. The substitution is
   disclosed per item (`parent_native_font_substitution_accepted: true`,
   `visual_verified: false`) and never certified as the PDF's look; the report

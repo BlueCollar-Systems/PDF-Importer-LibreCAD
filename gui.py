@@ -490,6 +490,14 @@ class Pdf2DxfApp(tk.Tk):
                     "as editable text in LibreCAD's font; the report says how each "
                     "other one came in and why."
                 )
+            # Words drawn as outlines keep an editable copy on a hidden layer;
+            # say where, so a worker who needs to edit one can find it.
+            companions = dict(stats.get("searchable_text_companions") or {})
+            if int(companions.get("written") or 0):
+                self._log(
+                    "  Editable copies: on the hidden layer whose name ends in "
+                    "_TEXT_SEARCH (thaw it in the layer list to edit)"
+                )
             self._log(
                 f"  Complete report: {text_delivery.get('report_path', '')}"
             )
