@@ -476,6 +476,9 @@ class ExtractionOptions:
     image_dir: Optional[str] = None
     cancel_requested: Optional[Callable[[], bool]] = None
     progress_callback: Optional[Callable[[str], None]] = None
+    # False when the target file cannot hold pictures (DXF R12): Auto then
+    # keeps a page's lines instead of sending the page to a picture alone.
+    pictures_supported: bool = True
 
 
 def _prepare_vector_page_data(page_data: PageData, options: ExtractionOptions) -> None:
@@ -732,11 +735,28 @@ def _extract_document_impl(
                 and not preserve_requested_text
             ):
                 if _looks_like_text_cloud_page(len(page_data.primitives), len(page_data.text_items)):
+                    if opts.pictures_supported:
+                        effective_mode = "raster"
+                        resolved_reason = "Text-cloud page -- fallback to raster"
+                    else:
+                        # The target (DXF R12) cannot hold the page picture,
+                        # so a picture-only page would arrive as an empty
+                        # outline. Keep its lines; the picture is still
+                        # offered, and the exporter outlines and reports it.
+                        effective_mode = "hybrid"
+                        resolved_reason = (
+                            "Text-cloud page -- fallback: the target cannot hold a "
+                            "page picture, so the page's lines are kept"
+                        )
+                elif _looks_like_page_frame_only(page_data) and _page_paints_smooth_shading(page):
+                    # A smooth shading is not delivered as lines yet, and a
+                    # vector page holding one cannot be written today: keep
+                    # the picture route such a page always had. Any other
+                    # frame page stays lines (and text); the vector branch
+                    # below lays a page picture under them only on evidence
+                    # that the extractor missed ink.
                     effective_mode = "raster"
-                    resolved_reason = "Text-cloud page -- fallback to raster"
-                elif _looks_like_page_frame_only(page_data):
-                    effective_mode = "raster"
-                    resolved_reason = "Page frame only -- fallback to raster"
+                    resolved_reason = "Page frame with a smooth shading -- fallback to raster"
                 if effective_mode == "raster":
                     if _has_viable_vector_content(page_data):
                         retained_content = (list(page_data.primitives), list(page_data.text_items))
@@ -815,7 +835,21 @@ def _extract_document_impl(
                         )
                     has_text = bool(page_data.text_items)
                     vector_empty = not page_data.primitives and not has_text
-                    if opts.raster_fallback and (vector_empty or _looks_like_page_frame_only(page_data)) and not images:
+                    # A page picture here goes to an empty page, or under the
+                    # lines and text of a frame page (a border near the paper
+                    # edge plus a few items) that shows ink the extractor
+                    # missed -- e.g. a pattern fill: a cheap coarse render is
+                    # the evidence. Otherwise it would just duplicate them.
+                    missed_ink = 0.0
+                    if (
+                        opts.raster_fallback
+                        and not vector_empty
+                        and not images
+                        and _looks_like_page_frame_only(page_data)
+                    ):
+                        missed_ink = _frame_page_unextracted_ink_ratio(page, page_data, opts)
+                    frame_missed_ink = missed_ink > FRAME_PAGE_MISSED_INK_RATIO
+                    if opts.raster_fallback and (vector_empty or frame_missed_ink) and not images:
                         rendered, raster_failure_detail = _render_page_raster_safely(
                             page,
                             page_number,
@@ -845,9 +879,21 @@ def _extract_document_impl(
                             else:
                                 page_raster_job_pixels += rendered_pixels
                                 images.append(rendered)
-                                effective_mode = "raster"
-                                resolved_reason = "Vector empty -- raster fallback"
                                 raster_failure_detail = ""
+                                if vector_empty:
+                                    effective_mode = "raster"
+                                    resolved_reason = "Vector empty -- raster fallback"
+                                else:
+                                    # The lines and text stay editable; the
+                                    # picture under them carries what they miss.
+                                    # "fallback" in the reason marks the step-down
+                                    # for the import report.
+                                    effective_mode = "hybrid"
+                                    resolved_reason = (
+                                        "Page frame with unextracted ink "
+                                        f"({missed_ink:.1%} of the page) -- fallback: "
+                                        "page picture kept under the lines and text"
+                                    )
             elif effective_mode in {"raster", "hybrid"}:
                 raster_failure_detail = "image delivery disabled"
 
@@ -1158,6 +1204,110 @@ def _looks_like_text_cloud_page(primitives_count: int, text_count: int) -> bool:
     if text_count < 180:
         return False
     return (text_count / float(max(primitives_count, 1))) >= 2.5
+
+
+# A frame page goes to a picture only when ink the extractor did not deliver
+# covers more than this share of the page (coarse render, dilated cover).
+FRAME_PAGE_MISSED_INK_RATIO = 0.005
+_FRAME_PAGE_PROBE_DPI = 36
+_FRAME_PAGE_INK_LEVEL = 200      # 8-bit grey below this is ink
+_FRAME_PAGE_COVER_PT = 4.0       # dilation around delivered content, in points
+
+
+def _page_paints_smooth_shading(page) -> bool:
+    """True when the page paints a smooth shading (PDF ``sh``) anywhere.
+
+    If the paint log cannot be read, answer True: that keeps the previous
+    picture route for a frame page.
+    """
+
+    try:
+        return any(row[0] == "fill-shade" for row in page.get_bboxlog())
+    except Exception:  # noqa: BLE001 - no evidence: keep the previous picture route
+        return True
+
+
+def _frame_page_unextracted_ink_ratio(page, page_data: PageData, opts) -> float:
+    """Share of the page showing ink that no delivered item accounts for.
+
+    Renders the page coarsely, then paints a cover of everything the importer
+    will deliver -- each vector primitive (stroked wide, closed shapes filled),
+    every text box (delivered or not: text is never "missed" content) and every
+    picture's box -- and counts ink pixels the cover leaves bare. Any failure
+    returns 1.0, which keeps the previous picture route.
+    """
+
+    try:
+        from librecad_pdf_importer.raster_geometry import display_to_model_matrix
+
+        rect = page.rect
+        a, _b, _c, d, _e, f = display_to_model_matrix(rect, opts.scale, opts.flip_y)
+
+        def to_display(point):
+            return (float(point[0]) / a, (float(point[1]) - f) / d)
+
+        zoom = _FRAME_PAGE_PROBE_DPI / 72.0
+        matrix = fitz.Matrix(zoom, zoom)
+        source = page.get_pixmap(matrix=matrix, colorspace=fitz.csGRAY, alpha=False)
+        cover_doc = fitz.open()
+        try:
+            cover_page = cover_doc.new_page(width=rect.width, height=rect.height)
+            shape = cover_page.new_shape()
+            pad = _FRAME_PAGE_COVER_PT
+            for prim in list(page_data.primitives or ()):
+                points = [to_display(point) for point in list(prim.points or ())]
+                if not points and prim.center is not None and prim.radius:
+                    cx, cy = to_display(prim.center)
+                    radius = abs(float(prim.radius) / a)
+                    shape.draw_circle((cx, cy), radius)
+                    shape.finish(color=(0, 0, 0), width=2 * pad)
+                    continue
+                if len(points) == 1:
+                    points = points * 2
+                if len(points) < 2:
+                    continue
+                closed = bool(prim.closed or prim.fill_color is not None)
+                width_pt = abs(float(prim.line_width or 0.0) / a)
+                shape.draw_polyline(points + ([points[0]] if closed else []))
+                shape.finish(
+                    color=(0, 0, 0),
+                    fill=(0, 0, 0) if prim.fill_color is not None else None,
+                    width=width_pt + 2 * pad,
+                    closePath=closed,
+                )
+            boxes = [
+                fitz.Rect(word[:4]) * page.rotation_matrix
+                for word in page.get_text("words")
+            ]
+            boxes.extend(
+                fitz.Rect(info["bbox"]) * page.rotation_matrix
+                for info in page.get_image_info()
+            )
+            for item in list(page_data.text_items or ()):
+                bbox = getattr(item, "bbox", None)
+                if bbox:
+                    (x0, y0), (x1, y1) = to_display(bbox[:2]), to_display(bbox[2:4])
+                    boxes.append(fitz.Rect(x0, y0, x1, y1).normalize())
+            for box in boxes:
+                if box.is_infinite:
+                    continue
+                shape.draw_rect(fitz.Rect(box.x0 - pad, box.y0 - pad, box.x1 + pad, box.y1 + pad))
+                shape.finish(color=None, fill=(0, 0, 0), width=0)
+            shape.commit()
+            cover = cover_page.get_pixmap(matrix=matrix, colorspace=fitz.csGRAY, alpha=False)
+        finally:
+            cover_doc.close()
+        if (source.width, source.height) != (cover.width, cover.height):
+            return 1.0
+        ink = _FRAME_PAGE_INK_LEVEL
+        bare = sum(
+            1
+            for page_value, cover_value in zip(source.samples, cover.samples, strict=True)
+            if page_value < ink and cover_value == 255
+        )
+        return bare / float(max(1, source.width * source.height))
+    except Exception:  # noqa: BLE001 - no evidence: keep the previous picture route
+        return 1.0
 
 
 def _primitive_bbox_area_ratio(prim, page_area_mm2: float) -> float:

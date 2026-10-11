@@ -8,6 +8,8 @@ converter.  Uses *ttk* widgets for a modern look.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import math
 import re
@@ -16,6 +18,7 @@ import threading
 import time
 import tkinter as tk
 from dataclasses import dataclass
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 # Ensure project root is on sys.path
@@ -34,8 +37,14 @@ IMPORT_MODE_AUTO = "auto"
 # Every requested representation is available in both GUI and CLI. Each item
 # tries that type first; only item-specific, reported impossibility can advance
 # it to the nearest verified visual representation.
+#
+# "Exact look" (the default) draws every word as exact outlines. "Editable
+# text" asks for the same text rung but accepts LibreCAD's own font, so words
+# arrive as TEXT you can edit; it is told apart by its label, not its mode.
+EDITABLE_TEXT_LABEL = "Editable text (LibreCAD font)"
 TEXT_MODES = {
-    "Text (may become outlines)": "text",
+    "Exact look - text as outlines (default)": "text",
+    EDITABLE_TEXT_LABEL: "text",
     "Labels (fallback reported)": "labels",
     "3D Text (LibreCAD is 2D)": "3d_text",
     "Glyphs (grouped outlines)": "glyphs",
@@ -44,6 +53,14 @@ TEXT_MODES = {
 }
 
 DXF_VERSIONS = ("R12", "R2000", "R2004", "R2007", "R2010", "R2013", "R2018")
+LIBRECAD_NOT_FOUND_TIP = (
+    "LibreCAD was not found. Use Locate LibreCAD... to pick LibreCAD.exe once; "
+    "it is remembered."
+)
+LIBRECAD_START_FAILED_TIP = (
+    "LibreCAD could not be started. Use Locate LibreCAD... to pick the right "
+    "LibreCAD.exe; it is remembered."
+)
 DEFAULT_TEXT_LABEL = next(label for label, mode in TEXT_MODES.items() if mode == "text")
 
 
@@ -57,6 +74,99 @@ class ConversionOptions:
     pages: tuple[int, ...] | None
     dxf_version: str
     launch_librecad: bool
+    # The LibreCAD.exe picked with "Locate LibreCAD..." (None: normal lookup).
+    librecad_executable: str | None = None
+    # "Editable text (LibreCAD font)": words as editable TEXT in LibreCAD's font.
+    editable_text: bool = False
+
+
+def window_title(handoff: bool, version: str = "", is_dev: bool = False) -> str:
+    """The window title: which version is running, and whether it is a release.
+
+    A source checkout with git history is the copy developers edit every day;
+    saying so keeps it from being mistaken for a tested release.
+    """
+    title = "PDF to DXF Converter - BlueCollar-Systems"
+    if version:
+        title += f" v{version}"
+    if handoff:
+        title += " (for LibreCAD)"
+    if is_dev:
+        title += " - development copy"
+    return title
+
+
+def _importer_version() -> str:
+    try:
+        from pdf2dxf import __version__
+    except Exception:  # noqa: BLE001 - a title must never stop the window
+        return ""
+    return str(__version__ or "")
+
+
+def _running_from_development_copy() -> bool:
+    """Not a frozen release build, and a .git sits next to gui.py."""
+    if getattr(sys, "frozen", False):
+        return False
+    return os.path.exists(os.path.join(_PROJECT_ROOT, ".git"))
+
+
+def _file_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def is_librecad_program_name(path: str) -> bool:
+    """True for LibreCAD's own program file name (LibreCAD.exe, or librecad), any case."""
+    return os.path.basename(str(path or "")).lower() in {"librecad.exe", "librecad"}
+
+
+def output_replace_reason(input_path: str, output_path: str) -> str | None:
+    """Why converting would replace a drawing the user may want to keep.
+
+    ``None`` when the output does not exist yet, or when it is the untouched
+    result of importing this same PDF (Convert / Resume of that job stays one
+    click). Otherwise a short plain reason that follows the file name, e.g.
+    ``"EX101.dxf was made from a different PDF"``. The resume session sits next
+    to the output exactly as dxf_import_engine names it.
+    """
+    try:
+        output = Path(output_path).expanduser().resolve()
+        if not output.is_file():
+            return None
+    except OSError:
+        return None
+    manifest_path = output.with_name(f"{output.stem}_resume") / "session.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "already exists"
+    if not isinstance(manifest, dict):
+        return "already exists"
+    try:
+        source_sha256 = _file_sha256(str(Path(input_path).expanduser().resolve()))
+        output_sha256 = _file_sha256(str(output))
+    except OSError:
+        return "already exists"
+    if manifest.get("source_sha256") != source_sha256:
+        return "was made from a different PDF"
+    assembled = manifest.get("assembled")
+    if not isinstance(assembled, dict) or not assembled.get("output_sha256"):
+        # The session never wrote this file (for example it restarted for a
+        # new Scale and was cancelled before a page finished), so nothing
+        # says it was edited: it is simply there.
+        return "already exists"
+    if assembled.get("output_sha256") != output_sha256:
+        return "was changed after it was imported"
+    return None
+
+
+def _path_key(path: str) -> str:
+    """One spelling per file for comparing paths the user picked."""
+    return os.path.normcase(os.path.abspath(os.path.expanduser(str(path))))
 
 
 # ---------------------------------------------------------------------------
@@ -71,10 +181,9 @@ class Pdf2DxfApp(tk.Tk):
         # this window: the finished DXF path is handed back to that LibreCAD.
         self._handoff_path = handoff_path
         self._handoff_delivered = False
-        self.title(
-            "PDF to DXF Converter - BlueCollar-Systems"
-            + (" (for LibreCAD)" if handoff_path else "")
-        )
+        self.title(window_title(
+            bool(handoff_path), _importer_version(), _running_from_development_copy(),
+        ))
         self.resizable(True, True)
         self.minsize(560, 620)
 
@@ -83,6 +192,10 @@ class Pdf2DxfApp(tk.Tk):
 
         self._converting = False
         self._cancel_event = threading.Event()
+        # "Locate LibreCAD..." choice, used even when it could not be saved.
+        self._librecad_choice: str | None = None
+        # Existing DXF the user agreed to replace in the Output save dialog.
+        self._output_confirmed: str | None = None
         self._build_ui()
         if handoff_path:
             self.protocol("WM_DELETE_WINDOW", self._close_from_librecad_handoff)
@@ -169,8 +282,11 @@ class Pdf2DxfApp(tk.Tk):
         text_help = ttk.Label(
             frame,
             text=(
-                "Visible Text normally becomes verified outlines because LibreCAD "
-                "substitutes PDF fonts. Labels and 3D Text also have 2D host limits. "
+                "Exact look draws every word as exact outlines; an editable copy is "
+                "kept on the hidden layer ...TEXT_SEARCH. Editable text gives words "
+                "you can edit, drawn in LibreCAD's own font (letter shapes differ "
+                "from the PDF). Characters LibreCAD's font lacks still come in as "
+                "outlines and are listed. "
                 "Any fallback or unverified item is listed in the log and report."
             ),
             wraplength=620,
@@ -242,6 +358,10 @@ class Pdf2DxfApp(tk.Tk):
             state=tk.DISABLED,
         )
         self._btn_cancel.pack(side=tk.LEFT, padx=4)
+        # Shown only after LibreCAD was not found or could not be started.
+        self._btn_locate_librecad = ttk.Button(
+            action_frame, text="Locate LibreCAD...", command=self._locate_librecad,
+        )
 
         # ---- Progress bar ----
         self._progress = ttk.Progressbar(
@@ -277,9 +397,19 @@ class Pdf2DxfApp(tk.Tk):
             filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
         )
         if path:
+            old_input = self._var_input.get().strip()
+            output = self._var_output.get().strip()
             self._var_input.set(path)
-            # Auto-populate output if empty
-            if not self._var_output.get():
+            # The output follows the PDF while it still holds the name filled in
+            # for the previous PDF; a name the user picked or typed stays put.
+            auto_output = (
+                os.path.splitext(old_input)[0] + ".dxf" if old_input else ""
+            )
+            if not output or (
+                auto_output
+                and os.path.normcase(os.path.normpath(output))
+                == os.path.normcase(os.path.normpath(auto_output))
+            ):
                 self._var_output.set(os.path.splitext(path)[0] + ".dxf")
 
     def _browse_output(self) -> None:
@@ -290,6 +420,9 @@ class Pdf2DxfApp(tk.Tk):
         )
         if path:
             self._var_output.set(path)
+            # The save dialog already asked "replace?" for a file that exists,
+            # so Convert does not ask again only because it is there.
+            self._output_confirmed = _path_key(path) if os.path.isfile(path) else None
 
     # ------------------------------------------------------------------
     # Logging helper
@@ -321,6 +454,9 @@ class Pdf2DxfApp(tk.Tk):
     # ------------------------------------------------------------------
     def _capture_options(self) -> ConversionOptions:
         """Read Tk variables once, on the main thread, and reject invalid inputs."""
+        from librecad_pdf_importer.launchers.librecad_launcher import (
+            preferred_librecad_executable,
+        )
         from page_selection import parse_page_selection
 
         try:
@@ -343,6 +479,10 @@ class Pdf2DxfApp(tk.Tk):
             pages=tuple(pages) if pages is not None else None,
             dxf_version=self._var_dxf_ver.get(),
             launch_librecad=self._var_launch_librecad.get(),
+            librecad_executable=preferred_librecad_executable(
+                getattr(self, "_librecad_choice", None)
+            ),
+            editable_text=self._var_text_mode.get() == EDITABLE_TEXT_LABEL,
         )
 
     def _start_conversion(self) -> None:
@@ -368,6 +508,24 @@ class Pdf2DxfApp(tk.Tk):
             options = self._capture_options()
         except (ValueError, PdfOpenError) as exc:
             messagebox.showwarning("Check conversion settings", str(exc))
+            return
+
+        # Never write over another drawing, or over edits saved into this one,
+        # without asking first.
+        replace_reason = output_replace_reason(input_path, output_path)
+        if (
+            replace_reason == "already exists"
+            and getattr(self, "_output_confirmed", None) == _path_key(output_path)
+        ):
+            # Confirmed in the Output Browse... save dialog this session. A
+            # different PDF or an edited drawing is still asked about.
+            replace_reason = None
+        if replace_reason and not messagebox.askyesno(
+            "Replace drawing?",
+            f"{os.path.basename(output_path)} {replace_reason}. Replace it?\n\n"
+            "Choose No to keep it, then pick another name with the Browse... "
+            "button next to Output DXF.",
+        ):
             return
 
         self._converting = True
@@ -411,9 +569,14 @@ class Pdf2DxfApp(tk.Tk):
             t0 = time.perf_counter()
             self._log(f"Starting conversion: {os.path.basename(input_path)}")
             self._log("Import mode: Auto (per-page strategy)")
+            editable_text = bool(options.editable_text and options.import_text)
+            text_setting = (
+                "off"
+                if not options.import_text
+                else ("editable (LibreCAD font)" if editable_text else options.text_mode)
+            )
             self._log(
-                f"Settings: scale={options.scale:g}; text="
-                f"{options.text_mode if options.import_text else 'off'}; DXF={dxf_version}"
+                f"Settings: scale={options.scale:g}; text={text_setting}; DXF={dxf_version}"
             )
             selection = (
                 f"{len(config.pages)} selected page(s)"
@@ -432,7 +595,12 @@ class Pdf2DxfApp(tk.Tk):
                 find_librecad_executable,
             )
 
-            resolved_librecad_executable = find_librecad_executable() or ""
+            resolved_librecad_executable = (
+                find_librecad_executable(options.librecad_executable) or ""
+            )
+            if not resolved_librecad_executable:
+                # Unbound call: tests drive this worker with a window-less namespace.
+                self.after(0, lambda: Pdf2DxfApp._show_locate_librecad(self))
             stats = convert(
                 input_path=input_path,
                 output_path=output_path,
@@ -443,6 +611,7 @@ class Pdf2DxfApp(tk.Tk):
                 cancel_requested=self._cancel_event.is_set,
                 restart_on_resume_mismatch=True,
                 librecad_executable=resolved_librecad_executable,
+                editable_text=editable_text,
             )
 
             elapsed = time.perf_counter() - t0
@@ -464,13 +633,45 @@ class Pdf2DxfApp(tk.Tk):
                     items=text_delivery.get("item_count", 0),
                 )
             )
+            if editable_text:
+                editable_count = int(text_delivery.get("editable_text_item_count") or 0)
+                self._log(
+                    f"  Editable text: {editable_count} of "
+                    f"{int(text_delivery.get('item_count') or 0)} text item(s) came in "
+                    "as editable text in LibreCAD's font; the report says how each "
+                    "other one came in and why."
+                )
+            # Words drawn as outlines keep an editable copy on a hidden layer;
+            # say where, so a worker who needs to edit one can find it.
+            companions = dict(stats.get("searchable_text_companions") or {})
+            if int(companions.get("written") or 0):
+                self._log(
+                    "  Editable copies: on the hidden layer whose name ends in "
+                    "_TEXT_SEARCH (thaw it in the layer list to edit)"
+                )
             self._log(
                 f"  Complete report: {text_delivery.get('report_path', '')}"
             )
+            # The scale read from the title block: the DXF is paper size in mm
+            # unless Scale says otherwise, so tell the fitter the multiplier.
+            from librecad_pdf_importer.importer import drawing_scale_line
+
+            # Each page's own scale too: one Scale value cannot fit sheets that differ.
+            scale_line = drawing_scale_line(
+                stats.get("resolved_scale"),
+                options.scale,
+                page_scales=stats.get("resolved_scales_by_page"),
+            )
+            if scale_line:
+                self._log(scale_line)
             # Said once, at completion, pages certified by an earlier run included.
             clip_fill_warning = str(stats.get("clip_fill_warning") or "")
             if clip_fill_warning:
                 self._log(clip_fill_warning)
+            # DXF R12 cannot hold pictures: they were left out, never the sheet.
+            r12_picture_warning = str(stats.get("r12_picture_warning") or "")
+            if r12_picture_warning:
+                self._log(r12_picture_warning)
             # Text a font delivered as raw glyph codes: recovered characters
             # came from an installed reference face, not from the PDF, and an
             # unproven span is still on the drawing as raw codes. Either way
@@ -501,13 +702,22 @@ class Pdf2DxfApp(tk.Tk):
                     output_path,
                     executable=resolved_librecad_executable,
                 )
-                launch_message = launch_status
-                self._log(launch_status)
-                if not launch_ok:
-                    self._log(
-                        "Tip: Install LibreCAD or set the executable path in "
-                        "librecad_pdf_importer.launchers.librecad_launcher.",
+                if launch_ok:
+                    launch_message = launch_status
+                    self._log(launch_status)
+                else:
+                    launch_message = (
+                        LIBRECAD_START_FAILED_TIP
+                        if resolved_librecad_executable
+                        else LIBRECAD_NOT_FOUND_TIP
                     )
+                    if resolved_librecad_executable:
+                        self._log(launch_status)
+                    self._log(launch_message)
+                    self.after(0, lambda: Pdf2DxfApp._show_locate_librecad(self))
+            if not resolved_librecad_executable and not launch_message:
+                # No launch was asked for, but the button that appeared needs a reason.
+                self._log(LIBRECAD_NOT_FOUND_TIP)
 
             # The sheet exported, so this is a warning, never an error box.
             show_done = messagebox.showwarning if degraded_count else messagebox.showinfo
@@ -528,7 +738,9 @@ class Pdf2DxfApp(tk.Tk):
                  f"{'yes' if text_delivery.get('fallback_used') else 'no'}\n"
                  f"Complete report: {text_delivery.get('report_path', '')}\n"
                  f"Output: {output_path}"
+                + (f"\n\n{scale_line}" if scale_line else "")
                 + (f"\n\n{clip_fill_warning}" if clip_fill_warning else "")
+                + (f"\n\n{r12_picture_warning}" if r12_picture_warning else "")
                 + (f"\n\n{glyph_code_warning}" if glyph_code_warning else "")
                 + (f"\n\n{search_text_warning}" if search_text_warning else "")
                 + (f"\n\n{launch_message}" if launch_message else ""),
@@ -616,10 +828,67 @@ class Pdf2DxfApp(tk.Tk):
                 pass  # the plugin also notices the process exit
         self.destroy()
 
+    def _show_locate_librecad(self) -> None:
+        """Offer "Locate LibreCAD..." once a lookup or a launch failed."""
+        button = getattr(self, "_btn_locate_librecad", None)
+        if button is not None and not button.winfo_manager():
+            button.pack(side=tk.LEFT, padx=4)
+
+    def _locate_librecad(self) -> None:
+        """Let the user point at LibreCAD.exe once; the choice is remembered."""
+        from librecad_pdf_importer.launchers.librecad_launcher import (
+            find_librecad_executable,
+            save_librecad_executable,
+        )
+
+        path = filedialog.askopenfilename(
+            title="Locate LibreCAD.exe",
+            filetypes=[
+                ("LibreCAD program", "LibreCAD.exe"),
+                ("Programs", "*.exe"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        found = find_librecad_executable(path)
+        if not found:
+            messagebox.showwarning(
+                "Locate LibreCAD",
+                f"That file could not be used as LibreCAD:\n{path}",
+            )
+            return
+        # Every later run opens the DXF with the remembered program, so a
+        # wrong pick (an installer, another app) is only kept when confirmed.
+        if not is_librecad_program_name(found) and not messagebox.askyesno(
+            "Locate LibreCAD",
+            f"{os.path.basename(found)} is not LibreCAD.exe. Use it anyway?\n\n"
+            "It would open every converted drawing from now on. Choose No and "
+            "pick LibreCAD.exe, usually in C:\\Program Files\\LibreCAD.",
+            icon=messagebox.WARNING,
+            default=messagebox.NO,
+        ):
+            return
+        self._librecad_choice = found
+        if save_librecad_executable(found):
+            self._log(f"LibreCAD set to {found}. It is remembered for next time.")
+        else:
+            self._log(
+                f"LibreCAD set to {found} for this window. It could not be "
+                "remembered for next time."
+            )
+        if os.environ.get("BCS_LIBRECAD_EXECUTABLE", "").strip():
+            self._log(
+                "Note: the BCS_LIBRECAD_EXECUTABLE setting on this PC still "
+                "chooses LibreCAD while it is set."
+            )
+        self._btn_locate_librecad.pack_forget()
+
     def _install_librecad_menu(self) -> None:
         from librecad_pdf_importer.librecad_plugin_install import (
             TARGET_LIBRECAD,
             PluginInstallError,
+            blocked_stale_message,
             install_librecad_plugin,
         )
 
@@ -628,14 +897,18 @@ class Pdf2DxfApp(tk.Tk):
         except PluginInstallError as exc:
             messagebox.showerror("Install LibreCAD menu entry", str(exc))
             return
-        messagebox.showinfo(
+        blocked = blocked_stale_message(getattr(result, "blocked_stale", ()))
+        # Installed either way; old program-folder copies make it a warning.
+        show = messagebox.showwarning if blocked else messagebox.showinfo
+        show(
             "Install LibreCAD menu entry",
             "Installed the LibreCAD menu entry.\n\n"
             f"Plugin: {result.dll_path}\n"
             f"Starts: {result.launcher_path}\n\n"
             "Restart LibreCAD, then use:\n"
             "Plugins > Import PDF (BlueCollar)...\n\n"
-            f"Built for {TARGET_LIBRECAD}.",
+            f"Built for {TARGET_LIBRECAD}."
+            + (f"\n\n{blocked}" if blocked else ""),
         )
 
 

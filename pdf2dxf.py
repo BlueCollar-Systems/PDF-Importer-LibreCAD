@@ -55,6 +55,13 @@ def _build_parser() -> argparse.ArgumentParser:
                    action=argparse.BooleanOptionalAction,
                    default=None,
                    help="Import text from the PDF (--no-import-text to skip)")
+    p.add_argument("--editable-text",
+                   action="store_true",
+                   help="Bring words in as editable TEXT drawn in LibreCAD's own "
+                        "font (letter shapes differ from the PDF) instead of exact "
+                        "outlines. Characters that font lacks still come in as "
+                        "outlines and are listed. Works with --text-mode text "
+                        "(the default) or labels")
     p.add_argument("--searchable-text",
                    action=argparse.BooleanOptionalAction,
                    default=True,
@@ -199,6 +206,13 @@ def main(argv: list[str] | None = None) -> int:
         config.import_text = True
     if args.import_text is not None:
         config.import_text = bool(args.import_text)
+    if args.editable_text and config.text_mode not in ("text", "labels"):
+        print(
+            "--editable-text works with --text-mode text (the default) or labels, "
+            f"not {config.text_mode}.",
+            file=sys.stderr,
+        )
+        return 2
     if args.pages:
         try:
             config.pages = _parse_pages(args.pages, page_count)
@@ -236,6 +250,7 @@ def main(argv: list[str] | None = None) -> int:
             progress_callback=_progress if args.verbose else None,
             resumable=bool(args.resume),
             searchable_text=bool(args.searchable_text),
+            editable_text=bool(args.editable_text),
         )
     except KeyboardInterrupt:
         print(
@@ -291,8 +306,43 @@ def main(argv: list[str] | None = None) -> int:
     report_path = stats.get("import_report_path")
     if report_path:
         _safe_print(f"  import_report:   {report_path}")
+    from librecad_pdf_importer.importer import SPLIT_BY_SCALE_CLI, drawing_scale_line
+
+    scale_line = drawing_scale_line(
+        stats.get("resolved_scale"),
+        args.scale,
+        how_to_rescale="add --scale {factor} and convert again",
+        page_scales=stats.get("resolved_scales_by_page"),
+        how_to_split=SPLIT_BY_SCALE_CLI,
+    )
+    if scale_line:
+        _safe_print(scale_line)
+    # What was asked for and what the drawing actually holds, in one line.
+    delivery = dict(stats.get("text_delivery") or {})
+    if config.import_text and delivery:
+        _safe_print(
+            "  Text delivery: requested={requested}; delivered={delivered}; "
+            "fallback={fallback}".format(
+                requested=delivery.get("requested", "none"),
+                delivered=delivery.get("delivered", "none"),
+                fallback="yes" if delivery.get("fallback_used") else "no",
+            )
+        )
+        if args.editable_text:
+            _safe_print(
+                f"  Editable text:   {int(delivery.get('editable_text_item_count') or 0)}"
+                f" of {int(delivery.get('item_count') or 0)} text item(s) in "
+                "LibreCAD's font; the report says how each other one came in"
+            )
+        companions = dict(stats.get("searchable_text_companions") or {})
+        if int(companions.get("written") or 0):
+            _safe_print(
+                "  Editable copies: hidden layer P###_TEXT_SEARCH (thaw it to edit)"
+            )
     if stats.get("clip_fill_warning"):
         _safe_print(str(stats["clip_fill_warning"]), file=sys.stderr)
+    if stats.get("r12_picture_warning"):
+        _safe_print(str(stats["r12_picture_warning"]), file=sys.stderr)
     # The DXF was written (exit code 0), but a degraded text item must be loud.
     text_delivery = dict(stats.get("text_delivery") or {})
     if text_delivery.get("degraded_item_count"):

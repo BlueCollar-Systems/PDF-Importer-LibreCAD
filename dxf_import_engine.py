@@ -36,7 +36,13 @@ from conversion_control import (
     ActivePageCancelled, ImportStopped, check_cancel, ensure_output_is_not_source,
 )
 from librecad_runtime import resolve_librecad_runtime_binding
-from librecad_pdf_importer.dxf_framing import finite_bounds, frame_modelspace, union_bounds
+from librecad_pdf_importer.dxf_framing import (
+    finite_bounds,
+    frame_modelspace,
+    sheet_bounds,
+    union_bounds,
+)
+from librecad_pdf_importer.ink_color import rule_identity as ink_rule_identity
 
 
 class ResumeMismatchError(RuntimeError):
@@ -131,6 +137,7 @@ def _resume_options_identity(
     dxf_version: str,
     librecad_executable: Optional[str] = None,
     searchable_text: bool = True,
+    editable_text: bool = False,
 ) -> tuple[str, dict]:
     from pdf2dxf import __version__
 
@@ -140,6 +147,12 @@ def _resume_options_identity(
         "engine_sha256": _engine_sha256(),
         "dxf_version": str(dxf_version),
         "searchable_text": bool(searchable_text),
+        # Pages certified as exact outlines are never mixed with pages
+        # delivered as editable LibreCAD-font text, or the other way round.
+        "editable_text": bool(editable_text),
+        # A page checkpoint written under another ink rule is never resumed:
+        # the rule lives in the exporter, which the engine hash does not cover.
+        "ink_color_rule": ink_rule_identity(),
         "librecad_runtime_binding": librecad_binding.identity_payload(),
         "config": asdict(config),
     }
@@ -218,15 +231,19 @@ def _assemble_checkpoints(checkpoints: list[Path], output_path: str) -> None:
             ),
             fast=False,
         )
-        # Page frames preserve whitespace and blank pages. Include every visible
-        # entity as well, while frozen search companions never size the drawing.
+        # The page exporter saves the sheet as the checkpoint's extents, which
+        # preserves whitespace and blank pages. Placement keeps every visible
+        # entity clear of the neighbouring pages (frozen search companions
+        # never size anything); what is framed is decided by sheet_bounds.
         source_msp = source.modelspace()
-        page_bounds = finite_bounds(source_msp.dxf.extmin, source_msp.dxf.extmax)
+        saved_extents = finite_bounds(source_msp.dxf.extmin, source_msp.dxf.extmax)
+        page_bounds = saved_extents
         if source_extents.has_data:
             page_bounds = union_bounds(page_bounds, finite_bounds(
                 source_extents.extmin, source_extents.extmax))
         if page_bounds is None:
             page_bounds = (0.0, 0.0, 1.0, 1.0)
+        framed_bounds = sheet_bounds(saved_extents, page_bounds)
         offset_y = 0.0 if next_top is None else next_top - page_bounds[3]
         load_modelspace(
             source,
@@ -240,11 +257,12 @@ def _assemble_checkpoints(checkpoints: list[Path], output_path: str) -> None:
                 transformer = getattr(entity, "transform", None)
                 if callable(transformer):
                     transformer(transform)
-        placed_bounds = (page_bounds[0], page_bounds[1] + offset_y,
-                         page_bounds[2], page_bounds[3] + offset_y)
-        drawing_bounds = union_bounds(drawing_bounds, placed_bounds)
+        drawing_bounds = union_bounds(drawing_bounds, (
+            framed_bounds[0], framed_bounds[1] + offset_y,
+            framed_bounds[2], framed_bounds[3] + offset_y,
+        ))
         height = max(1.0, page_bounds[3] - page_bounds[1])
-        next_top = placed_bounds[1] - height * 0.2
+        next_top = page_bounds[1] + offset_y - height * 0.2
 
     if "$INSUNITS" in sources[0].header:
         target.header["$INSUNITS"] = sources[0].header["$INSUNITS"]
@@ -293,6 +311,15 @@ def _search_text_block(page_records: list[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _r12_pictures_rows(page_records: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    """Pictures DXF R12 left out, one row per page, pages resumed included."""
+    return [
+        dict(row)
+        for record in page_records
+        for row in record.get("r12_pictures_omitted") or ()
+    ]
+
+
 def _page_progress(position: int, total: int, record: Dict[str, Any]) -> str:
     """A checkpointed page is announced as certified only when all its text is."""
     degraded = _page_degraded_text_items(record)
@@ -313,6 +340,7 @@ def _write_resumable_summary(
         merge_clip_fill_deliveries,
         merge_glyph_code_deliveries,
     )
+    from librecad_pdf_importer.importer import most_confident_scale
 
     output = Path(output_path).expanduser().resolve()
     summary_path = output.with_name(f"{output.stem}_import_report.json")
@@ -336,6 +364,9 @@ def _write_resumable_summary(
     text_degrade_warnings = int(degraded_text["total"])
     search_text = _search_text_block(page_records)
     search_text_warnings = search_text["failed"] + search_text["mismatch"]
+    # DXF R12 cannot hold pictures: each one left out is a step-down warning.
+    r12_rows = _r12_pictures_rows(page_records)
+    r12_pictures = sum(int(row.get("pictures") or 0) for row in r12_rows)
     payload = {
         "schema": "bcs.resumable_import_report/1.0",
         "result": "complete" if len(page_records) == len(selected_pages) else "cancelled",
@@ -361,12 +392,18 @@ def _write_resumable_summary(
         # proved.
         "warnings": (
             clip_fill_warnings + text_degrade_warnings + search_text_warnings
-            + glyph_code_warnings
+            + glyph_code_warnings + r12_pictures
         ),
         "clip_fill_delivery": clip_fill_delivery,
         "text_glyph_codes": glyph_code_delivery,
         # What a search-text warning is about; the page reports name the items.
         "searchable_text_companions": search_text,
+        # The drawing scale read from the sheet (most confident page), as the
+        # single-run report's extra.resolved_scale; null when none was found.
+        "resolved_scale": most_confident_scale(
+            record.get("resolved_scale") for record in page_records
+        ),
+        "pictures_omitted_r12": {"pictures": r12_pictures, "pages": r12_rows},
         "output": str(output),
     }
     _atomic_json(summary_path, payload)
@@ -421,12 +458,17 @@ def _convert_resumable(
     restart_on_resume_mismatch: bool,
     librecad_executable: Optional[str],
     searchable_text: bool = True,
+    editable_text: bool = False,
 ) -> Dict[str, Any]:
     from librecad_pdf_importer.core.document import (
         clip_fill_warning_line,
         glyph_code_warning_line,
     )
-    from librecad_pdf_importer.exporters.dxf_exporter import searchable_text_warning_line
+    from librecad_pdf_importer.exporters.dxf_exporter import (
+        r12_picture_warning_line,
+        searchable_text_warning_line,
+    )
+    from librecad_pdf_importer.importer import most_confident_scale
 
     source = Path(input_path).expanduser().resolve()
     output = Path(output_path).expanduser().resolve()
@@ -438,6 +480,7 @@ def _convert_resumable(
         dxf_version,
         librecad_executable,
         searchable_text,
+        editable_text,
     )
     selected_pages = _selected_page_indices(str(source), config)
     manifest: Dict[str, Any] = {
@@ -506,6 +549,7 @@ def _convert_resumable(
                 cancel_requested=cancel_requested,
                 librecad_executable=librecad_executable,
                 searchable_text=searchable_text,
+                editable_text=editable_text,
             )
         except ActivePageCancelled as exc:
             checkpoint.unlink(missing_ok=True)
@@ -530,6 +574,11 @@ def _convert_resumable(
             "searchable_text_companions": dict(
                 page_stats.get("searchable_text_companions") or {}
             ),
+            # Older manifests lack it; such a page reads as "no scale found".
+            "resolved_scale": page_stats.get("resolved_scale"),
+            "r12_pictures_omitted": [
+                dict(row) for row in page_stats.get("r12_pictures_omitted") or ()
+            ],
             "assets": _dxf_asset_inventory(checkpoint, session_dir),
         }
         _atomic_json(manifest_path, manifest)
@@ -557,6 +606,9 @@ def _convert_resumable(
             "delivered": next(iter(delivered)) if len(delivered) == 1 else "mixed",
             "fallback_used": any(bool(item.get("fallback_used")) for item in deliveries),
             "item_count": sum(int(item.get("item_count", 0)) for item in deliveries),
+            "editable_text_item_count": sum(
+                int(item.get("editable_text_item_count", 0)) for item in deliveries
+            ),
             "verified": all(item.get("verified", True) is True for item in deliveries),
             "degraded_item_count": degraded_text["total"],
             "degraded_items": degraded_text["items"],
@@ -571,6 +623,21 @@ def _convert_resumable(
             record.get("text_glyph_codes") or {} for record in records
         ),
         "searchable_text_warning": searchable_text_warning_line(_search_text_block(records)),
+        # The drawing scale read from the sheet, pages resumed from an earlier run included.
+        "resolved_scale": most_confident_scale(record.get("resolved_scale") for record in records),
+        # The same counts a single-shot run returns, merged across the pages.
+        "searchable_text_companions": _search_text_block(records),
+        "r12_pictures_omitted": _r12_pictures_rows(records),
+        "r12_picture_warning": r12_picture_warning_line(_r12_pictures_rows(records)),
+        # Each page's own scale: sheets of one set often differ, and one Scale
+        # value then draws only some of them at real size.
+        "resolved_scales_by_page": [
+            {
+                "page": int(record.get("page_number") or page + 1),
+                "resolved_scale": record.get("resolved_scale"),
+            }
+            for page, record in zip(selected_pages, records, strict=True)
+        ],
     }
 
 
@@ -588,17 +655,21 @@ def _convert_via_package(
     cancel_requested: Optional[Callable[[], bool]] = None,
     librecad_executable: Optional[str] = None,
     searchable_text: bool = True,
+    editable_text: bool = False,
 ) -> Dict[str, Any]:
     """Full BCS-ARCH-001 pipeline (auto/raster/hybrid + raster pages)."""
     from librecad_pdf_importer.exporters.dxf_exporter import (
         DxfExportOptions,
         degraded_text_items,
         export_to_dxf,
+        r12_picture_warning_line,
         searchable_text_warning_line,
         summarize_text_delivery,
     )
     from librecad_pdf_importer.importer import (
+        best_resolved_scale,
         failure_import_report_path,
+        page_resolved_scales,
         run_import,
         terminal_failure_record,
         write_import_report,
@@ -623,6 +694,8 @@ def _convert_via_package(
         "import_report_path": report_path,
         "_cancel_requested": cancel_requested,
         "_progress_callback": progress_callback,
+        # DXF R12 cannot hold pictures: Auto keeps a page's lines instead.
+        "_pictures_supported": str(dxf_version or "").strip().upper() != "R12",
     }
     t0 = time.perf_counter()
     _log(f"Using package pipeline for mode={config.import_mode}...")
@@ -649,6 +722,7 @@ def _convert_via_package(
                     librecad_executable=librecad_executable,
                     provenance_opts=run.config,
                     searchable_text=bool(searchable_text),
+                    librecad_editable_text=bool(editable_text),
                 ),
             )
         except ActivePageCancelled:
@@ -737,6 +811,13 @@ def _convert_via_package(
             "searchable_text_warning": searchable_text_warning_line(
                 export.searchable_text_companions
             ),
+            # The drawing scale read from the sheet; the report's extra.resolved_scale.
+            "resolved_scale": best_resolved_scale(run.extraction.pages),
+            # DXF R12 cannot hold pictures: what was left out, and one line.
+            "r12_pictures_omitted": [dict(row) for row in export.r12_pictures_omitted],
+            "r12_picture_warning": r12_picture_warning_line(export.r12_pictures_omitted),
+            # Each page's own scale, for a set whose sheets differ.
+            "resolved_scales_by_page": page_resolved_scales(run.extraction.pages),
         }
     finally:
         run.close()
@@ -754,6 +835,7 @@ def convert(
     restart_on_resume_mismatch: bool = False,
     librecad_executable: Optional[str] = None,
     searchable_text: bool = True,
+    editable_text: bool = False,
 ) -> Dict[str, Any]:
     """Convert a PDF file to DXF.
 
@@ -769,6 +851,9 @@ def convert(
         Target DXF version (``"R12"`` through ``"R2018"``).
     progress_callback:
         Optional callable receiving status strings during processing.
+    editable_text:
+        "Editable text (LibreCAD font)": deliver visible words as native TEXT
+        drawn in LibreCAD's own font instead of exact outlines. Off by default.
 
     Returns
     -------
@@ -796,6 +881,7 @@ def convert(
             restart_on_resume_mismatch,
             librecad_executable,
             searchable_text,
+            editable_text,
         )
     return _convert_via_package(
         input_path,
@@ -806,4 +892,5 @@ def convert(
         cancel_requested=cancel_requested,
         librecad_executable=librecad_executable,
         searchable_text=searchable_text,
+        editable_text=editable_text,
     )

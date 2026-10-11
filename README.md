@@ -30,10 +30,22 @@ must substitute descends automatically to visually verified glyph outlines.
 
 ## Import report / scale trust
 
-Conversions write `<output>_import_report.json` with optional `extra.resolved_scale`.
+Every conversion writes `<output>_import_report.json` beside the DXF, and it
+carries the drawing scale read from the sheet: `extra.resolved_scale` for a
+single run, top-level `resolved_scale` for a resumable run (the GUI and
+`--resume`). It is `null` when no scale was found.
 
 - Use `factor` only when `confidence >= 0.70` and `fallback_reason` is not `no_scale_detected`.
 - Otherwise treat scale as unknown in your CAD workflow.
+- When the scale is trusted, the GUI log, the Done box and the `pdf2dxf`
+  summary say it in plain words, for example
+  `Drawing scale found: 1/4" = 1'-0" (98% sure). This DXF is at paper size (millimetres); to draw at real size put 48 in Scale and convert again.`
+  The DXF itself is not rescaled: it stays at paper size times `Scale`.
+- When the sheets of one PDF carry different scales, the line lists each scale
+  with its pages (`Drawing scales differ by sheet: ...`) and says to convert
+  each scale's pages on their own (Pages box or `--pages`) with that Scale;
+  it never calls the whole DXF real size then. The report's `resolved_scale`
+  is still the most confident page's; each page report has its own.
 
 ## Compatibility
 
@@ -41,7 +53,7 @@ See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the full host version matrix (L
 
 ## Requirements
 
-- Windows release installer or portable ZIP: no separate Python or pip packages.
+- Windows portable ZIP (the Windows download; no installer has been published yet): no separate Python or pip packages.
 - Source/dev install: Python 3.12+, PyMuPDF 1.28.2, ezdxf 1.4.4,
   FontTools 4.63.0, Matplotlib 3.11.1, and NumPy 2.5.1. All are free software dependencies.
 
@@ -93,11 +105,11 @@ LibreCAD 2.2.1.5. Install it once:
 
 See [LibreCAD Menu Integration](#librecad-menu-integration) for how it works.
 
-**Offline install:** The portable ZIP and published installer work without internet after download. Source ZIP dev installs may run `preflight_check.py --install` once if `lib/` is empty (requires network for that step only).
+**Offline install:** The portable ZIP works without internet after download. Source ZIP dev installs may run `preflight_check.py --install` once if `lib/` is empty (requires network for that step only).
 
 ## Upgrading / skipping versions
 
-Extract a newer portable ZIP over your folder (or run the latest installer).
+Extract a newer portable ZIP over your folder.
 Skipping versions (for example, 1.0.40 → 1.0.80) is supported. Before shop
 use, run the bundled `pdf2dxf.exe` on one of your own representative PDFs,
 open the resulting DXF in LibreCAD, and review its adjacent import report.
@@ -297,11 +309,16 @@ Limitations:
 - Diagnostics: start LibreCAD with `BC_LCPDF_PLUGIN_TRACE=1` to log each step
   to `%TEMP%\bc_lcpdf_menu.log`.
 
-The installer keeps exactly one `bc_lcpdf_menu.dll` where LibreCAD looks
-(LibreCAD loads every `*.dll` in its plugin folders, so leftover copies such as
-an old `bc_lcpdf_menu1.dll` or a copy in `%USERPROFILE%\.librecad\plugins` would
-show every entry twice); it removes those and drops a stale path pinned in
-Settings so the freshly installed importer is used.
+**Install LibreCAD menu entry...** keeps exactly one `bc_lcpdf_menu.dll` where
+LibreCAD looks (LibreCAD loads every `*.dll` in its plugin folders, so leftover
+copies such as an old `bc_lcpdf_menu1.dll` or a copy in
+`%USERPROFILE%\.librecad\plugins` would show every entry twice); it removes those
+and drops a stale path pinned in Settings so the freshly installed importer is
+used. It also removes old copies from LibreCAD's program folder
+(`C:\Program Files\LibreCAD\plugins` and `...\resources\plugins`). Windows only
+lets an administrator delete files there, so when it cannot, the result box
+lists them: close LibreCAD and have someone with administrator rights delete
+those files.
 
 Uninstall: close LibreCAD and delete `Documents\LibreCAD\plugins\bc_lcpdf_menu.dll`
 and `bc_lcpdf_menu-importer.txt` (or run
@@ -354,6 +371,31 @@ it, and descends to exact Glyphs; only a whitespace-only span, which paints no
 ink, ends on native `TEXT`. DXF has no native Label entity, so a Labels request
 records that item-scoped impossibility first. Likewise, `TEXT` thickness alone
 does not prove visible/editable 3D text in LibreCAD's 2D parent.
+
+**Two text choices in the window: Exact look (default) or Editable text.**
+
+- **Exact look - text as outlines (default)** is the Text request above: every
+  word is drawn as exact outlines, the same shapes as the PDF, and an editable
+  copy of each string is kept on the hidden layer `P###_TEXT_SEARCH` (see below).
+- **Editable text (LibreCAD font)** gives words you can click and edit in
+  LibreCAD. Each visible word is delivered as native `TEXT` on the visible,
+  plotting layer `P###_TEXT`, drawn in LibreCAD's own `unicode` LFF font, so the
+  letter shapes differ from the PDF while the string, anchor, cap height,
+  rotation and width match. Each word keeps the PDF word's width (Fit
+  alignment): if you edit a word to make it longer, LibreCAD squeezes the
+  letters into the original width (a shorter word is stretched). To let an
+  edited word take its natural width, change its alignment from Fit to another
+  one in the text's properties. No outline block, picture or hidden copy is written
+  for those words, so the file is also much smaller. The substitution is
+  disclosed per item (`parent_native_font_substitution_accepted: true`,
+  `visual_verified: false`) and never certified as the PDF's look; the report
+  adds `extra.editable_text` (`chosen`, `item_count`). A word with a character
+  LibreCAD's font lacks steps down to exact outlines for that item only and is
+  listed. The font comes from your LibreCAD installation; when no LibreCAD is
+  found, every word comes in as outlines and the report says why. The command
+  line offers the same choice as `pdf2dxf.py --editable-text` (with
+  `--text-mode text`, the default, or `labels`). Pages made under one choice
+  are never resumed under the other.
 
 **The strings are still in the file: searchable text** (owner decision
 2026-09-19). Every span that ends as Glyphs, Geometry, or a Raster patch, and
@@ -410,8 +452,8 @@ itself: a text search of the file finds every string. In a CAD host, thaw
 
 | Option | GUI | Verified DXF representation |
 |--------|-----|-----------------------------|
-| **text** | ✅ Text | The native DXF `TEXT` candidate is built and checked (source text or an explicitly reported Unicode compatibility normalization, placement, cap height, rotation, source identity, `unicode` LFF binding, source-width FIT alignment), but LibreCAD's substituted LFF font does not reproduce the source glyphs, so a visible span is never certified as Text: it is delivered as verified Glyphs and reported as that fallback. Only a whitespace-only span ends as native `TEXT`. The exact string is on the frozen `P###_TEXT_SEARCH` layer. |
-| **labels** | ✅ Labels | DXF exposes no native Label entity. The item-scoped Labels attempt fails loudly without creating a wrong-type alias, the Text rung then refuses the substituted LFF font as above, and the span is delivered as verified Glyphs and reported. The exact string is on the frozen `P###_TEXT_SEARCH` layer. |
+| **text** | ✅ Exact look (default); Editable text | The native DXF `TEXT` candidate is built and checked (source text or an explicitly reported Unicode compatibility normalization, placement, cap height, rotation, source identity, `unicode` LFF binding, source-width FIT alignment), but LibreCAD's substituted LFF font does not reproduce the source glyphs, so a visible span is never certified as Text: it is delivered as verified Glyphs and reported as that fallback. Only a whitespace-only span ends as native `TEXT`. The exact string is on the frozen `P###_TEXT_SEARCH` layer. With **Editable text** (`--editable-text`) a visible span ends as that native `TEXT` in LibreCAD's font instead, disclosed as substituted. |
+| **labels** | ✅ Labels | DXF exposes no native Label entity. The item-scoped Labels attempt fails loudly without creating a wrong-type alias, the Text rung then refuses the substituted LFF font as above, and the span is delivered as verified Glyphs and reported. The exact string is on the frozen `P###_TEXT_SEARCH` layer. With `--editable-text` the Text rung accepts LibreCAD's font, as for **text**. |
 | **3d_text** | ✅ 3D Text | Attempts DXF `TEXT` with positive thickness and +Z extrusion first. Success additionally requires the parent to verify it as visible/editable 3D text. LibreCAD is 2D, so the exact failed item advances to the flat Text rung, which refuses the substituted LFF font as above, and is delivered as verified Glyphs with that transition reported. The exact string is on the frozen `P###_TEXT_SEARCH` layer. |
 | **glyphs** | ✅ Glyphs | One grouped DXF `INSERT` per source text span with outline entities in its owned block definition. This remains structurally distinct from raw Geometry. |
 | **geometry** | ✅ Geometry | Raw modelspace `LWPOLYLINE`/`POLYLINE` glyph edges. No `TEXT`, `MTEXT`, or `INSERT` is accepted as Geometry. |
@@ -540,7 +582,15 @@ paint and Normal-blend proof; it does not provide general PDF compositing.
 
 ## DXF Compatibility
 
-- **R12**: Maximum compatibility. No true-color, limited linetypes.
+- **R12**: Maximum compatibility. No true-color, limited linetypes, and no
+  pictures: each picture is left out, its outline is drawn on layer
+  `P###_PICTURES_OMITTED_R12`, and one warning line (log, stderr, report
+  `extra.pictures_omitted_r12`) says how many. The rest of the drawing is kept.
+  A bordered sheet with ink the importer cannot turn into lines (for example a
+  pattern fill) keeps its lines and text in every version, with a page picture
+  laid under them for the missing ink; at R12 that picture is the one left out.
+  A sheet with a smooth colour shading still comes in as a page picture only,
+  so at R12 it is just the outline.
 - **R2000 - R2004**: True-color support, standard linetypes.
 - **R2007 - R2018**: Full feature set including lineweights.
 

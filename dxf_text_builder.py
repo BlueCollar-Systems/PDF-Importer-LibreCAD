@@ -50,6 +50,7 @@ from pdfcadcore.embedded_fonts import EmbeddedFontFailure
 from pdfcadcore.primitives import NormalizedText, TextCharLayout
 from librecad_runtime import redacted_local_path, resolve_librecad_installation
 from librecad_pdf_importer.core.text_paint import bound_fill_receipt
+from librecad_pdf_importer.ink_color import INK_RULE_NEAR_BLACK, delivered_rgb8
 
 
 _MTEXT_THRESHOLD = 120
@@ -181,11 +182,19 @@ class TextDeliveryResult:
 
     def to_dict(self) -> Dict[str, Any]:
         for attempt in self.attempts:
+            # The one verified attempt that may lack visual proof: native TEXT
+            # the operator chose to have drawn in LibreCAD's own font
+            # ("Editable text"). Its letter shapes are disclosed as substituted
+            # and stay visual_verified=False; every other proof is required.
+            substitution_accepted = (
+                attempt.evidence.get("parent_native_font_substitution_accepted")
+                is True
+            )
             if attempt.outcome == "verified" and not all(
                 (
                     attempt.type_verified,
                     attempt.delivery_verified,
-                    attempt.visual_verified,
+                    attempt.visual_verified or substitution_accepted,
                     attempt.cleanup_verified,
                 )
             ):
@@ -1975,8 +1984,68 @@ def _plain_lwpolyline_bbox(
     return (float(min_x), float(min_y), float(max_x), float(max_y))
 
 
+def _plain_solid_bbox(
+    entities: Sequence[Any],
+) -> Optional[Tuple[float, float, float, float]]:
+    """Exact bbox of flat, thickness-less, WCS-plane SOLIDs, or None.
+
+    Glyph fills are SOLIDs. For a SOLID, ezdxf's ``bbox.extents`` builds
+    ``path.from_vertices(solid.wcs_vertices(), close=True)`` and takes the
+    precise bbox of its LINE_TO points -- the min/max of the very same vertex
+    floats, after the generic primitive machinery. This walks the same vertex
+    list with the same "drop a vertex that is close to the previous one" rule,
+    so the result is identical by construction, only much cheaper. Anything
+    else (another entity type, a non-Z extrusion such as a mirrored glyph,
+    thickness, a non-finite vertex, an empty list) returns None and the
+    caller falls back to ezdxf.
+    """
+    if not entities:
+        return None
+    min_x = min_y = math.inf
+    max_x = max_y = -math.inf
+    for entity in entities:
+        if entity.dxftype() != "SOLID":
+            return None
+        try:
+            ex, ey, ez = tuple(entity.dxf.get("extrusion", (0.0, 0.0, 1.0)))
+            if (float(ex), float(ey), float(ez)) != (0.0, 0.0, 1.0):
+                return None
+            if float(entity.dxf.get("thickness", 0.0) or 0.0) != 0.0:
+                return None
+            vertices = list(entity.wcs_vertices())
+        except Exception:
+            return None
+        if len(vertices) < 2:
+            continue  # ezdxf: an empty path, no bbox contribution
+        # path.from_vertices: skip a vertex close to the path's end. Its
+        # close() then adds the start again, so even a fill whose vertices all
+        # coincide still contributes that one point.
+        kept = [vertices[0]]
+        for vertex in vertices[1:]:
+            if not kept[-1].isclose(vertex):
+                kept.append(vertex)
+        for vertex in kept:
+            x, y = vertex.x, vertex.y
+            if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(vertex.z)):
+                return None
+            if x < min_x:
+                min_x = x
+            if x > max_x:
+                max_x = x
+            if y < min_y:
+                min_y = y
+            if y > max_y:
+                max_y = y
+    if min_x > max_x or min_y > max_y:
+        return None  # nothing contributed: let ezdxf say so
+    return (float(min_x), float(min_y), float(max_x), float(max_y))
+
+
 def _bbox_tuple(entities: Sequence[Any]) -> Optional[Tuple[float, float, float, float]]:
     plain = _plain_lwpolyline_bbox(entities)
+    if plain is not None:
+        return plain
+    plain = _plain_solid_bbox(entities)
     if plain is not None:
         return plain
     box = ezdxf_bbox.extents(entities)
@@ -2032,7 +2101,9 @@ def _base_attributes(
         from ezdxf.colors import rgb2int
 
         rgb = tuple(round(float(component) * 255) for component in text_color[:3])
-        attribs["true_color"] = rgb2int(rgb)
+        # Near-black neutral ink is written as exact black, as the vector
+        # exporter does: LibreCAD draws only exact black in its foreground colour.
+        attribs["true_color"] = rgb2int(delivered_rgb8(*rgb))
     attribs["style"] = style_name
     return attribs
 
@@ -2071,21 +2142,25 @@ def _positioned_r12_color_contract(
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Bind positioned R12 ink to a zero-error, context-free ACI mapping."""
 
-    rgb = _source_rgb8(text_item)
-    if rgb is None:
+    observed = _source_rgb8(text_item)
+    if observed is None:
         return {}, {"r12_source_color_encoding": "source_color_absent"}
+    # Near-black neutral ink is bound as exact black (the importer's ink rule);
+    # the ACI match stays zero-error against that delivered ink.
+    rgb = delivered_rgb8(*observed)
     aci = _exact_r12_aci(rgb)
     if aci is None:
         raise _R12ColorImpossible(rgb)
-    return (
-        {"color": aci},
-        {
-            "r12_source_color_encoding": "exact_srgb8_aci_match",
-            "r12_source_color_rgb": list(rgb),
-            "r12_source_color_aci": aci,
-            "r12_source_color_max_channel_error": 0,
-        },
-    )
+    evidence = {
+        "r12_source_color_encoding": "exact_srgb8_aci_match",
+        "r12_source_color_rgb": list(rgb),
+        "r12_source_color_aci": aci,
+        "r12_source_color_max_channel_error": 0,
+    }
+    if rgb != observed:
+        evidence["r12_ink_rule"] = INK_RULE_NEAR_BLACK
+        evidence["r12_observed_source_color_rgb"] = list(observed)
+    return {"color": aci}, evidence
 
 
 def _fit_text_advance(
@@ -2458,14 +2533,20 @@ def _attempt_labels(
             str(getattr(text_item, "text", "") or "").strip()
         )
         # A substituted LFF can preserve editable structure, but it cannot
-        # prove the source glyph appearance for visible text.  Only a zero-ink
-        # whitespace span can terminate on this native rung; visible content
-        # must descend to exact outlines (or the next finite fallback).
+        # prove the source glyph appearance for visible text.  By default
+        # only a zero-ink whitespace span can terminate on this native rung;
+        # visible content descends to exact outlines (or the next finite
+        # fallback).  "Editable text (LibreCAD font)" is the operator's
+        # explicit choice to accept LibreCAD's font for visible words: the
+        # substitution stays disclosed per item, never certified as the look.
         accept_librecad_font_substitution = bool(
             parent == "librecad"
             and requested in {"text", "labels"}
             and not is_3d_text
-            and source_content_whitespace_only
+            and (
+                source_content_whitespace_only
+                or bool(getattr(config, "_librecad_editable_text", False))
+            )
         )
         if parent == "librecad":
             lff_evidence = _librecad_lff_evidence(

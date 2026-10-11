@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import math
+import re
 import sys
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -172,6 +175,230 @@ def _text_mode_fallback_for_report(config: ImportConfig, text_source_spans: int)
     }
 
 
+def _resolved_scale_record(rs: Any) -> Optional[Dict[str, Any]]:
+    if not rs:
+        return None
+    return {
+        "factor": rs.factor,
+        "notation": rs.notation,
+        "source": rs.source,
+        "confidence": rs.confidence,
+        "fallback_reason": rs.fallback_reason,
+    }
+
+
+def most_confident_scale(candidates: Iterable[Any]) -> Optional[Dict[str, Any]]:
+    """The first, most confident resolved-scale record (confidence > 0), or None.
+
+    Records that are missing or malformed (for example a page record written
+    before the scale was kept) are skipped.
+    """
+    best: Optional[Dict[str, Any]] = None
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping):
+            continue
+        try:
+            confidence = float(candidate.get("confidence") or 0)
+        except (TypeError, ValueError):
+            continue
+        if confidence > 0 and (
+            best is None or confidence > float(best.get("confidence", 0) or 0)
+        ):
+            best = dict(candidate)
+    return best
+
+
+def best_resolved_scale(pages: Iterable[Any]) -> Optional[Dict[str, Any]]:
+    """The scale the import report carries: the most confident page's."""
+    return most_confident_scale(
+        _resolved_scale_record(page.page_data.resolved_scale) for page in pages
+    )
+
+
+def page_resolved_scales(pages: Iterable[Any]) -> list[Dict[str, Any]]:
+    """Each extracted page's one-based number and its scale record (None when none).
+
+    A set often mixes scales from sheet to sheet, so one "best" scale cannot
+    say which sheets a Scale value draws at real size; this list can.
+    """
+    return [
+        {
+            "page": int(page.page_data.page_number),
+            "resolved_scale": _resolved_scale_record(page.page_data.resolved_scale),
+        }
+        for page in pages
+    ]
+
+
+# Below this the scale is reported but not offered to the user (README rule).
+SCALE_TRUST_CONFIDENCE = 0.70
+_SCALE_LABEL_PREFIX = re.compile(r"^\s*(?:SCALE|SCL\.?|SC\.?)\s*[:=]?\s*", re.I)
+# How to draw each scale's sheets at real size when the sheets differ.
+SPLIT_BY_SCALE_GUI = (
+    "convert each scale's pages on their own: put those pages in the Pages box "
+    "and that number in Scale, and pick a new Output DXF name"
+)
+SPLIT_BY_SCALE_CLI = (
+    "convert each scale's pages on their own with --pages and that --scale "
+    "number, into a new output file"
+)
+# Page ranges named in one scale line; the rest are counted (each page report has its scale).
+_MAX_PAGE_RANGES = 12
+
+
+def _trusted_scale(resolved_scale: Any) -> Optional[tuple[float, float, str]]:
+    """(factor, confidence, notation) of a scale worth telling the user, else None.
+
+    Trusted means confidence >= 0.70, a real scale (not 1:1) and not the
+    no-scale fallback.
+    """
+    if not isinstance(resolved_scale, Mapping):
+        return None
+    try:
+        factor = float(resolved_scale.get("factor") or 0)
+        confidence = float(resolved_scale.get("confidence") or 0)
+    except (TypeError, ValueError):
+        return None
+    if (
+        not math.isfinite(confidence)
+        or confidence < SCALE_TRUST_CONFIDENCE
+        or str(resolved_scale.get("fallback_reason") or "") == "no_scale_detected"
+        or not math.isfinite(factor)
+        or factor <= 0
+        or math.isclose(factor, 1.0, rel_tol=1e-9)
+    ):
+        return None
+    notation = _SCALE_LABEL_PREFIX.sub("", str(resolved_scale.get("notation") or "")).strip()
+    return factor, min(confidence, 1.0), notation or f"1:{factor:g}"
+
+
+def _page_list(pages: list[int]) -> str:
+    """'page 3' or 'pages 1-3, 5', written the way the Pages box takes them."""
+    ranges: list[list[int]] = []
+    for page in sorted(set(pages)):
+        if ranges and page == ranges[-1][1] + 1:
+            ranges[-1][1] = page
+        else:
+            ranges.append([page, page])
+    parts = [str(first) if first == last else f"{first}-{last}" for first, last in ranges]
+    text = ", ".join(parts[:_MAX_PAGE_RANGES])
+    if len(parts) > _MAX_PAGE_RANGES:
+        shown = sum(last - first + 1 for first, last in ranges[:_MAX_PAGE_RANGES])
+        text += f" and {len(set(pages)) - shown} more"
+    return ("page " if len(set(pages)) == 1 else "pages ") + text
+
+
+def _is_or_are(pages: list[int]) -> str:
+    return "is" if len(set(pages)) == 1 else "are"
+
+
+def _scale_groups(entries: list[tuple[Any, Any]]) -> tuple[list[Dict[str, Any]], bool]:
+    """Trusted scales grouped by factor (first page first), and whether every page has one."""
+    groups: list[Dict[str, Any]] = []
+    trusted_pages = 0
+    for page, record in entries:
+        trusted = _trusted_scale(record)
+        if trusted is None:
+            continue
+        trusted_pages += 1
+        factor, confidence, notation = trusted
+        group = next(
+            (item for item in groups if math.isclose(item["factor"], factor, rel_tol=1e-6)),
+            None,
+        )
+        if group is None:
+            group = {"factor": factor, "confidence": 0.0, "notation": notation, "pages": []}
+            groups.append(group)
+        if confidence > group["confidence"]:
+            group["confidence"], group["notation"] = confidence, notation
+        if isinstance(page, int) and not isinstance(page, bool):
+            group["pages"].append(page)
+    return groups, trusted_pages == len(entries)
+
+
+def drawing_scale_line(
+    resolved_scale: Any,
+    user_scale: float,
+    how_to_rescale: str = "put {factor} in Scale and convert again",
+    page_scales: Optional[Iterable[Any]] = None,
+    how_to_split: str = SPLIT_BY_SCALE_GUI,
+) -> str:
+    """One plain line about the drawing scale found on the sheets, or ''.
+
+    Said only for a trusted scale (confidence >= 0.70) that is not 1:1. The DXF
+    is drawn in millimetres at paper size times *user_scale*, the same for
+    every page. *page_scales* (``{"page", "resolved_scale"}`` per converted
+    page) lets the line name the pages a scale was found on, and say so
+    plainly when the sheets differ: then no single Scale draws the whole DXF
+    at real size, and the line never claims it does. Without it,
+    *resolved_scale* is taken to be every page's scale.
+    """
+    try:
+        user = float(user_scale)
+    except (TypeError, ValueError):
+        return ""
+    if page_scales is None:
+        entries: list[tuple[Any, Any]] = [(None, resolved_scale)]
+    else:
+        entries = [
+            (entry.get("page"), entry.get("resolved_scale"))
+            for entry in page_scales
+            if isinstance(entry, Mapping)
+        ]
+    groups, every_page_trusted = _scale_groups(entries)
+    if not groups:
+        return ""
+    if math.isclose(user, 1.0, rel_tol=1e-9):
+        size = "paper size"
+    else:
+        size = f"{user:g} times paper size"
+
+    if len(groups) == 1:
+        group = groups[0]
+        factor, pages = group["factor"], group["pages"]
+        # Name the pages when some converted pages have no trusted scale.
+        named = not every_page_trusted and bool(pages)
+        where = f" on {_page_list(pages)}" if named else ""
+        found = (
+            f"Drawing scale found{where}: {group['notation']} "
+            f"({group['confidence'] * 100:.0f}% sure)."
+        )
+        if math.isclose(user, factor, rel_tol=1e-6):
+            subject = f"{_page_list(pages)} {_is_or_are(pages)}" if named else "this DXF is"
+            return f"{found} Scale is {user:g}, so {subject} at real size (millimetres)."
+        advice = how_to_rescale.format(factor=f"{factor:g}")
+        target = f"to draw {_page_list(pages)} at real size" if named else "to draw at real size"
+        return f"{found} This DXF is at {size} (millimetres); {target} {advice}."
+
+    # Sheets at different scales: one Scale value cannot fit them all.
+    found = "; ".join(
+        f"{group['notation']}"
+        + (f" on {_page_list(group['pages'])}" if group["pages"] else "")
+        + f" (Scale {group['factor']:g})"
+        for group in groups
+    )
+    head = f"Drawing scales differ by sheet: {found}."
+    matching = next(
+        (group for group in groups if math.isclose(user, group["factor"], rel_tol=1e-6)),
+        None,
+    )
+    if matching is not None:
+        pages = matching["pages"]
+        which = (
+            f"{_page_list(pages)} {_is_or_are(pages)}"
+            if pages
+            else f"the {matching['notation']} sheets are"
+        )
+        return (
+            f"{head} Scale is {user:g}, so only {which} at real size (millimetres). "
+            f"To draw the other sheets at real size, {how_to_split}."
+        )
+    return (
+        f"{head} This DXF is at {size} (millimetres). "
+        f"To draw the sheets at real size, {how_to_split}."
+    )
+
+
 def write_import_report(
     run: ImportRun,
     output_path: str,
@@ -193,7 +420,7 @@ def write_import_report(
     artifact_stem = report_path.stem
     pages = extraction.pages
     layer_names: set[str] = set()
-    resolved_scale = None
+    resolved_scale = best_resolved_scale(pages)
     scale_hints = {
         "title_block_detected": False,
         "dimension_count": 0,
@@ -203,16 +430,6 @@ def write_import_report(
     for page in pages:
         layer_names.update(page.page_data.layers or [])
         rs = page.page_data.resolved_scale
-        if rs and rs.confidence > 0 and (
-            resolved_scale is None or rs.confidence > resolved_scale.get("confidence", 0)
-        ):
-            resolved_scale = {
-                "factor": rs.factor,
-                "notation": rs.notation,
-                "source": rs.source,
-                "confidence": rs.confidence,
-                "fallback_reason": rs.fallback_reason,
-            }
         if rs and rs.factor and rs.confidence > 0:
             alternate_factors.add(float(rs.factor))
         profile = getattr(page, "profile", None)
@@ -241,18 +458,35 @@ def write_import_report(
     raster_fallback_pages = [
         page
         for page in pages
-        if (page.resolved_mode or "") == "raster"
+        if (page.resolved_mode or "") in {"raster", "hybrid"}
         and "fallback" in str(page.resolved_reason or "").lower()
     ]
     # Raster is an exact outcome when the user requested Raster or Auto chose
     # it as the appropriate page strategy. It is a fallback only when the
-    # extraction record identifies a real failed/secondary transition.
+    # extraction record identifies a real failed/secondary transition. A
+    # hybrid page counts too when a page picture was laid under its lines
+    # because the extractor missed ink (its reason says "fallback").
     fallback_used = bool(raster_fallback_pages) or raster_delivery_failure is not None
     fallback_reason = (
         getattr(raster_delivery_failure, "resolved_reason", None)
         if raster_delivery_failure is not None
         else None
     ) or next((p.resolved_reason for p in raster_fallback_pages), None)
+    # DXF R12 cannot hold pictures. Each one was left out (its outline drawn on
+    # P###_PICTURES_OMITTED_R12) instead of losing the whole file: a step-down,
+    # so it is a fallback, a warning, and named in the human summary.
+    r12_pictures_omitted = [
+        dict(row) for row in getattr(run.config, "_r12_pictures_omitted", ()) or ()
+    ]
+    r12_picture_count = sum(int(row.get("pictures") or 0) for row in r12_pictures_omitted)
+    if r12_picture_count:
+        from .exporters.dxf_exporter import r12_picture_warning_line
+
+        fallback_used = True
+        r12_reason = "pictures_omitted_r12: " + r12_picture_warning_line(
+            r12_pictures_omitted
+        )
+        fallback_reason = f"{fallback_reason}; {r12_reason}" if fallback_reason else r12_reason
 
     from pdfcadcore.fitz_loader import sample_process_mb
 
@@ -281,6 +515,9 @@ def write_import_report(
         "clip_fill_delivery": clip_fill_delivery,
         "source_stroke_ink_delivery": list(getattr(run.config, "_source_capsule_deliveries", ()) or ()),
         "source_blend_display_delivery": list(getattr(run.config, "_nontext_composite_deliveries", ()) or ()),
+        # Source colours the exporter delivered as exact black (LibreCAD draws
+        # only exact black in its foreground colour), with counts per page.
+        "ink_color_delivery": list(getattr(run.config, "_ink_color_deliveries", ()) or ()),
         "source_stroke_ink_plan": extraction.summary().get("source_stroke_ink_plan"),
         "model_3d_intent": analyze_model3d_intent(
             text_items,
@@ -439,6 +676,23 @@ def write_import_report(
     extra["text_items_degraded_total"] = degraded_text["total"]
     extra["text_items_degraded_truncated"] = degraded_text["truncated"]
     extra["searchable_text_companions"] = search_text
+    if r12_picture_count:
+        extra["pictures_omitted_r12"] = r12_pictures_omitted
+    if getattr(run.config, "_librecad_editable_text", False):
+        # The operator chose "Editable text (LibreCAD font)": say how many
+        # words came in editable and that their letter shapes are LibreCAD's.
+        from .exporters.dxf_exporter import editable_text_item_count
+
+        extra["editable_text"] = {
+            "chosen": True,
+            "item_count": editable_text_item_count(text_representation_deliveries),
+            "font": "LibreCAD unicode",
+            "note": (
+                "Words were delivered as editable text in LibreCAD's own font, so "
+                "letter shapes differ from the PDF. Characters that font lacks came "
+                "in as outlines and are listed per item."
+            ),
+        }
     if glyph_code_delivery["spans_examined"]:
         extra["text_glyph_codes"] = glyph_code_delivery
     if terminal_failure:
@@ -479,6 +733,7 @@ def write_import_report(
             + text_degrade_warnings
             + search_text_warnings
             + glyph_code_warnings
+            + r12_picture_count
         ),
         extra=extra,
     )
@@ -625,6 +880,7 @@ def run_import(pdf_path: str, mode: str = "auto",
         arc_sampling_pts=cfg.arc_sampling_pts,
         cancel_requested=cfg._cancel_requested,
         progress_callback=cfg._progress_callback,
+        pictures_supported=bool(incoming.get("_pictures_supported", True)),
     )
 
     extraction = extract_document(pdf_path, opts)
