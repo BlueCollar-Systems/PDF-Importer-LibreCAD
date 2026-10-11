@@ -301,6 +301,8 @@ def test_partial_trace_census_never_borrows_another_same_name_program_glyph():
     other = char("A", 0, "b" * 64)
     span = {"font": "Same", "chars": [unresolved, proven, other]}
     raw = {"blocks": [{"type": 0, "lines": [{"spans": [span]}]}]}
+    # Two different glyph ids at one origin are a partial census. They must
+    # not collapse, and the letter must not borrow the other program's glyph.
     trace = {"font": "Same", "chars": [(65, 8, (0, 0)), (65, 3, (10, 0)),
                                              (65, 7, (10, 0)), (66, 4, (20, 0))]}
     page = SimpleNamespace(get_texttrace=lambda: [trace])
@@ -341,6 +343,36 @@ def test_identical_coincident_trace_glyphs_keep_the_original_program_binding():
     assert [char.glyph_id for char in layouts] == [3, 8]
     assert all(char.source_font_binding_verified for char in layouts)
     assert [char.source_font_program_sha256 for char in layouts] == ["a" * 64, "b" * 64]
+
+
+def test_coincident_identical_trace_passes_bind_that_glyph():
+    from pdfcadcore.embedded_fonts import _page_program_glyph_maps
+    from pdfcadcore.primitive_extractor import _character_layout, _trace_glyph_queues
+
+    def char(text, x, digest):
+        return {"c": text, "origin": (x, 0), "bbox": (x, 0, x + 2, 10),
+                "quad": ((x, 0), (x + 2, 0), (x + 2, 10), (x, 10)),
+                "source_font_program_sha256": digest,
+                "source_font_binding_verified": True,
+                "source_font_character_codepoint": ord(text)}
+
+    repeated = char("A", 10, "a" * 64)
+    proven = char("B", 20, "a" * 64)
+    other = char("A", 0, "b" * 64)
+    span = {"font": "Same", "chars": [repeated, proven, other]}
+    raw = {"blocks": [{"type": 0, "lines": [{"spans": [span]}]}]}
+    trace = {"font": "Same", "chars": [(65, 8, (0, 0)), (65, 3, (10, 0)),
+                                             (65, 3, (10, 0)), (66, 4, (20, 0))]}
+    page = SimpleNamespace(get_texttrace=lambda: [trace])
+    maps, ambiguous = _page_program_glyph_maps(page, raw)
+    assert maps == {"a" * 64: {65: 3, 66: 4}, "b" * 64: {65: 8}}
+    assert not ambiguous
+    assert repeated["source_font_binding_verified"] is True
+    assert repeated["source_trace_glyph_id"] == 3
+    layouts = _character_layout({}, span, "Same", lambda x, y: (x, y), _trace_glyph_queues(page))
+    assert layouts[0].glyph_id == 3
+    assert layouts[0].source_font_binding_verified
+    assert layouts[1].glyph_id == 4 and layouts[2].glyph_id == 8
 
 
 @pytest.mark.parametrize("text,flags,trace_count,expected", [

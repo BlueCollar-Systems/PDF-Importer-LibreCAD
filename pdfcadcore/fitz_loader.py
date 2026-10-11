@@ -103,6 +103,19 @@ def safe_open(path: str, *, prefer_lib_dir: Optional[str] = None) -> Any:
             "password_protected",
             "This PDF is password-protected; supply credentials to import.",
         )
+    metadata = getattr(doc, "metadata", None) or {}
+    try:
+        encryption = str(metadata.get("encryption") or "").strip()
+    except Exception:
+        encryption = ""
+    # An empty open-password still carries a security lock. MuPDF opens it
+    # without setting needs_pass. Treat that the same as a locked file.
+    if encryption and encryption.lower() != "none":
+        doc.close()
+        raise PdfOpenError(
+            "password_protected",
+            "This PDF is password-protected; supply credentials to import.",
+        )
     if int(getattr(doc, "page_count", 0) or 0) == 0:
         doc.close()
         raise PdfOpenError("corrupt", "PDF has no readable pages.")

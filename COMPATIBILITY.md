@@ -51,7 +51,7 @@ Release portable ZIP bundles Python + PyMuPDF + ezdxf + FontTools + Matplotlib +
 
 ## Offline install
 
-Release **portable ZIP** and installer artifacts work without internet after download. Source dev path may run `preflight_check.py --install` once if `lib/` is empty.
+The release **portable ZIP** works without internet after download (no installer has been published yet). Source dev path may run `preflight_check.py --install` once if `lib/` is empty.
 
 ## Enterprise / roaming
 

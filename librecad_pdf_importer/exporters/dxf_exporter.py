@@ -11,7 +11,7 @@ import re
 import shutil
 import traceback
 from types import MappingProxyType
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import uuid
 import weakref
 
@@ -44,7 +44,14 @@ from ..core.document import (
 
 from pdfcadcore.import_config import ImportConfig
 from pdfcadcore.embedded_fonts import source_control_zero_ink_proof
-from ..dxf_framing import frame_modelspace
+from ..dxf_framing import frame_modelspace, sheet_bounds
+from ..ink_color import (
+    INK_RULE_NEAR_BLACK,
+    delivered_ink,
+    delivered_rgb8,
+    is_remapped_near_black,
+    rgb8,
+)
 from pdfcadcore.fitz_loader import safe_open
 from pdfcadcore.primitive_extractor import (
     _page_rotation_transform,
@@ -55,6 +62,7 @@ from pdfcadcore.primitives import TextCharLayout
 from dxf_text_builder import (
     TextDeliveryAttempt,
     TextDeliveryResult,
+    _RepresentationImpossible,
     _attempt_degraded_text,
     _bbox_tuple,
     _glyph_definition_geometry_fingerprint,
@@ -137,6 +145,26 @@ _POSITIONED_GEOMETRY_PROOF_FIELDS = frozenset(
 
 
 _SOURCE_DASH_APPID = "BCS_SOURCE_DASH"
+
+
+def _visible_ink_attribs(doc, attribs):
+    """Keep a dashed stroke on a layer the drawing actually shows.
+
+    White knockout fills share a layer that is turned off so they do not cover
+    a dark canvas. A dash on that same layer is real ink (its color is already
+    rewritten to black) and must not be hidden, or the whole import stops.
+    """
+    layer_name = str(attribs.get("layer") or "")
+    if not layer_name or not doc.layers.has_entry(layer_name):
+        return attribs
+    layer = doc.layers.get(layer_name)
+    if not layer.is_off() and not layer.is_frozen():
+        return attribs
+    visible_name = f"{layer_name}_INK"[:255]
+    _ensure_layer(doc, visible_name, (0.0, 0.0, 0.0))
+    updated = dict(attribs)
+    updated["layer"] = visible_name
+    return updated
 
 
 def _add_source_dash_block(doc, layout, primitive, proof, attribs, dy):
@@ -247,6 +275,11 @@ class DxfExportOptions:
     # outlined / rastered / dropped span as native TEXT on the frozen layer
     # P###_TEXT_SEARCH, so the drawing is searchable. Outlines stay the truth.
     searchable_text: bool = True
+    # "Editable text (LibreCAD font)": visible words are delivered as native
+    # TEXT in LibreCAD's own font (letter shapes differ from the PDF) instead
+    # of exact outlines. Characters that font lacks still step down to
+    # outlines. Off by default: "Exact look" stays the default.
+    librecad_editable_text: bool = False
 
 
 class TextRepresentationDeliveryError(ImportStopped):
@@ -301,6 +334,9 @@ class DxfExportResult:
     source_capsules: List[Dict[str, Any]] = field(default_factory=list)
     nontext_composites: List[Dict[str, Any]] = field(default_factory=list)
     searchable_text_companions: Dict[str, Any] = field(default_factory=dict)
+    ink_color_deliveries: List[Dict[str, Any]] = field(default_factory=list)
+    # DXF R12 has no IMAGE entity: pictures left out, one row per page.
+    r12_pictures_omitted: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -1105,6 +1141,7 @@ def summarize_text_delivery(
         "fallback_used": fallback_count > 0,
         "fallback_item_count": fallback_count,
         "item_count": len(items),
+        "editable_text_item_count": editable_text_item_count(items),
         "entity_count": entity_count,
         "failed_source_ids": failures,
         "degraded_item_count": degraded["total"],
@@ -1112,6 +1149,37 @@ def summarize_text_delivery(
         "degraded_items_truncated": degraded["truncated"],
         "report_path": str(report_path),
     }
+
+
+def editable_text_item_count(deliveries: Sequence[Any]) -> int:
+    """Visible words delivered as editable TEXT in LibreCAD's own font.
+
+    Counts verified, non-degraded items whose final attempt accepted the
+    disclosed LibreCAD font substitution ("Editable text") for real content;
+    a whitespace-only span is not a word anyone edits.
+    """
+
+    count = 0
+    for item in deliveries or []:
+        if not isinstance(item, dict) or item.get("verified") is not True:
+            continue
+        if item.get("degraded") is True:
+            continue
+        if _normalized_text_mode(str(item.get("final_representation") or "")) not in {
+            "text", "labels",
+        }:
+            continue
+        attempts = item.get("attempts") or []
+        final = attempts[-1] if attempts and isinstance(attempts[-1], dict) else {}
+        evidence = final.get("evidence") if isinstance(final, dict) else None
+        if (
+            isinstance(evidence, dict)
+            and final.get("outcome") == "verified"
+            and evidence.get("parent_native_font_substitution_accepted") is True
+            and evidence.get("source_content_whitespace_only") is not True
+        ):
+            count += 1
+    return count
 
 
 def degraded_text_items(
@@ -1598,29 +1666,27 @@ def _verify_serialized_text_deliveries(
         source_ids.add(source_id)
         degraded = delivery.get("degraded") is True
         if degraded and delivery.get("dropped") is True:
-            # A dropped item is reported, not delivered: it must own nothing.
+            # A dropped item is reported, not delivered. A failed attempt may
+            # still name a shared text style. That style is not ink. What must
+            # not remain is a modelspace entity this item created.
             attempts = [
                 attempt
                 for attempt in delivery.get("attempts") or []
                 if isinstance(attempt, dict)
             ]
-            if (
-                representation
-                or any(
-                    owner.get(key)
-                    for owner in (delivery, *attempts)
-                    for key in (
-                        "entity_handles",
-                        "support_entity_handles",
-                        "referenced_entity_handles",
-                    )
+            live_handles = [
+                str(handle)
+                for owner in (delivery, *attempts)
+                for key in (
+                    "entity_handles",
+                    "support_entity_handles",
+                    "referenced_entity_handles",
+                    "created_entity_handles",
                 )
-                or any(
-                    modelspace_handle_counts.get(str(handle), 0)
-                    for attempt in attempts
-                    for handle in attempt.get("created_entity_handles") or []
-                )
-            ):
+                for handle in owner.get(key) or []
+                if modelspace_handle_counts.get(str(handle), 0)
+            ]
+            if representation or live_handles:
                 raise RuntimeError(
                     f"serialized text delivery {source_id}: dropped item owns live handles"
                 )
@@ -4248,6 +4314,10 @@ def _attempt_terminal_text_raster(
                 None,
             )
 
+        if doc.dxfversion == "AC1009":
+            # Item-scoped, before anything is written: this one item steps
+            # down its ladder (degraded, reported); the page is never stopped.
+            raise _RepresentationImpossible(R12_PICTURES_IMPOSSIBLE)
         safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", delivery.source_id)
         asset_path = asset_root / f"{safe_id}.png"
         image_def = doc.add_image_def(
@@ -4373,7 +4443,9 @@ def _attempt_terminal_text_raster(
                 pass
         attempt.entity_handles = []
         attempt.support_entity_handles = []
-        attempt.outcome = "failed"
+        attempt.outcome = (
+            "impossible" if isinstance(exc, _RepresentationImpossible) else "failed"
+        )
         attempt.cleanup_verified = all(
             doc.entitydb.get(handle) is None
             or not getattr(doc.entitydb.get(handle), "is_alive", True)
@@ -4659,9 +4731,12 @@ def _export_to_dxf_impl(
         if opts.include_text
         else {}
     )
+    # DXF R12 has no IMAGE entity: no picture is staged (no PNG written) and no
+    # page is composited into tiles; each picture steps down to its outline.
+    is_r12_export = _normalize_dxf_version(opts.dxf_version) == "R12"
     staged_image_assets, omitted_image_sources, compositing_pages = (
         _stage_image_assets(extraction, asset_root, asset_transaction)
-        if opts.include_images
+        if opts.include_images and not is_r12_export
         else ({}, set(), set())
     )
     terminal_page_tiles: Dict[int, List[ImagePlacement]] = {}
@@ -4764,6 +4839,11 @@ def _export_to_dxf_impl(
         opts.provenance_opts._delivered_image_count = 0  # noqa: B010
         opts.provenance_opts._source_capsule_deliveries = []  # noqa: B010
         opts.provenance_opts._nontext_composite_deliveries = []  # noqa: B010
+        opts.provenance_opts._ink_color_deliveries = []  # noqa: B010
+        opts.provenance_opts._r12_pictures_omitted = []  # noqa: B010
+        opts.provenance_opts._librecad_editable_text = bool(  # noqa: B010
+            opts.librecad_editable_text
+        )
         opts.provenance_opts._result_status = "pending_export"  # noqa: B010
 
     def _sync_text_evidence() -> None:
@@ -4837,6 +4917,9 @@ def _export_to_dxf_impl(
     final_paint_records = []
     final_paint_expectations = []
     final_paint_stroke_handles = set()
+    ink_remaps: Dict[Tuple[int, Tuple[int, int, int]], Dict[str, int]] = {}
+    r12_pictures_omitted: List[Dict[str, Any]] = []
+    r12_invisible_pictures: Dict[str, bool] = {}
     source_paint_keys = {}
     has_source_image_order = False
     for page_position, page in enumerate(extraction.pages, start=1):
@@ -4859,7 +4942,8 @@ def _export_to_dxf_impl(
 
         page_entity_start = len(msp.entity_space.entities)
         paint_order = getattr(page, "image_paint_order", None)
-        if not opts.include_images:
+        if not opts.include_images or is_r12:
+            # R12 holds no picture and no redraw-order table: nothing to order.
             paint_order = None
         if not is_r12:
             capsule_order = (page.capsule_paint_order if opts.include_images else page.capsule_vector_paint_order)
@@ -4902,11 +4986,25 @@ def _export_to_dxf_impl(
                     source_paint_keys[str(entity.dxf.handle)] = (_page, key)
 
         clip_fill_groups = {}
+        even_odd_fills = {}
         for primitive in page.page_data.primitives:
             group_id = getattr(primitive, "clip_fill_group_id", None)
             if group_id:
                 clip_fill_groups.setdefault(group_id, []).append(primitive)
+            delivered_fill = delivered_ink(primitive.fill_color)
+            if (
+                getattr(primitive, "fill_even_odd", False)
+                and not group_id
+                and delivered_fill is not None
+                and primitive.closed
+                and primitive.source_draw_order is not None
+            ):
+                even_odd_fills.setdefault(
+                    (primitive.source_draw_order, tuple(delivered_fill)),
+                    [],
+                ).append(primitive)
         emitted_clip_fills = set()
+        emitted_even_odd_fills = set()
         clip_fill_rows = None  # source rows by group id, built on the first failed fill
         page.clip_fill_build_drops = []  # this export's own; an earlier export's are stale
         for primitive_index, primitive in enumerate(page.page_data.primitives, start=1):
@@ -4923,8 +5021,13 @@ def _export_to_dxf_impl(
                     f"Building source page {page.page_data.page_number}: "
                     f"vectors {primitive_index}/{len(page.page_data.primitives)}",
                 )
-            stroke_rgb = primitive.stroke_color
-            fill_rgb = primitive.fill_color
+            # Near-black neutral ink is delivered as exact black from here on
+            # (layer name, layer colour, entity colour, fill colour): LibreCAD
+            # draws only exact black in its foreground colour.
+            source_stroke_rgb = primitive.stroke_color
+            source_fill_rgb = primitive.fill_color
+            stroke_rgb = delivered_ink(source_stroke_rgb)
+            fill_rgb = delivered_ink(source_fill_rgb)
             final_paint = final_by_id.get(primitive.id)
             layer_rgb = stroke_rgb if stroke_rgb is not None else fill_rgb
             layer = _layer_name(page.page_data.page_number, primitive.layer_name, layer_rgb, opts)
@@ -4947,8 +5050,10 @@ def _export_to_dxf_impl(
 
             source_dash = getattr(page, "source_line_dashes", {}).get(primitive.id)
             if opts.map_dashes and source_dash is not None and (not source_dash.dots_model or not is_r12):
+                attribs = _visible_ink_attribs(doc, attribs)
                 expected = _add_source_dash_block(doc, msp, primitive, source_dash, attribs, dy)
                 source_dash_expectations.append(expected)
+                _note_ink_remap(ink_remaps, page.page_data.page_number, "strokes", source_stroke_rgb)
                 for point in primitive.points:
                     _track_xy(float(point[0]), float(point[1])+dy)
                 entity_count += 1
@@ -4973,8 +5078,10 @@ def _export_to_dxf_impl(
                 if source_pdf_sha256 is None:
                     source_pdf_sha256 = _file_sha256(source_pdf)
                 verify_model_capsule(capsule, primitive, source_pdf_sha256)
-                capsule_record, capsule_expectation = add_capsule(doc, msp, capsule, capsule['source_rgb'],
-                                                                  layer, dy, source_pdf_sha256)
+                # The capsule's attached proof keeps the source colour.
+                capsule_record, capsule_expectation = add_capsule(
+                    doc, msp, capsule, delivered_ink(capsule['source_rgb']),
+                    layer, dy, source_pdf_sha256)
                 capsule_records.append(capsule_record)
                 capsule_expectations.append(capsule_expectation)
                 capsule_ids_delivered.add(primitive.id)
@@ -4994,7 +5101,7 @@ def _export_to_dxf_impl(
                 # it never costs the page or the document.
                 try:
                     if any(
-                        member.fill_color != fill_rgb
+                        member.fill_color != source_fill_rgb
                         or member.stroke_color is not None
                         or bool(getattr(member, "clip_fill_even_odd", False)) != even_odd
                         for member in members
@@ -5030,6 +5137,8 @@ def _export_to_dxf_impl(
                     ))
                     continue
                 entity_count += len(fills)
+                if fills:
+                    _note_ink_remap(ink_remaps, page.page_data.page_number, "fills", source_fill_rgb)
                 for contour in contours:
                     for px, py in contour:
                         _track_xy(float(px), float(py))
@@ -5079,6 +5188,33 @@ def _export_to_dxf_impl(
                 page_width=page_w,
                 page_height=page_h,
             )
+            even_odd_key = (
+                (primitive.source_draw_order, tuple(fill_rgb))
+                if (
+                    fill_rgb is not None
+                    and getattr(primitive, "fill_even_odd", False)
+                    and primitive.source_draw_order is not None
+                )
+                else None
+            )
+            even_odd_members = even_odd_fills.get(even_odd_key) if even_odd_key else None
+            if even_odd_members and len(even_odd_members) > 1:
+                if even_odd_key not in emitted_even_odd_fills:
+                    emitted_even_odd_fills.add(even_odd_key)
+                    rings = []
+                    for member in even_odd_members:
+                        ring = [_ofs(point) for point in (member.points or [])]
+                        if _filled_path_has_visible_area(ring):
+                            rings.append(ring)
+                    fills = _add_even_odd_filled_paths(
+                        msp, rings, fill_rgb, fill_attribs, is_r12=is_r12,
+                    )
+                    if not fills:
+                        raise RuntimeError(
+                            f"even-odd fill {even_odd_key[0]} produced no fill entities"
+                        )
+                    entity_count += len(fills)
+                fill_rgb = None
             if (
                 fill_rgb is not None
                 and not page_background_fill
@@ -5096,6 +5232,7 @@ def _export_to_dxf_impl(
                         f"filled source primitive {primitive.id} produced no fill entities"
                     )
                 entity_count += len(fills)
+                _note_ink_remap(ink_remaps, page.page_data.page_number, "fills", source_fill_rgb)
 
             # A PDF fill-only path has no stroke.  Do not manufacture an
             # outline in the fill color after its exact fill has been emitted.
@@ -5104,6 +5241,7 @@ def _export_to_dxf_impl(
                     _track_xy(float(px), float(py))
                 continue
 
+            stroke_entity_start = entity_count
             if primitive.type == "line" and primitive.points and len(primitive.points) == 2:
                 start = _ofs(primitive.points[0])
                 end = _ofs(primitive.points[1])
@@ -5133,7 +5271,17 @@ def _export_to_dxf_impl(
                 _track_xy(float(center[0]) + radius, float(center[1]) + radius)
                 entity_count += 1
             elif primitive.points and len(primitive.points) >= 2:
-                if is_r12:
+                if (
+                    not is_r12
+                    and not primitive.closed
+                    and "linetype" not in attribs
+                    and _open_polyline_is_curve(offset_pts)
+                ):
+                    msp.add_spline(
+                        [(float(x), float(y), 0.0) for x, y in offset_pts],
+                        dxfattribs=attribs,
+                    )
+                elif is_r12:
                     msp.add_polyline2d(
                         offset_pts,
                         close=bool(primitive.closed),
@@ -5149,12 +5297,17 @@ def _export_to_dxf_impl(
                 for px, py in offset_pts:
                     _track_xy(float(px), float(py))
                 entity_count += 1
+            if entity_count > stroke_entity_start:
+                _note_ink_remap(ink_remaps, page.page_data.page_number, "strokes", source_stroke_rgb)
 
         record_primitive_entities(primitive_entity_start, previous_primitive_key, previous_primitive_id)
 
         if opts.include_text and opts.text_mode != "none":
             text_cfg = ImportConfig.auto()
             text_cfg.text_mode = opts.text_mode
+            text_cfg._librecad_editable_text = bool(  # noqa: B010
+                opts.librecad_editable_text
+            )
             # Only positive character-bound source paint permits omission of
             # contour wires. Missing/unreadable trace data keeps prior behavior.
             text_cfg._source_text_fill_receipts = {}
@@ -5342,6 +5495,13 @@ def _export_to_dxf_impl(
                         )
                     positioned_translation_anchors[delivery.source_id] = positioned_anchor
                 text_deliveries.append(delivery.to_dict())
+                if delivery.final_representation not in (None, "raster"):
+                    # The text builder applies the same ink rule to every
+                    # native or outline representation it writes.
+                    _note_ink_remap(
+                        ink_remaps, page.page_data.page_number, "text_items",
+                        getattr(text, "color", None),
+                    )
                 if delivery.source_id in original_control_anchors:
                     text_deliveries[-1].update(
                         source_text=text.text,
@@ -5451,7 +5611,35 @@ def _export_to_dxf_impl(
                             )
                         )
 
-        if opts.include_images:
+        if opts.include_images and is_r12 and page.images:
+            # Step down, never stop: R12 cannot hold a picture, so each one is
+            # left out and its placed bounds are drawn as a closed outline the
+            # operator can see, counted and reported. Lines and text stay.
+            page_number = int(page.page_data.page_number)
+            omitted_layer = _layer_name(page_number, R12_PICTURES_OMITTED_LAYER, None, opts)
+            omitted_here = 0
+            for placement in page.images:
+                check_cancel(cancel_requested, "active page image build")
+                if _picture_paints_nothing(placement, r12_invisible_pictures):
+                    continue
+                omitted_here += 1
+                corners = _placement_outline_corners(placement, dy)
+                if corners is None:
+                    continue
+                _ensure_layer(doc, omitted_layer, None)
+                msp.add_polyline2d(corners, close=True, dxfattribs={"layer": omitted_layer})
+                for px, py in corners:
+                    _track_xy(px, py)
+                entity_count += 1
+            if omitted_here:
+                r12_pictures_omitted.append(
+                    {
+                        "source_page_number": page_number,
+                        "pictures": omitted_here,
+                        "layer": omitted_layer,
+                    }
+                )
+        elif opts.include_images:
             page_number = int(page.page_data.page_number)
             image_placements = terminal_page_tiles.get(page_number, page.images)
             for image_index, placement in enumerate(image_placements, start=1):
@@ -5680,21 +5868,15 @@ def _export_to_dxf_impl(
         source_paint_keys=source_paint_keys,
     )
 
-    # Persist extents + initial modelspace viewport so hosts open focused on geometry.
-    # A stroke that runs far past the crop stays in the file, but zoom-extents
-    # and the first view stay on the sheet the way a print is read.
+    # Persist extents + initial modelspace viewport so hosts open on the sheets.
+    # Ink that runs past a page box stays in the file, but zoom-extents and the
+    # first view are the placed page frames, the way a print is read. The
+    # checkpoint assembly reads these saved extents back as the page's sheet.
     if frame_min_x <= frame_max_x and frame_min_y <= frame_max_y:
-        frame_w = float(frame_max_x) - float(frame_min_x)
-        frame_h = float(frame_max_y) - float(frame_min_y)
-        geom_w = float(max_x) - float(min_x)
-        geom_h = float(max_y) - float(min_y)
-        if frame_w > 0.0 and frame_h > 0.0 and (
-            geom_w > 1.5 * frame_w or geom_h > 1.5 * frame_h
-        ):
-            min_x, min_y, max_x, max_y = (
-                frame_min_x, frame_min_y, frame_max_x, frame_max_y
-            )
-        frame_modelspace(doc, (min_x, min_y, max_x, max_y))
+        frame_modelspace(doc, sheet_bounds(
+            (frame_min_x, frame_min_y, frame_max_x, frame_max_y),
+            (min_x, min_y, max_x, max_y),
+        ))
 
     if has_source_image_order:
         background_set = set(background_image_handles)
@@ -5854,6 +6036,10 @@ def _export_to_dxf_impl(
         opts.provenance_opts._final_rect_paint_deliveries = final_paint_records  # noqa: B010
         opts.provenance_opts._source_capsule_deliveries = capsule_records  # noqa: B010
         opts.provenance_opts._nontext_composite_deliveries = composite_records  # noqa: B010
+        opts.provenance_opts._ink_color_deliveries = _ink_remap_records(ink_remaps)  # noqa: B010
+        opts.provenance_opts._r12_pictures_omitted = [  # noqa: B010
+            dict(row) for row in r12_pictures_omitted
+        ]
         opts.provenance_opts._result_status = "success"  # noqa: B010
         _sync_text_evidence()
 
@@ -5883,7 +6069,73 @@ def _export_to_dxf_impl(
         searchable_text_companions=searchable_text_companions(
             text_deliveries, enabled=search_text_enabled
         ),
+        ink_color_deliveries=_ink_remap_records(ink_remaps),
+        r12_pictures_omitted=[dict(row) for row in r12_pictures_omitted],
     )
+
+
+R12_PICTURES_OMITTED_LAYER = "PICTURES_OMITTED_R12"
+R12_PICTURES_IMPOSSIBLE = "DXF R12 cannot hold pictures"
+
+
+def r12_picture_warning_line(rows: Iterable[Mapping[str, Any]]) -> str:
+    """One line when DXF R12 left pictures out, else ``''``."""
+
+    count = sum(int(row.get("pictures") or 0) for row in rows or ())
+    if not count:
+        return ""
+    return (
+        f"{R12_PICTURES_IMPOSSIBLE}: {count} picture(s) left out; their outlines are "
+        f"on layer P###_{R12_PICTURES_OMITTED_LAYER}. Choose R2010 (the default) "
+        "or newer to keep them."
+    )
+
+
+def _placement_outline_corners(
+    placement: ImagePlacement, page_offset_y: float
+) -> Optional[List[Tuple[float, float]]]:
+    """The four model-space corners a picture would cover, uncropped.
+
+    The same placement an IMAGE gets from ``_image_geometry`` with its whole
+    source pixel grid: insert, insert+U, insert+U+V, insert+V.
+    """
+
+    if placement.affine_model is not None:
+        ix, iy, ux, uy, vx, vy = (float(value) for value in placement.affine_model)
+        iy += page_offset_y
+        corners = [
+            (ix, iy), (ix + ux, iy + uy), (ix + ux + vx, iy + uy + vy), (ix + vx, iy + vy),
+        ]
+    else:
+        x0 = float(placement.x_mm)
+        y0 = float(placement.y_mm) + page_offset_y
+        x1 = x0 + float(placement.width_mm)
+        y1 = y0 + float(placement.height_mm)
+        corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    if not all(math.isfinite(value) for corner in corners for value in corner):
+        return None
+    return corners
+
+
+def _picture_paints_nothing(
+    placement: ImagePlacement, cache: Dict[str, bool]
+) -> bool:
+    """True only for a picture whose pixels are all fully transparent.
+
+    Such a picture is left out of every DXF version (its asset is never
+    staged), so it is not a picture R12 lost either.
+    """
+
+    source_key = _normalized_image_source_path(str(placement.path))
+    if source_key not in cache:
+        try:
+            _size, alpha_kind, _crop, _alpha = _placement_alpha_profile(
+                Path(source_key), [placement]
+            )
+            cache[source_key] = alpha_kind == "zero"
+        except Exception:  # noqa: BLE001 - unreadable: count it as a lost picture
+            cache[source_key] = False
+    return cache[source_key]
 
 
 def _layer_name(
@@ -6049,6 +6301,44 @@ def _compound_clip_regions(contours):
     ]
 
 
+def _open_polyline_is_curve(points) -> bool:
+    """True when an open polyline is a flattened curve, not a few corners.
+
+    Fit-point splines stay editable as one curve. Straight polylines and
+    dashed strokes stay LWPOLYLINE so LibreCAD's linetypes keep working.
+    """
+    if len(points) < 8:
+        return False
+    bends = 0
+    for index in range(1, len(points) - 1):
+        ax = float(points[index][0]) - float(points[index - 1][0])
+        ay = float(points[index][1]) - float(points[index - 1][1])
+        bx = float(points[index + 1][0]) - float(points[index][0])
+        by = float(points[index + 1][1]) - float(points[index][1])
+        len_a = math.hypot(ax, ay)
+        len_b = math.hypot(bx, by)
+        if len_a <= 0.01 or len_b <= 0.01:
+            continue
+        if abs(ax * by - ay * bx) / (len_a * len_b) > 0.1:
+            bends += 1
+            if bends >= 3:
+                return True
+    return False
+
+
+def _add_even_odd_filled_paths(msp, rings, fill_rgb, attribs, *, is_r12: bool):
+    """One even-odd fill with a hole, as SOLID triangles.
+
+    A multi-path HATCH is the editable ideal, but LibreCAD draws connectors
+    between separate hatch contours and fills the counter. The same SOLID
+    triangulation already used for clipped counters keeps the hole empty in
+    every DXF version this importer writes.
+    """
+    return _add_compound_filled_paths(
+        msp, rings, fill_rgb, attribs, is_r12=is_r12, even_odd=True,
+    )
+
+
 def _add_compound_filled_paths(
     msp, contours, fill_rgb, attribs: dict, *, is_r12: bool, even_odd: bool,
 ) -> List[Any]:
@@ -6203,18 +6493,55 @@ def _ensure_layer(doc: ezdxf.EzDxf, name: str, rgb) -> None:
         layer.off()
 
 
+def _note_ink_remap(remaps: dict, page_number, kind: str, source_rgb) -> None:
+    """Count one delivered stroke, fill or text item whose ink became black."""
+
+    try:
+        remapped = is_remapped_near_black(source_rgb)
+    except (TypeError, ValueError):
+        return
+    if not remapped:
+        return
+    row = remaps.setdefault(
+        (int(page_number), rgb8(source_rgb)),
+        {"strokes": 0, "fills": 0, "text_items": 0},
+    )
+    row[kind] += 1
+
+
+def _ink_remap_records(remaps: dict) -> List[Dict[str, Any]]:
+    """The source colours the ink rule replaced, for the import report."""
+
+    return [
+        {
+            "rule": INK_RULE_NEAR_BLACK,
+            "source_page_number": page_number,
+            "source_rgb": list(source),
+            "delivered_rgb": [0, 0, 0],
+            **counts,
+        }
+        for (page_number, source), counts in sorted(remaps.items())
+    ]
+
+
 def _apply_color(attribs: dict, rgb) -> None:
     if rgb is None:
         return
-    r, g, b = (int(max(0, min(255, round(float(c) * 255)))) for c in rgb)
-    # Invert (near-)white to black so white-on-white geometry is visible on
-    # LibreCAD's default white background. Only genuinely white ink qualifies
-    # (every channel >= 250): a luminance threshold used to turn pale tints --
+    r, g, b = rgb8(rgb)
+    # Write genuinely white ink as exact black. LibreCAD's default drawing
+    # canvas is black, not white; it draws an exact-black pen in its foreground
+    # colour, so this ink stays visible there and on any viewer with a white
+    # paper background, where pure white would vanish. Only genuinely white
+    # ink qualifies (every channel >= 250): a luminance threshold used to turn pale tints --
     # light-grey lines, pale-yellow highlights, and every translucent colour that
     # pdfcadcore now composites against the page (a 5 % black wash is 242 grey) --
     # into solid black, which is not what the PDF viewer shows.
     if _is_near_white(r, g, b):
         r, g, b = 0, 0, 0
+    # Near-black neutral ink (Distiller "rich black" 35/31/32) is written as
+    # exact black: LibreCAD swaps only exact black to its foreground colour,
+    # so anything else that dark is close to invisible on a black background.
+    r, g, b = delivered_rgb8(r, g, b)
     attribs["true_color"] = rgb2int((r, g, b))
 
 

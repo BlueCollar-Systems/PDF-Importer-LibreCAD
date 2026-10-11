@@ -1,5 +1,7 @@
 # Kept for existing instructions: builds, load-tests and installs the LibreCAD
-# menu plugin via scripts/build_librecad_plugin.py.
+# menu plugin via scripts/build_librecad_plugin.py. The Python installer puts
+# the one bc_lcpdf_menu.dll into Documents\LibreCAD\plugins and removes old
+# copies; this script never copies DLLs anywhere itself.
 param(
     [string]$QtRoot = "C:\Qt\5.15.2\msvc2019_64"
 )
@@ -11,30 +13,5 @@ $python = (Get-Command python -ErrorAction Stop).Source
 if ($LASTEXITCODE -ne 0) {
     throw "Plugin build/install failed with exit code $LASTEXITCODE"
 }
-$buildDir = Join-Path $repoRoot "plugin\lcpdf_menu"
-$candidateDlls = @()
-$candidateDlls += Get-ChildItem -Path $buildDir -Filter "bc_lcpdf_menu*.dll" -ErrorAction SilentlyContinue
-$candidateDlls += Get-ChildItem -Path (Join-Path $buildDir "release") -Filter "bc_lcpdf_menu*.dll" -ErrorAction SilentlyContinue
-$candidateDlls = $candidateDlls | Sort-Object LastWriteTime -Descending
-if ($candidateDlls.Count -gt 0) {
-    $builtDll = $candidateDlls[0].FullName
-    $docs = [Environment]::GetFolderPath("MyDocuments")
-    $targetDirs = @(
-        (Join-Path $docs "LibreCAD\plugins"),
-        (Join-Path $docs "librecad\plugins"),
-        (Join-Path $env:USERPROFILE ".librecad\plugins"),
-        "C:\Program Files\LibreCAD\resources\plugins",
-        "C:\Program Files\LibreCAD\plugins"
-    )
 
-    foreach ($dir in $targetDirs) {
-        if (Test-Path (Split-Path -Parent $dir)) {
-            New-Item -ItemType Directory -Path $dir -Force | Out-Null
-            Copy-Item -LiteralPath $builtDll -Destination (Join-Path $dir ([IO.Path]::GetFileName($builtDll))) -Force
-            Copy-Item -LiteralPath $builtDll -Destination (Join-Path $dir "bc_lcpdf_menu.dll") -Force
-            Write-Host "Installed plugin to: $dir"
-        }
-    }
-}
-
-Write-Host "Restart LibreCAD. The importer is now available under both the 'Plugins' and 'Tools' menus."
+Write-Host "Restart LibreCAD, then use Plugins > Import PDF (BlueCollar)..."

@@ -14,6 +14,7 @@ from unittest.mock import patch
 import dxf_text_builder as text_builder
 import ezdxf
 from ezdxf.colors import aci2rgb, rgb2int
+from ezdxf.disassemble import recursive_decompose
 from fontTools.ttLib import TTFont
 import pytest
 
@@ -1905,6 +1906,49 @@ def test_positioned_fraction_fill_only_contract_survives_r12_reopen(
     assert visible
     assert {entity.dxftype() for entity in visible} == {"SOLID"}
     assert all(entity.dxf.color == source_aci for entity in entities)
+
+
+@pytest.mark.parametrize("mode", ["glyphs", "geometry"])
+def test_r12_positioned_fraction_delivers_near_black_ink_as_exact_black(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    # Distiller "rich black" 35/31/32 has no ACI of its own. The importer's ink
+    # rule delivers dark neutral ink as exact black, so the item is bound to
+    # black's ACI instead of being refused, and the evidence keeps the source.
+    rich_black = (35, 31, 32)
+    black_aci = next(
+        index for index in range(1, 256)
+        if tuple(int(component) for component in aci2rgb(index)) == (0, 0, 0)
+    )
+    item = _positioned_fraction(
+        "vertical",
+        color=tuple(component / 255.0 for component in rich_black),
+    )
+
+    reopened, result, _trusted_anchors = _save_reopen(
+        tmp_path,
+        item,
+        mode,
+        dxf_version="R12",
+    )
+
+    assert result.verified is True
+    assert result.final_representation == mode
+    final = next(attempt for attempt in result.attempts if attempt.outcome == "verified")
+    assert final.evidence["r12_source_color_encoding"] == "exact_srgb8_aci_match"
+    assert final.evidence["r12_source_color_rgb"] == [0, 0, 0]
+    assert final.evidence["r12_source_color_aci"] == black_aci
+    assert final.evidence["r12_source_color_max_channel_error"] == 0
+    assert final.evidence["r12_ink_rule"] == "near_black_neutral_delivered_as_black"
+    assert final.evidence["r12_observed_source_color_rgb"] == list(rich_black)
+    solids = [
+        entity
+        for entity in recursive_decompose(reopened.modelspace())
+        if entity.dxftype() == "SOLID"
+    ]
+    assert solids
+    assert all(entity.dxf.color == black_aci for entity in solids)
 
 
 @pytest.mark.parametrize("mode", ["glyphs", "geometry"])

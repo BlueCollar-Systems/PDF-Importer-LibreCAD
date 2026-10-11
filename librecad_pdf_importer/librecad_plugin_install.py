@@ -28,9 +28,11 @@ PLUGIN_BUNDLE_DIR = "librecad-plugin"
 SIDECAR_NAME = "bc_lcpdf_menu-importer.txt"
 TARGET_LIBRECAD = "LibreCAD 2.2.x for Windows (Qt 5.15, 64-bit)"
 # Earlier builds were installed as bc_lcpdf_menu1.dll (qmake VERSION suffix)
-# and also copied to ~/.librecad/plugins. LibreCAD loads every "*.dll" in every
-# plugin folder it scans, so any leftover copy with another name doubles each
-# menu entry. The installer removes these (they are only ever ours).
+# and also copied to ~/.librecad/plugins and into LibreCAD's program folder
+# (<LibreCAD>/plugins and <LibreCAD>/resources/plugins). LibreCAD loads every
+# "*.dll" in every plugin folder it scans, so any leftover copy with another
+# name doubles each menu entry. The installer removes these (they are only
+# ever ours); program-folder copies may need an administrator.
 LEGACY_DLL_NAMES = ("bc_lcpdf_menu1.dll",)
 SETTINGS_INI_NAME = "bc_pdf_importer_plugin.ini"
 PINNED_SETTING_KEYS = ("script_path", "python_path")
@@ -50,6 +52,15 @@ class PluginInstallResult:
     replaced_existing: bool
     removed_stale: tuple[Path, ...] = ()
     cleared_pin: bool = False
+    # Old copies in LibreCAD's program folder that Windows would not let us
+    # delete (they need an administrator, or LibreCAD still has them open).
+    blocked_stale: tuple[Path, ...] = ()
+
+
+class PluginUninstallResult(list):
+    """The files removed (a list, as before) plus ``blocked_stale``."""
+
+    blocked_stale: tuple[Path, ...] = ()
 
 
 def documents_directory() -> Path:
@@ -97,6 +108,46 @@ def librecad_legacy_plugin_directories() -> list[Path]:
     return [Path.home() / ".librecad" / "plugins"]
 
 
+def librecad_program_plugin_directories() -> list[Path]:
+    """The plugin folders inside LibreCAD's own program folder.
+
+    LibreCAD 2.2.x scans ``<LibreCAD>/plugins`` and ``<LibreCAD>/resources/plugins``
+    (never %APPDATA% or %LOCALAPPDATA%). The program folder is the LibreCAD
+    this importer finds, else ``%ProgramFiles%/LibreCAD``.
+    """
+    root: Path | None = None
+    try:
+        from librecad_pdf_importer.launchers.librecad_launcher import (
+            preferred_librecad_executable,
+        )
+        from librecad_runtime import resolve_librecad_installation
+
+        installation = resolve_librecad_installation(preferred_librecad_executable())
+        if installation is not None:
+            root = Path(installation.installation_root)
+    except Exception:  # noqa: BLE001 - the lookup must never stop an install
+        root = None
+    if root is None:
+        program_files = str(os.environ.get("ProgramFiles", "") or "").strip()
+        if not program_files:
+            return []
+        root = Path(program_files) / "LibreCAD"
+    return [root / "plugins", root / "resources" / "plugins"]
+
+
+def blocked_stale_message(paths: "tuple[Path, ...] | list[Path]") -> str:
+    """Plain words for old program-folder copies that could not be deleted."""
+    if not paths:
+        return ""
+    return (
+        "Old copies of the menu add-on are in LibreCAD's program folder. Windows "
+        "needs an administrator to delete them; until then LibreCAD may show each "
+        "BlueCollar menu entry twice, and an old entry may start the wrong program.\n"
+        "Close LibreCAD, then ask someone with administrator rights to delete:\n"
+        + "\n".join(f"  {path}" for path in paths)
+    )
+
+
 def plugin_settings_ini() -> Path:
     """QSettings(IniFormat, UserScope, "LibreCAD", "bc_pdf_importer_plugin")."""
     appdata = os.environ.get("APPDATA")
@@ -104,7 +155,36 @@ def plugin_settings_ini() -> Path:
     return base / "LibreCAD" / SETTINGS_INI_NAME
 
 
-def _remove_stale_copies(target_dir: Path, keep: Path) -> list[Path]:
+def _program_folder_copies() -> list[Path]:
+    return [
+        folder / name
+        for folder in librecad_program_plugin_directories()
+        for name in (PLUGIN_DLL_NAME, *LEGACY_DLL_NAMES)
+    ]
+
+
+def _remove_program_folder_copies(keep: Path | None) -> tuple[list[Path], list[Path]]:
+    """Delete our copies in LibreCAD's program folder; never raises.
+
+    Returns (removed, blocked): a copy Windows will not let us delete (no
+    administrator rights, or LibreCAD has it open) is reported, not fatal.
+    """
+    removed: list[Path] = []
+    blocked: list[Path] = []
+    for path in _program_folder_copies():
+        try:
+            if not path.is_file() or (keep is not None and path.resolve() == keep.resolve()):
+                continue
+            path.unlink()
+            removed.append(path)
+        except PermissionError:
+            blocked.append(path)
+        except OSError:
+            pass
+    return removed, blocked
+
+
+def _remove_stale_copies(target_dir: Path, keep: Path) -> tuple[list[Path], list[Path]]:
     removed = []
     candidates = [target_dir / name for name in LEGACY_DLL_NAMES]
     for folder in librecad_legacy_plugin_directories():
@@ -121,7 +201,8 @@ def _remove_stale_copies(target_dir: Path, keep: Path) -> list[Path]:
             ) from exc
         except OSError:
             pass
-    return removed
+    program_removed, blocked = _remove_program_folder_copies(keep)
+    return removed + program_removed, blocked
 
 
 def _clear_pinned_launcher(ini_path: Path) -> bool:
@@ -214,7 +295,7 @@ def install_librecad_plugin(
             except OSError:
                 pass
 
-    removed = _remove_stale_copies(target_dir, target)
+    removed, blocked = _remove_stale_copies(target_dir, target)
     sidecar = target_dir / SIDECAR_NAME
     sidecar.write_text(
         "# Written by the BlueCollar PDF Importer. The LibreCAD menu entry starts:\n"
@@ -229,13 +310,20 @@ def install_librecad_plugin(
         replaced_existing=replaced,
         removed_stale=tuple(removed),
         cleared_pin=cleared,
+        blocked_stale=tuple(blocked),
     )
 
 
-def uninstall_librecad_plugin(plugin_directory: str | os.PathLike[str] | None = None) -> list[Path]:
-    """Remove the plugin DLL and sidecar; returns the files removed."""
+def uninstall_librecad_plugin(
+    plugin_directory: str | os.PathLike[str] | None = None,
+) -> PluginUninstallResult:
+    """Remove the plugin DLL and sidecar; returns the files removed.
+
+    Copies in LibreCAD's program folder that need an administrator are left and
+    listed in the result's ``blocked_stale``.
+    """
     target_dir = Path(plugin_directory) if plugin_directory else librecad_user_plugin_directory()
-    removed = []
+    removed = PluginUninstallResult()
     paths = [target_dir / name for name in (PLUGIN_DLL_NAME, SIDECAR_NAME, *LEGACY_DLL_NAMES)]
     for folder in librecad_legacy_plugin_directories():
         paths += [folder / PLUGIN_DLL_NAME] + [folder / name for name in LEGACY_DLL_NAMES]
@@ -248,6 +336,9 @@ def uninstall_librecad_plugin(plugin_directory: str | os.PathLike[str] | None = 
                     "LibreCAD is using the menu plugin. Close LibreCAD and try again."
                 ) from exc
             removed.append(path)
+    program_removed, blocked = _remove_program_folder_copies(None)
+    removed.extend(program_removed)
+    removed.blocked_stale = tuple(blocked)
     return removed
 
 
@@ -262,6 +353,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.uninstall:
             removed = uninstall_librecad_plugin(args.plugin_dir)
             print("Removed: " + (", ".join(str(p) for p in removed) or "nothing installed"))
+            if removed.blocked_stale:
+                print(f"WARNING: {blocked_stale_message(removed.blocked_stale)}", file=sys.stderr)
             return 0
         result = install_librecad_plugin(
             args.dll, launcher_path=args.launcher, plugin_directory=args.plugin_dir
@@ -272,6 +365,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Installed LibreCAD menu plugin: {result.dll_path}")
     print(f"Menu entry starts: {result.launcher_path}")
     print("Restart LibreCAD, then use Plugins > Import PDF (BlueCollar)...")
+    if result.blocked_stale:
+        print(f"WARNING: {blocked_stale_message(result.blocked_stale)}", file=sys.stderr)
     return 0
 
 

@@ -242,10 +242,15 @@ def main(argv: list[str] | None = None) -> int:
             smoke_plugin(dll, qt_root, e2e=not args.no_e2e)
         if args.install:
             sys.path.insert(0, str(ROOT))
-            from librecad_pdf_importer.librecad_plugin_install import install_librecad_plugin
+            from librecad_pdf_importer.librecad_plugin_install import (
+                blocked_stale_message,
+                install_librecad_plugin,
+            )
 
             result = install_librecad_plugin(dll)
             print(f"Installed {result.dll_path} -> starts {result.launcher_path}")
+            if result.blocked_stale:
+                print(f"WARNING: {blocked_stale_message(result.blocked_stale)}", file=sys.stderr)
     except (PluginBuildError, subprocess.CalledProcessError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

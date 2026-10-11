@@ -27,6 +27,25 @@ def union_bounds(first, second):
             max(first[2], second[2]), max(first[3], second[3]))
 
 
+def sheet_bounds(sheets, geometry):
+    """The bounds a drawing is framed by: its sheets whenever they are known.
+
+    A print is read sheet by sheet, so the union of the placed page frames is
+    the drawing's extents, limits and first view. Ink a content stream paints
+    past the page box stays in the file and never enlarges them, however far
+    it runs. Only a drawing without a page frame of positive area - a
+    hand-built or zero-size page - is framed by its geometry.
+
+    This is the single place that rule lives; the page exporter and the
+    checkpoint assembly both ask it.
+    """
+    if sheets is not None:
+        sheet = finite_bounds(sheets[:2], sheets[2:])
+        if sheet is not None and sheet[2] > sheet[0] and sheet[3] > sheet[1]:
+            return sheet
+    return geometry
+
+
 def frame_modelspace(doc, bounds):
     """Set page extents and an untwisted +Z view which contains both dimensions."""
     valid = finite_bounds(bounds[:2], bounds[2:])
