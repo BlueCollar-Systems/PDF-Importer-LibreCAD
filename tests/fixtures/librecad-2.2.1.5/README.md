@@ -4,7 +4,7 @@
 by the actual Windows LibreCAD 2.2.1.5 / Qt 5.15.2 application. The native
 operator opened the early saved-copy mm control, used Auto Zoom, Save As,
 closed it, and reopened the saved path. It contains a 100 mm control line
-and synthetic vector shapes from `01-vector-curves-holes.pdf`; it contains
+and synthetic vector shapes from `01-vector-only.pdf`; it contains
 no customer drawing, private text, local paths, email address, or image file.
 
 The original is retained at
