@@ -22,8 +22,7 @@ W, H = 612.0, 792.0
 NOTES = ("JOB D042 SAMPLE", "MARK EX101 PLATE", "W12X26 A572-50 TYP", "SEE DETAIL 4")
 
 
-def _sheet(path: Path, *, border=True, line=True, notes=NOTES, picture=False,
-           shading=False) -> Path:
+def _sheet(path: Path, *, border=True, line=True, notes=NOTES, picture=False) -> Path:
     document = pymupdf.open()
     page = document.new_page(width=W, height=H)
     shape = page.new_shape()
@@ -40,10 +39,6 @@ def _sheet(path: Path, *, border=True, line=True, notes=NOTES, picture=False,
         pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 64, 64), False)
         pixmap.clear_with(90)
         page.insert_image(pymupdf.Rect(40, 40, W - 40, H - 40), stream=pixmap.tobytes("png"))
-    if shading:
-        # Ink the vector extractor does not deliver: a large dark area drawn
-        # as an image-free smooth shading.
-        page.draw_rect(pymupdf.Rect(60, 420, 540, 700), color=None, fill=(0.2, 0.2, 0.2))
     document.save(str(path))
     document.close()
     return path
@@ -100,27 +95,136 @@ def test_a_truly_empty_page_still_gets_its_page_picture(tmp_path):
         assert page.resolved_mode == "raster"
 
 
-def test_unextracted_ink_on_a_frame_page_still_falls_back_to_raster(tmp_path, monkeypatch):
-    """The coarse render is real evidence: ink the extractor did not deliver."""
+def _frame_sheet_with_pattern_fill(path: Path, *, notes=NOTES) -> Path:
+    """Border + one line + notes + a tiling-pattern fill the extractor does not
+    turn into lines (``/Pattern cs /P1 scn ... re f``)."""
 
-    from librecad_pdf_importer.core import document as document_module
+    path = _sheet(path, notes=notes)
+    document = pymupdf.open(str(path))
+    page = document[0]
+    page.clean_contents()
+    pattern = document.get_new_xref()
+    document.update_object(
+        pattern,
+        "<< /Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1"
+        " /BBox [0 0 8 8] /XStep 8 /YStep 8 /Resources << >> /Length 0 >>",
+    )
+    document.update_stream(pattern, b"0 0 0 rg 0 0 4 4 re f 4 4 4 4 re f")
+    document.xref_set_key(page.xref, "Resources/Pattern", f"<< /P1 {pattern} 0 R >>")
+    [contents] = page.get_contents()
+    document.update_stream(
+        contents,
+        document.xref_stream(contents) + b"\nq /Pattern cs /P1 scn 60 92 480 280 re f Q\n",
+    )
+    patterned = path.with_name(path.stem + "_pattern.pdf")
+    document.save(str(patterned))
+    document.close()
+    return patterned
 
-    path = _sheet(tmp_path / "missed.pdf", shading=True, notes=())
-    real = document_module._frame_page_unextracted_ink_ratio
 
-    def drop_the_dark_area(page, page_data, opts):
-        # Pretend the extractor never saw the filled area, as with a shading.
-        page_data.primitives = [
-            prim for prim in page_data.primitives if prim.fill_color is None
-        ]
-        return real(page, page_data, opts)
+@pytest.mark.parametrize("notes", [NOTES, ()], ids=["with-notes", "no-notes"])
+@pytest.mark.parametrize("import_text", [True, False], ids=["text-on", "text-off"])
+def test_ink_the_extractor_missed_keeps_a_page_picture_under_the_lines(
+    tmp_path, notes, import_text
+):
+    """The coarse render is real evidence: a pattern fill the extractor does
+    not turn into lines is still seen, as a page picture laid under the lines
+    and text, which stay editable. Notes on the sheet never switch this off."""
 
-    monkeypatch.setattr(document_module, "_frame_page_unextracted_ink_ratio", drop_the_dark_area)
-    with _extract(path) as extraction:
+    path = _frame_sheet_with_pattern_fill(tmp_path / "missed.pdf", notes=notes)
+    with _extract(path, import_text=import_text) as extraction:
         page = extraction.pages[0]
-        assert page.resolved_mode == "raster"
+        assert len(_page_rasters(page)) == 1, "the patterned area would be lost"
+        assert len(page.page_data.primitives) == 2
+        assert len(page.page_data.text_items) == (len(notes) if import_text else 0)
+        assert page.resolved_mode == "hybrid"
+        reason = str(page.resolved_reason)
+        assert "unextracted ink" in reason and "fallback" in reason
+
+
+def test_missed_ink_step_down_is_written_and_reported(tmp_path):
+    """The DXF holds the lines, the notes and the page picture, and the
+    import report says a fallback was used and why."""
+
+    import json
+
+    import ezdxf
+
+    import pdf2dxf
+
+    path = _frame_sheet_with_pattern_fill(tmp_path / "report.pdf")
+    output = tmp_path / "report.dxf"
+    assert pdf2dxf.main([str(path), str(output)]) == 0
+    types = [entity.dxftype() for entity in ezdxf.readfile(str(output)).modelspace()]
+    assert types.count("IMAGE") == 1
+    assert types.count("LWPOLYLINE") == 2
+    assert types.count("INSERT") == 4
+    [report_path] = list(tmp_path.glob("report_import_report.json"))
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["fallback"]["used"] is True
+    assert "unextracted ink" in report["fallback"]["reason"]
+    assert "unextracted ink" in report["extra"]["human_summary"]
+
+
+def test_at_r12_a_missed_ink_frame_page_keeps_its_lines(tmp_path):
+    """R12 cannot hold the page picture: it is left out (outlined and
+    reported), and the border and line still come in as lines."""
+
+    import ezdxf
+
+    import pdf2dxf
+
+    path = _frame_sheet_with_pattern_fill(tmp_path / "r12.pdf", notes=())
+    output = tmp_path / "r12.dxf"
+    assert pdf2dxf.main([str(path), str(output), "--dxf-version", "R12"]) == 0
+    layers = [
+        (entity.dxftype(), entity.dxf.layer)
+        for entity in ezdxf.readfile(str(output)).modelspace()
+    ]
+    omitted = [row for row in layers if row[1].endswith("_PICTURES_OMITTED_R12")]
+    lines = [row for row in layers if row[0] == "POLYLINE" and row not in omitted]
+    assert len(omitted) == 1
+    assert len(lines) == 2
+
+
+def _text_cloud_sheet(path: Path) -> Path:
+    """A border, one line and 200 short notes: Auto's text-cloud page."""
+
+    document = pymupdf.open()
+    page = document.new_page(width=W, height=H)
+    shape = page.new_shape()
+    shape.draw_rect(pymupdf.Rect(40, 40, W - 40, H - 40))
+    shape.finish(color=(0, 0, 0), width=1)
+    shape.draw_line((60, 100), (550, 100))
+    shape.finish(color=(0, 0, 0), width=0.5)
+    shape.commit()
+    for index in range(200):
+        row, column = divmod(index, 5)
+        page.insert_text(
+            (60 + column * 100, 130 + row * 15), f"EX{index:03d}", fontname="helv", fontsize=9
+        )
+    document.save(str(path))
+    document.close()
+    return path
+
+
+@pytest.mark.parametrize("pictures_supported", [True, False], ids=["r2010", "r12"])
+def test_a_text_cloud_page_keeps_its_lines_when_pictures_cannot_be_written(
+    tmp_path, pictures_supported
+):
+    path = _text_cloud_sheet(tmp_path / "cloud.pdf")
+    with _extract(
+        path, requested_text_representation="none", pictures_supported=pictures_supported
+    ) as extraction:
+        page = extraction.pages[0]
         assert len(_page_rasters(page)) == 1
-        assert "unextracted ink" in str(page.resolved_reason)
+        if pictures_supported:
+            assert page.resolved_mode == "raster"
+            assert not page.page_data.primitives
+        else:
+            assert page.resolved_mode == "hybrid"
+            assert len(page.page_data.primitives) == 2
+            assert "fallback" in str(page.resolved_reason)
 
 
 def _frame_sheet_with_smooth_shading(path: Path) -> Path:

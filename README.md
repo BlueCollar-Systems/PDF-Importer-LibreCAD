@@ -381,7 +381,11 @@ does not prove visible/editable 3D text in LibreCAD's 2D parent.
   LibreCAD. Each visible word is delivered as native `TEXT` on the visible,
   plotting layer `P###_TEXT`, drawn in LibreCAD's own `unicode` LFF font, so the
   letter shapes differ from the PDF while the string, anchor, cap height,
-  rotation and width match. No outline block, picture or hidden copy is written
+  rotation and width match. Each word keeps the PDF word's width (Fit
+  alignment): if you edit a word to make it longer, LibreCAD squeezes the
+  letters into the original width (a shorter word is stretched). To let an
+  edited word take its natural width, change its alignment from Fit to another
+  one in the text's properties. No outline block, picture or hidden copy is written
   for those words, so the file is also much smaller. The substitution is
   disclosed per item (`parent_native_font_substitution_accepted: true`,
   `visual_verified: false`) and never certified as the PDF's look; the report
@@ -582,6 +586,11 @@ paint and Normal-blend proof; it does not provide general PDF compositing.
   pictures: each picture is left out, its outline is drawn on layer
   `P###_PICTURES_OMITTED_R12`, and one warning line (log, stderr, report
   `extra.pictures_omitted_r12`) says how many. The rest of the drawing is kept.
+  A bordered sheet with ink the importer cannot turn into lines (for example a
+  pattern fill) keeps its lines and text in every version, with a page picture
+  laid under them for the missing ink; at R12 that picture is the one left out.
+  A sheet with a smooth colour shading still comes in as a page picture only,
+  so at R12 it is just the outline.
 - **R2000 - R2004**: True-color support, standard linetypes.
 - **R2007 - R2018**: Full feature set including lineweights.
 
