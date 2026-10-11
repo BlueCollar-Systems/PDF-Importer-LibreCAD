@@ -115,6 +115,15 @@ class TestPdfOpenGate(unittest.TestCase):
                 extract_document(str(path), ExtractionOptions(import_images=False, import_text=False))
             self.assertIn("page list refers to itself", str(ctx.exception))
             self.assertNotIn("FzErrorFormat", str(ctx.exception))
+            self.assertIsNotNone(ctx.exception.__cause__)
+            self.assertIn("cycle in page tree", str(ctx.exception.__cause__).lower())
+            self.assertIsNone(ctx.exception.__cause__.__traceback__)
+            # Keep the reported exception alive: a retained native traceback
+            # must not keep the rejected source open on Windows.
+            rejected = Path(tmp) / "rejected-cycle.pdf"
+            path.replace(rejected)
+            self.assertTrue(rejected.is_file())
+            self.assertFalse(path.exists())
 
     def test_safe_open_reads_only_the_header_before_path_delegation(self) -> None:
         with tempfile.TemporaryDirectory(prefix="lc_open_gate_") as tmp:

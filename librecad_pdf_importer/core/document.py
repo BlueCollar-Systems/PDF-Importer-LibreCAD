@@ -651,10 +651,15 @@ def _extract_document_impl(
                 page = doc.load_page(page_number - 1)
             except Exception as exc:
                 if "cycle in page tree" in str(exc).lower():
+                    # MuPDF's failed load_page traceback retains a native
+                    # document wrapper (including its Windows file handle),
+                    # even after the surrounding Document context closes.
+                    # Keep the cause's type/message while dropping those
+                    # native frames from this deliberately normalized error.
                     raise ValueError(
                         "This PDF's page list refers to itself in a loop, "
                         f"so page {page_number} cannot be read."
-                    ) from exc
+                    ) from exc.with_traceback(None)
                 raise
             effective_mode = mode
             resolved_reason = ""
