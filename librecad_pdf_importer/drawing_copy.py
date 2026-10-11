@@ -42,6 +42,10 @@ class DrawingCopyResult:
     image_files: int
     image_references: int
     source_sha256: str
+    # Identity receipts let a composing operation clean up its private staged
+    # copies without recursively deleting a replaced folder or unrelated files.
+    _owned_files: tuple = ()
+    _owned_directories: tuple = ()
 
 
 def _hash_file(path: Path) -> str:
@@ -362,7 +366,11 @@ def _copy_drawing_with_images(
         owned_files.pop(staged_dxf)
         completed = True
         return DrawingCopyResult(target, final_assets if paths else None, len(paths), len(images),
-                                 source_sha)
+                                 source_sha,
+                                 tuple((path, identity, digest) for path, (identity, digest)
+                                       in owned_files.items() if not _inside(path, stage)),
+                                 tuple((path, identity) for path, identity in owned_directories.items()
+                                       if not _inside(path, stage)))
     except (DrawingCopyError, OSError, ValueError, ezdxf.DXFError) as exc:
         if isinstance(exc, DrawingCopyError):
             raise

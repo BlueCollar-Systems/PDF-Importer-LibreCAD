@@ -8,7 +8,7 @@
 //   3. after a successful conversion the GUI writes the DXF path to
 //      <result.json> and closes
 //   4. this plugin opens that DXF in the running LibreCAD (same code path as
-//      File > Open), or inserts it as a block into the current drawing.
+//      File > Open), including an editable copy of a selected saved drawing.
 //
 // The plugin never converts anything itself, so it cannot change the
 // converter's accuracy. It only launches the GUI and loads its output.
@@ -28,6 +28,7 @@
 #include <QJsonObject>
 #include <QMessageBox>
 #include <QMetaObject>
+#include <QPointer>
 #include <QPointF>
 #include <QProcess>
 #include <QProgressDialog>
@@ -55,7 +56,7 @@
 namespace {
 
 const char *kActionOpen = "Import PDF (BlueCollar)...";
-const char *kActionInsert = "Import PDF into Current Drawing (BlueCollar)...";
+const char *kActionInsert = "Import PDF into Saved Drawing Copy (BlueCollar)...";
 const char *kActionSettings = "PDF Importer Settings (BlueCollar)...";
 
 // Written by the importer's "Install LibreCAD menu entry" action next to the
@@ -446,32 +447,41 @@ HandoffResult waitForHandoff(QWidget *parent, const QString &handoffPath, qint64
     return result;
 }
 
-bool openInLibreCad(QWidget *parent, const QString &dxfPath) {
+bool openInLibreCad(QWidget *parent, const QString &dxfPath, bool fitDrawing = false) {
     // QC_ApplicationWindow::slotFileOpen(const QString&) is a public slot and
     // is exactly what File > Open / drag-and-drop use. Queue it so it runs
     // after this plugin call (and LibreCAD's undo section) has finished.
     const QString nativePath = QDir::toNativeSeparators(dxfPath);
     for (QObject *target = parent; target != nullptr; target = target->parent()) {
         if (target->metaObject()->indexOfSlot("slotFileOpen(QString)") >= 0) {
+            if (fitDrawing) {
+                QPointer<QObject> window(target);
+                QTimer::singleShot(0, target, [window, nativePath]() {
+                    if (!window || !QMetaObject::invokeMethod(window, "slotFileOpen", Qt::DirectConnection,
+                                                               Q_ARG(QString, nativePath))) {
+                        return;
+                    }
+                    if (!window) {
+                        return;
+                    }
+                    // v2.2.1.5's official QG_ActionHandler exposes this slot.
+                    // Wait until FileOpen returns: its loading path processes
+                    // events, so a second queued call could otherwise run early.
+                    for (QObject *child : window->findChildren<QObject *>()) {
+                        if (QString::fromLatin1(child->metaObject()->className()) == "QG_ActionHandler" &&
+                            child->metaObject()->indexOfSlot("slotZoomAuto()") >= 0) {
+                            QMetaObject::invokeMethod(child, "slotZoomAuto", Qt::DirectConnection);
+                            break;
+                        }
+                    }
+                });
+                return true;
+            }
             return QMetaObject::invokeMethod(target, "slotFileOpen", Qt::QueuedConnection,
                                              Q_ARG(QString, nativePath));
         }
     }
     return false;
-}
-
-bool insertIntoDrawing(Document_Interface *doc, const QString &dxfPath, QString *blockName) {
-    if (doc == nullptr) {
-        return false;
-    }
-    const QString name = doc->addBlockfromFromdisk(QDir::toNativeSeparators(dxfPath));
-    if (name.isEmpty()) {
-        return false;
-    }
-    doc->addInsert(name, QPointF(0.0, 0.0), QPointF(1.0, 1.0), 0.0);
-    doc->updateView();
-    *blockName = name;
-    return true;
 }
 
 void openSettingsDialog(QWidget *parent, QSettings &settings) {
@@ -548,7 +558,25 @@ void LC_BcLCPdfMenuPlugin::execComm(Document_Interface *doc, QWidget *parent, QS
         openSettingsDialog(parent, settings);
         return;
     }
-    const bool insertMode = (cmd == tr(kActionInsert)) || cmd.contains("Current Drawing");
+    const bool insertMode = (cmd == tr(kActionInsert)) || cmd.contains("Saved Drawing Copy");
+    // The v2.2.1.5 SDK's block-from-disk routine leaves pointers to its local
+    // drawing in cloned entities. Never call it, even for simple vector PDFs.
+    // A runtime DXF merge preserves resources without sharing host pointers.
+    QString savedDrawing;
+    if (insertMode) {
+        savedDrawing = QFileDialog::getOpenFileName(
+            parent, tr("Choose a saved DXF (save current edits first; original is kept)"),
+            QDir::homePath(), tr("Saved DXF Drawings (*.dxf)"));
+        if (savedDrawing.isEmpty()) {
+            return;
+        }
+        if (!QFileInfo(savedDrawing).isReadable() ||
+            !savedDrawing.endsWith(".dxf", Qt::CaseInsensitive)) {
+            QMessageBox::warning(parent, tr("BlueCollar PDF Importer"),
+                                 tr("Choose a readable saved DXF drawing."));
+            return;
+        }
+    }
 
     QString launcher = resolveLauncherPath(settings);
     if (launcher.isEmpty()) {
@@ -576,6 +604,10 @@ void LC_BcLCPdfMenuPlugin::execComm(Document_Interface *doc, QWidget *parent, QS
                               tr("%1\n\nUse Plugins > %2 to set the paths.")
                                   .arg(error, tr(kActionSettings)));
         return;
+    }
+    if (insertMode) {
+        spec.arguments << QStringLiteral("--librecad-saved-drawing")
+                       << QDir::toNativeSeparators(QFileInfo(savedDrawing).absoluteFilePath());
     }
 
     qint64 pid = 0;
@@ -618,19 +650,8 @@ void LC_BcLCPdfMenuPlugin::execComm(Document_Interface *doc, QWidget *parent, QS
         return;
     }
 
-    if (insertMode) {
-        QString blockName;
-        if (!insertIntoDrawing(doc, result.dxfPath, &blockName)) {
-            QMessageBox::warning(parent, tr("BlueCollar PDF Importer"),
-                                 tr("LibreCAD could not insert the DXF into this drawing.\n"
-                                    "Open it with File > Open instead:\n%1")
-                                     .arg(QDir::toNativeSeparators(result.dxfPath)));
-        }
-        return;
-    }
-
     trace(QStringLiteral("opening via slotFileOpen: %1").arg(result.dxfPath));
-    if (!openInLibreCad(parent, result.dxfPath)) {
+    if (!openInLibreCad(parent, result.dxfPath, insertMode)) {
         QMessageBox::information(parent, tr("BlueCollar PDF Importer"),
                                  tr("Conversion finished. Open the DXF with File > Open:\n%1")
                                      .arg(QDir::toNativeSeparators(result.dxfPath)));

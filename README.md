@@ -2,7 +2,7 @@
 
 **BlueCollar-Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.100](https://img.shields.io/badge/Version-1.0.106-blue.svg)
+![Version: 1.0.100](https://img.shields.io/badge/Version-1.0.107-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
@@ -283,7 +283,7 @@ LibreCAD's **Plugins** menu has:
 | Menu entry | What it does |
 |---|---|
 | `Import PDF (BlueCollar)...` (also under **Tools**) | Opens the importer window. Pick the PDF, pages, scale, text mode and DXF version there and press **Convert / Resume**. When the conversion succeeds the DXF opens in a new tab of *this* LibreCAD (the same code path as File > Open) and the importer window closes after you dismiss its Done summary. |
-| `Import PDF into Current Drawing (BlueCollar)...` | Same, but the DXF is inserted into the open drawing as a block at 0,0 (its layers and blocks come along). |
+| `Import PDF into Saved Drawing Copy (BlueCollar)...` | Choose a saved DXF after saving current edits. Creates a new editable copy with the PDF at 0,0 and drawing-unit conversion; preserves the original. |
 | `PDF Importer Settings (BlueCollar)...` | Shows which importer the menu starts; pin another `lcpdf-gui.exe` / `launch_lcpdf_gui.pyw`, or go back to the installed one. |
 
 How it works: the plugin (`plugin/lcpdf_menu`, GPL-2.0-or-later) starts

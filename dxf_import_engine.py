@@ -659,6 +659,8 @@ def _convert_via_package(
     librecad_executable: Optional[str] = None,
     searchable_text: bool = True,
     editable_text: bool = False,
+    output_publication_guard: Optional[Callable[[], None]] = None,
+    output_must_not_exist: bool = False,
 ) -> Dict[str, Any]:
     """Full BCS-ARCH-001 pipeline (auto/raster/hybrid + raster pages)."""
     from librecad_pdf_importer.exporters.dxf_exporter import (
@@ -697,6 +699,8 @@ def _convert_via_package(
         "import_report_path": report_path,
         "_cancel_requested": cancel_requested,
         "_progress_callback": progress_callback,
+        "_output_publication_guard": output_publication_guard,
+        "_output_must_not_exist": output_must_not_exist,
         # DXF R12 cannot hold pictures: Auto keeps a page's lines instead.
         "_pictures_supported": str(dxf_version or "").strip().upper() != "R12",
     }
@@ -839,6 +843,8 @@ def convert(
     librecad_executable: Optional[str] = None,
     searchable_text: bool = True,
     editable_text: bool = False,
+    output_publication_guard: Optional[Callable[[], None]] = None,
+    output_must_not_exist: bool = False,
 ) -> Dict[str, Any]:
     """Convert a PDF file to DXF.
 
@@ -864,6 +870,10 @@ def convert(
         Statistics: ``pages``, ``entities``, ``text_items``.
     """
     ensure_output_is_not_source(input_path, output_path)
+    if output_publication_guard:
+        output_publication_guard()
+    if output_must_not_exist and os.path.lexists(output_path):
+        raise FileExistsError("The new PDF-only drawing filename already exists. Choose another output.")
     if config is None:
         config = ImportConfig.auto()
 
@@ -874,6 +884,8 @@ def convert(
             "Valid modes: auto, vector, raster, hybrid (BCS-ARCH-001)."
         )
     if resumable:
+        if output_publication_guard or output_must_not_exist:
+            raise ValueError("New drawing-copy publication cannot resume over an existing intermediate file.")
         return _convert_resumable(
             input_path,
             output_path,
@@ -896,4 +908,6 @@ def convert(
         librecad_executable=librecad_executable,
         searchable_text=searchable_text,
         editable_text=editable_text,
+        output_publication_guard=output_publication_guard,
+        output_must_not_exist=output_must_not_exist,
     )

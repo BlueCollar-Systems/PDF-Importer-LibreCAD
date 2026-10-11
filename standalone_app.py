@@ -30,9 +30,10 @@ def main() -> int:
     multiprocessing.freeze_support()
     from gui import launch_gui
     from librecad_pdf_importer.librecad_handoff import handoff_path_from_argv
+    from librecad_pdf_importer.drawing_insert import saved_drawing_from_argv
 
     # LibreCAD's Plugins > Import PDF (BlueCollar)... passes --librecad-handoff.
-    launch_gui(handoff_path_from_argv(sys.argv[1:]))
+    launch_gui(handoff_path_from_argv(sys.argv[1:]), saved_drawing_from_argv(sys.argv[1:]))
     return 0
 
 
