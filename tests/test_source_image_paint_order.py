@@ -85,7 +85,7 @@ def fake_source():
     return page, data, [image], info, trace
 
 
-@pytest.mark.parametrize("mutation", ["bbox", "affine", "pixels", "xref", "missing_image", "missing_char", "missing_seq"])
+@pytest.mark.parametrize("mutation", ["bbox", "affine", "pixels", "xref", "missing_image", "missing_seq"])
 def test_binding_mismatch_cannot_silently_reorder(mutation):
     page, data, images, info, trace = fake_source()
     if mutation == "bbox": images[0].source_bbox_pdf = (1, 0, 2, 2)
@@ -93,9 +93,47 @@ def test_binding_mismatch_cannot_silently_reorder(mutation):
     elif mutation == "pixels": images[0].pixel_size = (3, 2)
     elif mutation == "xref": images[0].xref = 6
     elif mutation == "missing_image": page.get_image_info = lambda **kw: []
-    elif mutation == "missing_char": trace.pop()
     elif mutation == "missing_seq": data.primitives[0].source_draw_order = None
     with pytest.raises(ValueError): bind_image_paint_order(page, data, images)
+
+
+def test_text_missing_from_the_paint_log_skips_order_instead_of_rejecting_the_page():
+    page, data, images, _info, trace = fake_source()
+    trace.pop()
+    assert bind_image_paint_order(page, data, images) is None
+
+
+def test_shade_preview_is_not_treated_as_a_missing_image():
+    page, data, images, info, _trace = fake_source()
+    shade_info = {
+        "xref": 0, "number": 1, "bbox": (4, 0, 8, 4), "width": 2, "height": 2,
+        "transform": (4, 0, 0, 4, 4, 0),
+    }
+    shade = SimpleNamespace(
+        xref=0, source_kind="inline_image", alpha_kind="opaque",
+        source_bbox_pdf=shade_info["bbox"], pixel_size=(2, 2),
+        affine_pdf=shade_info["transform"], source_number=1,
+    )
+    page.get_image_info = lambda **_kw: [info, shade_info]
+    page.get_bboxlog = lambda: [
+        ("fill-text", (0, 0, 2, 2)),
+        ("fill-image", info["bbox"]),
+        ("fill-text", (2, 0, 4, 2)),
+        ("stroke-path", (0, 0, 4, 4)),
+        ("fill-shade", (-2147483648.0, -2147483648.0, 2147483520.0, 2147483520.0)),
+    ]
+    order = bind_image_paint_order(page, data, images + [shade])
+    assert order.image_keys == {0: 1, 1: 3}
+
+
+def test_ligature_letter_uses_the_painted_origin():
+    page, data, images, *_ = fake_source()
+    data.text_items[0].text = "Ai"
+    data.text_items[0].source_char_layout.append(
+        SimpleNamespace(text="i", source_origin_pdf=(1, 1))
+    )
+    order = bind_image_paint_order(page, data, images)
+    assert order.text_keys[2] == 0
 
 
 def test_grouped_text_across_image_fails_with_item_identity():

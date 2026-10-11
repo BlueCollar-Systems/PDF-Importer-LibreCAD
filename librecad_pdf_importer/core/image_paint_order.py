@@ -56,12 +56,38 @@ def bind_image_paint_order(page, page_data, placements, extra_paint_seqnos=()):
         for seqno, row in enumerate(bboxlog)
         if placements and row[0] == "fill-image"
     ]
-    if len(image_info) != len(events):
+    # MuPDF lists a shading's preview raster in get_image_info (xref 0) but
+    # records the paint as fill-shade, often with non-finite bounds. Those
+    # rows are not fill-image events. A real inline image is also xref 0,
+    # and its bbox matches a fill-image event, so it stays in the image list.
+    shade_events = [
+        seqno
+        for seqno, row in enumerate(bboxlog)
+        if placements and row[0] == "fill-shade"
+    ]
+    fill_bboxes = {bbox for _seqno, bbox in events}
+    shade_ordinals = []
+    real_info = []
+    for ordinal, info in enumerate(image_info):
+        bbox = _finite_tuple(info["bbox"], 4)
+        if int(info.get("xref") or 0) == 0 and bbox not in fill_bboxes:
+            shade_ordinals.append(ordinal)
+        else:
+            real_info.append((ordinal, info, bbox))
+    if shade_ordinals and len(shade_ordinals) != len(shade_events):
         raise ValueError("source image paint and occurrence inventories disagree")
-    for info, (_seqno, bbox) in zip(image_info, events, strict=True):
-        if _finite_tuple(info["bbox"], 4) != bbox:
+    if not shade_ordinals:
+        shade_events = []
+    if len(real_info) != len(events):
+        raise ValueError("source image paint and occurrence inventories disagree")
+    seqno_by_ordinal = {}
+    for (ordinal, _info, bbox), (seqno, event_bbox) in zip(real_info, events, strict=True):
+        if bbox != event_bbox:
             raise ValueError("source image paint bbox disagrees with its occurrence")
-    image_seqnos = tuple(event[0] for event in events)
+        seqno_by_ordinal[ordinal] = seqno
+    for index, ordinal in enumerate(shade_ordinals):
+        seqno_by_ordinal[ordinal] = shade_events[index]
+    image_seqnos = tuple(sorted(seqno_by_ordinal.values()))
     seen_extra = set()
     for seqno in extra_paint_seqnos:
         if (type(seqno) is not int or not 0 <= seqno < len(bboxlog)
@@ -97,7 +123,7 @@ def bind_image_paint_order(page, page_data, placements, extra_paint_seqnos=()):
         # order. They have identical pixels/geometry; none is merged or dropped.
         ordinal = matches[0]
         available.remove(ordinal)
-        order.image_keys[placement_index] = bisect_left(barriers, events[ordinal][0]) * 2 + 1
+        order.image_keys[placement_index] = bisect_left(barriers, seqno_by_ordinal[ordinal]) * 2 + 1
     if available:
         raise ValueError("source image occurrence has no delivered image placement")
 
@@ -115,13 +141,16 @@ def bind_image_paint_order(page, page_data, placements, extra_paint_seqnos=()):
         order.primitive_keys[primitive.id] = content_key(primitive.source_draw_order)
 
     traced = defaultdict(set)
+    painted_at = defaultdict(set)
     for span in page.get_texttrace():
         seqno = span["seqno"]
         content_key(seqno)  # Validate the original paint identity before binding characters.
         if seqno in seen_extra:
             raise ValueError("text paint sequence identifies a capsule stroke")
         for char in span["chars"]:
-            traced[(chr(char[0]), _finite_tuple(char[2], 2))].add(seqno)
+            point = _finite_tuple(char[2], 2)
+            traced[(chr(char[0]), point)].add(seqno)
+            painted_at[point].add(seqno)
     for item in page_data.text_items:
         keys = set()
         source_seqnos = set()
@@ -130,9 +159,18 @@ def bind_image_paint_order(page, page_data, placements, extra_paint_seqnos=()):
         for char in item.source_char_layout:
             if not char.text.strip():
                 continue  # MuPDF may synthesize spaces; they have no painted ink.
-            matches = traced.get((char.text, _finite_tuple(char.source_origin_pdf, 2)))
+            point = _finite_tuple(char.source_origin_pdf, 2)
+            matches = traced.get((char.text, point))
             if not matches:
-                raise ValueError(f"text item {item.id} character {char.text!r} has no source paint occurrence")
+                # A ligature can list two letters at the one origin that was painted.
+                same_place = painted_at.get(point) or set()
+                if len(same_place) == 1:
+                    matches = same_place
+            if not matches:
+                # Shading-pattern text can be readable in the page and absent
+                # from the paint log. Refusing an order keeps the sheet; guessing
+                # one would put the words on the wrong side of a picture.
+                return None
             image_keys = {2 * bisect_right(image_seqnos, seqno) for seqno in matches}
             if len(image_keys) != 1:
                 raise ValueError(f"text item {item.id} character paint order is ambiguous across an image")
