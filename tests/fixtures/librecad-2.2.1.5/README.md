@@ -21,3 +21,13 @@ transport, optional default spelling, and VPORT/STYLE owner aliases on a
 second PDF import. Tests read this frozen input without rewriting it and
 check preserved base handles, nondefault geometry/paint, and table membership.
 They do not launch LibreCAD or claim final portable visual acceptance.
+
+`02-text-paint-raster.pdf` is the unchanged deterministic public synthetic PDF
+used to reproduce a second import with fresh converter output. It embeds
+glyph text, a white panel, colored paths and a fictional checker image; it has
+no customer data. Its metadata names BlueCollar Systems synthetic test and
+uses a fixed 2000 timestamp. SHA256:
+`16c7ec56ce5146a81dffa117a3ee9eeaffae6d3d2841ec01599b4d51fd3ae5cc`.
+The fresh DXF's built-in CONTINUOUS description is empty, while the actual
+native base's equivalent description is `Solid line`. This descriptive label
+does not alter its empty continuous pattern or built-in role.

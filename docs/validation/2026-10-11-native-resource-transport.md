@@ -62,3 +62,17 @@ Windowless widget tests cover that route and the normal plugin route; the
 standalone launch checkbox stays available, and copy-tool controls do not
 occupy the saved-copy image row. Actual rebuilt package acceptance remains
 with the native operator; these source tests do not substitute for it.
+
+The later frozen-runtime PDF02 replay exposed one additional descriptive
+transport difference: fresh CONTINUOUS has an empty description, while the
+native base's equivalent built-in record says `Solid line`. Both records have
+flags 0 and the identical empty pattern `(72,65), (73,0), (40,0.0)`. An
+independent in-memory replay confirmed that this one label explains the
+entire top-level and nested digest difference. Incoming CONTINUOUS comparison
+now retains an explicit built-in role and every pattern/flag element, while
+allowing this descriptive label to differ. The base's original description
+remains strictly protected; custom descriptions and role/pattern/flag changes
+remain rejected. The unchanged public PDF02 fixture drives an actual CLI
+conversion plus native-base merge regression without launching the host.
+The earlier r5 refusal and outputs remain historical evidence; they do not
+become final package acceptance through this source repair.
