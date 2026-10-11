@@ -11,7 +11,10 @@ Every fixture is synthetic and generated here (fictional job D042, mark EX101).
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import ezdxf
 import pymupdf
@@ -70,6 +73,33 @@ def _convert(tmp_path: Path, name: str, *, dxf_version: str, resumable: bool = F
 
 def _omitted_layer(name: str) -> bool:
     return name.endswith("P001_PICTURES_OMITTED_R12")
+
+
+@pytest.mark.parametrize("version,expected_pictures", [("R12", 0), ("R2010", 1)])
+def test_lcpdf_import_cli_says_when_r12_left_a_picture_out(tmp_path, version, expected_pictures):
+    source = _picture_pdf(tmp_path / "neutral-picture.pdf")
+    original = source.read_bytes()
+    output = tmp_path / "drawing.dxf"
+    environment = dict(os.environ)
+    environment["BCS_LIBRECAD_EXECUTABLE"] = str(tmp_path / "not-a-host.exe")
+    environment.pop("BCS_LIBRECAD_UNICODE_LFF", None)
+    run = subprocess.run([
+        sys.executable, "-m", "librecad_pdf_importer.cli", str(source), "--out", str(output),
+        "--mode", "vector", "--no-import-text", "--dxf-version", version,
+    ], cwd=Path(__file__).resolve().parents[1], env=environment, capture_output=True,
+        text=True, encoding="utf-8", errors="replace", timeout=90)
+    assert run.returncode == 0, run.stderr
+    summary = json.loads(run.stdout)
+    assert summary["export"]["image_count"] == expected_pictures
+    document = ezdxf.readfile(output)
+    assert len(list(document.modelspace().query("IMAGE"))) == expected_pictures
+    if version == "R12":
+        assert run.stderr.count("DXF R12 cannot hold pictures: 1 picture(s) left out") == 1
+        report = json.loads(output.with_name("drawing_import_report.json").read_text("utf-8"))
+        assert report["extra"]["pictures_omitted_r12"][0]["pictures"] == 1
+    else:
+        assert "DXF R12 cannot hold pictures" not in run.stderr
+    assert source.read_bytes() == original
 
 
 @pytest.mark.parametrize("resumable", [False, True], ids=["one-shot", "window-path"])

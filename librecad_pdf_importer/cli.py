@@ -14,6 +14,7 @@ from .exporters.dxf_exporter import (
     DxfExportOptions,
     degraded_text_item_lines,
     export_to_dxf,
+    r12_picture_warning_line,
     searchable_text_warning_line,
     summarize_text_delivery,
 )
@@ -294,6 +295,9 @@ def _main() -> int:
     clip_fill_warning = run.extraction.clip_fill_warning()
     if clip_fill_warning:
         _print_stderr(clip_fill_warning)
+    r12_picture_warning = r12_picture_warning_line(export.r12_pictures_omitted)
+    if r12_picture_warning:
+        _print_stderr(r12_picture_warning)
     # Recovered spans are stated and unproven ones warned about, in one line.
     glyph_code_warning = run.extraction.glyph_code_warning()
     if glyph_code_warning:
