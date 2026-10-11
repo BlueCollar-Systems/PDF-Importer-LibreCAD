@@ -348,11 +348,12 @@ class Pdf2DxfApp(tk.Tk):
             # never start a second LibreCAD.
             self._var_launch_librecad.set(False)
             launch_check.configure(state=tk.DISABLED)
+        if self._handoff_path or self._saved_drawing:
             ttk.Label(
                 frame,
                 text=(
                     (f"Saved drawing: {Path(self._saved_drawing).name}. Original kept.\n"
-                     "The new editable drawing copy opens in LibreCAD at completion."
+                     "The result is a new editable drawing copy."
                      if self._saved_drawing else
                      "Started from LibreCAD: after a successful conversion the DXF\n"
                      "opens in that LibreCAD window and this window closes.")
@@ -417,7 +418,7 @@ class Pdf2DxfApp(tk.Tk):
         # Let the log area expand when the window is resized
         frame.columnconfigure(1, weight=1)
         frame.rowconfigure(14, weight=1)
-        if not self._handoff_path:
+        if not self._handoff_path and not self._saved_drawing:
             tools = ttk.Frame(frame)
             tools.grid(row=16, column=0, columnspan=3, sticky=tk.EW, **pad)
             self._btn_copy_drawing = ttk.Button(

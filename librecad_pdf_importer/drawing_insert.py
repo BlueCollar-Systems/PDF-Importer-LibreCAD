@@ -21,6 +21,7 @@ from ezdxf import units, xref
 from ezdxf.entities import DXFTagStorage
 from ezdxf.lldxf.tagwriter import TagCollector
 from ezdxf.lldxf.const import acad_maint_ver
+from ezdxf.sections.headervars import HEADER_VAR_MAP
 
 from .drawing_copy import (
     DrawingCopyCancelled, DrawingCopyError, ImageSourcesRequired,
@@ -130,6 +131,34 @@ def _tags(entity):
 
 def _base_state(document):
     """Existing entities/resources stay bound to their original handles and names."""
+    table_owners = {}
+    # The native writer uses its LAYER-table owner for VPORT/STYLE records.
+    # ezdxf repairs these two proven membership aliases on serialization.
+    # An arbitrary changed owner is still compared and rejected.
+    native_alias = document.layers.head.dxf.handle
+    for table in (document.viewports, document.styles):
+        for record in table:
+            if record.dxf.get("owner") in {native_alias, table.head.dxf.handle}:
+                table_owners[str(record.dxf.handle)] = table.head.dxf.handle
+
+    def serialized(entity):
+        collector = TagCollector(optional=False)
+        entity.export_dxf(collector)
+        owner = table_owners.get(str(entity.dxf.handle))
+        depth = 0
+        tags = []
+        for tag in collector.tags:
+            code, value = tag.code, tag.value
+            if code == 102:
+                if isinstance(value, str) and value.startswith("{"):
+                    depth += 1
+                elif value == "}":
+                    depth = max(0, depth - 1)
+            if code == 330 and depth == 0 and owner is not None:
+                value = owner
+            tags.append((code, _plain(value)))
+        return tags
+
     def orphan_insert_terminator(entity):
         if entity.dxftype() != "SEQEND":
             return False
@@ -137,7 +166,7 @@ def _base_state(document):
         # ezdxf creates an in-memory SEQEND even for an INSERT with no ATTRIBs;
         # it is intentionally never serialized. Attached sequences stay strict.
         return owner is not None and owner.dxftype() == "INSERT" and not owner.attribs
-    return {str(e.dxf.handle): _tags(e) for e in document.entitydb.values()
+    return {str(e.dxf.handle): serialized(e) for e in document.entitydb.values()
             if e.is_alive and not orphan_insert_terminator(e) and e.dxftype() not in {"DICTIONARY", "DICTIONARYVAR",
                 "ACDBDICTIONARYWDFLT", "TABLE", "ENDTAB"}}
 
@@ -174,8 +203,57 @@ def _header_state(document):
 
 def _check_headers(document, expected):
     actual = _header_state(document)
-    if any(actual.get(key) != value for key, value in expected.items()):
+    # The writer synchronizes these cached bounds from the modelspace LAYOUT.
+    # Existing LAYOUT and VPORT records remain separately protected, including
+    # their bounds and view settings. Arbitrary header changes still fail.
+    bounds = {"$EXTMIN": _plain(document.modelspace().dxf.extmin),
+              "$EXTMAX": _plain(document.modelspace().dxf.extmax)}
+    if any(actual.get(key) != value and not (
+            key in bounds and actual.get(key) == bounds[key]) for key, value in expected.items()):
         raise DrawingCopyError("The merge changed an existing drawing unit, dimension or header setting.")
+
+
+def _write_merged_drawing(document, stream):
+    """Retain LibreCAD's native integer grid flags omitted by ezdxf 1.4.4."""
+    flags = {key: document.header.get(key) for key in ("$GRIDMODE", "$SNAPSTYLE")
+             if key in document.header.varnames() and key not in HEADER_VAR_MAP}
+    if not flags:
+        document.write(stream)
+        return
+    if any(not isinstance(value, int) for value in flags.values()):
+        raise DrawingCopyError("The saved drawing has unsupported native grid settings. "
+                               "Save a standard DXF copy first.")
+    export = document.header.export_dxf
+    injected = []
+
+    class NativeHeaderWriter:
+        def __init__(self, writer):
+            self.writer = writer
+
+        def __getattr__(self, name):
+            return getattr(self.writer, name)
+
+        def write_str(self, text):
+            # The pinned HeaderSection exports this exact terminal tag pair.
+            if text == "  0\nENDSEC\n":
+                for key, value in flags.items():
+                    self.writer.write_tag2(9, key)
+                    self.writer.write_tag2(70, value)
+                injected.append(True)
+            self.writer.write_str(text)
+
+    def native_export(writer):
+        export(NativeHeaderWriter(writer))
+
+    # Only this owned document is wrapped; restore its class method even if
+    # writing fails. No shared/global writer or header definitions are changed.
+    document.header.export_dxf = native_export
+    try:
+        document.write(stream)
+        if injected != [True]:
+            raise DrawingCopyError("The DXF writer could not retain the native grid settings.")
+    finally:
+        del document.header.export_dxf
 
 
 def _input_image_hashes(path, image_folder=None):
@@ -319,6 +397,40 @@ def _check_document(document, *, pdf=False, max_records=None, expanded_entity_bu
     return root_count
 
 
+def _resolved_layer_reference(document, handle, expected_type, cache):
+    """Compare referenced paint content, not drawing-local resource handles."""
+    key = ("layer-reference", expected_type, str(handle))
+    if key not in cache:
+        resource = document.entitydb.get(str(handle))
+        if resource is None or resource.dxftype() != expected_type:
+            raise DrawingCopyError(f"The PDF drawing has an unresolved {expected_type} "
+                                   "layer resource. Open the PDF separately.")
+        # Serialized material tags include defaults and mapper matrices that
+        # all_existing_dxf_attribs() omits in native-saved drawings. Loader
+        # rebinds material handles, replaces Normal plotstyle placeholders and
+        # namespaces custom material names. Keep every other paint value.
+        tags = []
+        in_reactors = False
+        for code, value in _tags(resource):
+            if code == 102 and value == "{ACAD_REACTORS":
+                in_reactors = True
+                continue
+            if in_reactors:
+                if code == 102 and value == "}":
+                    in_reactors = False
+                continue
+            if code not in {5, 330}:
+                tags.append((code, value))
+        system_name = None
+        if expected_type == "MATERIAL":
+            name = resource.dxf.name.upper()
+            if name in {"GLOBAL", "BYLAYER", "BYBLOCK"}:
+                system_name = name
+            tags = [(code, value) for code, value in tags if code != 1]
+        cache[key] = [expected_type, system_name, tags]
+    return cache[key]
+
+
 def _semantic(entity, document, ancestors, depth, cache=None):
     """Compare geometry, resolved resources, fill boundaries, and nested content."""
     if depth > MAX_DEPTH:
@@ -338,6 +450,13 @@ def _semantic(entity, document, ancestors, depth, cache=None):
             data = dict(resource.dxf.all_existing_dxf_attribs())
             for key in ("handle", "owner", "name"):
                 data.pop(key, None)
+            if field == "layer":
+                for reference, expected_type in (("material_handle", "MATERIAL"),
+                                                  ("plotstyle_handle", "ACDBPLACEHOLDER")):
+                    handle = data.pop(reference, None)
+                    if handle is not None:
+                        data[reference] = _resolved_layer_reference(
+                            document, handle, expected_type, cache)
             resources[field] = _plain(data)
             if field == "linetype":
                 resources["linetype_pattern"] = [(t.code, _plain(t.value))
@@ -505,7 +624,7 @@ def insert_into_saved_drawing_copy(
             info = os.fstat(stream.fileno())
             file_identity = (info.st_dev, info.st_ino)
             owned_files[merged] = (file_identity, "")
-            document.write(stream)
+            _write_merged_drawing(document, stream)
         owned_files[merged] = (file_identity, _hash_file(merged))
         _check_directory(stage, stage_identity)
         reopened = ezdxf.readfile(merged)
