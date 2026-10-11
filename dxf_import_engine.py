@@ -589,7 +589,7 @@ def _convert_resumable(
                 "page": int(record.get("page_number") or page + 1),
                 "resolved_scale": record.get("resolved_scale"),
             }
-            for page, record in zip(selected_pages, records)
+            for page, record in zip(selected_pages, records, strict=True)
         ],
     }
 

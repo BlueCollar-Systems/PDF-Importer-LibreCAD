@@ -320,7 +320,7 @@ def test_output_made_from_a_different_pdf_asks(tmp_path):
 
 def test_output_edited_after_import_asks(tmp_path):
     output = tmp_path / "drawing.dxf"
-    app = _app_without_window(tmp_path)
+    _app_without_window(tmp_path)  # writes drawing.pdf
     output.write_bytes(b"assembled by the importer")
     _write_session(
         output,
