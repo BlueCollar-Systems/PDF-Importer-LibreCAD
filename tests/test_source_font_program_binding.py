@@ -237,3 +237,174 @@ def test_nonembedded_custom_font_keeps_original_absence_proof():
         assert failure.reason == "embedded_font_asset_build_failed"
         assert failure.detail == "embedded font stream is empty"
         assert failure.proof_category == "source_specific_impossibility"
+
+
+@pytest.mark.parametrize("in_form", [False, True])
+def test_same_unicode_different_glyph_ids_bind_each_actual_program(deterministic_exact_font, in_form):
+    from fontTools.ttLib.reorderGlyphs import reorderGlyphs
+
+    source = fitz.open()
+    page = source.new_page(width=240, height=160)
+    for index, resource in enumerate(("F1", "F2")):
+        font = TTFont(deterministic_exact_font)
+        if index:
+            order = font.getGlyphOrder()
+            a = order.index(font.getBestCmap()[ord("A")])
+            b = order.index(font.getBestCmap()[ord("B")])
+            order[a], order[b] = order[b], order[a]
+            reorderGlyphs(font, order)
+        program = BytesIO()
+        font.save(program)
+        font.close()
+        page.insert_font(fontname=resource, fontbuffer=program.getvalue())
+        page.insert_text((20, 40 + 40 * index), "A", fontname=resource, fontsize=16)
+    pdf = fitz.open()
+    if in_form:
+        page = pdf.new_page(width=300, height=200)
+        page.show_pdf_page(fitz.Rect(10, 10, 250, 170), source, 0)
+    else:
+        pdf.insert_pdf(source)
+        page = pdf[0]
+    traces = page.get_texttrace()
+    expected_glyphs = [span["chars"][0][1] for span in traces]
+    assert len(set(expected_glyphs)) == 2
+    assert len({span["font"] for span in traces}) == 1
+    items = extract_page(page, 1).text_items
+    assert len(items) == 2
+    assert all(item.font_failure is None for item in items)
+    assert len({item.font_asset.source_sha256 for item in items}) == 2
+    assert [item.source_char_layout[0].glyph_id for item in items] == expected_glyphs
+    for item in items:
+        asset = item.font_asset
+        char = item.source_char_layout[0]
+        assert char.source_font_program_sha256 == asset.source_sha256
+        assert char.source_font_binding_verified
+        with TTFont(BytesIO(asset.usable_bytes)) as font:
+            assert font.getGlyphID(font.getBestCmap()[ord("A")]) == char.glyph_id
+    source.close()
+    pdf.close()
+
+
+def test_partial_trace_census_never_borrows_another_same_name_program_glyph():
+    from pdfcadcore.embedded_fonts import _page_program_glyph_maps
+    from pdfcadcore.primitive_extractor import _character_layout, _trace_glyph_queues
+
+    def char(text, x, digest):
+        return {"c": text, "origin": (x, 0), "bbox": (x, 0, x + 2, 10),
+                "quad": ((x, 0), (x + 2, 0), (x + 2, 10), (x, 10)),
+                "source_font_program_sha256": digest,
+                "source_font_binding_verified": True,
+                "source_font_character_codepoint": ord(text)}
+
+    unresolved = char("A", 10, "a" * 64)
+    proven = char("B", 20, "a" * 64)
+    other = char("A", 0, "b" * 64)
+    span = {"font": "Same", "chars": [unresolved, proven, other]}
+    raw = {"blocks": [{"type": 0, "lines": [{"spans": [span]}]}]}
+    trace = {"font": "Same", "chars": [(65, 8, (0, 0)), (65, 3, (10, 0)),
+                                             (65, 3, (10, 0)), (66, 4, (20, 0))]}
+    page = SimpleNamespace(get_texttrace=lambda: [trace])
+    maps, ambiguous = _page_program_glyph_maps(page, raw)
+    assert maps == {"a" * 64: {66: 4}, "b" * 64: {65: 8}}
+    assert not ambiguous
+    assert unresolved["source_font_binding_verified"] is False
+    layouts = _character_layout({}, span, "Same", lambda x, y: (x, y), _trace_glyph_queues(page))
+    assert layouts[0].glyph_id is None
+    assert not layouts[0].source_font_binding_verified
+    assert layouts[1].glyph_id == 4 and layouts[2].glyph_id == 8
+    catalog = EmbeddedFontCatalog(1, {}, {})
+    asset, failure = catalog.resolve_span("Same", [unresolved])
+    assert asset is None and failure.reason == "incomplete_source_font_character_binding"
+
+
+@pytest.mark.parametrize("text,flags,trace_count,expected", [
+    (" ", 4, 0, True), (" ", 532, 0, True), (" ", 28, 0, True),
+    (" ", 16, 0, False), (" ", 24, 0, False), ("A", 4, 0, False),
+    (" ", 4, 1, False), (" ", 4, 2, False), (" ", True, 0, False),
+])
+def test_only_native_synthetic_spaces_without_paint_can_retain_font_binding(text, flags, trace_count, expected):
+    from pdfcadcore.embedded_fonts import _page_program_glyph_maps
+    from pdfcadcore.primitive_extractor import _character_layout, _trace_glyph_queues
+
+    char = {"c": text, "origin": (10, 20), "bbox": (10, 20, 20, 30),
+            "quad": ((10, 20), (20, 20), (20, 30), (10, 30)),
+            "source_font_program_sha256": "a" * 64,
+            "source_font_binding_verified": True,
+            "source_font_character_codepoint": ord(text), "source_stext_flags": flags}
+    span = {"font": "Same", "chars": [char]}
+    raw = {"blocks": [{"type": 0, "lines": [{"spans": [span]}]}]}
+    trace = {"font": "Same", "chars": [(ord(text), 2, (10, 20))] * trace_count}
+    page = SimpleNamespace(get_texttrace=lambda: [trace])
+    _page_program_glyph_maps(page, raw)
+    assert char["source_font_binding_verified"] is expected
+    assert bool(char.get("source_synthetic_spacing")) is expected
+    layout = _character_layout({}, span, "Same", lambda x, y: (x, y), _trace_glyph_queues(page))[0]
+    assert layout.glyph_id is None
+    assert layout.source_synthetic_spacing is expected
+    assert layout.source_origin_pdf == (10, 20)
+    assert layout.advance_width == 10
+
+
+@pytest.mark.parametrize("visible", [False, True])
+def test_synthetic_space_requires_original_exact_font_empty_glyph(deterministic_exact_font, visible):
+    font = TTFont(deterministic_exact_font)
+    if visible:
+        name = font.getBestCmap()[32]
+        pen = TTGlyphPen(None)
+        pen.moveTo((0, 0)); pen.lineTo((500, 0)); pen.lineTo((500, 700)); pen.closePath()
+        font["glyf"][name] = pen.glyph()
+    stream = BytesIO()
+    font.save(stream)
+    font.close()
+    with fitz.open() as pdf:
+        page = pdf.new_page()
+        page.insert_font(fontname="F1", fontbuffer=stream.getvalue())
+        page.insert_text((20, 40), "A", fontname="F1")
+        catalog = EmbeddedFontCatalog.from_page(page, 1)
+        asset = catalog._candidates[0]
+        char = {"c": " ", "source_font_program_sha256": asset.source_sha256,
+                "source_font_binding_verified": True, "source_synthetic_spacing": True}
+        bound, failure = catalog.resolve_span(asset.span_font_name, [char])
+        if visible:
+            assert bound is None and failure.reason == "synthetic_space_zero_ink_unverified"
+            assert not char["source_font_binding_verified"]
+            assert not char["source_synthetic_spacing"]
+        else:
+            assert failure is None and bound.source_sha256 == asset.source_sha256
+
+
+@pytest.mark.parametrize("space_name,visible,expected", [
+    ("space", False, True), ("space", True, False),
+    ("unknownSpacing", False, False),
+])
+def test_original_cff_synthetic_space_proof_requires_encoded_empty_glyph(space_name, visible, expected):
+    from fontTools.fontBuilder import FontBuilder
+    from fontTools.pens.t2CharStringPen import T2CharStringPen
+
+    order = [".notdef", space_name, "A"]
+    strings = {}
+    for name in order:
+        pen = T2CharStringPen(500, None)
+        if name == "A" or (name == space_name and visible):
+            pen.moveTo((0, 0)); pen.lineTo((500, 0)); pen.lineTo((500, 700)); pen.closePath()
+        strings[name] = pen.getCharString()
+    builder = FontBuilder(1000, isTTF=False)
+    builder.setupGlyphOrder(order)
+    builder.setupCharacterMap({32: space_name, 65: "A"})
+    builder.setupHorizontalMetrics({name: (500, 0) for name in order})
+    builder.setupHorizontalHeader(ascent=1000, descent=0)
+    builder.setupNameTable({"familyName": "ExactCFF", "styleName": "Regular",
+                           "psName": "ExactCFF", "fullName": "ExactCFF"})
+    builder.setupOS2(sTypoAscender=1000, sTypoDescender=0, usWinAscent=1000, usWinDescent=0)
+    builder.setupPost()
+    builder.setupCFF("ExactCFF", {"FullName": "ExactCFF", "FamilyName": "ExactCFF",
+                                "Weight": "Regular", "FontMatrix": [0.001, 0, 0, 0.001, 0, 0]},
+                     strings, {})
+    # Strip the wrapper's cmap: raw CFF proof must come from its own encoding
+    # and original glyph names, never the repaired or wrapper Unicode table.
+    original = builder.font["CFF "].compile(builder.font)
+    builder.font.close()
+    asset = SimpleNamespace(source_bytes=original, source_format="cff",
+                            source_sha256=sha256(original).hexdigest(), base_font_name="ExactCFF")
+    catalog = EmbeddedFontCatalog(1, {}, {})
+    assert catalog._original_space_is_empty(asset) is expected

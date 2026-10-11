@@ -1,0 +1,41 @@
+{
+  "schema": "bcs.local_workflow_review/1.0",
+  "verification": "converter_report_and_ezdxf_reopen",
+  "source_bytes": 179562772,
+  "source_page_count": 259,
+  "pages_selected": [
+    1
+  ],
+  "elapsed_seconds": 195.72,
+  "source_sha256_unchanged": true,
+  "result": "complete",
+  "pages_certified": [
+    1
+  ],
+  "pages_degraded": [],
+  "requested_text_representation": "text",
+  "text_representation_verified": true,
+  "source_text_spans": 340,
+  "editable_glyph_spans": 339,
+  "native_text_spans": 1,
+  "raster_text_items": 0,
+  "degraded_text_items": 0,
+  "import_contract_ready": true,
+  "warnings": 0,
+  "reopened_dxf_entities_including_searchable_companions": 12867,
+  "reopened_entity_types": {
+    "HATCH": 963,
+    "LWPOLYLINE": 947,
+    "LINE": 818,
+    "SOLID": 9442,
+    "TEXT": 340,
+    "ARC": 13,
+    "CIRCLE": 2,
+    "INSERT": 339,
+    "IMAGE": 3
+  },
+  "dxf_audit_errors": 0,
+  "dxf_audit_fixes": 0,
+  "boundary": "One sampled page; no complete native LibreCAD/PDF visual acceptance or performance guarantee. Private source names and output paths omitted.",
+  "settled_competing_paint_guard_verified": true
+}
