@@ -759,6 +759,11 @@ def _character_layout(line, span, font, to_model, glyph_queues):
         target_quad = tuple(to_model(x, y) for x, y in quad)
         target_origin = to_model(*source_origin)
         glyph_id = _pop_trace_glyph_id(glyph_queues, font, text)
+        bound_glyph = char.get("source_trace_glyph_id")
+        if char.get("source_font_binding_verified") is True and isinstance(bound_glyph, int):
+            glyph_id = bound_glyph
+        elif char.get("source_font_program_sha256") and len(text) == 1 and ord(text) >= 32:
+            glyph_id = None
         trace_codepoint = None
         if glyph_id is None and len(text) == 1 and ord(text) < 32 and char.get("source_font_binding_verified") is True:
             candidates = glyph_queues.get(("replacement_zero", font, *source_origin), ())
@@ -786,6 +791,8 @@ def _character_layout(line, span, font, to_model, glyph_queues):
             source_font_binding_verified=char.get("source_font_binding_verified") is True,
             source_font_character_codepoint=char.get("source_font_character_codepoint"),
             source_glyph_trace_codepoint=trace_codepoint,
+            source_stext_flags=char.get("source_stext_flags"),
+            source_synthetic_spacing=char.get("source_synthetic_spacing") is True,
         ))
     return tuple(layouts)
 
@@ -882,6 +889,8 @@ def _raw_text_with_source_quads(page):
                         char.font, fitz.mupdf, font_digests
                     )
                     metrics["source_font_character_codepoint"] = int(char.c)
+                    if hasattr(char, "flags"):
+                        metrics["source_stext_flags"] = int(char.flags)
                     queues.setdefault(key, deque()).append((quad, metrics))
     except (AttributeError, ImportError, RuntimeError, TypeError, ValueError):
         return page.get_text("rawdict")
@@ -966,7 +975,7 @@ def _extract_text(
     try:
         from .embedded_fonts import EmbeddedFontCatalog
 
-        font_catalog = EmbeddedFontCatalog.from_page(page, page_num)
+        font_catalog = EmbeddedFontCatalog.from_page(page, page_num, source_text=tdict)
     except (ImportError, RuntimeError, TypeError, ValueError):
         font_catalog = None
     glyph_queues = _trace_glyph_queues(page)

@@ -60,6 +60,8 @@ def test_text_truth_model_preserves_every_cross_host_field() -> None:
         "source_font_binding_verified",
         "source_font_character_codepoint",
         "source_glyph_trace_codepoint",
+        "source_stext_flags",
+        "source_synthetic_spacing",
     ]
     normalized_fields = {field.name for field in fields(primitives.NormalizedText)}
     assert {

@@ -191,14 +191,14 @@ class Pdf2DxfApp(tk.Tk):
         self.geometry("680x680")
 
         self._converting = False
+        self._close_when_finished = False
         self._cancel_event = threading.Event()
         # "Locate LibreCAD..." choice, used even when it could not be saved.
         self._librecad_choice: str | None = None
         # Existing DXF the user agreed to replace in the Output save dialog.
         self._output_confirmed: str | None = None
         self._build_ui()
-        if handoff_path:
-            self.protocol("WM_DELETE_WINDOW", self._close_from_librecad_handoff)
+        self.protocol("WM_DELETE_WINDOW", self._request_close)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -448,6 +448,14 @@ class Pdf2DxfApp(tk.Tk):
         self._cancel_event.set()
         self._btn_cancel.configure(state=tk.DISABLED)
         self._log("Cancel requested — finishing the active safe boundary...")
+
+    def _request_close(self) -> None:
+        """Keep the worker alive long enough to retain its page checkpoint."""
+        if self._converting:
+            self._close_when_finished = True
+            self._request_cancel()
+            return
+        self._close_from_librecad_handoff()
 
     # ------------------------------------------------------------------
     # Conversion
@@ -789,6 +797,9 @@ class Pdf2DxfApp(tk.Tk):
         self._btn_convert.configure(state=tk.NORMAL)
         self._btn_cancel.configure(state=tk.DISABLED)
         self._converting = False
+        if getattr(self, "_close_when_finished", False):
+            self._close_from_librecad_handoff()
+            return
         if getattr(self, "_handoff_delivered", False):
             # Runs after the Done dialog was dismissed; LibreCAD already has
             # the drawing, so return the operator to it.

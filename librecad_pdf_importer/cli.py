@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -64,9 +65,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Write each outlined/rastered string as hidden TEXT on the "
                              "frozen layer P###_TEXT_SEARCH so the DXF is searchable "
                              "(--no-searchable-text to skip)")
-    parser.add_argument("--dxf-version", default="R2018",
+    parser.add_argument("--dxf-version", default="R2010",
                         choices=["R12", "R2000", "R2004", "R2007", "R2010", "R2013", "R2018"],
-                        help="Target DXF version")
+                        help="Target DXF version (default: R2010)")
     parser.add_argument("--page-arrangement", default="spread",
                         choices=["spread", "compact", "touch", "overlay"],
                         help="Multi-page placement mode (default: spread = 20%% gap)")
@@ -139,6 +140,22 @@ def _main() -> int:
         print(preflight_paragraph("librecad"))
         return 0
 
+    if args.scale is not None and (not math.isfinite(args.scale) or args.scale <= 0):
+        _print_stderr("Scale must be a positive, finite number, such as 1.0 or 0.5.")
+        return 1
+    reference_values = (args.reference_detected_mm, args.reference_real_mm)
+    if any(value is not None for value in reference_values):
+        if any(value is None for value in reference_values):
+            _print_stderr("Reference scaling needs both the measured and real-world lengths.")
+            return 1
+        if any(not math.isfinite(value) or value <= 0 for value in reference_values):
+            _print_stderr("Both reference lengths must be positive, finite numbers in millimeters.")
+            return 1
+        reference_factor = args.reference_real_mm / args.reference_detected_mm
+        if not math.isfinite(reference_factor) or reference_factor <= 0:
+            _print_stderr("The reference lengths produce an invalid scale factor.")
+            return 1
+
     pdf_path = Path(args.pdf).expanduser().resolve()
     if not pdf_path.is_file():
         from pdfcadcore.cli_error_copy import cli_error
@@ -175,15 +192,8 @@ def _main() -> int:
     run = run_import(str(pdf_path), mode=args.mode, overrides=overrides)
     run_import_ms = (time.perf_counter() - t0) * 1000.0
 
-    if args.reference_detected_mm and args.reference_real_mm:
-        if args.reference_detected_mm <= 0:
-            from pdfcadcore.cli_error_copy import cli_error
-
-            print(cli_error("reference_detected_invalid"), file=sys.stderr)
-            run.close()
-            return 1
-        scale_factor = args.reference_real_mm / args.reference_detected_mm
-        apply_uniform_scale(run.extraction, scale_factor)
+    if args.reference_detected_mm is not None:
+        apply_uniform_scale(run.extraction, reference_factor)
 
     resolved_librecad_executable = find_librecad_executable(args.librecad_exe)
     librecad_contract_executable = resolved_librecad_executable or (
