@@ -91,3 +91,51 @@ def test_existing_copy_never_offers_replace_or_starts_worker(tmp_path, monkeypat
     gui.Pdf2DxfApp._start_conversion(app)
     assert not replace.called and not app._converting
     assert output.read_bytes() == b"native edits" and seen == []
+
+
+@pytest.mark.parametrize("handoff", [None, "owned-handoff.json"])
+def test_saved_copy_controls_are_wired_with_or_without_plugin_handoff(tmp_path, monkeypatch, handoff):
+    # Execute the real widget-building method against a windowless toolkit.
+    made = []
+
+    class Variable:
+        def __init__(self, value="", **kwargs):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    class Widget:
+        def __init__(self, *args, **kwargs):
+            self.options = kwargs
+            made.append(self)
+
+        def __getattr__(self, name):
+            return Mock()
+
+    for name in ("Frame", "Label", "Button", "Entry", "Combobox", "LabelFrame",
+                 "Checkbutton", "Progressbar", "Scrollbar"):
+        monkeypatch.setattr(gui.ttk, name, Widget)
+    monkeypatch.setattr(gui.tk, "Text", Widget)
+    monkeypatch.setattr(gui.tk, "StringVar", Variable)
+    monkeypatch.setattr(gui.tk, "BooleanVar", Variable)
+    app = Mock()
+    app._saved_drawing = str(tmp_path / "fictional-base.dxf")
+    app._handoff_path = handoff
+    gui.Pdf2DxfApp._build_ui(app)
+    labels = [widget.options.get("text", "") for widget in made]
+    assert any(label.startswith("Saved drawing: fictional-base.dxf. Original kept.") for label in labels)
+    assert "Locate saved drawing images..." in labels
+    assert "Allow very large merged drawings (may be slow)" in labels
+    assert "Create drawing copy" in labels
+    assert "Copy drawing with images..." not in labels
+    images = next(widget for widget in made if widget.options.get("text") == "Locate saved drawing images...")
+    assert images.options["command"] == app._locate_saved_drawing_images
+    large = next(widget for widget in made if widget.options.get("text") == "Allow very large merged drawings (may be slow)")
+    assert large.options["variable"] is app._var_allow_large_merge
+    app._var_allow_large_merge.set(True)
+    assert app._var_allow_large_merge.get() is True
+    assert app._var_launch_librecad.get() is (handoff is None)
