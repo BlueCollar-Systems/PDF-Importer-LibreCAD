@@ -47,10 +47,12 @@ from pdfcadcore.embedded_fonts import source_control_zero_ink_proof
 from ..dxf_framing import frame_modelspace, sheet_bounds
 from ..ink_color import (
     INK_RULE_NEAR_BLACK,
+    PAINT_RULE_FIXED_BLACK_WHITE,
     delivered_ink,
-    delivered_rgb8,
     is_remapped_near_black,
     rgb8,
+    source_paint_rgb8,
+    text_ink_rgb8,
 )
 from pdfcadcore.fitz_loader import safe_open
 from pdfcadcore.primitive_extractor import (
@@ -4991,7 +4993,7 @@ def _export_to_dxf_impl(
             group_id = getattr(primitive, "clip_fill_group_id", None)
             if group_id:
                 clip_fill_groups.setdefault(group_id, []).append(primitive)
-            delivered_fill = delivered_ink(primitive.fill_color)
+            delivered_fill = primitive.fill_color
             if (
                 getattr(primitive, "fill_even_odd", False)
                 and not group_id
@@ -5021,13 +5023,15 @@ def _export_to_dxf_impl(
                     f"Building source page {page.page_data.page_number}: "
                     f"vectors {primitive_index}/{len(page.page_data.primitives)}",
                 )
-            # Near-black neutral ink is delivered as exact black from here on
-            # (layer name, layer colour, entity colour, fill colour): LibreCAD
-            # draws only exact black in its foreground colour.
+            # Only ordinary line ink uses adaptive foreground black. Fill paint
+            # stays independent of the stroke and retains the source color.
             source_stroke_rgb = primitive.stroke_color
             source_fill_rgb = primitive.fill_color
             stroke_rgb = delivered_ink(source_stroke_rgb)
-            fill_rgb = delivered_ink(source_fill_rgb)
+            # Filled regions carry source paint. Foreground adaptation would
+            # turn a dark panel white on a black model canvas and erase its
+            # white lettering when printing.
+            fill_rgb = source_fill_rgb
             final_paint = final_by_id.get(primitive.id)
             layer_rgb = stroke_rgb if stroke_rgb is not None else fill_rgb
             layer = _layer_name(page.page_data.page_number, primitive.layer_name, layer_rgb, opts)
@@ -5039,8 +5043,11 @@ def _export_to_dxf_impl(
                 _apply_r12_color(fill_attribs, fill_rgb)
             else:
                 _apply_color(attribs, stroke_rgb)
-                _apply_color(fill_attribs, fill_rgb)
-                if stroke_rgb == (1.0, 1.0, 1.0) and fill_rgb == (1.0, 1.0, 1.0):
+                if fill_rgb is not None:
+                    fill_attribs["true_color"] = rgb2int(source_paint_rgb8(*rgb8(fill_rgb)))
+                if (source_stroke_rgb is not None and source_fill_rgb is not None
+                        and rgb8(source_stroke_rgb) == (255, 255, 255)
+                        and rgb8(source_fill_rgb) == (255, 255, 255)):
                     # A source white-filled and white-stroked annotation box
                     # paints no black border. Match the non-inverting white
                     # fill encoding while retaining its editable stroke.
@@ -5054,6 +5061,8 @@ def _export_to_dxf_impl(
                 expected = _add_source_dash_block(doc, msp, primitive, source_dash, attribs, dy)
                 source_dash_expectations.append(expected)
                 _note_ink_remap(ink_remaps, page.page_data.page_number, "strokes", source_stroke_rgb)
+                _note_paint_encoding(ink_remaps, page.page_data.page_number, "strokes",
+                                     source_stroke_rgb, is_r12=is_r12, text=True)
                 for point in primitive.points:
                     _track_xy(float(point[0]), float(point[1])+dy)
                 entity_count += 1
@@ -5138,7 +5147,7 @@ def _export_to_dxf_impl(
                     continue
                 entity_count += len(fills)
                 if fills:
-                    _note_ink_remap(ink_remaps, page.page_data.page_number, "fills", source_fill_rgb)
+                    _note_paint_encoding(ink_remaps, page.page_data.page_number, "fills", source_fill_rgb, is_r12=is_r12)
                 for contour in contours:
                     for px, py in contour:
                         _track_xy(float(px), float(py))
@@ -5214,6 +5223,9 @@ def _export_to_dxf_impl(
                             f"even-odd fill {even_odd_key[0]} produced no fill entities"
                         )
                     entity_count += len(fills)
+                    for member in even_odd_members:
+                        _note_paint_encoding(ink_remaps, page.page_data.page_number, "fills",
+                                             member.fill_color, is_r12=is_r12)
                 fill_rgb = None
             if (
                 fill_rgb is not None
@@ -5232,7 +5244,7 @@ def _export_to_dxf_impl(
                         f"filled source primitive {primitive.id} produced no fill entities"
                     )
                 entity_count += len(fills)
-                _note_ink_remap(ink_remaps, page.page_data.page_number, "fills", source_fill_rgb)
+                _note_paint_encoding(ink_remaps, page.page_data.page_number, "fills", source_fill_rgb, is_r12=is_r12)
 
             # A PDF fill-only path has no stroke.  Do not manufacture an
             # outline in the fill color after its exact fill has been emitted.
@@ -5299,6 +5311,8 @@ def _export_to_dxf_impl(
                 entity_count += 1
             if entity_count > stroke_entity_start:
                 _note_ink_remap(ink_remaps, page.page_data.page_number, "strokes", source_stroke_rgb)
+                _note_paint_encoding(ink_remaps, page.page_data.page_number, "strokes",
+                                     source_stroke_rgb, is_r12=is_r12, text=True)
 
         record_primitive_entities(primitive_entity_start, previous_primitive_key, previous_primitive_id)
 
@@ -5502,6 +5516,9 @@ def _export_to_dxf_impl(
                         ink_remaps, page.page_data.page_number, "text_items",
                         getattr(text, "color", None),
                     )
+                    _note_paint_encoding(ink_remaps, page.page_data.page_number,
+                                         "text_items", getattr(text, "color", None),
+                                         is_r12=is_r12, text=True)
                 if delivery.source_id in original_control_anchors:
                     text_deliveries[-1].update(
                         source_text=text.text,
@@ -6356,9 +6373,7 @@ def _add_compound_filled_paths(
     # visible regions and empty counters in every supported DXF version.
     attribs = dict(attribs)
     if not is_r12:
-        parent_rgb = _rgb_bytes(fill_rgb)
-        if parent_rgb == (255, 255, 255):
-            parent_rgb = (254, 254, 254)
+        parent_rgb = source_paint_rgb8(*_rgb_bytes(fill_rgb))
         attribs["true_color"] = rgb2int(parent_rgb)
         attribs["color"] = _nearest_r12_aci(fill_rgb)
     solids = []
@@ -6407,12 +6422,7 @@ def _add_filled_path(
         # LibreCAD's print path may honor HATCH ACI before true-color.  Use a
         # non-inverting ACI approximation as well as exact RGB; color 7 would
         # turn a white PDF page fill black on printed output.
-        parent_rgb = _rgb_bytes(fill_rgb)
-        if parent_rgb == (255, 255, 255):
-            # LibreCAD's print engine inverts exact white drawing entities to
-            # black.  254/255 is visually indistinguishable on white paper and
-            # bypasses that special color-7/white inversion path.
-            parent_rgb = (254, 254, 254)
+        parent_rgb = source_paint_rgb8(*_rgb_bytes(fill_rgb))
         hatch.set_solid_fill(
             color=_nearest_r12_aci(fill_rgb),
             rgb=RGB(*parent_rgb),
@@ -6457,14 +6467,23 @@ def _is_redundant_white_page_fill(
     fill = getattr(primitive, "fill_color", None)
     if fill is None or getattr(primitive, "stroke_color", None) is not None:
         return False
-    if any(float(component) < 0.995 for component in fill[:3]):
+    if tuple(float(component) for component in fill[:3]) != (1.0, 1.0, 1.0):
+        return False
+    # A later white rectangle is a knockout, not paper. Missing source order,
+    # translucent fills, clipped compounds and merely page-sized bounding
+    # boxes cannot prove an initial paper backdrop.
+    if (type(getattr(primitive, "source_draw_order", None)) is not int
+            or primitive.source_draw_order != 0
+            or float(getattr(primitive, "fill_opacity", 1.0)) != 1.0
+            or getattr(primitive, "clip_fill_group_id", None)
+            or not bool(getattr(primitive, "closed", False))):
         return False
     bbox = getattr(primitive, "bbox", None)
     if not bbox or len(bbox) < 4:
         return False
     expected = (0.0, 0.0, float(page_width), float(page_height))
     tolerance = max(1e-7, max(float(page_width), float(page_height), 1.0) * 1e-7)
-    return all(
+    if not all(
         math.isclose(
             float(actual),
             target,
@@ -6472,7 +6491,22 @@ def _is_redundant_white_page_fill(
             abs_tol=tolerance,
         )
         for actual, target in zip(bbox[:4], expected, strict=True)
-    )
+    ):
+        return False
+    points = [tuple(map(float, point[:2])) for point in (getattr(primitive, "points", None) or [])]
+    close = lambda a, b: all(math.isclose(x, y, rel_tol=0.0, abs_tol=tolerance)
+                             for x, y in zip(a, b, strict=True))
+    if len(points) == 5 and close(points[0], points[-1]):
+        points.pop()
+    corners = [(0.0, 0.0), (float(page_width), 0.0),
+               (float(page_width), float(page_height)), (0.0, float(page_height))]
+    if len(points) != 4 or any(sum(close(point, corner) for point in points) != 1
+                               for corner in corners):
+        return False
+    # Exclude a self-crossing four-corner path with the same full-page bbox.
+    return all((math.isclose(a[0], b[0], abs_tol=tolerance, rel_tol=0.0)
+                != math.isclose(a[1], b[1], abs_tol=tolerance, rel_tol=0.0))
+               for a, b in zip(points, points[1:] + points[:1], strict=True))
 
 
 def _ensure_layer(doc: ezdxf.EzDxf, name: str, rgb) -> None:
@@ -6483,14 +6517,12 @@ def _ensure_layer(doc: ezdxf.EzDxf, name: str, rgb) -> None:
         kwargs["true_color"] = rgb2int(
             tuple(int(max(0, min(255, round(float(c) * 255)))) for c in rgb)
         )
-    layer = doc.layers.new(name=name, dxfattribs=kwargs)
-    # White knockout/wipeout mask fills are exported on RGB_255_255_255 layers.
-    # In CAD with dark/black canvases (LibreCAD, AutoCAD), these appear as opaque white
-    # blocks that cover all underlying geometry. Turn white layers off by default
-    # so drawings are immediately legible on dark backgrounds, while preserving the
-    # mask geometry in the DXF for plotting or inspection.
-    if name.endswith("RGB_255_255_255") or (rgb is not None and all(float(c) >= 0.999 for c in rgb[:3])):
-        layer.off()
+        if rgb8(rgb) == (255, 255, 255):
+            kwargs["true_color"] = rgb2int((254, 254, 254))
+            kwargs["color"] = _nearest_r12_aci(rgb)
+    doc.layers.new(name=name, dxfattribs=kwargs)
+    # White masks are real PDF paint. Keep them visible: hiding a whole color
+    # layer exposes source strokes that the PDF masks, and destroys knockouts.
 
 
 def _note_ink_remap(remaps: dict, page_number, kind: str, source_rgb) -> None:
@@ -6509,18 +6541,33 @@ def _note_ink_remap(remaps: dict, page_number, kind: str, source_rgb) -> None:
     row[kind] += 1
 
 
+def _note_paint_encoding(remaps: dict, page_number, kind: str, source_rgb,
+                         *, is_r12: bool, text: bool = False) -> None:
+    """Report the one-step true-color host approximation, never as exact RGB."""
+    if is_r12 or source_rgb is None:
+        return
+    source = rgb8(source_rgb)
+    delivered = text_ink_rgb8(*source) if text else source_paint_rgb8(*source)
+    if delivered == source or (text and source != (255, 255, 255)):
+        return
+    row = remaps.setdefault((int(page_number), source, delivered),
+                            {"strokes": 0, "fills": 0, "text_items": 0})
+    row[kind] += 1
+
+
 def _ink_remap_records(remaps: dict) -> List[Dict[str, Any]]:
     """The source colours the ink rule replaced, for the import report."""
 
     return [
         {
-            "rule": INK_RULE_NEAR_BLACK,
-            "source_page_number": page_number,
-            "source_rgb": list(source),
-            "delivered_rgb": [0, 0, 0],
+            "rule": INK_RULE_NEAR_BLACK if len(key) == 2 else PAINT_RULE_FIXED_BLACK_WHITE,
+            "source_page_number": key[0],
+            "source_rgb": list(key[1]),
+            "delivered_rgb": [0, 0, 0] if len(key) == 2 else list(key[2]),
+            **({} if len(key) == 2 else {"max_channel_error": 1}),
             **counts,
         }
-        for (page_number, source), counts in sorted(remaps.items())
+        for key, counts in sorted(remaps.items())
     ]
 
 
@@ -6528,20 +6575,10 @@ def _apply_color(attribs: dict, rgb) -> None:
     if rgb is None:
         return
     r, g, b = rgb8(rgb)
-    # Write genuinely white ink as exact black. LibreCAD's default drawing
-    # canvas is black, not white; it draws an exact-black pen in its foreground
-    # colour, so this ink stays visible there and on any viewer with a white
-    # paper background, where pure white would vanish. Only genuinely white
-    # ink qualifies (every channel >= 250): a luminance threshold used to turn pale tints --
-    # light-grey lines, pale-yellow highlights, and every translucent colour that
-    # pdfcadcore now composites against the page (a 5 % black wash is 242 grey) --
-    # into solid black, which is not what the PDF viewer shows.
-    if _is_near_white(r, g, b):
-        r, g, b = 0, 0, 0
     # Near-black neutral ink (Distiller "rich black" 35/31/32) is written as
     # exact black: LibreCAD swaps only exact black to its foreground colour,
     # so anything else that dark is close to invisible on a black background.
-    r, g, b = delivered_rgb8(r, g, b)
+    r, g, b = text_ink_rgb8(r, g, b)
     attribs["true_color"] = rgb2int((r, g, b))
 
 
