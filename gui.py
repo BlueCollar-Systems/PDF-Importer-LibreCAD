@@ -193,6 +193,8 @@ class Pdf2DxfApp(tk.Tk):
         self._converting = False
         self._close_when_finished = False
         self._cancel_event = threading.Event()
+        self._copying = False
+        self._copy_cancel_event = threading.Event()
         # "Locate LibreCAD..." choice, used even when it could not be saved.
         self._librecad_choice: str | None = None
         # Existing DXF the user agreed to replace in the Output save dialog.
@@ -387,6 +389,19 @@ class Pdf2DxfApp(tk.Tk):
         # Let the log area expand when the window is resized
         frame.columnconfigure(1, weight=1)
         frame.rowconfigure(14, weight=1)
+        if not self._handoff_path:
+            tools = ttk.Frame(frame)
+            tools.grid(row=16, column=0, columnspan=3, sticky=tk.EW, **pad)
+            self._btn_copy_drawing = ttk.Button(
+                tools, text="Copy drawing with images...", command=self._copy_drawing_dialog,
+            )
+            self._btn_copy_drawing.pack(anchor=tk.W)
+            ttk.Label(
+                tools,
+                text="LibreCAD Save As does not copy linked images. Use this tool to move or "
+                     "share a drawing, including edits saved in LibreCAD.",
+                wraplength=560,
+            ).pack(anchor=tk.W, pady=(4, 0))
 
     # ------------------------------------------------------------------
     # Browse dialogs
@@ -443,6 +458,11 @@ class Pdf2DxfApp(tk.Tk):
 
     def _request_cancel(self) -> None:
         """Request a bounded, page-safe stop without discarding certified work."""
+        if getattr(self, "_copying", False):
+            self._copy_cancel_event.set()
+            self._btn_cancel.configure(state=tk.DISABLED)
+            self._log("Drawing copy cancellation requested...")
+            return
         if not self._converting or self._cancel_event.is_set():
             return
         self._cancel_event.set()
@@ -451,7 +471,7 @@ class Pdf2DxfApp(tk.Tk):
 
     def _request_close(self) -> None:
         """Keep the worker alive long enough to retain its page checkpoint."""
-        if self._converting:
+        if self._converting or getattr(self, "_copying", False):
             self._close_when_finished = True
             self._request_cancel()
             return
@@ -494,7 +514,7 @@ class Pdf2DxfApp(tk.Tk):
         )
 
     def _start_conversion(self) -> None:
-        if self._converting:
+        if self._converting or getattr(self, "_copying", False):
             return
 
         input_path = self._var_input.get().strip()
@@ -540,6 +560,9 @@ class Pdf2DxfApp(tk.Tk):
         self._cancel_event.clear()
         self._btn_convert.configure(state=tk.DISABLED)
         self._btn_cancel.configure(state=tk.NORMAL)
+        copy_button = getattr(self, "_btn_copy_drawing", None)
+        if copy_button is not None:
+            copy_button.configure(state=tk.DISABLED)
         self._progress.configure(maximum=1, value=0)
 
         # Clear log
@@ -797,6 +820,9 @@ class Pdf2DxfApp(tk.Tk):
         self._btn_convert.configure(state=tk.NORMAL)
         self._btn_cancel.configure(state=tk.DISABLED)
         self._converting = False
+        copy_button = getattr(self, "_btn_copy_drawing", None)
+        if copy_button is not None:
+            copy_button.configure(state=tk.NORMAL)
         if getattr(self, "_close_when_finished", False):
             self._close_from_librecad_handoff()
             return
@@ -804,6 +830,102 @@ class Pdf2DxfApp(tk.Tk):
             # Runs after the Done dialog was dismissed; LibreCAD already has
             # the drawing, so return the operator to it.
             self.destroy()
+
+    def _copy_initial_directory(self) -> str:
+        output = self._var_output.get().strip()
+        if output:
+            try:
+                folder = Path(output).expanduser().resolve().parent
+            except (OSError, ValueError):
+                return ""
+            if folder.is_dir():
+                return str(folder)
+        return ""
+
+    def _copy_drawing_dialog(self) -> None:
+        if self._converting or getattr(self, "_copying", False):
+            return
+        initial = self._copy_initial_directory()
+        source = filedialog.askopenfilename(
+            title="Choose the saved DXF drawing to copy", initialdir=initial,
+            filetypes=[("DXF drawings", "*.dxf"), ("All files", "*.*")],
+        )
+        if not source:
+            return
+        destination = filedialog.asksaveasfilename(
+            title="Choose a new drawing copy filename", initialdir=str(Path(source).parent),
+            initialfile=Path(source).stem + "-copy.dxf", defaultextension=".dxf",
+            confirmoverwrite=False, filetypes=[("DXF drawings", "*.dxf")],
+        )
+        if not destination:
+            return
+        self._copying = True
+        self._copy_cancel_event.clear()
+        self._btn_convert.configure(state=tk.DISABLED)
+        self._btn_copy_drawing.configure(state=tk.DISABLED)
+        self._btn_cancel.configure(state=tk.NORMAL)
+        self._log("Copying the saved drawing and all its linked images...")
+        self._start_copy_worker(source, destination, None)
+
+    def _start_copy_worker(self, source: str, destination: str, image_folder: str | None) -> None:
+        def run():
+            try:
+                from librecad_pdf_importer.drawing_copy import (
+                    DrawingCopyCancelled, ImageSourcesRequired, copy_drawing_with_images,
+                )
+            except Exception as exc:  # noqa: BLE001 - keep the controls recoverable
+                self.after(0, lambda e=exc: self._complete_copy(None, str(e)))
+                return
+            try:
+                result = copy_drawing_with_images(
+                    source, destination, image_folder=image_folder,
+                    cancel_requested=self._copy_cancel_event.is_set,
+                )
+            except ImageSourcesRequired as exc:
+                self.after(0, lambda e=exc: self._locate_copy_images(source, destination, str(e)))
+            except DrawingCopyCancelled as exc:
+                self.after(0, lambda e=exc: self._complete_copy(None, str(e), cancelled=True))
+            except Exception as exc:  # noqa: BLE001 - file/decoder failures stay in the GUI
+                self.after(0, lambda e=exc: self._complete_copy(None, str(e)))
+            else:
+                self.after(0, lambda: self._complete_copy(result, ""))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _locate_copy_images(self, source: str, destination: str, detail: str) -> None:
+        if self._copy_cancel_event.is_set() or self._close_when_finished:
+            self._complete_copy(None, "Drawing copy cancelled. The original was kept.", cancelled=True)
+            return
+        messagebox.showinfo("Locate original images", detail)
+        folder = filedialog.askdirectory(
+            title="Locate the original drawing or image folder",
+            initialdir=self._copy_initial_directory() or str(Path(source).parent),
+            mustexist=True,
+        )
+        if not folder:
+            self._complete_copy(None, "Drawing copy cancelled. The original was kept.", cancelled=True)
+            return
+        self._start_copy_worker(source, destination, folder)
+
+    def _complete_copy(self, result, error: str, *, cancelled: bool = False) -> None:
+        self._copying = False
+        self._btn_convert.configure(state=tk.NORMAL)
+        self._btn_copy_drawing.configure(state=tk.NORMAL)
+        self._btn_cancel.configure(state=tk.DISABLED)
+        if result is not None:
+            detail = f"Copied drawing: {result.drawing}\nLinked image files: {result.image_files}"
+            if result.image_folder is not None:
+                detail += f"\nImage folder: {result.image_folder}\n\nKeep this DXF and image " \
+                          "folder together when moving or sharing the drawing."
+            self._log(detail)
+            if not self._close_when_finished:
+                messagebox.showinfo("Drawing copy complete", detail)
+        else:
+            self._log(error)
+            if not cancelled and not self._close_when_finished:
+                messagebox.showerror("Drawing copy failed", error)
+        if self._close_when_finished:
+            self._close_from_librecad_handoff()
 
     # ------------------------------------------------------------------
     # LibreCAD menu integration
