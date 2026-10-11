@@ -529,3 +529,115 @@ def test_locate_librecad_takes_librecad_exe_in_any_case_without_asking(tmp_path,
 )
 def test_librecad_program_name(name, expected):
     assert gui.is_librecad_program_name(name) is expected
+
+
+# --- "Replace drawing?" says the right reason, and asks once ---
+
+
+def test_session_that_never_wrote_the_output_says_already_exists(tmp_path):
+    pdf = tmp_path / "drawing.pdf"
+    _app_without_window(tmp_path)  # writes the PDF
+    output = tmp_path / "drawing.dxf"
+    output.write_bytes(b"an older drawing")
+    _write_session(output, source_sha256=_sha(pdf), output_sha256=None)
+    assert gui.output_replace_reason(str(pdf), str(output)) == "already exists"
+
+
+def test_new_scale_cancelled_before_a_page_finished_is_not_called_an_edit(tmp_path):
+    import pymupdf
+
+    import dxf_import_engine
+    from pdfcadcore.import_config import ImportConfig
+
+    pdf = tmp_path / "D042" / "EX101.pdf"
+    pdf.parent.mkdir(parents=True)
+    with pymupdf.open() as document:
+        page = document.new_page(width=612, height=792)
+        page.draw_line((72, 100), (500, 100))
+        document.save(pdf)
+    output = pdf.with_suffix(".dxf")
+    dxf_import_engine.convert(
+        str(pdf), str(output), ImportConfig.auto(),
+        resumable=True, restart_on_resume_mismatch=True,
+    )
+    assert gui.output_replace_reason(str(pdf), str(output)) is None
+    before = output.read_bytes()
+
+    # New Scale: the session restarts, then Cancel lands before page 1 finishes.
+    config = ImportConfig.auto()
+    config.user_scale = 48.0
+    with pytest.raises(dxf_import_engine.ConversionCancelled):
+        dxf_import_engine.convert(
+            str(pdf), str(output), config, resumable=True,
+            restart_on_resume_mismatch=True, cancel_requested=lambda: True,
+        )
+    assert output.read_bytes() == before  # nobody edited it
+    assert gui.output_replace_reason(str(pdf), str(output)) == "already exists"
+
+
+def _existing_output_app(tmp_path):
+    app = _app_without_window(tmp_path)
+    output = tmp_path / "drawing.dxf"
+    output.write_bytes(b"0\nSECTION\n999\nOLD DRAWING\n0\nEOF\n")
+    # Window-less stand-ins for the Output box, so Browse... can set it.
+    app._var_output = _Var(str(output))
+    return app, output
+
+
+def test_output_confirmed_in_the_save_dialog_is_not_asked_again(tmp_path):
+    app, output = _existing_output_app(tmp_path)
+    with patch.object(gui.filedialog, "asksaveasfilename", return_value=output.as_posix()):
+        gui.Pdf2DxfApp._browse_output(app)
+    with patch.object(gui.threading, "Thread") as thread, patch.object(
+        gui.messagebox, "askyesno",
+    ) as ask:
+        gui.Pdf2DxfApp._start_conversion(app)
+    ask.assert_not_called()
+    thread.return_value.start.assert_called_once()
+
+
+def test_typed_output_that_exists_is_still_asked(tmp_path):
+    app, _output = _existing_output_app(tmp_path)
+    app._output_confirmed = None
+    with patch.object(gui.threading, "Thread") as thread, patch.object(
+        gui.messagebox, "askyesno", return_value=False,
+    ) as ask:
+        gui.Pdf2DxfApp._start_conversion(app)
+    ask.assert_called_once()
+    assert "drawing.dxf already exists" in ask.call_args.args[1]
+    thread.assert_not_called()
+
+
+def test_save_dialog_confirmation_never_hides_a_different_pdf(tmp_path):
+    app, output = _existing_output_app(tmp_path)
+    _write_session(output, source_sha256="0" * 64, output_sha256=_sha(output))
+    with patch.object(gui.filedialog, "asksaveasfilename", return_value=output.as_posix()):
+        gui.Pdf2DxfApp._browse_output(app)
+    with patch.object(gui.threading, "Thread") as thread, patch.object(
+        gui.messagebox, "askyesno", return_value=False,
+    ) as ask:
+        gui.Pdf2DxfApp._start_conversion(app)
+    ask.assert_called_once()
+    assert "drawing.dxf was made from a different PDF" in ask.call_args.args[1]
+    thread.assert_not_called()
+
+
+def test_save_dialog_confirmation_never_hides_an_edited_drawing(tmp_path):
+    app, output = _existing_output_app(tmp_path)
+    _write_session(output, source_sha256=_sha(tmp_path / "drawing.pdf"), output_sha256="1" * 64)
+    with patch.object(gui.filedialog, "asksaveasfilename", return_value=output.as_posix()):
+        gui.Pdf2DxfApp._browse_output(app)
+    with patch.object(gui.threading, "Thread"), patch.object(
+        gui.messagebox, "askyesno", return_value=False,
+    ) as ask:
+        gui.Pdf2DxfApp._start_conversion(app)
+    ask.assert_called_once()
+    assert "drawing.dxf was changed after it was imported" in ask.call_args.args[1]
+
+
+def test_new_name_from_the_save_dialog_confirms_nothing(tmp_path):
+    app, _output = _existing_output_app(tmp_path)
+    fresh = tmp_path / "new.dxf"
+    with patch.object(gui.filedialog, "asksaveasfilename", return_value=fresh.as_posix()):
+        gui.Pdf2DxfApp._browse_output(app)
+    assert app._output_confirmed is None

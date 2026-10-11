@@ -146,9 +146,19 @@ def output_replace_reason(input_path: str, output_path: str) -> str | None:
     if manifest.get("source_sha256") != source_sha256:
         return "was made from a different PDF"
     assembled = manifest.get("assembled")
-    if not isinstance(assembled, dict) or assembled.get("output_sha256") != output_sha256:
+    if not isinstance(assembled, dict) or not assembled.get("output_sha256"):
+        # The session never wrote this file (for example it restarted for a
+        # new Scale and was cancelled before a page finished), so nothing
+        # says it was edited: it is simply there.
+        return "already exists"
+    if assembled.get("output_sha256") != output_sha256:
         return "was changed after it was imported"
     return None
+
+
+def _path_key(path: str) -> str:
+    """One spelling per file for comparing paths the user picked."""
+    return os.path.normcase(os.path.abspath(os.path.expanduser(str(path))))
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +186,8 @@ class Pdf2DxfApp(tk.Tk):
         self._cancel_event = threading.Event()
         # "Locate LibreCAD..." choice, used even when it could not be saved.
         self._librecad_choice: str | None = None
+        # Existing DXF the user agreed to replace in the Output save dialog.
+        self._output_confirmed: str | None = None
         self._build_ui()
         if handoff_path:
             self.protocol("WM_DELETE_WINDOW", self._close_from_librecad_handoff)
@@ -397,6 +409,9 @@ class Pdf2DxfApp(tk.Tk):
         )
         if path:
             self._var_output.set(path)
+            # The save dialog already asked "replace?" for a file that exists,
+            # so Convert does not ask again only because it is there.
+            self._output_confirmed = _path_key(path) if os.path.isfile(path) else None
 
     # ------------------------------------------------------------------
     # Logging helper
@@ -486,6 +501,13 @@ class Pdf2DxfApp(tk.Tk):
         # Never write over another drawing, or over edits saved into this one,
         # without asking first.
         replace_reason = output_replace_reason(input_path, output_path)
+        if (
+            replace_reason == "already exists"
+            and getattr(self, "_output_confirmed", None) == _path_key(output_path)
+        ):
+            # Confirmed in the Output Browse... save dialog this session. A
+            # different PDF or an edited drawing is still asked about.
+            replace_reason = None
         if replace_reason and not messagebox.askyesno(
             "Replace drawing?",
             f"{os.path.basename(output_path)} {replace_reason}. Replace it?\n\n"
