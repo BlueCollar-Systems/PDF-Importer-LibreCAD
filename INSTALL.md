@@ -39,7 +39,8 @@ run: the GUI and `--resume`). Use its `factor` only when `confidence >= 0.70`
 and `fallback_reason` is not `no_scale_detected`; otherwise set scale manually
 in your CAD app. A trusted scale is also named in the GUI log, the Done box and
 the `pdf2dxf` summary, with the number to put in `Scale` (or `--scale`) for a
-real-size drawing.
+real-size drawing. When sheets differ in scale, that line names each scale
+with its pages instead, so each group can be converted with its own Scale.
 
 **Bad-PDF gate:** LibreCAD converter refuses encrypted/non-PDF/truncated files at open
 (**fail closed**). SketchUp shows the same messages but may proceed on rare gate errors

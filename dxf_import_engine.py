@@ -629,6 +629,15 @@ def _convert_resumable(
         "searchable_text_companions": _search_text_block(records),
         "r12_pictures_omitted": _r12_pictures_rows(records),
         "r12_picture_warning": r12_picture_warning_line(_r12_pictures_rows(records)),
+        # Each page's own scale: sheets of one set often differ, and one Scale
+        # value then draws only some of them at real size.
+        "resolved_scales_by_page": [
+            {
+                "page": int(record.get("page_number") or page + 1),
+                "resolved_scale": record.get("resolved_scale"),
+            }
+            for page, record in zip(selected_pages, records, strict=True)
+        ],
     }
 
 
@@ -660,6 +669,7 @@ def _convert_via_package(
     from librecad_pdf_importer.importer import (
         best_resolved_scale,
         failure_import_report_path,
+        page_resolved_scales,
         run_import,
         terminal_failure_record,
         write_import_report,
@@ -804,6 +814,8 @@ def _convert_via_package(
             # DXF R12 cannot hold pictures: what was left out, and one line.
             "r12_pictures_omitted": [dict(row) for row in export.r12_pictures_omitted],
             "r12_picture_warning": r12_picture_warning_line(export.r12_pictures_omitted),
+            # Each page's own scale, for a set whose sheets differ.
+            "resolved_scales_by_page": page_resolved_scales(run.extraction.pages),
         }
     finally:
         run.close()

@@ -119,6 +119,11 @@ def _file_sha256(path: str) -> str:
     return digest.hexdigest()
 
 
+def is_librecad_program_name(path: str) -> bool:
+    """True for LibreCAD's own program file name (LibreCAD.exe, or librecad), any case."""
+    return os.path.basename(str(path or "")).lower() in {"librecad.exe", "librecad"}
+
+
 def output_replace_reason(input_path: str, output_path: str) -> str | None:
     """Why converting would replace a drawing the user may want to keep.
 
@@ -149,9 +154,19 @@ def output_replace_reason(input_path: str, output_path: str) -> str | None:
     if manifest.get("source_sha256") != source_sha256:
         return "was made from a different PDF"
     assembled = manifest.get("assembled")
-    if not isinstance(assembled, dict) or assembled.get("output_sha256") != output_sha256:
+    if not isinstance(assembled, dict) or not assembled.get("output_sha256"):
+        # The session never wrote this file (for example it restarted for a
+        # new Scale and was cancelled before a page finished), so nothing
+        # says it was edited: it is simply there.
+        return "already exists"
+    if assembled.get("output_sha256") != output_sha256:
         return "was changed after it was imported"
     return None
+
+
+def _path_key(path: str) -> str:
+    """One spelling per file for comparing paths the user picked."""
+    return os.path.normcase(os.path.abspath(os.path.expanduser(str(path))))
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +194,8 @@ class Pdf2DxfApp(tk.Tk):
         self._cancel_event = threading.Event()
         # "Locate LibreCAD..." choice, used even when it could not be saved.
         self._librecad_choice: str | None = None
+        # Existing DXF the user agreed to replace in the Output save dialog.
+        self._output_confirmed: str | None = None
         self._build_ui()
         if handoff_path:
             self.protocol("WM_DELETE_WINDOW", self._close_from_librecad_handoff)
@@ -403,6 +420,9 @@ class Pdf2DxfApp(tk.Tk):
         )
         if path:
             self._var_output.set(path)
+            # The save dialog already asked "replace?" for a file that exists,
+            # so Convert does not ask again only because it is there.
+            self._output_confirmed = _path_key(path) if os.path.isfile(path) else None
 
     # ------------------------------------------------------------------
     # Logging helper
@@ -493,6 +513,13 @@ class Pdf2DxfApp(tk.Tk):
         # Never write over another drawing, or over edits saved into this one,
         # without asking first.
         replace_reason = output_replace_reason(input_path, output_path)
+        if (
+            replace_reason == "already exists"
+            and getattr(self, "_output_confirmed", None) == _path_key(output_path)
+        ):
+            # Confirmed in the Output Browse... save dialog this session. A
+            # different PDF or an edited drawing is still asked about.
+            replace_reason = None
         if replace_reason and not messagebox.askyesno(
             "Replace drawing?",
             f"{os.path.basename(output_path)} {replace_reason}. Replace it?\n\n"
@@ -621,7 +648,12 @@ class Pdf2DxfApp(tk.Tk):
             # unless Scale says otherwise, so tell the fitter the multiplier.
             from librecad_pdf_importer.importer import drawing_scale_line
 
-            scale_line = drawing_scale_line(stats.get("resolved_scale"), options.scale)
+            # Each page's own scale too: one Scale value cannot fit sheets that differ.
+            scale_line = drawing_scale_line(
+                stats.get("resolved_scale"),
+                options.scale,
+                page_scales=stats.get("resolved_scales_by_page"),
+            )
             if scale_line:
                 self._log(scale_line)
             # Said once, at completion, pages certified by an earlier run included.
@@ -817,6 +849,17 @@ class Pdf2DxfApp(tk.Tk):
                 "Locate LibreCAD",
                 f"That file could not be used as LibreCAD:\n{path}",
             )
+            return
+        # Every later run opens the DXF with the remembered program, so a
+        # wrong pick (an installer, another app) is only kept when confirmed.
+        if not is_librecad_program_name(found) and not messagebox.askyesno(
+            "Locate LibreCAD",
+            f"{os.path.basename(found)} is not LibreCAD.exe. Use it anyway?\n\n"
+            "It would open every converted drawing from now on. Choose No and "
+            "pick LibreCAD.exe, usually in C:\\Program Files\\LibreCAD.",
+            icon=messagebox.WARNING,
+            default=messagebox.NO,
+        ):
             return
         self._librecad_choice = found
         if save_librecad_executable(found):
