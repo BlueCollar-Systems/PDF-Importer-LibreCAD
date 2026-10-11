@@ -49,8 +49,10 @@ from pdfcadcore.import_config import ImportConfig
 from pdfcadcore.embedded_fonts import EmbeddedFontFailure
 from pdfcadcore.primitives import NormalizedText, TextCharLayout
 from librecad_runtime import redacted_local_path, resolve_librecad_installation
-from librecad_pdf_importer.core.text_paint import bound_fill_receipt
-from librecad_pdf_importer.ink_color import INK_RULE_NEAR_BLACK, delivered_rgb8
+from librecad_pdf_importer.core.text_paint import bound_fill_receipt, bound_fill_backed_receipt
+from librecad_pdf_importer.ink_color import (
+    INK_RULE_NEAR_BLACK, delivered_rgb8, text_ink_rgb8,
+)
 
 
 _MTEXT_THRESHOLD = 120
@@ -2210,7 +2212,8 @@ def _base_attributes(
         rgb = tuple(round(float(component) * 255) for component in text_color[:3])
         # Near-black neutral ink is written as exact black, as the vector
         # exporter does: LibreCAD draws only exact black in its foreground colour.
-        attribs["true_color"] = rgb2int(delivered_rgb8(*rgb))
+        fixed = bound_fill_backed_receipt(text_item)
+        attribs["true_color"] = rgb2int(tuple(fixed["delivered_rgb"]) if fixed else text_ink_rgb8(*rgb))
     attribs["style"] = style_name
     return attribs
 

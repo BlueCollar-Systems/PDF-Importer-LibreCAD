@@ -133,17 +133,20 @@ def test_gui_path_delivers_near_black_ink_as_exact_black(tmp_path):
         centre_y = box.center.y
         for index, row_y in enumerate(row_centres_mm):
             if abs(centre_y - row_y) <= half_band_mm:
-                seen[index][leaf.dxftype()].add(colour)
+                kind = leaf.dxftype()
+                if kind == "SOLID" and "TEXT" in leaf.dxf.layer:
+                    kind = "GLYPH_SOLID"
+                seen[index][kind].add(colour)
                 break
 
-    for index, (label, _rgb8, expected) in enumerate(INKS):
+    for index, (label, source_rgb8, expected) in enumerate(INKS):
         kinds = seen[index]
         assert kinds, f"nothing delivered on the {label} row"
-        colours = set().union(*kinds.values())
-        assert colours == {expected}, (
-            f"{label}: delivered colours {sorted(map(str, colours))}, "
-            f"expected #{expected:06x}"
-        )
+        from librecad_pdf_importer.ink_color import source_paint_rgb8
+        fill_rgb = source_paint_rgb8(*source_rgb8)
+        fill_expected = (fill_rgb[0] << 16) | (fill_rgb[1] << 8) | fill_rgb[2]
+        for kind, colors in kinds.items():
+            assert colors == {fill_expected if kind in {"HATCH", "SOLID"} else expected}, (label, kind, colors)
         # The line, the fill and the lettering all came through on this row.
         assert {"LWPOLYLINE", "LINE", "POLYLINE"} & set(kinds), (label, dict(kinds))
         assert {"HATCH", "SOLID"} & set(kinds), (label, dict(kinds))
@@ -160,7 +163,8 @@ def test_gui_path_delivers_near_black_ink_as_exact_black(tmp_path):
     sources = {tuple(row["source_rgb"]) for row in deliveries}
     assert (0x23, 0x1F, 0x20) in sources
     assert (0x19, 0x19, 0x19) in sources
-    assert all(row["delivered_rgb"] == [0, 0, 0] for row in deliveries)
+    assert all(row["delivered_rgb"] == [0, 0, 0] for row in deliveries
+               if row["rule"] == "near_black_neutral_delivered_as_black")
 
 
 def test_gui_path_frames_by_the_sheet_when_a_stroke_runs_off_it(tmp_path):

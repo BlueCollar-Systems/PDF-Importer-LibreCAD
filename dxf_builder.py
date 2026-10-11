@@ -87,11 +87,10 @@ def _rgb_to_aci(r: float, g: float, b: float) -> int:
 def _true_color_int(r: float, g: float, b: float) -> int:
     """Pack RGB (0-1 floats) into a 24-bit DXF true-color integer."""
     ri, gi, bi = round(r * 255), round(g * 255), round(b * 255)
-    # Invert (near-)white to black for visibility on light backgrounds -- white ink
-    # only (every channel >= 250); pale tints and composited translucent colours
-    # keep their colour, as the PDF viewer shows them.
-    if min(ri, gi, bi) >= 250:
-        ri, gi, bi = 0, 0, 0
+    # Exact white is source paint. One channel step avoids LibreCAD's white
+    # foreground inversion when printing; near-white tints stay unchanged.
+    if (ri, gi, bi) == (255, 255, 255):
+        ri, gi, bi = 254, 254, 254
     return ezdxf_colors.rgb2int((ri, gi, bi))
 
 

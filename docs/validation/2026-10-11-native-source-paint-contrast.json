@@ -1,0 +1,247 @@
+{
+  "schema": "bcs.native-source-paint-contrast-validation/1",
+  "date": "2026-10-11",
+  "native_host": "LibreCAD 2.2.1.5 / Qt 5.15.2",
+  "scope": "Bounded source-created paint controls, actual native open/preview/save/close/reopen observations, and independently retained serialization checks. Not whole-document visual or semantic equivalence.",
+  "source_control_commit": "2eef01be672ca098230cc081cbb329ab0fadcb13",
+  "integrated_test_commit": "07a1ef02376bccf751ecd12ee70d9ec1d8838a93",
+  "paint_runtime_files_identical_between_commits": true,
+  "runtime_sha256": {
+    "dxf_builder.py": "9210a7df7b7f95972d586234f76cfe3788d6945e48debcb82570d206528fb921",
+    "dxf_text_builder.py": "a31d0eed3278ecfd6c9d7d730b086d3e975e1229f5a73421c6cd0e6f018d825e",
+    "librecad_pdf_importer/core/text_paint.py": "5c3727b0075a6a4191af7d1d978dcd676e7a0c14157d02fc973e640ea5f96fec",
+    "librecad_pdf_importer/exporters/dxf_exporter.py": "c5544b80d1a080eaa8bfc5aedfe410fdc4ba1593b56f226a12c3485d18f36e72",
+    "librecad_pdf_importer/ink_color.py": "0c7e7b45cdcfe67e0db8d2c32a91a7eb2d7e806843355af5d26b25144ed02282"
+  },
+  "white_panel_source_pdf_sha256": "98c3098c7d64f8a99a810f896ee59f43a064238d561552c8f33357b560c58fc1",
+  "channel_approximations": {
+    "source_exact_white": [
+      254,
+      254,
+      254
+    ],
+    "source_fixed_exact_black": [
+      1,
+      1,
+      1
+    ],
+    "maximum_channel_error": 1
+  },
+  "verification": {
+    "focused_tests_passed": 101,
+    "complete_suite": {
+      "passed": 2183,
+      "skipped": 18,
+      "subtests_passed": 28,
+      "seconds": 550.33
+    },
+    "whole_tree_ruff": "pass",
+    "hosted_runtime_ci_run": 38178503329,
+    "hosted_runtime_ci_jobs": {
+      "declared-dependencies": "success",
+      "librecad-plugin": "success",
+      "syntax-check (3.12)": "success"
+    }
+  },
+  "cases": [
+    {
+      "case": "white_panel_black_text",
+      "native_observation": {
+        "model_view": "pass: fixed black inside white panel; ordinary outside text remains adaptive",
+        "print_preview": "pass: both source-black labels readable",
+        "save_close_reopen": "pass: exact native-saved path verified and both contexts readable",
+        "image_coverage": false
+      },
+      "comparison_receipt": {
+        "name": "fill-backed-source-native-save-v3.json",
+        "sha256": "4796339762599a8937d7cb7f753076c41e9e7c492178f45d5a7b6d2d828df3b2",
+        "scope": "Actual native DXF serialization only; no native GUI/render equivalence claim. Counters prove individual geometry, not counts or areas alone. Unsupported conversions are reported and not accepted.",
+        "helper_sha256": "82a8012e464457ab3b352ce42e97cdb38425a6b25caaf40f671950ff9722ab0f"
+      },
+      "source": {
+        "sha256": "8cfe4aee7683e22b2337bb6ca7ad9036479636a75610eaaaee6ffe24d76220c0",
+        "bytes": 269496,
+        "version": "AC1024",
+        "units": 4,
+        "unsupported": [],
+        "audit": {
+          "errors": [],
+          "fixes": [],
+          "only_known_housekeeping_fix": true
+        },
+        "name": "white-panel-contrast-glyphs.dxf"
+      },
+      "native_saved": {
+        "sha256": "62886408ab1ea3cf072e6b85c9b7ccc3383d210ea2c7513636f7c18038878545",
+        "bytes": 280461,
+        "version": "AC1021",
+        "units": 4,
+        "unsupported": [],
+        "audit": {
+          "errors": [],
+          "fixes": [
+            {
+              "code": 202,
+              "message": "Deleted PLOTSETTINGS(#36E) entity without owner handle.",
+              "entity_type": null
+            }
+          ],
+          "only_known_housekeeping_fix": true
+        },
+        "name": "source-panel-native-saved.dxf"
+      },
+      "checks": {
+        "units_equal": true,
+        "all_supported_geometry_equal": true,
+        "strict_entity_paint_equal": false,
+        "draw_geometry_sequence_equal": true,
+        "layers_equal": false,
+        "text_content_layout_visibility_equal": true,
+        "used_text_font_styles_equal": false,
+        "image_references_all_resolve": true,
+        "image_pixels_geometry_equal": true,
+        "visible_envelope_equal": true,
+        "fill_area_sum_equal": true,
+        "xdata_equal": true,
+        "audits_zero_errors": true,
+        "only_known_housekeeping_fixes": true,
+        "critical_drawing_headers_equal": true
+      },
+      "strict_semantic_equivalence": false,
+      "geometry_units_and_hidden_text_retained": false,
+      "layer_difference_names": [
+        "page_0001$0$P001_RGB_000_000_255"
+      ],
+      "text_font_style_transport": {
+        "source": {
+          "page_0001$0$unicode": {
+            "bigfont": "",
+            "font": "unicode",
+            "generation_flags": 0,
+            "height": 0,
+            "oblique": 0,
+            "width": 1
+          }
+        },
+        "native_saved": {
+          "page_0001$0$unicode": {
+            "bigfont": "",
+            "font": "page_0001$0$unicode",
+            "generation_flags": 0,
+            "height": 0,
+            "oblique": 0,
+            "width": 1
+          }
+        }
+      },
+      "unaccepted_changes": "Paint colors, layer visibility/plot flags, text/style/content, image decode/placement, draw order, fill paths and unknown type conversions are never hidden as housekeeping."
+    },
+    {
+      "case": "dark_panel_white_text_historical",
+      "native_observation": {
+        "model_view": "pass: RGB31 panel and white lettering readable",
+        "print_preview": "pass: panel lettering and other spans readable",
+        "save_close_reopen": "pass: saved beside existing image assets, exact saved path reopened",
+        "image_coverage": "bounded: same-folder image references, decoded pixels and placement; no cross-folder claim"
+      },
+      "comparison_receipt": {
+        "name": "source-painted-native-save-v3.json",
+        "sha256": "f2f79ab9f4afb3e9f89ccc5421ee11e6f3d7244336eb121b6013f919e010f3c5",
+        "scope": "Actual native DXF serialization only; no native GUI/render equivalence claim. Counters prove individual geometry, not counts or areas alone. Unsupported conversions are reported and not accepted.",
+        "helper_sha256": "82a8012e464457ab3b352ce42e97cdb38425a6b25caaf40f671950ff9722ab0f"
+      },
+      "source": {
+        "sha256": "87fe07e90dca17bfec2c40c273621472c2d3e3c6d8f9ef9931fea17ae30eba32",
+        "bytes": 1328049,
+        "version": "AC1024",
+        "units": 4,
+        "unsupported": [],
+        "audit": {
+          "errors": [],
+          "fixes": [],
+          "only_known_housekeeping_fix": true
+        },
+        "name": "02-text-paint-raster-glyphs.dxf"
+      },
+      "native_saved": {
+        "sha256": "360b2988d55a0a240e3f96141b9e060ebf48c03e32ec4d52c54378e2afe0276a",
+        "bytes": 1377301,
+        "version": "AC1021",
+        "units": 4,
+        "unsupported": [],
+        "audit": {
+          "errors": [],
+          "fixes": [
+            {
+              "code": 202,
+              "message": "Fixed invalid owner handle of IMAGEDEF(#103E).",
+              "entity_type": null
+            },
+            {
+              "code": 202,
+              "message": "Deleted PLOTSETTINGS(#1044) entity without owner handle.",
+              "entity_type": null
+            },
+            {
+              "code": 210,
+              "message": "Fixed extrusion vector for entity: SPLINE(#102F).",
+              "entity_type": "SPLINE"
+            }
+          ],
+          "only_known_housekeeping_fix": false
+        },
+        "name": "native-source-painted-saved.dxf"
+      },
+      "checks": {
+        "units_equal": true,
+        "all_supported_geometry_equal": false,
+        "strict_entity_paint_equal": false,
+        "draw_geometry_sequence_equal": false,
+        "layers_equal": false,
+        "text_content_layout_visibility_equal": true,
+        "used_text_font_styles_equal": false,
+        "image_references_all_resolve": true,
+        "image_pixels_geometry_equal": true,
+        "visible_envelope_equal": true,
+        "fill_area_sum_equal": true,
+        "xdata_equal": false,
+        "audits_zero_errors": true,
+        "only_known_housekeeping_fixes": false,
+        "critical_drawing_headers_equal": true
+      },
+      "strict_semantic_equivalence": false,
+      "geometry_units_and_hidden_text_retained": false,
+      "layer_difference_names": [
+        "page_0001$0$P001_RGB_217_031_020",
+        "page_0001$0$P001_RGB_077_038_178",
+        "page_0001$0$P001_RGB_020_122_051",
+        "page_0001$0$P001_RGB_031_031_031",
+        "page_0001$0$P001_RGB_026_064_204",
+        "page_0001$0$P001_RGB_000_000_000"
+      ],
+      "text_font_style_transport": {
+        "source": {
+          "page_0001$0$unicode": {
+            "bigfont": "",
+            "font": "unicode",
+            "generation_flags": 0,
+            "height": 0,
+            "oblique": 0,
+            "width": 1
+          }
+        },
+        "native_saved": {
+          "page_0001$0$unicode": {
+            "bigfont": "",
+            "font": "page_0001$0$unicode",
+            "generation_flags": 0,
+            "height": 0,
+            "oblique": 0,
+            "width": 1
+          }
+        }
+      },
+      "unaccepted_changes": "Paint colors, layer visibility/plot flags, text/style/content, image decode/placement, draw order, fill paths and unknown type conversions are never hidden as housekeeping."
+    }
+  ]
+}

@@ -1,11 +1,11 @@
-"""Near-black neutral ink is delivered exactly as exact black is.
+"""Near-black foreground ink is adaptive; source fill paints are independent.
 
 LibreCAD swaps a pen to its foreground colour only when the pen is exactly
 black. Distiller's "rich black" (35/31/32) written as that true colour is close
 to invisible on LibreCAD's black drawing background, so dark neutral ink --
 every channel <= 64 and the channels no further apart than 16 -- is written as
-exact black: same colour value, same layer name. A dark ink with a hue keeps
-its colour, and the import report names every source colour that was replaced.
+exact black on ordinary lines/text. Source fill paints keep their colors and
+exact black/white paint has a reported one-step non-inverting host encoding.
 
 Every fixture is synthetic and generated here.
 """
@@ -85,9 +85,9 @@ def test_other_ink_keeps_its_colour(source):
     assert ink_color.delivered_rgb8(*source) == source
 
 
-def test_near_white_rule_is_unchanged():
-    assert _true_color((255, 255, 255)) == BLACK
-    assert _true_color((250, 250, 250)) == BLACK
+def test_white_is_noninverting_paint_and_near_white_stays_source_colored():
+    assert _true_color((255, 255, 255)) == (254, 254, 254)
+    assert _true_color((250, 250, 250)) == (250, 250, 250)
     assert _true_color((249, 249, 249)) == (249, 249, 249)
 
 
@@ -119,7 +119,7 @@ def test_native_text_attributes_follow_the_same_rule():
     assert true_color((65, 65, 65)) == (65, 65, 65)
     assert true_color(DARK_BLUE) == DARK_BLUE
     assert true_color(RED) == RED
-    assert true_color((255, 255, 255)) == (255, 255, 255)
+    assert true_color((255, 255, 255)) == (254, 254, 254)
 
 
 def test_r12_positioned_colour_contract_binds_near_black_as_black():
@@ -204,15 +204,16 @@ def test_rich_black_page_is_delivered_as_black_and_colours_stay(tmp_path, determ
 
     layer_names = {layer.dxf.name for layer in doc.layers}
     assert "P001_RGB_000_000_000" in layer_names
-    assert "P001_RGB_035_031_032" not in layer_names
+    assert "P001_RGB_035_031_032" in layer_names
     assert "P001_RGB_255_000_000" in layer_names
     assert doc.layers.get("P001_RGB_000_000_000").dxf.true_color == 0
 
     black_layer = [e for e in doc.modelspace() if e.dxf.layer == "P001_RGB_000_000_000"]
-    assert sorted(e.dxftype() for e in black_layer) == ["HATCH", "LINE", "LWPOLYLINE"]
+    assert sorted(e.dxftype() for e in black_layer) == ["LINE", "LWPOLYLINE"]
     assert all(_rgb(e) == BLACK for e in black_layer)
-    hatch = next(e for e in black_layer if e.dxftype() == "HATCH")
-    assert hatch.dxf.color == dxf_exporter._nearest_r12_aci((0.0, 0.0, 0.0))
+    hatch = next(e for e in doc.modelspace() if e.dxftype() == "HATCH")
+    assert _rgb(hatch) == RICH_BLACK
+    assert hatch.dxf.color == dxf_exporter._nearest_r12_aci(_unit(RICH_BLACK))
 
     red = [e for e in doc.modelspace() if e.dxf.layer == "P001_RGB_255_000_000"]
     assert len(red) == 1 and _rgb(red[0]) == RED
@@ -227,19 +228,25 @@ def test_rich_black_page_is_delivered_as_black_and_colours_stay(tmp_path, determ
         if not doc.layers.get(e.dxf.layer).is_frozen() and not doc.layers.get(e.dxf.layer).is_off()
     ]
     colours = {_rgb(e) for e in recursive_decompose(visible)}
-    assert colours == {BLACK, DARK_BLUE, RED}
+    assert colours == {BLACK, RICH_BLACK, DARK_BLUE, RED}
 
 
 @pytest.mark.parametrize("dxf_version", ["R2010", "R12"])
-def test_rich_black_page_equals_its_exact_black_twin(tmp_path, deterministic_exact_font, dxf_version):
+def test_rich_black_line_and_text_equal_black_but_fills_keep_source(tmp_path, deterministic_exact_font, dxf_version):
     rich, rich_result, _run, _out = _export(
         tmp_path, deterministic_exact_font, RICH_BLACK, "rich", dxf_version)
     black, black_result, _run, _out = _export(
         tmp_path, deterministic_exact_font, BLACK, "black", dxf_version)
 
-    assert _signature(rich) == _signature(black)
+    def ink_colors(doc):
+        return [(_rgb(e), e.dxf.get("color")) for e in doc.modelspace()
+                if e.dxftype() in {"LINE", "LWPOLYLINE", "POLYLINE", "INSERT", "TEXT"}]
+    assert ink_colors(rich) == ink_colors(black)
     assert rich_result.entity_count == black_result.entity_count
-    assert black_result.ink_color_deliveries == []
+    if dxf_version == "R12":
+        assert black_result.ink_color_deliveries == []
+    else:
+        assert black_result.ink_color_deliveries[0]["delivered_rgb"] == [1, 1, 1]
     assert len(rich_result.ink_color_deliveries) == 1
 
 
@@ -251,7 +258,7 @@ def test_report_names_the_replaced_source_colour(tmp_path, deterministic_exact_f
         "source_rgb": list(RICH_BLACK),
         "delivered_rgb": [0, 0, 0],
         "strokes": 2,
-        "fills": 1,
+        "fills": 0,
         "text_items": 1,
     }]
     assert result.ink_color_deliveries == expected
@@ -261,23 +268,23 @@ def test_report_names_the_replaced_source_colour(tmp_path, deterministic_exact_f
     assert report["extra"]["ink_color_delivery"] == expected
 
 
-def test_report_is_empty_when_no_ink_was_replaced(tmp_path, deterministic_exact_font):
+def test_report_names_exact_black_fill_host_encoding(tmp_path, deterministic_exact_font):
     _doc, result, run, output = _export(tmp_path, deterministic_exact_font, BLACK, "black")
-    assert result.ink_color_deliveries == []
+    expected = [{"rule": ink_color.PAINT_RULE_FIXED_BLACK_WHITE,
+                 "source_page_number": 1, "source_rgb": [0, 0, 0],
+                 "delivered_rgb": [1, 1, 1], "max_channel_error": 1,
+                 "strokes": 0, "fills": 1, "text_items": 0}]
+    assert result.ink_color_deliveries == expected
     report_path = write_import_report(run, str(output.with_name("black_import_report.json")))
     report = json.loads(Path(report_path).read_text(encoding="utf-8"))
-    assert report["extra"]["ink_color_delivery"] == []
+    assert report["extra"]["ink_color_delivery"] == expected
 
 
 def test_resume_identity_covers_the_ink_rule(monkeypatch):
     """A page checkpoint written under another ink rule is never resumed."""
     config = ImportConfig.auto()
     first, payload = dxf_import_engine._resume_options_identity(config, "R2010")
-    assert payload["ink_color_rule"] == {
-        "rule": ink_color.INK_RULE_NEAR_BLACK,
-        "max_channel": 64,
-        "max_spread": 16,
-    }
+    assert payload["ink_color_rule"] == ink_color.rule_identity()
     monkeypatch.setattr(ink_color, "NEAR_BLACK_MAX_CHANNEL", 32)
     second, _payload = dxf_import_engine._resume_options_identity(config, "R2010")
     assert second != first
