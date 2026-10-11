@@ -75,7 +75,6 @@ class TestLcGuiProfessionalImport(unittest.TestCase):
         self.assertIn('mode="determinate"', self.source)
         self.assertIn("self._cancel_event", self.source)
         self.assertIn("cancel_requested=self._cancel_event.is_set", self.source)
-        self.assertIn("resumable=True", self.source)
         self.assertIn("restart_on_resume_mismatch=True", self.source)
         self.assertIn("Certified pages were kept", self.source)
 

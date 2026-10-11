@@ -908,6 +908,8 @@ def run_import(pdf_path: str, mode: str = "auto",
     cfg._delivered_image_count = 0  # noqa: B010
     cfg._cancel_requested = incoming.get("_cancel_requested")  # noqa: B010
     cfg._progress_callback = incoming.get("_progress_callback")  # noqa: B010
+    cfg._output_publication_guard = incoming.get("_output_publication_guard")  # noqa: B010
+    cfg._output_must_not_exist = bool(incoming.get("_output_must_not_exist"))  # noqa: B010
 
     opts = ExtractionOptions(
         pages=cfg.pages,

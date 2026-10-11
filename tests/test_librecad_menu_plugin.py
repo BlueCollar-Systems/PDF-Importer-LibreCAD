@@ -111,7 +111,7 @@ def test_plugin_source_matches_python_contract():
     assert '"output_path"' in source
     for entry in (
         "Import PDF (BlueCollar)...",
-        "Import PDF into Current Drawing (BlueCollar)...",
+        "Import PDF into Saved Drawing Copy (BlueCollar)...",
         "PDF Importer Settings (BlueCollar)...",
     ):
         assert f'"{entry}"' in source
@@ -516,16 +516,32 @@ def test_finish_closes_the_window_only_after_a_handoff(tmp_path):
 def test_every_gui_entry_point_forwards_the_handoff_flag(monkeypatch):
     gui = pytest.importorskip("gui")
     seen = []
-    monkeypatch.setattr(gui, "launch_gui", lambda handoff_path=None: seen.append(handoff_path))
+    monkeypatch.setattr(gui, "launch_gui", lambda handoff_path=None, saved_drawing=None:
+                        seen.append((handoff_path, saved_drawing)))
     import standalone_app
 
     monkeypatch.setattr(sys, "argv", ["lcpdf-gui.exe", HANDOFF_FLAG, "C:/T/h.json"])
     assert standalone_app.main() == 0
-    assert seen == ["C:/T/h.json"]
+    assert seen == [("C:/T/h.json", None)]
     launcher = (REPO_ROOT / "launch_lcpdf_gui.pyw").read_text(encoding="utf-8")
-    assert "launch_gui(handoff_path_from_argv(sys.argv[1:]))" in launcher
+    assert "launch_gui(handoff_path_from_argv(sys.argv[1:]), saved_drawing_from_argv(sys.argv[1:]))" in launcher
     gui_source = (REPO_ROOT / "gui.py").read_text(encoding="utf-8")
-    assert "launch_gui(handoff_path_from_argv(sys.argv[1:]))" in gui_source
+    assert "launch_gui(handoff_path_from_argv(sys.argv[1:]), saved_drawing_from_argv(sys.argv[1:]))" in gui_source
+
+
+def test_frozen_and_source_launchers_forward_saved_drawing(monkeypatch, tmp_path):
+    import runpy
+    gui = pytest.importorskip("gui")
+    import standalone_app
+    seen = []
+    monkeypatch.setattr(gui, "launch_gui", lambda handoff_path=None, saved_drawing=None:
+                        seen.append((handoff_path, saved_drawing)))
+    base = tmp_path / "fictional é base.dxf"
+    monkeypatch.setattr(sys, "argv", ["lcpdf-gui.exe", HANDOFF_FLAG, "handoff.json",
+                                    "--librecad-saved-drawing", str(base)])
+    assert standalone_app.main() == 0
+    runpy.run_path(str(REPO_ROOT / "launch_lcpdf_gui.pyw"), run_name="__main__")
+    assert seen == [("handoff.json", str(base.resolve()))] * 2
 
 
 # ---------------------------------------------------------------------------

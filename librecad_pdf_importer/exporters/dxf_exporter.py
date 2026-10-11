@@ -2702,14 +2702,25 @@ class _AssetTransaction:
     files: List[Path] = field(default_factory=list)
     directories: List[Path] = field(default_factory=list)
     committed: bool = False
+    protected: bool = False
+    file_receipts: Dict[Path, Any] = field(default_factory=dict)
+    directory_receipts: Dict[Path, Any] = field(default_factory=dict)
 
     def register_file(self, path: Path) -> None:
         if path not in self.files:
             self.files.append(path)
+        if self.protected:
+            from ..drawing_copy import _ordinary_file
+            _ordinary_file(path)
+            info = path.lstat()
+            self.file_receipts[path] = ((info.st_dev, info.st_ino), _file_sha256(path))
 
     def register_directory(self, path: Path) -> None:
         if path not in self.directories:
             self.directories.append(path)
+        if self.protected:
+            from ..drawing_copy import _directory_identity
+            self.directory_receipts[path] = _directory_identity(path)
 
     def commit(self) -> None:
         self.committed = True
@@ -2719,13 +2730,28 @@ class _AssetTransaction:
             return
         for path in reversed(self.files):
             try:
+                if self.protected:
+                    from ..drawing_copy import _ordinary_file
+                    receipt = self.file_receipts.get(path)
+                    if receipt is None:
+                        continue
+                    _ordinary_file(path)
+                    info = path.lstat()
+                    if (info.st_dev, info.st_ino) != receipt[0] or _file_sha256(path) != receipt[1]:
+                        continue
                 path.unlink(missing_ok=True)
-            except OSError:
+            except (OSError, RuntimeError):
                 pass
         for path in reversed(self.directories):
             try:
+                if self.protected:
+                    from ..drawing_copy import _check_directory
+                    receipt = self.directory_receipts.get(path)
+                    if receipt is None:
+                        continue
+                    _check_directory(path, receipt)
                 path.rmdir()
-            except OSError:
+            except (OSError, RuntimeError):
                 pass
 
 
@@ -4677,7 +4703,9 @@ def _export_to_dxf_once(
     options: Optional[DxfExportOptions] = None,
     forced_text_rungs: Optional[Mapping[str, Tuple[int, str]]] = None,
 ) -> DxfExportResult:
-    transaction = _AssetTransaction()
+    transaction = _AssetTransaction(protected=bool(
+        getattr(options.provenance_opts if options is not None else None,
+                "_output_must_not_exist", False)))
     with _RasterRenderSession() as raster_session:
         try:
             result = _export_to_dxf_impl(
@@ -5946,19 +5974,50 @@ def _export_to_dxf_impl(
             ]
         )
 
+    publication_guard = getattr(opts.provenance_opts, "_output_publication_guard", None)
+    output_must_not_exist = bool(getattr(opts.provenance_opts, "_output_must_not_exist", False))
+    if publication_guard:
+        publication_guard()
     output.parent.mkdir(parents=True, exist_ok=True)
     temp_output = output.with_name(f".{output.name}.{session_token}.tmp")
     written_assets: List[Path] = []
     temp_assets: List[Path] = []
+    protected_created_files = {}
+    def record_created(path):
+        info = path.stat()
+        protected_created_files[path] = ((info.st_dev, info.st_ino), _file_sha256(path))
+    def cleanup_owned(path):
+        if output_must_not_exist:
+            receipt = protected_created_files.get(path)
+            if receipt is None or not path.is_file() or path.is_symlink():
+                return
+            info = path.stat()
+            if (info.st_dev, info.st_ino) != receipt[0] or _file_sha256(path) != receipt[1]:
+                return
+        path.unlink(missing_ok=True)
     try:
         for asset in pending_raster_assets:
             asset.path.parent.mkdir(parents=True, exist_ok=True)
             temp_asset = asset.path.with_name(f".{asset.path.name}.tmp")
             temp_assets.append(temp_asset)
-            temp_asset.write_bytes(asset.content)
+            if publication_guard:
+                publication_guard()
+            if output_must_not_exist:
+                with temp_asset.open("xb") as stream:
+                    stream.write(asset.content)
+                record_created(temp_asset)
+            else:
+                temp_asset.write_bytes(asset.content)
             if temp_asset.read_bytes() != asset.content:
                 raise OSError(f"raster asset byte verification failed: {asset.path}")
-            temp_asset.replace(asset.path)
+            if publication_guard:
+                publication_guard()
+            if output_must_not_exist:
+                from ..drawing_copy import _publish_file
+                _publish_file(temp_asset, asset.path)
+                record_created(asset.path)
+            else:
+                temp_asset.replace(asset.path)
             temp_assets.remove(temp_asset)
             written_assets.append(asset.path)
             asset_transaction.register_file(asset.path)
@@ -5994,7 +6053,15 @@ def _export_to_dxf_impl(
             )
         )
         entities_written = len(msp)
-        doc.saveas(str(temp_output))
+        if publication_guard:
+            publication_guard()
+        if output_must_not_exist:
+            doc.filename = str(temp_output)
+            with temp_output.open("x", encoding=doc.output_encoding) as stream:
+                doc.write(stream)
+            record_created(temp_output)
+        else:
+            doc.saveas(str(temp_output))
         if has_source_image_order:
             verify_serialized_image_paint_order(
                 temp_output, [str(entity.dxf.handle) for entity in msp],
@@ -6040,24 +6107,34 @@ def _export_to_dxf_impl(
         verify_display_metadata(candidate, composite_expectations)
         if (capsule_records or source_fill_receipts_present or original_control_anchors) and _file_sha256(source_pdf) != source_pdf_sha256:
             raise RuntimeError('Original PDF changed during source paint export')
-        temp_output.replace(output)
+        if publication_guard:
+            publication_guard()
+        if output_must_not_exist:
+            from ..drawing_copy import _publish_file
+            _publish_file(temp_output, output)
+        else:
+            temp_output.replace(output)
     except Exception:
         _sync_text_evidence()  # the failure report names every item's evidence
         for temp_asset in temp_assets:
             try:
-                temp_asset.unlink(missing_ok=True)
+                cleanup_owned(temp_asset)
             except OSError:
                 pass
         for asset_path in written_assets:
             try:
-                asset_path.unlink(missing_ok=True)
+                cleanup_owned(asset_path)
             except OSError:
                 pass
         try:
-            temp_output.unlink(missing_ok=True)
+            cleanup_owned(temp_output)
         except OSError:
             pass
         for directory in (asset_root, asset_parent):
+            if output_must_not_exist:
+                # Protected outer rollback owns directory identity receipts.
+                # A path-only rmdir here could remove a competing replacement.
+                continue
             try:
                 directory.rmdir()
             except OSError:

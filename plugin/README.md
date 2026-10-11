@@ -5,9 +5,10 @@ Native LibreCAD 2.2.x plugin that adds to LibreCAD's **Plugins** menu:
 - `Import PDF (BlueCollar)...` - starts the importer GUI in handoff mode; after a
   successful conversion the DXF opens in the running LibreCAD
   (`QC_ApplicationWindow::slotFileOpen`, the File > Open code path).
-- `Import PDF into Current Drawing (BlueCollar)...` - same, but inserts the DXF
-  into the current drawing as a block at 0,0 (`Document_Interface::addBlockfromFromdisk`
-  + `addInsert`).
+- `Import PDF into Saved Drawing Copy (BlueCollar)...` - choose a saved DXF
+  after saving your current edits. The importer creates a new editable copy,
+  inserts the PDF at 0,0 with explicit drawing-unit conversion, and opens that
+  copy normally. The original drawing is kept.
 - `PDF Importer Settings (BlueCollar)...` - show / pin / reset the importer path.
 - `Tools > Import PDF (BlueCollar)...` - same as the first entry.
 
@@ -17,12 +18,23 @@ The plugin never converts anything itself; the unchanged importer GUI does.
 
 1. Plugin starts `lcpdf-gui.exe --librecad-handoff <%TEMP%\bc_lcpdf_handoff_*.json>`
    (or `pythonw launch_lcpdf_gui.pyw --librecad-handoff ...` for source checkouts).
+   Saved-copy import also passes `--librecad-saved-drawing <selected DXF>`.
 2. After a successful export the GUI atomically writes
    `{"schema": 1, "status": "ok", "output_path": "<abs DXF>", ...}`;
    closing the window without a finished drawing writes `{"status": "closed"}`
    (`librecad_pdf_importer/librecad_handoff.py`).
 3. The plugin polls that file (and the importer process) behind a modal
-   "waiting" dialog with **Stop Waiting**, then opens / inserts the DXF.
+   "waiting" dialog with **Stop Waiting**, then opens the finished DXF.
+
+Saved-copy import requires known drawing units and a base saved as DXF2007 or
+newer. External XREFs, unproven proxy data and cyclic/deeper-than-32 block
+graphs produce an actionable error. It namespaces the PDF's layers, styles,
+linetypes and nested blocks, retains frozen search text and paint order, and
+copies both drawings' verified images beside the new DXF. Keep that image
+folder with the copy when moving it. The PDF-only DXF and full conversion
+report are kept in a separately named import folder for review. Existing
+output files are always refused. This route does not use LibreCAD's clipboard
+or the unsafe `addBlockfromFromdisk` API.
 
 ## Importer lookup order
 

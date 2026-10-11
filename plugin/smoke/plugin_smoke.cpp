@@ -46,7 +46,7 @@ int main(int argc, char **argv) {
 
     const QStringList expected = {
         QStringLiteral("plugins_menu|Import PDF (BlueCollar)..."),
-        QStringLiteral("plugins_menu|Import PDF into Current Drawing (BlueCollar)..."),
+        QStringLiteral("plugins_menu|Import PDF into Saved Drawing Copy (BlueCollar)..."),
         QStringLiteral("plugins_menu|PDF Importer Settings (BlueCollar)..."),
         QStringLiteral("tools_menu|Import PDF (BlueCollar)..."),
     };

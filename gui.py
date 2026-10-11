@@ -15,6 +15,7 @@ import math
 import re
 import sys
 import threading
+import tempfile
 import time
 import tkinter as tk
 from dataclasses import dataclass
@@ -78,6 +79,9 @@ class ConversionOptions:
     librecad_executable: str | None = None
     # "Editable text (LibreCAD font)": words as editable TEXT in LibreCAD's font.
     editable_text: bool = False
+    saved_drawing: str | None = None
+    saved_drawing_image_folder: str | None = None
+    allow_large_merge: bool = False
 
 
 def window_title(handoff: bool, version: str = "", is_dev: bool = False) -> str:
@@ -175,17 +179,19 @@ def _path_key(path: str) -> str:
 class Pdf2DxfApp(tk.Tk):
     """Main application window."""
 
-    def __init__(self, handoff_path: str | None = None) -> None:
+    def __init__(self, handoff_path: str | None = None, saved_drawing: str | None = None) -> None:
         super().__init__()
         # Set when LibreCAD's "Plugins > Import PDF (BlueCollar)..." started
         # this window: the finished DXF path is handed back to that LibreCAD.
         self._handoff_path = handoff_path
         self._handoff_delivered = False
+        self._saved_drawing = str(Path(saved_drawing).resolve()) if saved_drawing else None
+        self._saved_drawing_image_folder = None
         self.title(window_title(
             bool(handoff_path), _importer_version(), _running_from_development_copy(),
         ))
         self.resizable(True, True)
-        self.minsize(560, 620)
+        self.minsize(560, 560 if saved_drawing else 620)
 
         # Try to set a reasonable starting size
         self.geometry("680x680")
@@ -241,6 +247,17 @@ class Pdf2DxfApp(tk.Tk):
         # ---- Output file ----
         ttk.Label(frame, text="Output DXF:").grid(row=4, column=0, sticky=tk.W, **pad)
         self._var_output = tk.StringVar()
+        if self._saved_drawing:
+            base = Path(self._saved_drawing)
+            number = 1
+            while True:
+                suffix = "" if number == 1 else f"-{number}"
+                target = base.with_name(base.stem + "-pdf-copy" + suffix + ".dxf")
+                pdf_only = target.with_name(target.stem + "-pdf-only.dxf")
+                if not target.exists() and not pdf_only.exists():
+                    self._var_output.set(str(target))
+                    break
+                number += 1
         self._ent_output = ttk.Entry(frame, textvariable=self._var_output, width=50)
         self._ent_output.grid(row=4, column=1, sticky=tk.EW, **pad)
         ttk.Button(frame, text="Browse...", command=self._browse_output).grid(
@@ -334,11 +351,22 @@ class Pdf2DxfApp(tk.Tk):
             ttk.Label(
                 frame,
                 text=(
-                    "Started from LibreCAD: after a successful conversion the DXF\n"
-                    "opens in that LibreCAD window and this window closes."
+                    (f"Saved drawing: {Path(self._saved_drawing).name}. Original kept.\n"
+                     "The new editable drawing copy opens in LibreCAD at completion."
+                     if self._saved_drawing else
+                     "Started from LibreCAD: after a successful conversion the DXF\n"
+                     "opens in that LibreCAD window and this window closes.")
                 ),
                 font=("Segoe UI", 9, "bold"),
             ).grid(row=15, column=0, columnspan=3, sticky=tk.W, padx=8, pady=(4, 0))
+            if self._saved_drawing:
+                self._var_allow_large_merge = tk.BooleanVar(value=False)
+                ttk.Checkbutton(frame, text="Allow very large merged drawings (may be slow)",
+                                variable=self._var_allow_large_merge).grid(
+                                    row=17, column=0, columnspan=3, sticky=tk.W, padx=8)
+                ttk.Button(frame, text="Locate saved drawing images...",
+                           command=self._locate_saved_drawing_images).grid(
+                               row=16, column=0, columnspan=3, sticky=tk.W, padx=8)
         else:
             ttk.Button(
                 opts_frame,
@@ -350,7 +378,7 @@ class Pdf2DxfApp(tk.Tk):
         action_frame = ttk.Frame(frame)
         action_frame.grid(row=11, column=0, columnspan=3, **pad)
         self._btn_convert = ttk.Button(
-            action_frame, text="Convert / Resume", command=self._start_conversion,
+            action_frame, text="Create drawing copy" if self._saved_drawing else "Convert / Resume", command=self._start_conversion,
         )
         self._btn_convert.pack(side=tk.LEFT, padx=4)
         self._btn_cancel = ttk.Button(
@@ -379,7 +407,7 @@ class Pdf2DxfApp(tk.Tk):
         ttk.Label(frame, text="Log:").grid(row=13, column=0, sticky=tk.NW, **pad)
         log_frame = ttk.Frame(frame)
         log_frame.grid(row=14, column=0, columnspan=3, sticky=tk.NSEW, **pad)
-        self._log_text = tk.Text(log_frame, height=10, width=1, state=tk.DISABLED,
+        self._log_text = tk.Text(log_frame, height=4 if self._saved_drawing else 10, width=1, state=tk.DISABLED,
                                  wrap=tk.WORD, font=("Consolas", 9))
         self._log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         log_scroll = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self._log_text.yview)
@@ -415,6 +443,8 @@ class Pdf2DxfApp(tk.Tk):
             old_input = self._var_input.get().strip()
             output = self._var_output.get().strip()
             self._var_input.set(path)
+            if getattr(self, "_saved_drawing", None):
+                return
             # The output follows the PDF while it still holds the name filled in
             # for the previous PDF; a name the user picked or typed stays put.
             auto_output = (
@@ -429,8 +459,9 @@ class Pdf2DxfApp(tk.Tk):
 
     def _browse_output(self) -> None:
         path = filedialog.asksaveasfilename(
-            title="Save DXF file as",
+            title="Choose a new drawing copy filename" if getattr(self, "_saved_drawing", None) else "Save DXF file as",
             defaultextension=".dxf",
+            confirmoverwrite=not bool(getattr(self, "_saved_drawing", None)),
             filetypes=[("DXF files", "*.dxf"), ("All files", "*.*")],
         )
         if path:
@@ -438,6 +469,16 @@ class Pdf2DxfApp(tk.Tk):
             # The save dialog already asked "replace?" for a file that exists,
             # so Convert does not ask again only because it is there.
             self._output_confirmed = _path_key(path) if os.path.isfile(path) else None
+
+    def _locate_saved_drawing_images(self) -> None:
+        if self._converting:
+            return
+        folder = filedialog.askdirectory(
+            title="Choose the original drawing or linked image folder",
+            initialdir=str(Path(self._saved_drawing).parent), mustexist=True,
+        )
+        if folder:
+            self._saved_drawing_image_folder = folder
 
     # ------------------------------------------------------------------
     # Logging helper
@@ -511,6 +552,10 @@ class Pdf2DxfApp(tk.Tk):
                 getattr(self, "_librecad_choice", None)
             ),
             editable_text=self._var_text_mode.get() == EDITABLE_TEXT_LABEL,
+            saved_drawing=getattr(self, "_saved_drawing", None),
+            saved_drawing_image_folder=getattr(self, "_saved_drawing_image_folder", None),
+            allow_large_merge=(self._var_allow_large_merge.get()
+                               if hasattr(self, "_var_allow_large_merge") else False),
         )
 
     def _start_conversion(self) -> None:
@@ -540,7 +585,19 @@ class Pdf2DxfApp(tk.Tk):
 
         # Never write over another drawing, or over edits saved into this one,
         # without asking first.
-        replace_reason = output_replace_reason(input_path, output_path)
+        if options.saved_drawing:
+            from librecad_pdf_importer.drawing_insert import validate_copy_destination
+            try:
+                validate_copy_destination(options.saved_drawing, input_path, output_path)
+            except ValueError as exc:
+                messagebox.showwarning("Choose a new drawing copy", str(exc))
+                return
+            except RuntimeError as exc:
+                messagebox.showwarning("Choose a new drawing copy", str(exc))
+                return
+            replace_reason = None
+        else:
+            replace_reason = output_replace_reason(input_path, output_path)
         if (
             replace_reason == "already exists"
             and getattr(self, "_output_confirmed", None) == _path_key(output_path)
@@ -582,6 +639,7 @@ class Pdf2DxfApp(tk.Tk):
         self, input_path: str, output_path: str, options: ConversionOptions,
     ) -> None:
         """Execute the conversion pipeline (runs in a worker thread)."""
+        workspace_guard = None
         try:
             from pdfcadcore.import_config import ImportConfig
             from dxf_import_engine import convert
@@ -622,6 +680,15 @@ class Pdf2DxfApp(tk.Tk):
             from pdf_open_guard import precheck_pdf
             precheck_pdf(input_path)  # clean reject for encrypted/empty/non-PDF (caught below)
 
+            expected_base_sha = None
+            if options.saved_drawing:
+                from librecad_pdf_importer.drawing_insert import preflight_saved_drawing
+                self._log(f"Checking saved drawing: {Path(options.saved_drawing).name}")
+                expected_base_sha = preflight_saved_drawing(
+                    options.saved_drawing, image_folder=options.saved_drawing_image_folder,
+                    expanded_entity_budget=None if options.allow_large_merge else 1_000_000,
+                )
+
             from librecad_pdf_importer.launchers.librecad_launcher import (
                 find_librecad_executable,
             )
@@ -632,18 +699,48 @@ class Pdf2DxfApp(tk.Tk):
             if not resolved_librecad_executable:
                 # Unbound call: tests drive this worker with a window-less namespace.
                 self.after(0, lambda: Pdf2DxfApp._show_locate_librecad(self))
+            conversion_path = output_path
+            if options.saved_drawing:
+                target = Path(output_path).resolve()
+                # A newly reserved folder protects the intermediate PDF-only DXF
+                # and keeps its complete conversion report available after merging.
+                workspace = Path(tempfile.mkdtemp(prefix=target.stem[:40] + "-pdf-import-",
+                                                  dir=target.parent)).resolve()
+                assert workspace.parent == target.parent
+                from librecad_pdf_importer.drawing_copy import _directory_identity
+                from librecad_pdf_importer.drawing_insert import PinnedConversionWorkspace
+                workspace_guard = PinnedConversionWorkspace(workspace, _directory_identity(workspace))
+                conversion_path = str(workspace / "pdf-only.dxf")
+                self._log(f"PDF-only conversion and its report folder: {workspace}")
             stats = convert(
                 input_path=input_path,
-                output_path=output_path,
+                output_path=conversion_path,
                 config=config,
                 dxf_version=dxf_version,
                 progress_callback=self._log,
-                resumable=True,
+                resumable=not bool(options.saved_drawing),
                 cancel_requested=self._cancel_event.is_set,
                 restart_on_resume_mismatch=True,
                 librecad_executable=resolved_librecad_executable,
                 editable_text=editable_text,
+                output_publication_guard=workspace_guard.check if workspace_guard else None,
+                output_must_not_exist=bool(options.saved_drawing),
             )
+
+            if options.saved_drawing:
+                from librecad_pdf_importer.drawing_insert import insert_into_saved_drawing_copy
+                merged = insert_into_saved_drawing_copy(
+                    options.saved_drawing, conversion_path, output_path,
+                    base_image_folder=options.saved_drawing_image_folder,
+                    cancel_requested=self._cancel_event.is_set,
+                    expanded_entity_budget=None if options.allow_large_merge else 1_000_000,
+                    expected_base_sha256=expected_base_sha,
+                )
+                self._log(f"Original drawing kept: {options.saved_drawing}")
+                self._log(f"PDF inserted at 0,0; unit conversion factor: {merged.insertion_scale:g}")
+                self._log(f"PDF-only DXF and conversion report kept: {conversion_path}")
+                if merged.image_folder:
+                    self._log(f"Keep the new DXF with its linked image folder: {merged.image_folder}")
 
             elapsed = time.perf_counter() - t0
             self._log("")
@@ -790,14 +887,21 @@ class Pdf2DxfApp(tk.Tk):
         except Exception as exc:  # noqa: BLE001
             from dxf_import_engine import ConversionCancelled
             from pdfcadcore.fitz_loader import PdfOpenError
+            from librecad_pdf_importer.drawing_copy import DrawingCopyCancelled
 
-            if isinstance(exc, ConversionCancelled):
+            if isinstance(exc, (ConversionCancelled, DrawingCopyCancelled)):
                 self._log(f"\n{exc}")
-                self.after(0, lambda e=exc: messagebox.showinfo(
-                    "Import paused",
-                    f"{e}\n\nCertified pages were kept in:\n{e.output_path}\n\n"
-                    "Press Convert / Resume with the same PDF and settings to continue.",
-                ))
+                if options.saved_drawing:
+                    self.after(0, lambda: messagebox.showinfo(
+                        "Drawing copy stopped", "The original drawing was kept. "
+                        "No finished drawing copy was published. Choose Create drawing copy to retry.",
+                    ))
+                else:
+                    self.after(0, lambda e=exc: messagebox.showinfo(
+                        "Import paused",
+                        f"{e}\n\nCertified pages were kept in:\n{e.output_path}\n\n"
+                        "Press Convert / Resume with the same PDF and settings to continue.",
+                    ))
             elif isinstance(exc, PdfOpenError):
                 self._log(f"\nERROR: {exc}")
                 self.after(0, lambda e=exc: messagebox.showerror("Conversion failed", str(e)))
@@ -814,6 +918,8 @@ class Pdf2DxfApp(tk.Tk):
                 ))
 
         finally:
+            if workspace_guard:
+                workspace_guard.close()
             self.after(0, self._finish_conversion)
 
     def _finish_conversion(self) -> None:
@@ -1051,17 +1157,18 @@ class Pdf2DxfApp(tk.Tk):
 # ---------------------------------------------------------------------------
 # Public launcher (called from pdf2dxf.py --gui)
 # ---------------------------------------------------------------------------
-def launch_gui(handoff_path: str | None = None) -> None:
+def launch_gui(handoff_path: str | None = None, saved_drawing: str | None = None) -> None:
     """Create and run the Pdf2DxfApp main loop.
 
     *handoff_path* is the ``--librecad-handoff`` file given by the LibreCAD
     ``Plugins > Import PDF (BlueCollar)...`` menu entry.
     """
-    app = Pdf2DxfApp(handoff_path=handoff_path)
+    app = Pdf2DxfApp(handoff_path=handoff_path, saved_drawing=saved_drawing)
     app.mainloop()
 
 
 if __name__ == "__main__":
     from librecad_pdf_importer.librecad_handoff import handoff_path_from_argv
+    from librecad_pdf_importer.drawing_insert import saved_drawing_from_argv
 
-    launch_gui(handoff_path_from_argv(sys.argv[1:]))
+    launch_gui(handoff_path_from_argv(sys.argv[1:]), saved_drawing_from_argv(sys.argv[1:]))
