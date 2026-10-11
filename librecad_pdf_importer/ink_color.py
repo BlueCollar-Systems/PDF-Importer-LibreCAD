@@ -21,6 +21,7 @@ NEAR_BLACK_MAX_SPREAD = 16
 
 INK_RULE_NEAR_BLACK = "near_black_neutral_delivered_as_black"
 PAINT_RULE_FIXED_BLACK_WHITE = "source_paint_noninverting_black_white"
+PAINT_RULE_FILL_BACKED_TEXT = "opaque_source_rectangle_backed_text_keeps_source_rgb"
 
 _BLACK = (0.0, 0.0, 0.0)
 
@@ -36,6 +37,7 @@ def rule_identity() -> dict:
         "paint_encoding_rule": PAINT_RULE_FIXED_BLACK_WHITE,
         "fixed_black_rgb": [1, 1, 1],
         "fixed_white_rgb": [254, 254, 254],
+        "fill_backed_text_rule": PAINT_RULE_FILL_BACKED_TEXT,
     }
 
 

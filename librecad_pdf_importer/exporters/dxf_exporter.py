@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+import copy
 import hashlib
 import json
 import math
@@ -48,6 +49,7 @@ from ..dxf_framing import frame_modelspace, sheet_bounds
 from ..ink_color import (
     INK_RULE_NEAR_BLACK,
     PAINT_RULE_FIXED_BLACK_WHITE,
+    PAINT_RULE_FILL_BACKED_TEXT,
     delivered_ink,
     is_remapped_near_black,
     rgb8,
@@ -5319,8 +5321,9 @@ def _export_to_dxf_impl(
             # Only positive character-bound source paint permits omission of
             # contour wires. Missing/unreadable trace data keeps prior behavior.
             text_cfg._source_text_fill_receipts = {}
+            fill_backed_text = {}
             try:
-                from ..core.text_paint import fill_only_text_receipts
+                from ..core.text_paint import fill_only_text_receipts, fill_backed_text_receipts
                 if source_pdf_sha256 is None:
                     source_pdf_sha256 = _file_sha256(source_pdf)
                 paint_page, _ = raster_session.page(source_pdf, source_pdf_sha256,
@@ -5328,6 +5331,12 @@ def _export_to_dxf_impl(
                 text_cfg._source_text_fill_receipts = fill_only_text_receipts(
                     paint_page, page.page_data.text_items, source_pdf_sha256)
                 source_fill_receipts_present |= bool(text_cfg._source_text_fill_receipts)
+                if not is_r12 and int(page.page_data.page_number) not in compositing_pages:
+                    fill_backed_text = fill_backed_text_receipts(
+                        paint_page, page.page_data.text_items, source_pdf_sha256,
+                        check_cancel=lambda: check_cancel(cancel_requested, "source text background proof"))
+            except ActivePageCancelled:
+                raise
             except (OSError, RuntimeError, TypeError, ValueError):
                 pass
             text_cfg._embedded_font_asset_paths = dict(embedded_font_paths)  # noqa: B010
@@ -5357,6 +5366,11 @@ def _export_to_dxf_impl(
                 ti = text
                 if dy != 0.0:
                     ti = _translate_positioned_text_for_page(text, dy)
+                fixed_paint = fill_backed_text.get(_source_id(text))
+                if fixed_paint is not None:
+                    # Export-only copy: never mutate source colors/character data.
+                    ti = copy.copy(ti)
+                    ti._source_fill_backed_ink_receipt = fixed_paint
                 forced_rung = forced_text_rungs.get(_source_id(ti))
                 delivery = _build_text_item(
                     ti,
@@ -5506,10 +5520,20 @@ def _export_to_dxf_impl(
                 if delivery.final_representation not in (None, "raster"):
                     # The text builder applies the same ink rule to every
                     # native or outline representation it writes.
-                    _note_ink_remap(
-                        ink_remaps, page.page_data.page_number, "text_items",
-                        getattr(text, "color", None),
-                    )
+                    if fixed_paint is not None:
+                        text_deliveries[-1]["source_fill_backed_ink"] = dict(fixed_paint)
+                        source = tuple(fixed_paint["source_rgb"])
+                        delivered = tuple(fixed_paint["delivered_rgb"])
+                        ink_remaps[(int(page.page_data.page_number), source, delivered,
+                                    PAINT_RULE_FILL_BACKED_TEXT, delivery.source_id)] = {
+                            "strokes": 0, "fills": 0, "text_items": 1,
+                            "source_context": dict(fixed_paint),
+                        }
+                    else:
+                        _note_ink_remap(
+                            ink_remaps, page.page_data.page_number, "text_items",
+                            getattr(text, "color", None),
+                        )
                     _note_paint_encoding(ink_remaps, page.page_data.page_number,
                                          "text_items", getattr(text, "color", None),
                                          is_r12=is_r12, text=True)
@@ -6529,11 +6553,12 @@ def _ink_remap_records(remaps: dict) -> List[Dict[str, Any]]:
 
     return [
         {
-            "rule": INK_RULE_NEAR_BLACK if len(key) == 2 else PAINT_RULE_FIXED_BLACK_WHITE,
+            "rule": (INK_RULE_NEAR_BLACK if len(key) == 2 else
+                     PAINT_RULE_FIXED_BLACK_WHITE if len(key) == 3 else PAINT_RULE_FILL_BACKED_TEXT),
             "source_page_number": key[0],
             "source_rgb": list(key[1]),
             "delivered_rgb": [0, 0, 0] if len(key) == 2 else list(key[2]),
-            **({} if len(key) == 2 else {"max_channel_error": 1}),
+            **({} if len(key) == 2 else {"max_channel_error": max(abs(a-b) for a, b in zip(key[1], key[2], strict=True))}),
             **counts,
         }
         for key, counts in sorted(remaps.items())

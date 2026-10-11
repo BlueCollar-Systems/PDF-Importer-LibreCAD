@@ -93,14 +93,14 @@ def test_real_pdf_cubic_keeps_source_approximation_without_refitting(writer, ver
         assert not list(reopened.modelspace().query("SPLINE"))
         delivered = vertices(entities[0])
         assert len(delivered) == len(admitted)
-        for original, final in zip(admitted, delivered):
+        for original, final in zip(admitted, delivered, strict=True):
             assert final == pytest.approx(original, abs=1e-10)
         # Independent source-curve checks: do not call the extractor's sampler.
         expected = [(x*25.4/72*scale, (300-y)*25.4/72*scale) for x, y in controls]
         assert delivered[0] == pytest.approx(expected[0], abs=1e-9)
         assert delivered[-1] == pytest.approx(expected[-1], abs=1e-9)
         worst = max(min(segment_distance(cubic_point(expected, i/512), a, b)
-                        for a, b in zip(delivered, delivered[1:])) for i in range(513))
+                        for a, b in zip(delivered, delivered[1:], strict=False)) for i in range(513))
         assert worst < 0.10*scale, "This fixture must stay close to the analytic source cubic."
         audit = reopened.audit()
         assert not audit.errors and not audit.fixes
