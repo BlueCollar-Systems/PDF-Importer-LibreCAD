@@ -2557,6 +2557,7 @@ def _attempt_labels(
         # fallback).  "Editable text (LibreCAD font)" is the operator's
         # explicit choice to accept LibreCAD's font for visible words: the
         # substitution stays disclosed per item, never certified as the look.
+        # A symbol font stays outlines: unicode.lff would draw a different character.
         accept_librecad_font_substitution = bool(
             parent == "librecad"
             and requested in {"text", "labels"}
