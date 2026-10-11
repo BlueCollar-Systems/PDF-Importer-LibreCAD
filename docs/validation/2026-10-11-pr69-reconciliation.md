@@ -1,5 +1,10 @@
 # Original font and character-frame reconciliation
 
+Final closure: [v1.0.106 converter and release acceptance](2026-10-11-v106-final-acceptance.md)
+records the completed full suite, cold converters, attested exact-byte acceptance
+and publication. Earlier incomplete validation and release statements below
+remain historical; native LibreCAD GUI acceptance is still pending.
+
 The closed draft #69 contained useful installed-family/style normalization,
 original per-character metric frames and a resume-rule identity. Those changes
 are reconciled against main at c914046 while retaining its editable-text
