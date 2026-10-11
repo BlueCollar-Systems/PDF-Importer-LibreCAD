@@ -230,6 +230,38 @@ def page_resolved_scales(pages: Iterable[Any]) -> list[Dict[str, Any]]:
     ]
 
 
+def image_delivery_after_r12(
+    image_delivery: Any, r12_pictures_omitted: Iterable[Mapping[str, Any]]
+) -> Any:
+    """``image_delivery`` with the pictures DXF R12 left out taken off "placements".
+
+    The extraction counts every picture it hands the exporter. DXF R12 cannot
+    hold one, so each is left out and only its outline is drawn; counting it as
+    placed would say the DXF holds a picture it does not. The left-out count is
+    kept beside it as ``omitted_r12`` (per page and in total).
+    """
+    omitted_by_page: Dict[int, int] = {}
+    for row in r12_pictures_omitted or ():
+        page = int(row.get("source_page_number") or 0)
+        omitted_by_page[page] = omitted_by_page.get(page, 0) + int(row.get("pictures") or 0)
+    total_omitted = sum(omitted_by_page.values())
+    if not total_omitted or not isinstance(image_delivery, Mapping):
+        return image_delivery
+    per_page = []
+    for entry in list(image_delivery.get("per_page") or ()):
+        entry = dict(entry)
+        omitted = omitted_by_page.get(int(entry.get("page") or 0), 0)
+        if omitted:
+            entry["placements"] = max(0, int(entry.get("placements") or 0) - omitted)
+            entry["omitted_r12"] = omitted
+        per_page.append(entry)
+    result = dict(image_delivery)
+    result["placements"] = max(0, int(image_delivery.get("placements") or 0) - total_omitted)
+    result["omitted_r12"] = total_omitted
+    result["per_page"] = per_page
+    return result
+
+
 # Below this the scale is reported but not offered to the user (README rule).
 SCALE_TRUST_CONFIDENCE = 0.70
 _SCALE_LABEL_PREFIX = re.compile(r"^\s*(?:SCALE|SCL\.?|SC\.?)\s*[:=]?\s*", re.I)
@@ -510,7 +542,10 @@ def write_import_report(
             "alternate_scale_factors": sorted(alternate_factors),
         },
         "auto_mode": extraction.summary().get("auto_mode"),
-        "image_delivery": extraction.summary().get("image_delivery"),
+        # Pictures DXF R12 left out are not placed: never counted as placements.
+        "image_delivery": image_delivery_after_r12(
+            extraction.summary().get("image_delivery"), r12_pictures_omitted
+        ),
         "final_rect_paint_delivery": list(getattr(run.config, "_final_rect_paint_deliveries", ()) or ()),
         "clip_fill_delivery": clip_fill_delivery,
         "source_stroke_ink_delivery": list(getattr(run.config, "_source_capsule_deliveries", ()) or ()),
@@ -755,6 +790,15 @@ def write_import_report(
             f"{prior_reason}; {degraded_reason}" if prior_reason else degraded_reason
         )
         report.extra["human_summary"] = build_human_summary(report)
+    if r12_picture_count:
+        # The shared summary writes each "_" of a reason as a space. Put the
+        # layer name back as LibreCAD's layer list shows it, so it can be found.
+        from .exporters.dxf_exporter import R12_PICTURES_OMITTED_LAYER
+
+        layer = f"P###_{R12_PICTURES_OMITTED_LAYER}"
+        report.extra["human_summary"] = str(report.extra.get("human_summary") or "").replace(
+            layer.replace("_", " "), layer
+        )
 
     provenance_objects = list(getattr(run.config, "_source_provenance_objects", []) or [])
     if provenance_objects:

@@ -108,6 +108,14 @@ def test_r12_steps_a_picture_down_to_its_outline_and_says_so(tmp_path, resumable
     assert page_report["fallback"]["used"] is True
     assert "pictures_omitted_r12" in page_report["fallback"]["reason"]
     assert "pictures omitted r12" in page_report["extra"]["human_summary"]
+    # The summary names the layer exactly as LibreCAD's layer list shows it.
+    assert "P###_PICTURES_OMITTED_R12" in page_report["extra"]["human_summary"]
+    assert "P### PICTURES OMITTED R12" not in page_report["extra"]["human_summary"]
+    # A picture R12 left out is not counted as placed.
+    delivery = page_report["extra"]["image_delivery"]
+    assert delivery["placements"] == 0 and delivery["omitted_r12"] == 1
+    assert delivery["per_page"][0]["placements"] == 0
+    assert delivery["per_page"][0]["omitted_r12"] == 1
     if resumable:
         assert report["pictures_omitted_r12"]["pictures"] == 1
         assert report["warnings"] >= 1
@@ -136,6 +144,35 @@ def test_r2010_still_keeps_the_picture(tmp_path):
     assert not [e for e in msp if _omitted_layer(e.dxf.layer)]
     assert stats["r12_picture_warning"] == ""
     assert "pictures_omitted_r12" not in page_report["extra"]
+    delivery = page_report["extra"]["image_delivery"]
+    assert delivery["placements"] == 1 and "omitted_r12" not in delivery
+
+
+def test_image_delivery_takes_only_the_left_out_pictures_off_each_page():
+    from librecad_pdf_importer.importer import image_delivery_after_r12
+
+    delivery = {
+        "placements": 3,
+        "source_instances": 3,
+        "source_kinds": {"xobject_image": 3},
+        "per_page": [
+            {"page": 1, "placements": 2, "source_instances": 2, "source_kinds": {}},
+            {"page": 2, "placements": 1, "source_instances": 1, "source_kinds": {}},
+        ],
+    }
+    rows = [{"source_page_number": 1, "pictures": 2, "layer": "P001_PICTURES_OMITTED_R12"}]
+    adjusted = image_delivery_after_r12(delivery, rows)
+    assert adjusted["placements"] == 1 and adjusted["omitted_r12"] == 2
+    assert adjusted["per_page"][0] == {
+        "page": 1, "placements": 0, "source_instances": 2, "source_kinds": {},
+        "omitted_r12": 2,
+    }
+    assert adjusted["per_page"][1] == delivery["per_page"][1]
+    # The source facts stay as the PDF has them; the input is not changed.
+    assert adjusted["source_instances"] == 3
+    assert delivery["placements"] == 3 and "omitted_r12" not in delivery["per_page"][0]
+    # Nothing left out: the block is returned as it was.
+    assert image_delivery_after_r12(delivery, []) is delivery
 
 
 def test_command_line_writes_the_r12_file_and_says_what_was_left_out(tmp_path, capsys):
