@@ -44,7 +44,7 @@ class TestLcGuiProfessionalImport(unittest.TestCase):
         self.assertNotIn("3D Text (TEXT with thickness)", self.source)
         self.assertIn('"Match PDF letter shapes": "glyphs"', self.source)
         self.assertIn('"Geometry (raw outlines)": "geometry"', self.source)
-        self.assertIn('"Raster (exact item pixels)": "raster"', self.source)
+        self.assertIn('"Raster (picture of the letters)": "raster"', self.source)
 
     def test_default_request_remains_text(self) -> None:
         self.assertEqual(gui.TEXT_MODES[gui.DEFAULT_TEXT_LABEL], "text")
