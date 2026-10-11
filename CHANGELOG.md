@@ -4,21 +4,9 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
-## 1.0.105 - 2026-10-11
+- Current main is included with the control-audit fixes. Identical coincident font-trace passes still bind that glyph. A partial census whose traces disagree still refuses to borrow another program's glyph. The installed-wheel check builds with the setuptools backend named in the project file.
 
-- The window asks before it replaces a drawing that is already there, and the new file is named after the PDF. Closing the window during a conversion waits until that conversion can stop. A scale that is not a positive number is rejected. A page list such as "1,99" is checked against the PDF before a saved resume is replaced.
-- If LibreCAD is not found, the window says so and offers **Locate LibreCAD...**. It asks before it keeps a program that is not LibreCAD.
-- The log names the drawing scale it found, and names each sheet when one PDF mixes scales. The drawing and its first view are framed by the sheets. Near-black grey ink is written as exact black so LibreCAD shows it.
-- **Exact look** stays the default: words are drawn as outlines. **Editable text (LibreCAD font)** is a separate choice that writes words LibreCAD can edit. A symbol font such as Wingdings stays outlines, because LibreCAD's own font would draw a different character. The log says where the editable copies went.
-- Same-name fonts are tied to the actual font in the PDF. When two traces of one letter disagree, the letter does not borrow the other font's shape. When the traces agree, that shape is kept. A space the PDF invented is kept only when the original font's space has no ink.
-- A sheet of real lines no longer gets a full-page picture underneath it. A bordered sheet still keeps ink the lines miss, and a frame page with colour shading is still written. A smooth colour shading stays a picture instead of stopping the file. A scan made of a photo plus a stencil mask comes in. A completely blank page still gets a page picture.
-- DXF R12 no longer loses the whole drawing because of a picture. The report names the real layer, and pictures that were left out are not counted as placed.
-- A rectangular clip cuts the lines and curves inside it, and a solid fill inside that window stays a fill. An even-odd fill keeps its hole. A smooth open curve is stored as one editable spline. A shallow bend or a dashed line stays a polyline, so dashes still work. A dashed line that sat on the hidden white mask layer is moved to a visible layer.
-- A letter that shares its painted position with the next letter no longer rejects the sheet. A word that cannot be drawn no longer rejects the sheet just because the attempt mentioned a shared text style.
-- A PDF whose page list loops says so in plain language, and the page is released afterward. A PDF that opens only because the password is blank is still reported as locked.
-- An installed copy can open and convert a PDF without the source checkout sitting on the path.
-
-## 1.0.104 - 2026-10-01
+- Drawings that used to stop now come through, on top of the control-audit fixes. A shaded fill stays a picture instead of aborting the file. A rectangular clip cuts lines and leaves solid fills as fills. An even-odd fill keeps its hole. A smooth open curve is stored as a spline. A scan made of a photo plus a stencil mask comes in. A page list that loops on itself is reported in plain language. A PDF that opens only because its password is blank is still reported as locked. One character that shares a painted position with the next letter no longer rejects the whole sheet. A dashed line on a hidden white mask layer is moved to a visible layer. A word that cannot be drawn no longer rejects the sheet just because the attempt mentioned a shared text style. Editable text still leaves a symbol font as outlines.
 
 - LibreCAD menu entry: the Windows portable ZIP ships `librecad-plugin/bc_lcpdf_menu.dll` (LibreCAD 2.2.x, Qt 5.15.2 MSVC x64). The GUI's **Install LibreCAD menu entry...** copies it to `Documents\LibreCAD\plugins`; LibreCAD then shows **Plugins > Import PDF (BlueCollar)...**, which runs the unchanged importer GUI and opens the finished DXF in that LibreCAD (or inserts it into the current drawing). New `--librecad-handoff` GUI mode; conversion output is unchanged. CI builds, load-tests (QPluginLoader) and round-trips the plugin and requires reproducible bytes.
 
