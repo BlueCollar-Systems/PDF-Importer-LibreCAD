@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import stat
 import sys
 import uuid
 from dataclasses import dataclass
@@ -184,46 +185,134 @@ def _remove_program_folder_copies(keep: Path | None) -> tuple[list[Path], list[P
     return removed, blocked
 
 
-def _remove_stale_copies(target_dir: Path, keep: Path) -> tuple[list[Path], list[Path]]:
-    removed = []
+def _user_stale_copies(target_dir: Path, keep: Path) -> list[Path]:
     candidates = [target_dir / name for name in LEGACY_DLL_NAMES]
     for folder in librecad_legacy_plugin_directories():
         candidates += [folder / PLUGIN_DLL_NAME] + [folder / name for name in LEGACY_DLL_NAMES]
-    for path in candidates:
-        try:
-            if path.exists() and path.resolve() != keep.resolve():
-                path.unlink()
-                removed.append(path)
-        except PermissionError as exc:
-            raise PluginInstallError(
-                f"LibreCAD is using an old copy of the menu plugin ({path}). "
-                "Close LibreCAD and try again."
-            ) from exc
-        except OSError:
-            pass
-    program_removed, blocked = _remove_program_folder_copies(keep)
-    return removed + program_removed, blocked
+    return [path for path in candidates if path.resolve() != keep.resolve()]
 
 
-def _clear_pinned_launcher(ini_path: Path) -> bool:
-    """Drop a Settings pin so the plugin follows this install's sidecar."""
-    if not ini_path.is_file():
-        return False
-    try:
-        lines = ini_path.read_text(encoding="utf-8", errors="surrogateescape").splitlines(True)
-    except OSError:
-        return False
+def _without_pinned_launcher(contents: bytes) -> bytes:
+    """Drop only launcher pins, retaining unrelated settings and original newlines."""
+    lines = contents.decode("utf-8", errors="surrogateescape").splitlines(True)
     kept = [
         line for line in lines
         if line.split("=", 1)[0].strip() not in PINNED_SETTING_KEYS
     ]
-    if kept == lines:
-        return False
+    return "".join(kept).encode("utf-8", errors="surrogateescape")
+
+
+def _install_file_bytes(path: Path) -> bytes | None:
+    """Read a known ordinary file; never replace or remove a linked plugin."""
     try:
-        ini_path.write_text("".join(kept), encoding="utf-8", errors="surrogateescape")
-    except OSError:
-        return False
-    return True
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+        raise OSError(f"Not an ordinary installer file: {path}")
+    return path.read_bytes()
+
+
+@dataclass
+class _InstallChange:
+    path: Path
+    previous: bytes | None
+    replacement: bytes | None
+    backup: Path | None
+    staging: Path | None
+    optional: bool = False
+    attempted: bool = False
+
+
+class _PluginInstallTransaction:
+    """Stage known files before changing the usable DLL/launcher pair.
+
+    Rollback files live beside their targets, so restoring a file uses the same
+    atomic rename even when a legacy plugin is on another volume. Their names
+    contain no '.dll', which keeps LibreCAD from loading a recovery copy.
+    """
+
+    def __init__(self) -> None:
+        self.changes: list[_InstallChange] = []
+        self.temporary: list[Path] = []
+        self.retained: set[Path] = set()
+        self.blocked: list[Path] = []
+        self.current_path: Path | None = None
+
+    def _stage(self, target: Path, contents: bytes) -> Path:
+        path = target.parent / f"bc_lcpdf_menu-{uuid.uuid4().hex}.partial"
+        # Exclusive creation owns this exact file; never overwrite another
+        # installer's staging file, even in the event of a UUID collision.
+        with path.open("xb") as stream:
+            self.temporary.append(path)
+            stream.write(contents)
+        if path.read_bytes() != contents:
+            raise OSError(f"Installer staging readback failed: {target}")
+        return path
+
+    def prepare(self, path: Path, replacement: bytes | None, *, optional: bool = False) -> bool:
+        self.current_path = path
+        previous = _install_file_bytes(path)
+        if previous == replacement:
+            return False
+        backup = self._stage(path, previous) if previous is not None else None
+        staging = self._stage(path, replacement) if replacement is not None else None
+        self.changes.append(_InstallChange(path, previous, replacement, backup, staging, optional))
+        return True
+
+    def apply(self) -> None:
+        for change in self.changes:
+            self.current_path = change.path
+            try:
+                if _install_file_bytes(change.path) != change.previous:
+                    raise OSError(f"Installer file changed during preparation: {change.path}")
+                # Record ownership before the filesystem call, including a fault
+                # that occurs after an atomic rename has already changed the file.
+                change.attempted = True
+                if change.staging is None:
+                    change.path.unlink()
+                else:
+                    os.replace(change.staging, change.path)
+            except OSError:
+                if not change.optional or _install_file_bytes(change.path) != change.previous:
+                    raise
+                # A blocked Program Files copy is a warning only when its
+                # unchanged bytes prove that the failed removal did not mutate it.
+                change.attempted = False
+                self.blocked.append(change.path)
+
+    def rollback(self) -> list[str]:
+        failures: list[str] = []
+        for change in reversed(self.changes):
+            if not change.attempted:
+                continue
+            try:
+                current = _install_file_bytes(change.path)
+                if current == change.previous:
+                    continue
+                if current != change.replacement:
+                    raise OSError("file changed outside this installation; it was not overwritten")
+                if change.backup is None:
+                    change.path.unlink()
+                else:
+                    if change.backup.read_bytes() != change.previous:
+                        raise OSError("rollback copy failed byte verification")
+                    os.replace(change.backup, change.path)
+            except OSError as exc:
+                recovery = ""
+                if change.backup is not None:
+                    self.retained.add(change.backup)
+                    recovery = f"; previous bytes retained in {change.backup}"
+                failures.append(f"{change.path}: {exc}{recovery}")
+        return failures
+
+    def discard_staging(self) -> None:
+        for path in self.temporary:
+            if path not in self.retained:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass  # An owned non-DLL recovery file cannot be loaded as a plugin.
 
 
 def _is_frozen() -> bool:
@@ -276,33 +365,54 @@ def install_librecad_plugin(
         raise PluginInstallError(f"Cannot create {target_dir}: {exc}") from exc
 
     target = target_dir / PLUGIN_DLL_NAME
-    replaced = target.exists()
-    # Staging name deliberately lacks ".dll" so LibreCAD never loads a leftover.
-    staging = target_dir / f"bc_lcpdf_menu-{uuid.uuid4().hex}.partial"
-    try:
-        staging.write_bytes(source.read_bytes())
-        os.replace(staging, target)
-    except PermissionError as exc:
-        raise PluginInstallError(
-            "LibreCAD is using the current menu plugin. Close LibreCAD and try again."
-        ) from exc
-    except OSError as exc:
-        raise PluginInstallError(f"Cannot install {target}: {exc}") from exc
-    finally:
-        if staging.exists():
-            try:
-                staging.unlink()
-            except OSError:
-                pass
-
-    removed, blocked = _remove_stale_copies(target_dir, target)
     sidecar = target_dir / SIDECAR_NAME
-    sidecar.write_text(
-        "# Written by the BlueCollar PDF Importer. The LibreCAD menu entry starts:\n"
-        f"{launcher.resolve()}\n",
-        encoding="utf-8",
-    )
-    cleared = _clear_pinned_launcher(Path(settings_ini) if settings_ini else plugin_settings_ini())
+    replaced = target.exists()
+    transaction = _PluginInstallTransaction()
+    removed: list[Path] = []
+    blocked: list[Path] = []
+    cleared = False
+    try:
+        transaction.prepare(target, source.read_bytes())
+        transaction.prepare(sidecar, (
+            "# Written by the BlueCollar PDF Importer. The LibreCAD menu entry starts:\n"
+            f"{launcher.resolve()}\n"
+        ).encode("utf-8"))
+        ini = Path(settings_ini) if settings_ini else plugin_settings_ini()
+        transaction.current_path = ini
+        old_settings = _install_file_bytes(ini)
+        if old_settings is not None:
+            cleared = transaction.prepare(ini, _without_pinned_launcher(old_settings))
+        # Stage every user-copy rollback before deleting even the first copy.
+        for path in dict.fromkeys(_user_stale_copies(target_dir, target)):
+            if transaction.prepare(path, None):
+                removed.append(path)
+        for path in dict.fromkeys(_program_folder_copies()):
+            if path.resolve() == target.resolve() or path in removed:
+                continue
+            try:
+                if transaction.prepare(path, None, optional=True):
+                    removed.append(path)
+            except OSError:
+                # Program-folder copies without write permission remain usable
+                # and are reported; never remove one without its rollback copy.
+                blocked.append(path)
+        transaction.apply()
+        blocked.extend(transaction.blocked)
+        removed = [path for path in removed if path not in blocked]
+    except OSError as exc:
+        failures = transaction.rollback()
+        detail = (
+            f"Cannot install the LibreCAD menu entry ({transaction.current_path}): {exc}.\n"
+            "Close LibreCAD, check that the plugin folder is writable and has free disk "
+            "space, then try again."
+        )
+        if failures:
+            detail += "\nSome previous files could not be restored:\n" + "\n".join(failures)
+        else:
+            detail += "\nThe previous menu files were kept or restored."
+        raise PluginInstallError(detail) from exc
+    finally:
+        transaction.discard_staging()
     return PluginInstallResult(
         dll_path=target,
         sidecar_path=sidecar,
