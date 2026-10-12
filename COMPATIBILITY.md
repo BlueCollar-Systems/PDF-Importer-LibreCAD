@@ -98,4 +98,5 @@ Exported DXF (default R2010) opens in AutoCAD 2010+, DraftSight, QCAD. R12 avail
 
 ## CI coverage
 
-GitHub Actions: pytest on Python **3.10, 3.11, 3.12**; `pdfcadcore_sync_check.py`.
+GitHub Actions: pytest on Python **3.12**; `pdfcadcore_sync_check.py`; native
+Windows plugin build/load smoke checks with Qt **5.15.2**.
