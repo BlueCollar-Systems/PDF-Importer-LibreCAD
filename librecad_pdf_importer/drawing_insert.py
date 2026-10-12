@@ -450,6 +450,11 @@ def _semantic(entity, document, ancestors, depth, cache=None):
             data = dict(resource.dxf.all_existing_dxf_attribs())
             for key in ("handle", "owner", "name"):
                 data.pop(key, None)
+            if field == "linetype" and resource.dxf.name.upper() == "CONTINUOUS":
+                # Loader reuses the native built-in record. Its human-readable
+                # description may differ; retain the role and all paint data.
+                data.pop("description", None)
+                data["builtin_role"] = "CONTINUOUS"
             if field == "layer":
                 for reference, expected_type in (("material_handle", "MATERIAL"),
                                                   ("plotstyle_handle", "ACDBPLACEHOLDER")):
