@@ -819,13 +819,20 @@ class EmbeddedFontCatalog:
                         asset.source_bytes, asset.source_format, asset.base_font_name, {}
                     )
                 with TTFont(BytesIO(original), lazy=False) as font:
-                    name = (font.getBestCmap() or {}).get(32)
+                    cmap = font.getBestCmap() or {}
+                    name = cmap.get(32)
                     if name:
                         glyphs = font.getGlyphSet()
                         pen = BoundsPen(glyphs)
                         glyphs[name].draw(pen)
                         advance = float(font["hmtx"].metrics[name][0])
                         verified = pen.bounds is None and math.isfinite(advance) and advance >= 0
+                    elif (
+                        str(asset.source_format).lower().lstrip(".") != "cff"
+                        and 32 not in cmap
+                        and "space" not in font.getGlyphOrder()
+                    ):
+                        verified = True
             except (AssertionError, AttributeError, ImportError, KeyError, OSError,
                     RuntimeError, TypeError, ValueError, struct.error):
                 pass
