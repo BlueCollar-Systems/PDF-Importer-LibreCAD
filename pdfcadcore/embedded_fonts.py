@@ -800,15 +800,45 @@ class EmbeddedFontCatalog:
         self._failures = MappingProxyType(dict(failures))
         self._candidates = tuple(candidates) or tuple(self._assets.values())
         self._empty_space_proofs = {}
+        self._source_space_glyph_ids = MappingProxyType({})
+
+    def _observed_source_space_is_empty(self, asset):
+        """Use only an original-program-bound painted space's exact glyph ID."""
+        glyph_id = self._source_space_glyph_ids.get(asset.source_sha256)
+        if (not isinstance(glyph_id, int) or isinstance(glyph_id, bool)
+                or not 0 <= glyph_id < MAX_EMBEDDED_FONT_GLYPHS
+                or str(asset.source_format).lower().lstrip(".") not in {"ttf", "otf"}):
+            return False
+        from fontTools.ttLib import TTFont
+        from fontTools.pens.boundsPen import BoundsPen
+
+        _validate_font_work_bounds(asset.source_bytes)
+        with TTFont(BytesIO(asset.source_bytes), lazy=False) as font:
+            order = font.getGlyphOrder()
+            _validate_font_work_bounds(asset.source_bytes, glyph_count=len(order))
+            if glyph_id >= len(order):
+                return False
+            name = order[glyph_id]
+            glyphs = font.getGlyphSet()
+            pen = BoundsPen(glyphs)
+            glyphs[name].draw(pen)
+            advance = float(font["hmtx"].metrics[name][0])
+            return pen.bounds is None and math.isfinite(advance) and advance >= 0
 
     def _original_space_is_empty(self, asset):
         digest = asset.source_sha256
-        if digest not in self._empty_space_proofs:
+        # Bind a cached proof to immutable original bytes as well as their claim.
+        # A different program must never reuse a same-digest cached assertion.
+        key = (digest, bytes(asset.source_bytes))
+        if key not in self._empty_space_proofs:
             verified = False
             try:
                 from fontTools.ttLib import TTFont
                 from fontTools.pens.boundsPen import BoundsPen
 
+                if _digest(asset.source_bytes) != digest:
+                    self._empty_space_proofs[key] = False
+                    return False
                 if str(asset.source_format).lower().lstrip(".") == "cff":
                     # Wrap only the original CFF encoding/charstrings. The
                     # general usable-font path requires a PDF Unicode census
@@ -826,11 +856,17 @@ class EmbeddedFontCatalog:
                         glyphs[name].draw(pen)
                         advance = float(font["hmtx"].metrics[name][0])
                         verified = pen.bounds is None and math.isfinite(advance) and advance >= 0
+                    else:
+                        # Symbolic subsets can omit a Unicode space cmap while
+                        # the PDF's actual painted-space occurrence identifies
+                        # its original glyph. Never use a repaired cmap, family
+                        # name, or synthetic spacing flag as that identity proof.
+                        verified = self._observed_source_space_is_empty(asset)
             except (AssertionError, AttributeError, ImportError, KeyError, OSError,
                     RuntimeError, TypeError, ValueError, struct.error):
                 pass
-            self._empty_space_proofs[digest] = verified
-        return self._empty_space_proofs[digest]
+            self._empty_space_proofs[key] = verified
+        return self._empty_space_proofs[key]
 
     @property
     def assets(self) -> tuple[EmbeddedFontAsset, ...]:
@@ -1197,7 +1233,17 @@ class EmbeddedFontCatalog:
                 failures.pop(delivery_name, None)
             if base_name not in ambiguous_names:
                 failures.pop(base_name, None)
-        return cls(page_number, assets, failures, candidates)
+        catalog = cls(page_number, assets, failures, candidates)
+        source_digests = {asset.source_sha256 for asset in candidates}
+        catalog._source_space_glyph_ids = MappingProxyType({
+            digest: mapping[32]
+            for digest, mapping in program_maps.items()
+            if digest in source_digests and digest not in ambiguous_programs
+            and 32 in mapping
+            and isinstance(mapping[32], int) and not isinstance(mapping[32], bool)
+            and 0 <= mapping[32] < MAX_EMBEDDED_FONT_GLYPHS
+        })
+        return catalog
 
 
 def source_control_zero_ink_proof(text_item):
