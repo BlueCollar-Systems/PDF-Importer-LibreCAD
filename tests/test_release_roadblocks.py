@@ -122,7 +122,7 @@ def test_release_build_is_hash_locked_and_ci_hash_verifies_before_publish() -> N
     publish = workflow.index("gh release create")
     assert verify < publish
     candidate_upload = workflow.index(
-        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+        "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
     )
     assert verify < candidate_upload < publish
     assert "if: failure() && steps.verify.outcome == 'failure'" in workflow
