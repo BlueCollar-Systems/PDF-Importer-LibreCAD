@@ -4,6 +4,16 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
+## 1.0.108 - 2026-10-12
+
+- Keep supported symbolic-subset text as source glyph outlines instead of item
+  images. An observed space glyph is matched to its original embedded font
+  bytes, then checked for empty ink and a valid advance; font names and inferred
+  spacing alone cannot certify it. Visible, ambiguous, unbound, and invalid
+  glyphs retain the existing reported fallback.
+- Source conversion and font-binding regressions are verified. The new Windows
+  candidate still needs fresh native LibreCAD open/save/reopen and visual checks.
+
 ## 1.0.105 - 2026-10-11
 
 - The window asks before it replaces a drawing that is already there, and the new file is named after the PDF. Closing the window during a conversion waits until that conversion can stop. A scale that is not a positive number is rejected. A page list such as "1,99" is checked against the PDF before a saved resume is replaced.
