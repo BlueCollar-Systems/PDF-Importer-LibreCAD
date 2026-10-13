@@ -84,6 +84,8 @@ class EmbeddedFontAsset:
     glyph_advances: tuple[int, ...] = field(default=(), repr=False)
     source_binding_method: str = ""
     source_program_candidates: tuple[tuple[int, str], ...] = ()
+    source_inventory_format: str = ""
+    source_inventory_type: str = ""
 
 
 def _without_subset_prefix(name: object) -> str:
@@ -473,6 +475,49 @@ def _install_pdf_unicode_cmap(
         ) from exc
 
 
+def _canonical_source_font_format(source_bytes: bytes, source_format: str) -> str:
+    """Recognize name-keyed CFF bytes behind a PDF Type0 ``cid`` label.
+
+    ``cid`` describes the PDF font container, not necessarily the extracted
+    program. Only the existing single name-keyed CFF1 representation is
+    qualified here; CID-keyed FDArray/ROS programs remain unsupported.
+    """
+    source_format = str(source_format).lower().lstrip(".")
+    if source_format != "cid":
+        return source_format
+    _validate_font_work_bounds(source_bytes)
+    if len(source_bytes) < 4 or source_bytes[0] != 1:
+        raise ExactFontSourceImpossible("cid program is not raw CFF1")
+    try:
+        from fontTools.cffLib import CFFFontSet
+    except ImportError:
+        raise ExactFontRuntimeUnavailable(
+            "free FontTools runtime required to qualify the cid font program"
+        ) from None
+    try:
+        cff = CFFFontSet()
+        cff.decompile(BytesIO(source_bytes), None, isCFF2=False)
+        if len(cff.topDictIndex) != 1:
+            raise ExactFontSourceImpossible("cid CFF program must contain exactly one font")
+        top = cff.topDictIndex[0]
+        if (any(key in top.rawDict for key in ("ROS", "FDArray", "FDSelect"))
+                or "Private" not in top.rawDict):
+            raise ExactFontSourceImpossible("CID-keyed CFF font program is unsupported")
+        order = list(top.charset)
+        _validate_font_work_bounds(source_bytes, glyph_count=len(order))
+        if not order or order[0] != ".notdef":
+            raise ExactFontSourceImpossible("cid CFF has no canonical glyph order")
+    except ExactFontSourceImpossible:
+        raise
+    except (AssertionError, AttributeError, EOFError, IndexError, KeyError,
+            OSError, TypeError, ValueError, struct.error) as exc:
+        raise ExactFontSourceImpossible(
+            f"cid CFF qualification failed: {type(exc).__name__}: {exc}"
+        ) from exc
+    return "cff"
+
+
+
 def _usable_font(
     source_bytes: bytes,
     source_format: str,
@@ -794,11 +839,23 @@ def _annotation_font_records(page):
 
 
 class EmbeddedFontCatalog:
-    def __init__(self, page_number: int, assets, failures, candidates=()) -> None:
+    def __init__(self, page_number: int, assets, failures, candidates=(),
+                 program_failures=()) -> None:
         self.page_number = int(page_number)
         self._assets = MappingProxyType(dict(assets))
         self._failures = MappingProxyType(dict(failures))
         self._candidates = tuple(candidates) or tuple(self._assets.values())
+        failed = {}
+        for digest, failure in program_failures:
+            if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ValueError("Invalid failed source-font program digest")
+            failed.setdefault(digest, []).append(failure)
+        self._program_failures = MappingProxyType({
+            digest: tuple(dict.fromkeys(rows)) for digest, rows in failed.items()
+        })
+        self._source_programs = frozenset(
+            {a.source_sha256 for a in self._candidates} | set(self._program_failures)
+        )
         self._empty_space_proofs = {}
         self._source_space_glyph_ids = MappingProxyType({})
 
@@ -891,20 +948,41 @@ class EmbeddedFontCatalog:
         """
         name = str(span_font_name or "")
         original_failure = self.failure_for_span(name)
-        if (self.for_span(name) is None
-                and original_failure.reason == "embedded_font_asset_build_failed"
-                and original_failure.error_type == "ExactFontSourceImpossible"
-                and original_failure.detail == "embedded font stream is empty"
-                and original_failure.proof_category == "source_specific_impossibility"):
-            # A renderer may expose its own substitute for a nonembedded PDF
-            # font. That buffer is not new embedded-source evidence and cannot
-            # erase the original source-specific absence proof (which callers
-            # may use for a separately authenticated exact installed font).
-            return None, original_failure
+        empty_absence = (
+            original_failure.page_number == self.page_number
+            and original_failure.reason == "embedded_font_asset_build_failed"
+            and original_failure.proof_category == "source_specific_impossibility"
+            and original_failure.detail == "embedded font stream is empty"
+            and type(original_failure.source_xref) is int
+            and original_failure.source_xref > 0
+            and not any(f.span_font_name == name
+                        for rows in self._program_failures.values() for f in rows)
+        )
+        type3_absence = (
+            name in self._failures
+            and original_failure.page_number == self.page_number
+            and original_failure.span_font_name == name
+            and original_failure.reason == "embedded_type3_font_program_unavailable"
+            and original_failure.proof_category == "source_specific_impossibility"
+        )
         chars = tuple(characters or ())
         hashes = tuple(str(c.get("source_font_program_sha256", "")) for c in chars)
+        if empty_absence and not any(digest in self._source_programs for digest in hashes):
+            # A proved empty stream is independently absent even when ActualText
+            # prevents a complete glyph census for the renderer substitute. It
+            # must never override a program actually present in this catalog.
+            return None, original_failure
         if not any(hashes):
             asset = self.for_span(name)
+            if (asset is None and self._program_failures
+                    and not (empty_absence or type3_absence)):
+                # A failed embedded program is present, but these characters
+                # do not identify it. Names cannot turn that into font absence
+                # or borrow another program's affirmative failure.
+                return None, EmbeddedFontFailure(
+                    self.page_number, name, "incomplete_source_font_character_binding",
+                    proof_category="source_font_binding_unverified_for_item",
+                )
             return asset, None if asset else self.failure_for_span(name)
         reason = ""
         if not chars or not all(
@@ -916,6 +994,23 @@ class EmbeddedFontCatalog:
         elif len(set(hashes)) != 1:
             reason = "mixed_source_font_programs_in_span"
         matches = tuple(a for a in self._candidates if hashes and a.source_sha256 == hashes[0])
+        failed = self._program_failures.get(hashes[0], ()) if hashes else ()
+        if not reason and failed:
+            if matches or len(failed) != 1:
+                reason = "ambiguous_source_font_program_failure"
+            else:
+                failure = failed[0]
+                if (failure.page_number != self.page_number
+                        or type(failure.source_xref) is not int
+                        or failure.source_xref <= 0
+                        or failure.reason != "embedded_font_asset_build_failed"):
+                    reason = "source_font_failure_identity_unverified"
+                else:
+                    # The original character program equals the extracted PDF
+                    # bytes even when its asset could not be built. Retain the
+                    # actual failure category and xref; only the occurrence's
+                    # observed spelling changes, never its font identity.
+                    return None, replace(failure, span_font_name=name)
         if not reason and not matches:
             reason = "source_character_font_program_not_in_pdf_inventory"
         if not reason and len({a.asset_id for a in matches}) != 1:
@@ -961,6 +1056,7 @@ class EmbeddedFontCatalog:
         assets: dict[str, EmbeddedFontAsset] = {}
         failures: dict[str, EmbeddedFontFailure] = {}
         candidates: list[EmbeddedFontAsset] = []
+        program_failures = []
         ambiguous_names: set[str] = set()
         ambiguous_exact_names: set[str] = set()
         glyph_maps, ambiguous_maps, trace_failure = _page_unicode_glyph_maps(page)
@@ -1030,6 +1126,8 @@ class EmbeddedFontCatalog:
                 xref = int(record[0])
                 source_format = str(record[1] or "").lower().lstrip(".")
                 source_type = str(record[2] or "")
+                source_inventory_format = source_format
+                source_inventory_type = source_type
                 base_name = _without_subset_prefix(record[3])
                 resource_name = str(record[4] or "")
                 source_encoding = str(record[5] or "")
@@ -1072,6 +1170,7 @@ class EmbeddedFontCatalog:
                 )
                 continue
 
+            source_sha = ""
             try:
                 source_bytes = bytes(data)
                 source_origin = "embedded_pdf_font"
@@ -1084,10 +1183,14 @@ class EmbeddedFontCatalog:
                     source_origin = "pdf_base14_renderer_font"
                     extracted_format = "cff"
                     extracted_type = "Base14 renderer Type1"
+                source_sha = _digest(source_bytes)
+                source_format = _canonical_source_font_format(
+                    source_bytes, extracted_format or source_format
+                )
                 extracted_base = _without_subset_prefix(extracted_name)
                 name_aliases = {base_name}
                 name_aliases.update(
-                    _font_program_name_aliases(source_bytes, extracted_format or source_format)
+                    _font_program_name_aliases(source_bytes, source_format)
                 )
                 if extracted_base and extracted_base not in name_aliases:
                     raise ExactFontSourceImpossible(
@@ -1095,9 +1198,7 @@ class EmbeddedFontCatalog:
                     )
                 if extracted_base:
                     name_aliases.add(extracted_base)
-                source_format = str(extracted_format or source_format).lower().lstrip(".")
                 source_type = str(extracted_type or source_type)
-                source_sha = _digest(source_bytes)
                 if source_sha in ambiguous_programs:
                     raise ExactFontSourceImpossible(
                         "PDF Unicode maps one character to multiple glyph ids in its source program"
@@ -1147,6 +1248,8 @@ class EmbeddedFontCatalog:
                     ascender=ascender,
                     descender=descender,
                     glyph_advances=glyph_advances,
+                    source_inventory_format=source_inventory_format,
+                    source_inventory_type=source_inventory_type,
                 )
             except ExactFontSourceImpossible as exc:
                 failures[base_name] = EmbeddedFontFailure(
@@ -1154,6 +1257,8 @@ class EmbeddedFontCatalog:
                     xref, type(exc).__name__, str(exc),
                     "source_specific_impossibility",
                 )
+                if source_sha:
+                    program_failures.append((source_sha, failures[base_name]))
                 continue
             except ExactFontRuntimeUnavailable as exc:
                 failures[base_name] = EmbeddedFontFailure(
@@ -1161,6 +1266,8 @@ class EmbeddedFontCatalog:
                     xref, type(exc).__name__, str(exc),
                     "runtime_capability_unavailable_for_item",
                 )
+                if source_sha:
+                    program_failures.append((source_sha, failures[base_name]))
                 continue
             except struct.error as exc:
                 # fontTools unpacks fixed-width headers with struct; a truncated or
@@ -1173,6 +1280,8 @@ class EmbeddedFontCatalog:
                     xref, type(exc).__name__, str(exc),
                     "source_specific_impossibility",
                 )
+                if source_sha:
+                    program_failures.append((source_sha, failures[base_name]))
                 continue
             except (AttributeError, ImportError, OSError, RuntimeError) as exc:
                 failures[base_name] = EmbeddedFontFailure(
@@ -1180,6 +1289,8 @@ class EmbeddedFontCatalog:
                     xref, type(exc).__name__, str(exc),
                     "runtime_capability_unavailable_for_item",
                 )
+                if source_sha:
+                    program_failures.append((source_sha, failures[base_name]))
                 continue
             delivery_names = trace_names or (base_name,)
             candidates.append(asset)
@@ -1233,7 +1344,7 @@ class EmbeddedFontCatalog:
                 failures.pop(delivery_name, None)
             if base_name not in ambiguous_names:
                 failures.pop(base_name, None)
-        catalog = cls(page_number, assets, failures, candidates)
+        catalog = cls(page_number, assets, failures, candidates, program_failures)
         source_digests = {asset.source_sha256 for asset in candidates}
         catalog._source_space_glyph_ids = MappingProxyType({
             digest: mapping[32]
