@@ -28,6 +28,7 @@ from .drawing_copy import (
     _directory_identity, _check_directory,
     _hash_file, _image_definitions, _ordinary_file, _resolve_image, copy_drawing_with_images,
 )
+from .planar_blocks import qualify_planar_insert_repairs
 
 BASE_FLAG = "--librecad-saved-drawing"
 MAX_DEPTH = 32
@@ -49,6 +50,7 @@ class DrawingInsertResult:
     block_name: str
     imported_entities: int
     dxf_version: str
+    planar_insert_repair_ledger: dict | None = None
 
 
 class PinnedConversionWorkspace:
@@ -179,6 +181,74 @@ def _check_base_state(document, expected):
         if actual.get(handle) != tags:
             raise DrawingCopyError("The merge changed an existing drawing entity or resource. "
                                    "The original was kept; open the converted PDF separately.")
+
+
+def _state_hash(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True,
+        separators=(",", ":"), allow_nan=False).encode("ascii")).hexdigest()
+
+
+def _planar_repair_expectations(original, plans, role, input_sha, staged_sha):
+    """Derive sole permitted group43 deltas from the retained parsed snapshot."""
+    expected = dict(original)
+    records = []
+    for plan in plans:
+        handle = plan["handle"]
+        before = original[handle]
+        after = []
+        depth = 0
+        subclass = None
+        changes = 0
+        for code, value in before:
+            if code == 102:
+                if isinstance(value, str) and value.startswith("{"):
+                    depth += 1
+                elif value == "}":
+                    depth = max(0, depth - 1)
+            if code == 100 and depth == 0:
+                subclass = value
+            if code == 43 and depth == 0 and subclass == "AcDbBlockReference":
+                if value != 0:
+                    raise DrawingCopyError("A zero Z-scale repair no longer matches its original tags.")
+                changes += 1
+                # TagCollector(optional=False) omits effective default1.
+                continue
+            after.append((code, value))
+        if changes != 1:
+            raise DrawingCopyError("A zero Z-scale repair has ambiguous original tags.")
+        expected[handle] = after
+        records.append({**plan, "parsed_tags_before_sha256": _state_hash(before),
+            "parsed_tags_after_sha256": _state_hash(after),
+            "only_permitted_delta": {"group_code": 43, "before": 0,
+                "after_effective": 1, "declared_optional_default_may_be_omitted": True}})
+    return expected, {"role": role, "input_file_sha256": input_sha,
+        "owned_staged_file_sha256": staged_sha,
+        "snapshot_scope": "Parsed owned-stage TagCollector(optional=False), with existing table-owner aliases; not a raw physical tag inventory",
+        "original_parsed_entity_state_sha256": _state_hash(original),
+        "expected_parsed_entity_state_sha256": _state_hash(expected), "repairs": records}
+
+
+def _apply_planar_repairs(document, plans):
+    for plan in plans:
+        entity = document.entitydb.get(plan["handle"])
+        if entity is None or entity.dxftype() != "INSERT" or entity.dxf.get("zscale", 1) != 0:
+            raise DrawingCopyError("A flat block changed after its planar qualification.")
+        entity.dxf.zscale = 1.0
+
+
+def _store_planar_ledger(document, name, ledger):
+    payload = json.dumps(ledger, sort_keys=True, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
+    record = document.objects.add_xrecord(owner=document.rootdict.dxf.handle)
+    record.reset([(1, payload[index:index + 200]) for index in range(0, len(payload), 200)])
+    document.rootdict.add(name, record)
+
+
+def _check_planar_ledger(document, name, expected):
+    record = document.rootdict.get(name)
+    if record is None or record.dxftype() != "XRECORD" or any(tag.code != 1 for tag in record.tags):
+        raise DrawingCopyError("The drawing copy did not preserve its flat-block repair record.")
+    if json.loads("".join(tag.value for tag in record.tags)) != expected:
+        raise DrawingCopyError("The drawing copy changed its flat-block repair record.")
 
 
 def _dictionary_state(document):
@@ -677,15 +747,51 @@ def insert_into_saved_drawing_copy(
             # The writer uses the maintenance revision declared by the new
             # format; this is version metadata, not a unit/dimension setting.
             document.header["$ACADMAINTVER"] = acad_maint_ver[document.dxfversion]
+        # Retain both original parsed states before qualification/mutation.
+        # Every later expected base tag is derived solely from these snapshots.
+        original_base_state, original_source_state = _base_state(document), _base_state(source)
+        base_dictionaries, source_dictionaries = _dictionary_state(document), _dictionary_state(source)
+        base_headers, source_headers = _header_state(document), _header_state(source)
+        base_plans = qualify_planar_insert_repairs(document, cancel_check=cancelled)
+        source_plans = qualify_planar_insert_repairs(source, cancel_check=cancelled, max_depth=MAX_DEPTH - 1)
+        repair_ledger = None
+        base_state = original_base_state
+        if base_plans or source_plans:
+            # Qualify BOTH documents completely before changing either owned copy.
+            _check_base_state(document, original_base_state)
+            _check_base_state(source, original_source_state)
+            _check_dictionaries(document, base_dictionaries)
+            _check_dictionaries(source, source_dictionaries)
+            _check_headers(document, base_headers)
+            _check_headers(source, source_headers)
+            base_state, base_record = _planar_repair_expectations(original_base_state, base_plans,
+                "base", base_sha, _hash_file(copied_base.drawing))
+            source_state, source_record = _planar_repair_expectations(original_source_state, source_plans,
+                "incoming", pdf_sha, _hash_file(copied_pdf.drawing))
+            base_record.update(original_dictionary_state_sha256=_state_hash(base_dictionaries),
+                               original_header_state_sha256=_state_hash(base_headers))
+            source_record.update(original_dictionary_state_sha256=_state_hash(source_dictionaries),
+                                 original_header_state_sha256=_state_hash(source_headers))
+            _apply_planar_repairs(document, base_plans)
+            _apply_planar_repairs(source, source_plans)
+            _check_base_state(document, base_state)
+            _check_base_state(source, source_state)
+            _check_dictionaries(document, base_dictionaries)
+            _check_dictionaries(source, source_dictionaries)
+            _check_headers(document, base_headers)
+            _check_headers(source, source_headers)
+            repair_ledger = {"schema": "bcs.planar_insert_z_scale_repairs/1.0",
+                "documents": [base_record, source_record],
+                "repair_count": len(base_plans) + len(source_plans),
+                "original_inputs_unchanged": True,
+                "transport_scope": "Incoming layer/style isolation and loader handle rebinding follow the existing strict source-semantic checks; ledger handles identify the prior owned staging documents"}
         prefix = "BCPDF_" + uuid.uuid4().hex[:12].upper()
         _isolate_special_layers(source, prefix)
         _isolate_default_text_style(source, prefix)
         _preserve_redraw_order(source)
         source_semantic = _semantic_digest(source.modelspace().entities_in_redraw_order(), source)
         source_counts = Counter(e.dxftype() for e in source.modelspace())
-        base_state = _base_state(document)
-        base_dictionaries = _dictionary_state(document)
-        base_headers = _header_state(document)
+        # Do not recapture a fresh base baseline after the permitted repair.
         block_name = prefix + "_PDF"
         block = document.blocks.new(block_name)
         loader = xref.Loader(source, document, conflict_policy=xref.ConflictPolicy.XREF_PREFIX)
@@ -703,6 +809,9 @@ def insert_into_saved_drawing_copy(
         document.layers.new(import_layer)
         document.modelspace().add_blockref(block_name, (0, 0),
             dxfattribs={"layer": import_layer, "xscale": scale, "yscale": scale, "zscale": scale})
+        ledger_name = prefix + "_PLANAR_Z_REPAIRS"
+        if repair_ledger is not None:
+            _store_planar_ledger(document, ledger_name, repair_ledger)
         merged = stage / "merged.dxf"
         _check_directory(stage, stage_identity)
         document.filename = str(merged)
@@ -717,6 +826,8 @@ def insert_into_saved_drawing_copy(
         _check_base_state(reopened, base_state)
         _check_dictionaries(reopened, base_dictionaries)
         _check_headers(reopened, base_headers)
+        if repair_ledger is not None:
+            _check_planar_ledger(reopened, ledger_name, repair_ledger)
         if reopened.units != base_units or _semantic_digest(reopened.blocks.get(block_name).entities_in_redraw_order(), reopened) != source_semantic:
             raise DrawingCopyError("Merged drawing readback changed its units or PDF geometry.")
         cancelled()
@@ -731,4 +842,4 @@ def insert_into_saved_drawing_copy(
         published = copy_drawing_with_images(merged, target, cancel_requested=cancel_requested)
         return DrawingInsertResult(published.drawing, published.image_folder, published.image_files,
             base_sha, pdf_sha, base_units, pdf_units, float(scale), block_name,
-            sum(source_counts.values()), reopened.dxfversion)
+            sum(source_counts.values()), reopened.dxfversion, repair_ledger)

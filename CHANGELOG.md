@@ -4,6 +4,20 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
+## 1.0.110 - 2026-10-14
+
+- A saved drawing copy restores a native zero Z scale only after its complete
+  block closure and occurrence contexts prove exact planar geometry, with
+  bounded records/depth, finite transforms and cancellation checks. Original
+  files stay intact; every other entity, font, paint, resource and header check
+  remains strict. The generated DXF carries a record of the exact permitted
+  scale changes and original input hashes.
+- Embedded multiline attributes and MTEXT columns conservatively remain
+  unqualified: their hidden geometry must be proved before a scale repair.
+- No RGB/ACI color rewrite or native visual equivalence is claimed. LibreCAD
+  can write zero Z scales again during a later native save. The earlier native
+  save failure remains recorded; fresh package/native checks remain pending.
+
 ## 1.0.109 - 2026-10-13
 
 - Import into a saved drawing copy accepts LibreCAD's known inactive Normal

@@ -143,6 +143,9 @@ def test_actual_native_saved_base_accepts_repeated_import_with_images_hidden_tex
     originals[pdf] = _hash(pdf)
     result = module.insert_into_saved_drawing_copy(base, pdf, target)
     merged = ezdxf.readfile(target)
+    for row in result.planar_insert_repair_ledger["documents"][0]["repairs"]:
+        assert sum(code == 43 and value == 0 for code, value in before[row["handle"]]) == 1
+        before[row["handle"]] = [(code, value) for code, value in before[row["handle"]] if code != 43]
     module._check_base_state(merged, before)
     assert merged.units == native.units == 4
     for flag in ("$GRIDMODE", "$SNAPSTYLE"):

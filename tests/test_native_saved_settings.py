@@ -60,6 +60,14 @@ def test_actual_native_saved_drawing_preserves_geometry_limits_and_resources(tmp
     target = tmp_path / "copy.dxf"
     result = module.insert_into_saved_drawing_copy(base, incoming, target)
     reopened = ezdxf.readfile(target)
+    ledger = result.planar_insert_repair_ledger
+    for row in ledger["documents"][0]["repairs"]:
+        assert sum(code == 43 and value == 0 for code, value in base_state[row["handle"]]) == 1
+        base_state[row["handle"]] = [(code, value) for code, value in base_state[row["handle"]] if code != 43]
+    for row in ledger["documents"][1]["repairs"]:
+        assert source.entitydb[row["handle"]].dxf.zscale == 0
+        source.entitydb[row["handle"]].dxf.zscale = 1
+    source_semantic = module._semantic_digest(source.modelspace().entities_in_redraw_order(), source)
     module._check_base_state(reopened, base_state)
     module._check_headers(reopened, header_state)
     assert module._semantic_digest(reopened.blocks.get(result.block_name).entities_in_redraw_order(), reopened) == source_semantic

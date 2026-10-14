@@ -2,7 +2,7 @@
 
 **BlueCollar-Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.109](https://img.shields.io/badge/Version-1.0.109-blue.svg)
+![Version: 1.0.110](https://img.shields.io/badge/Version-1.0.110-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
@@ -14,7 +14,20 @@ must substitute descends automatically to visually verified glyph outlines.
 Version 1.0.109 accepts LibreCAD's qualified inactive Normal plotstyle spelling
 when importing into a saved drawing copy, preserves the drawing's original
 limits, and compares omitted standard entity defaults without losing the bound
-font, paint or geometry checks. Fresh native package checks remain pending.
+font, paint or geometry checks.
+
+Version 1.0.110 restores zero Z scales in a new saved drawing copy only when the
+complete supported block geometry and every placement prove exactly flat. It
+keeps both input files intact and preserves the existing font, paint, resource
+and drawing-setting checks. Embedded multiline attributes and MTEXT columns
+remain unqualified because their hidden geometry requires separate proof.
+The generated DXF records each permitted scale change and the input file hashes.
+
+LibreCAD can write zero Z scales again during a later native save. The repair
+record is verified in the generated DXF; retention after LibreCAD Save remains
+untested, and the official 2.2.1.5 writer source indicates that custom records
+may be discarded. Keep the original and generated copies for traceability.
+Fresh native package save/reopen and visual checks remain pending.
 
 It also keeps words from supported symbolic PDF font subsets as editable
 source outlines when their original font and observed space glyph prove that the
