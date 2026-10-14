@@ -7,7 +7,7 @@
   "dimension_parser.py": "a8a5b53d5a10a07b3fafe6683d832f7d0bfbbff74e11ba7d31b9fb3581066989",
   "document_profiler.py": "3f6d00d442c4a9a60103db2d15a082b85c44e840ce0614d9452869373a76962a",
   "drawing_clips.py": "85478ab862e03ac1c787812f6d4e228859852e4d2c802597cb50bf633e1d4403",
-  "embedded_fonts.py": "f3fa742778ea9fe76567536d2e61abd77deb516cbe3ba2b7556b101b951f8e67",
+  "embedded_fonts.py": "d7d02b3c7abb23ff2a8e9261a63ff3fde3f3ed8ab0c2b75002656b23b3f33894",
   "fitz_loader.py": "78ec5be901a92b7218a77ba5a8ec899f0677f390e572252e419d165eb9d30f08",
   "generic_classifier.py": "fa2a97506db43b13ef60bab4244a05ab3dd0263f9ab90807e503bd962972d2cc",
   "generic_recognizer.py": "5be71ca54023f7c049932c83453dc842a390509e23972762e3a37c4f7d134501",
