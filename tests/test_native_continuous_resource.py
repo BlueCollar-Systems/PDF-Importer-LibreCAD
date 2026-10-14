@@ -33,14 +33,46 @@ def test_fresh_mixed_pdf_glyphs_merge_into_actual_native_saved_drawing(tmp_path,
     assert source.linetypes.get('CONTINUOUS').dxf.description == ''
     assert original.linetypes.get('CONTINUOUS').dxf.description == 'Solid line'
     protected = module._base_state(original)
+    expected_zero_handles = {'5D', '7C'}
+    assert {str(entity.dxf.handle) for entity in original.entitydb.values()
+            if entity.is_alive and entity.dxftype() == 'INSERT'
+            and entity.dxf.get('zscale', 1) == 0} == expected_zero_handles
     result = module.insert_into_saved_drawing_copy(base, incoming, target)
     reopened = ezdxf.readfile(target)
+    ledger = result.planar_insert_repair_ledger
+    assert ledger['repair_count'] == 2 and ledger['original_inputs_unchanged'] is True
+    base_record, source_record = ledger['documents']
+    assert base_record['role'] == 'base' and base_record['input_file_sha256'] == before[0]
+    assert source_record['role'] == 'incoming' and source_record['input_file_sha256'] == digest(incoming)
+    assert not source_record['repairs']
+    assert {row['handle'] for row in base_record['repairs']} == expected_zero_handles
+    # Derive only the exact permitted tag deletion from the retained original
+    # snapshot. Do not recapture the merged file or discard other code43 tags.
+    for row in base_record['repairs']:
+        handle = row['handle']
+        assert row['only_permitted_delta'] == {'group_code': 43, 'before': 0,
+            'after_effective': 1, 'declared_optional_default_may_be_omitted': True}
+        tags = protected[handle]
+        index = tags.index((43, 0.0))
+        subclass = tags.index((100, 'AcDbBlockReference'))
+        assert index > subclass and not any(code in {100, 102} for code, _ in tags[subclass + 1:index])
+        assert tags.count((43, 0.0)) == 1
+        after = tags[:index] + tags[index + 1:]
+        assert row['parsed_tags_before_sha256'] == module._state_hash(tags)
+        assert row['parsed_tags_after_sha256'] == module._state_hash(after)
+        assert reopened.entitydb[handle].dxftype() == 'INSERT' and reopened.entitydb[handle].dxf.zscale == 1
+        protected[handle] = after
     module._check_base_state(reopened, protected)
     assert reopened.linetypes.get('CONTINUOUS').dxf.description == 'Solid line'
     assert reopened.units == 4 and result.insertion_scale == 1
     assert result.image_files == 1
     assert any(layer.is_frozen() and layer.dxf.name.endswith('TEXT_SEARCH') for layer in reopened.layers)
     assert (digest(base), digest(pdf)) == before
+    painted = next(entity for entity in original.entitydb.values()
+                   if entity.is_alive and entity.dxftype() == 'LINE')
+    reopened.entitydb[painted.dxf.handle].dxf.true_color = 0x123456
+    with pytest.raises(DrawingCopyError, match='existing drawing entity or resource'):
+        module._check_base_state(reopened, protected)
 
 
 def small_pair(tmp_path, *, custom=False, changed=None):
