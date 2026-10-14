@@ -2,7 +2,7 @@
 
 **BlueCollar-Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.112](https://img.shields.io/badge/Version-1.0.112-blue.svg)
+![Version: 1.0.113](https://img.shields.io/badge/Version-1.0.113-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
@@ -23,11 +23,13 @@ and drawing-setting checks. Embedded multiline attributes and MTEXT columns
 remain unqualified because their hidden geometry requires separate proof.
 The generated DXF records each permitted scale change and the input file hashes.
 
-LibreCAD can write zero Z scales again during a later native save. The repair
-record is verified in the generated DXF; retention after LibreCAD Save remains
-untested, and the official 2.2.1.5 writer source indicates that custom records
-may be discarded. Keep the original and generated copies for traceability.
-Fresh native package save/reopen and visual checks remain pending.
+LibreCAD can write zero Z scales again during a later native save. Desktop
+2.2.1.5 Save As DXF 2007 and fresh reopen succeeded for the public v1.0.111
+candidate fixture, retaining its forward planar geometry. That native writer
+changed black true-color fields to adaptive ACI 7, reduced HEADER extents to
+ink bounds and discarded the repair record. Strict source equality and whole
+page rendered parity are not established. Keep original and generated copies
+for traceability; each new candidate still requires its own native checks.
 
 Version 1.0.111 preserves a saved drawing's valid HEADER frame and expands the
 copy's bounds to include the imported sheet, margins and page offsets after
@@ -38,6 +40,20 @@ payloads or wide polylines without a valid declared frame require a fresh standa
 LibreCAD. This bounds fallback does not prove exact font or paint appearance.
 Original files stay intact; compiled-package and native save/reopen acceptance
 remain pending.
+
+Version 1.0.113 preserves the exact eight-tag native print-settings record while
+giving it a valid standard dictionary owner and a readable setup name. Its handle
+must be unique and unreferenced in both physical and retained parsed input.
+LibreCAD uses this record for page tiling and margins even without references:
+the complete ordered base print callbacks are checked from original physical
+tags to final physical output under the pinned LibreCAD 2.2.1.5 parser. Incoming
+print objects cannot replace the base print settings. Original raw bytes,
+parsed tags and the explicit owner/name/dictionary changes are archived; both
+inputs remain byte-identical. Every other entity, font, paint, resource, layout
+and setting stays guarded. The final generated DXF must audit with zero errors
+and zero fixes. Unknown, altered or referenced records are never automatically
+rehomed. Native Save may discard the archive and change paint, Z-scale or framing;
+complete native equivalence and the new compiled/native candidate remain pending.
 
 It also keeps words from supported symbolic PDF font subsets as editable
 source outlines when their original font and observed space glyph prove that the

@@ -30,6 +30,10 @@ from .drawing_copy import (
 )
 from .planar_blocks import qualify_planar_insert_repairs
 from .drawing_bounds import document_bounds, merged_bounds
+from .native_plot_settings import (
+    qualify_native_plot_settings, apply_native_plot_settings, native_plot_callback_sequence,
+    check_native_plot_rehome,
+)
 
 BASE_FLAG = "--librecad-saved-drawing"
 MAX_DEPTH = 32
@@ -53,6 +57,7 @@ class DrawingInsertResult:
     dxf_version: str
     planar_insert_repair_ledger: dict | None = None
     drawing_bounds_provenance: dict | None = None
+    native_plot_settings_rehome: dict | None = None
 
 
 class PinnedConversionWorkspace:
@@ -748,10 +753,22 @@ def insert_into_saved_drawing_copy(
         original_base_state, original_source_state = _base_state(document), _base_state(source)
         base_dictionaries, source_dictionaries = _dictionary_state(document), _dictionary_state(source)
         base_headers, source_headers = _header_state(document), _header_state(source)
+        base_plot_plans = qualify_native_plot_settings(copied_base.drawing, document,
+            original_base_state, base_dictionaries, base_headers, cancel_check=cancelled)
+        source_plot_plans = qualify_native_plot_settings(copied_pdf.drawing, source,
+            original_source_state, source_dictionaries, source_headers, cancel_check=cancelled)
+        base_print_callbacks = incoming_print_callbacks = None
+        if base_plot_plans or source_plot_plans:
+            base_print_callbacks = native_plot_callback_sequence(base_path, cancel_check=cancelled)
+            incoming_print_callbacks = native_plot_callback_sequence(pdf_path, cancel_check=cancelled)
+            if (native_plot_callback_sequence(copied_base.drawing, cancel_check=cancelled) != base_print_callbacks
+                    or native_plot_callback_sequence(copied_pdf.drawing, cancel_check=cancelled) != incoming_print_callbacks):
+                raise DrawingCopyError("Owned staging changed native print callback fields or order.")
         base_plans = qualify_planar_insert_repairs(document, cancel_check=cancelled)
         source_plans = qualify_planar_insert_repairs(source, cancel_check=cancelled, max_depth=MAX_DEPTH - 1)
         repair_ledger = None
         base_state = original_base_state
+        source_state = original_source_state
         if base_plans or source_plans:
             # Qualify BOTH documents completely before changing either owned copy.
             _check_base_state(document, original_base_state)
@@ -781,6 +798,61 @@ def insert_into_saved_drawing_copy(
                 "repair_count": len(base_plans) + len(source_plans),
                 "original_inputs_unchanged": True,
                 "transport_scope": "Incoming layer/style isolation and loader handle rebinding follow the existing strict source-semantic checks; ledger handles identify the prior owned staging documents"}
+        plot_archive = None
+        if base_plot_plans or source_plot_plans:
+            cancelled()
+            _check_base_state(document, base_state)
+            _check_base_state(source, source_state)
+            _check_dictionaries(document, base_dictionaries)
+            _check_dictionaries(source, source_dictionaries)
+            _check_headers(document, base_headers)
+            _check_headers(source, source_headers)
+            rows = []
+            for role, doc, plans, expected, original_state, input_sha, staged in (
+                ("base", document, base_plot_plans, base_state, original_base_state, base_sha, copied_base.drawing),
+                ("incoming", source, source_plot_plans, source_state, original_source_state, pdf_sha, copied_pdf.drawing)):
+                retained = dict(expected)
+                for plan in plans:
+                    if retained.get(plan["handle"]) != plan["parsed_before_tags"]:
+                        raise DrawingCopyError("Qualified print settings changed before rehoming.")
+                    retained[plan["handle"]] = plan["parsed_after_tags"]
+                rows.append({"role": role, "original_input_sha256": input_sha,
+                    "owned_staged_input_sha256": _hash_file(staged), "records": plans,
+                    "original_parsed_entity_state_sha256": _state_hash(original_state),
+                    "original_dictionary_state_sha256": _state_hash(base_dictionaries if role == "base" else source_dictionaries),
+                    "original_header_state_sha256": _state_hash(base_headers if role == "base" else source_headers),
+                    "before_rehome_state_sha256": _state_hash(expected),
+                    "expected_after_rehome_state_sha256": _state_hash(retained)})
+                apply_native_plot_settings(doc, plans)
+                _check_base_state(doc, retained)
+                dictionary_state = base_dictionaries if role == "base" else source_dictionaries
+                for plan in plans:
+                    # Derive sole dictionary entry additions from the retained
+                    # original map; never recapture a replacement baseline.
+                    dictionary_state = {key: dict(value) for key, value in dictionary_state.items()}
+                    dictionary_state[plan["dictionary_handle"]][plan["setup_name"]] = plan["handle"]
+                if role == "base":
+                    base_state = retained
+                    base_dictionaries = dictionary_state
+                else:
+                    source_state = retained
+                    source_dictionaries = dictionary_state
+            _check_dictionaries(document, base_dictionaries)
+            _check_dictionaries(source, source_dictionaries)
+            _check_headers(document, base_headers)
+            _check_headers(source, source_headers)
+            plot_archive = {"schema": "bcs.native_plot_settings_rehome/1.0", "documents": rows,
+                "record_count": len(base_plot_plans) + len(source_plot_plans), "original_inputs_unchanged": True,
+                "scope": "Exact physically and parsed unreferenced native eight-tag records rehomed only in owned copies. Only owner330/name1 and standard dictionary entry additions change. All print fields and original record identity/order remain. Raw bytes and original parsed tags archived; incoming unused print objects are not imported.",
+                "print_callback_proof": {"host_source_commit": "7ebab007d9eb4c68609388b835a2487648f0877b",
+                    "scope": "LibreCAD 2.2.1.5 DRW_PlotSettings constructor/parser and RS_FilterDXFRW addPlotSettings; physical code6/40..43 defaults/last-value callbacks in OBJECTS order, not visual or native Save acceptance",
+                    "original_base_ordered_callbacks": base_print_callbacks,
+                    "incoming_callbacks_not_imported": incoming_print_callbacks,
+                    "expected_final_ordered_callbacks": base_print_callbacks},
+                "native_Save_archive_retention": "Not established; retain the original drawing. Native writers may discard custom provenance records."}
+            # Bind the JSON transport representation once; tuple/list changes
+            # must not make an otherwise exact physical XRECORD fail equality.
+            plot_archive = json.loads(json.dumps(plot_archive, ensure_ascii=True, allow_nan=False))
         base_bounds = document_bounds(document, cancel_check=cancelled, max_records=max_records)
         incoming_bounds = document_bounds(source, cancel_check=cancelled, max_records=max_records)
         output_bounds = merged_bounds(base_bounds, incoming_bounds, scale)
@@ -805,6 +877,7 @@ def insert_into_saved_drawing_copy(
         _check_base_state(document, base_state)
         _check_dictionaries(document, base_dictionaries)
         _check_headers(document, base_headers)
+        check_native_plot_rehome(document, base_plot_plans)
         if Counter(e.dxftype() for e in block) != source_counts or _semantic_digest(block.entities_in_redraw_order(), document) != source_semantic:
             raise DrawingCopyError("The resource loader could not preserve every PDF entity, "
                                    "block, layer, text style or fill. Open the converted PDF separately.")
@@ -822,6 +895,9 @@ def insert_into_saved_drawing_copy(
         ledger_name = prefix + "_PLANAR_Z_REPAIRS"
         if repair_ledger is not None:
             _store_planar_ledger(document, ledger_name, repair_ledger)
+        plot_archive_name = prefix + "_PLOT_REHOME_LEDGER"
+        if plot_archive is not None:
+            _store_planar_ledger(document, plot_archive_name, plot_archive)
         merged = stage / "merged.dxf"
         _check_directory(stage, stage_identity)
         document.filename = str(merged)
@@ -836,8 +912,22 @@ def insert_into_saved_drawing_copy(
         _check_base_state(reopened, base_state)
         _check_dictionaries(reopened, base_dictionaries)
         _check_headers(reopened, output_headers)
+        check_native_plot_rehome(reopened, base_plot_plans)
         if repair_ledger is not None:
             _check_planar_ledger(reopened, ledger_name, repair_ledger)
+        if plot_archive is not None:
+            record = reopened.rootdict.get(plot_archive_name)
+            if (record is None or record.dxftype() != "XRECORD" or any(tag.code != 1 for tag in record.tags)
+                    or json.loads("".join(tag.value for tag in record.tags)) != plot_archive):
+                raise DrawingCopyError("The drawing copy did not preserve its print-settings rehome ledger.")
+            if native_plot_callback_sequence(merged, cancel_check=cancelled) != base_print_callbacks:
+                raise DrawingCopyError("The drawing copy changed native print callback fields, order or multiplicity.")
+        # Audit a separate parsed copy; never silently repair the retained
+        # physical document or accept arbitrary audit changes as equivalent.
+        audit = ezdxf.readfile(merged).audit()
+        if audit.errors or audit.fixes:
+            raise DrawingCopyError("The generated drawing has unsupported DXF audit changes. "
+                                   "The original was kept; open the converted PDF separately.")
         if reopened.units != base_units or _semantic_digest(reopened.blocks.get(block_name).entities_in_redraw_order(), reopened) != source_semantic:
             raise DrawingCopyError("Merged drawing readback changed its units or PDF geometry.")
         cancelled()
@@ -852,4 +942,4 @@ def insert_into_saved_drawing_copy(
         published = copy_drawing_with_images(merged, target, cancel_requested=cancel_requested)
         return DrawingInsertResult(published.drawing, published.image_folder, published.image_files,
             base_sha, pdf_sha, base_units, pdf_units, float(scale), block_name,
-            sum(source_counts.values()), reopened.dxfversion, repair_ledger, bounds_provenance)
+            sum(source_counts.values()), reopened.dxfversion, repair_ledger, bounds_provenance, plot_archive)

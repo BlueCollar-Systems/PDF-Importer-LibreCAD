@@ -68,6 +68,21 @@ def test_actual_native_saved_drawing_preserves_geometry_limits_and_resources(tmp
         assert source.entitydb[row["handle"]].dxf.zscale == 0
         source.entitydb[row["handle"]].dxf.zscale = 1
     source_semantic = module._semantic_digest(source.modelspace().entities_in_redraw_order(), source)
+    archive = result.native_plot_settings_rehome
+    assert archive["record_count"] == 1 and archive["original_inputs_unchanged"] is True
+    base_archive, incoming_archive = archive["documents"]
+    expected_row = base_archive if native_role == "base" else incoming_archive
+    assert expected_row["original_input_sha256"] == FIXTURE_SHA
+    assert [row["handle"] for row in expected_row["records"]] == ["1F4"]
+    assert not (incoming_archive if native_role == "base" else base_archive)["records"]
+    if native_role == "base":
+        assert module._state_hash(base_state["1F4"]) == module._state_hash(expected_row["records"][0]["parsed_before_tags"])
+        # Independently derive ONLY owner330/name1 from retained original tags.
+        # All printing fields, identity, geometry, font/paint resources stay strict.
+        plan = expected_row["records"][0]
+        base_state["1F4"] = [(code, plan["dictionary_handle"] if code == 330 else
+            plan["setup_name"] if code == 1 else value) for code, value in base_state["1F4"]]
+        assert module._state_hash(base_state["1F4"]) == module._state_hash(plan["parsed_after_tags"])
     module._check_base_state(reopened, base_state)
     # The only new header delta is the independently expected union of the
     # native sheet and the public incoming line, regardless of merge role.

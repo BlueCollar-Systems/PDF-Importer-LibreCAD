@@ -741,6 +741,9 @@ class Pdf2DxfApp(tk.Tk):
                 ledger = getattr(merged, "planar_insert_repair_ledger", None)
                 if ledger:
                     self._log(f"Made {ledger['repair_count']} flat block inserts compatible with other DXF readers; the original file was kept.")
+                plot_archive = getattr(merged, "native_plot_settings_rehome", None)
+                if plot_archive:
+                    self._log("Preserved the saved drawing's page tiling and margins; original drawings were kept.")
                 self._log(f"PDF-only DXF and conversion report kept: {conversion_path}")
                 if merged.image_folder:
                     self._log(f"Keep the new DXF with its linked image folder: {merged.image_folder}")

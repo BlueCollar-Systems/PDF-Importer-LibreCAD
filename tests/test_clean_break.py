@@ -130,10 +130,18 @@ class TestRule5GuiCheckboxesRemoved(unittest.TestCase):
         self.assertNotIn("_var_mode", self.source)
         self.assertNotIn('text="Mode:"', self.source)
 
-    def test_gui_text_default_is_native_text_for_2d_lc(self) -> None:
+    def test_gui_outlined_default_and_explicit_editable_choice_are_distinct(self) -> None:
         self.assertIn('tk.StringVar(value=DEFAULT_TEXT_LABEL)', self.source)
-        self.assertIn('mode == "text"', self.source)
         self.assertIn('text_mode=TEXT_MODES[self._var_text_mode.get()]', self.source)
+        try:
+            import gui
+        except ModuleNotFoundError as exc:
+            if exc.name == "tkinter":
+                self.skipTest("Tkinter is unavailable for the runtime GUI contract")
+            raise
+        self.assertEqual(gui.DEFAULT_TEXT_LABEL, "Exact look - text as outlines (default)")
+        self.assertEqual(gui.TEXT_MODES[gui.DEFAULT_TEXT_LABEL], "glyphs")
+        self.assertEqual(gui.TEXT_MODES[gui.EDITABLE_TEXT_LABEL], "text")
 
 
 class TestTextDefaults(unittest.TestCase):

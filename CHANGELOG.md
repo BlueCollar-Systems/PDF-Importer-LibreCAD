@@ -4,6 +4,22 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
+## 1.0.113 - 2026-10-14
+
+- Rehome the exact unreferenced eight-tag native plot record into the standard
+  print-settings dictionary, keeping its identity, order and printing fields.
+  Qualify exact OBJECTS bytes, global unique handles and complete physical/parsed
+  reference closure before changing either copy. Archive original bytes/tags and
+  explicit owner/name/dictionary deltas; both original inputs remain unchanged.
+- Compare complete original/final physical base print callbacks under the pinned
+  LibreCAD 2.2.1.5 parser, including defaults and ordered margins/page tiling.
+  Incoming print objects cannot override the base. Preserve every other
+  entity, font, paint, resource and header guard, and require physical ledger
+  readback plus zero final audit errors/fixes. Native Save retention/equivalence
+  is not implied.
+- Correct the obsolete GUI default regression contract. The shared-core guard
+  is separately updated to pin the already-reviewed report variant exactly.
+
 ## 1.0.112 - 2026-10-14
 
 - Make the window's Exact look default request grouped glyph outlines directly.
