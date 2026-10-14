@@ -29,6 +29,7 @@ from .drawing_copy import (
     _hash_file, _image_definitions, _ordinary_file, _resolve_image, copy_drawing_with_images,
 )
 from .planar_blocks import qualify_planar_insert_repairs
+from .drawing_bounds import document_bounds, merged_bounds
 
 BASE_FLAG = "--librecad-saved-drawing"
 MAX_DEPTH = 32
@@ -51,6 +52,7 @@ class DrawingInsertResult:
     imported_entities: int
     dxf_version: str
     planar_insert_repair_ledger: dict | None = None
+    drawing_bounds_provenance: dict | None = None
 
 
 class PinnedConversionWorkspace:
@@ -275,25 +277,19 @@ def _header_state(document):
 
 def _check_headers(document, expected):
     actual = _header_state(document)
-    # The writer synchronizes these cached bounds from the modelspace LAYOUT.
-    # Existing LAYOUT and VPORT records remain separately protected, including
-    # their bounds and view settings. Arbitrary header changes still fail.
-    bounds = {"$EXTMIN": _plain(document.modelspace().dxf.extmin),
-              "$EXTMAX": _plain(document.modelspace().dxf.extmax)}
-    if any(actual.get(key) != value and not (
-            key in bounds and actual.get(key) == bounds[key]) for key, value in expected.items()):
+    if any(actual.get(key) != value for key, value in expected.items()):
         raise DrawingCopyError("The merge changed an existing drawing unit, dimension or header setting.")
 
 
 def _write_merged_drawing(document, stream):
-    """Retain native grid flags and the drawing's actual header limits."""
+    """Retain native grid flags and the drawing's declared header frame."""
     flags = {key: document.header.get(key) for key in ("$GRIDMODE", "$SNAPSTYLE")
              if key in document.header.varnames() and key not in HEADER_VAR_MAP}
     # LibreCAD can retain real drawing limits in HEADER while its modelspace
     # LAYOUT contains default paper dimensions. ezdxf synchronizes the header
     # from that LAYOUT immediately before export. Preserve both original
     # records; changing either one would fail the existing strict readback.
-    limits = {key: document.header.get(key) for key in ("$LIMMIN", "$LIMMAX")
+    limits = {key: document.header.get(key) for key in ("$LIMMIN", "$LIMMAX", "$EXTMIN", "$EXTMAX")
               if key in document.header.varnames()}
     if not flags and not limits:
         document.write(stream)
@@ -785,6 +781,14 @@ def insert_into_saved_drawing_copy(
                 "repair_count": len(base_plans) + len(source_plans),
                 "original_inputs_unchanged": True,
                 "transport_scope": "Incoming layer/style isolation and loader handle rebinding follow the existing strict source-semantic checks; ledger handles identify the prior owned staging documents"}
+        base_bounds = document_bounds(document, cancel_check=cancelled, max_records=max_records)
+        incoming_bounds = document_bounds(source, cancel_check=cancelled, max_records=max_records)
+        output_bounds = merged_bounds(base_bounds, incoming_bounds, scale)
+        bounds_provenance = {"schema": "bcs.saved_copy_drawing_bounds/1.0",
+            "base": base_bounds.record() if base_bounds is not None else None,
+            "incoming": incoming_bounds.record() if incoming_bounds is not None else None,
+            "merged": output_bounds.record(), "insertion_scale": float(scale),
+            "base_input_sha256": base_sha, "incoming_input_sha256": pdf_sha}
         prefix = "BCPDF_" + uuid.uuid4().hex[:12].upper()
         _isolate_special_layers(source, prefix)
         _isolate_default_text_style(source, prefix)
@@ -804,6 +808,12 @@ def insert_into_saved_drawing_copy(
         if Counter(e.dxftype() for e in block) != source_counts or _semantic_digest(block.entities_in_redraw_order(), document) != source_semantic:
             raise DrawingCopyError("The resource loader could not preserve every PDF entity, "
                                    "block, layer, text style or fill. Open the converted PDF separately.")
+        # The only declared header changes follow qualification and strict
+        # loader checks against the retained original, never a fresh baseline.
+        output_headers = dict(base_headers)
+        for key, value in (("$EXTMIN", output_bounds.minimum), ("$EXTMAX", output_bounds.maximum)):
+            document.header[key] = value
+            output_headers[key] = _plain(document.header[key])
         # Keep the imported block on a fresh visible layer independent of the base's active layer.
         import_layer = prefix + "_IMPORT"
         document.layers.new(import_layer)
@@ -825,7 +835,7 @@ def insert_into_saved_drawing_copy(
         reopened = ezdxf.readfile(merged)
         _check_base_state(reopened, base_state)
         _check_dictionaries(reopened, base_dictionaries)
-        _check_headers(reopened, base_headers)
+        _check_headers(reopened, output_headers)
         if repair_ledger is not None:
             _check_planar_ledger(reopened, ledger_name, repair_ledger)
         if reopened.units != base_units or _semantic_digest(reopened.blocks.get(block_name).entities_in_redraw_order(), reopened) != source_semantic:
@@ -842,4 +852,4 @@ def insert_into_saved_drawing_copy(
         published = copy_drawing_with_images(merged, target, cancel_requested=cancel_requested)
         return DrawingInsertResult(published.drawing, published.image_folder, published.image_files,
             base_sha, pdf_sha, base_units, pdf_units, float(scale), block_name,
-            sum(source_counts.values()), reopened.dxfversion, repair_ledger)
+            sum(source_counts.values()), reopened.dxfversion, repair_ledger, bounds_provenance)

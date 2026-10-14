@@ -176,7 +176,12 @@ def test_native_dimensions_paperspace_headers_and_base_draw_order(tmp_path):
     dim.render()
     paper = doc.layouts.new("FICTIONAL_SHEET")
     paper.add_text("BASE sheet", dxfattribs={"height": .25})
-    doc.saveas(base)
+    # A native saved sheet carries a declared frame. This synthetic DXF must
+    # author that frame too: no approximate DIMENSION/text bbox is a proof.
+    from librecad_pdf_importer import drawing_insert as module
+    doc.header["$EXTMIN"], doc.header["$EXTMAX"] = (-10, -10, 0), (20, 20, 0)
+    with base.open("w", encoding=doc.output_encoding) as stream:
+        module._write_merged_drawing(doc, stream)
     drawing(pdf, 4, 25.4)
     original = ezdxf.readfile(base)
     result = insert_into_saved_drawing_copy(base, pdf, out)

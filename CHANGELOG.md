@@ -4,6 +4,21 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
+## 1.0.111 - 2026-10-14
+
+- Preserve valid physical HEADER extents independently of native LAYOUT caches,
+  and expand the drawing copy's bounds by the complete imported sheet frame in
+  the base drawing's units. Reject arbitrary extent/header changes on readback.
+- Missing/inverted frames use a bounded visible planar control envelope only
+  when the complete active geometry is supported. Visibility-aware cached block
+  closures retain layer-zero inheritance; active text/dimensions, unknown data,
+  wide polyline joins, arrays, cycles, nonfinite coordinates and exceeded proof
+  budgets fail closed when no valid declared frame exists.
+  The result identifies declared-sheet versus conservative-control provenance.
+- Keep all source files, existing layouts, view settings, fonts, paint, resources
+  and unit guards intact. No native Save ledger durability or appearance result
+  is inferred; compiled and native checks remain pending.
+
 ## 1.0.110 - 2026-10-14
 
 - A saved drawing copy restores a native zero Z scale only after its complete

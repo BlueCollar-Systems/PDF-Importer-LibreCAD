@@ -69,7 +69,13 @@ def test_actual_native_saved_drawing_preserves_geometry_limits_and_resources(tmp
         source.entitydb[row["handle"]].dxf.zscale = 1
     source_semantic = module._semantic_digest(source.modelspace().entities_in_redraw_order(), source)
     module._check_base_state(reopened, base_state)
+    # The only new header delta is the independently expected union of the
+    # native sheet and the public incoming line, regardless of merge role.
+    header_state["$EXTMIN"] = [0.0, 0.0, 0.0]
+    header_state["$EXTMAX"] = list(native.header["$EXTMAX"])
     module._check_headers(reopened, header_state)
+    assert result.drawing_bounds_provenance["merged"]["minimum"] == [0.0, 0.0, 0.0]
+    assert result.drawing_bounds_provenance["merged"]["maximum"] == list(native.header["$EXTMAX"])
     assert module._semantic_digest(reopened.blocks.get(result.block_name).entities_in_redraw_order(), reopened) == source_semantic
     assert tuple(reopened.header["$LIMMAX"]) == tuple(original_base.header["$LIMMAX"])
     assert Vec3(reopened.modelspace().dxf.limmax) == Vec3(original_base.modelspace().dxf.limmax)
@@ -189,7 +195,9 @@ def test_incoming_default_font_is_transported_without_changing_base_standard(tmp
     doc.styles.get("Standard").dxf.font = "PUBLIC_BASE_FACE.ttf"
     doc.styles.get("Standard").dxf.width = 1.5
     doc.modelspace().add_text("PUBLIC base text")
-    doc.saveas(base)
+    doc.header["$EXTMIN"], doc.header["$EXTMAX"] = (-5, -5, 0), (200, 200, 0)
+    with base.open("x", encoding=doc.output_encoding) as stream:
+        module._write_merged_drawing(doc, stream)
     incoming = ezdxf.new("R2007")
     incoming.units = 4
     incoming.styles.get("Standard").dxf.font = "PUBLIC_SOURCE_FACE.ttf"
@@ -203,7 +211,9 @@ def test_incoming_default_font_is_transported_without_changing_base_standard(tmp
         reference = incoming.modelspace().add_blockref(block.name, (1, 2))
         entity = reference.add_attrib("PUBLIC_TAG", "PUBLIC incoming text", (1, 2)) if kind == "ATTRIB" else block.add_attdef("PUBLIC_TAG", (0, 0), "PUBLIC incoming definition")
     entity.dxf.discard("style")
-    incoming.saveas(source)
+    incoming.header["$EXTMIN"], incoming.header["$EXTMAX"] = (-10, -10, 0), (250, 250, 0)
+    with source.open("x", encoding=incoming.output_encoding) as stream:
+        module._write_merged_drawing(incoming, stream)
     before = digest(base), digest(source)
     result = module.insert_into_saved_drawing_copy(base, source, target)
     merged = ezdxf.readfile(target)

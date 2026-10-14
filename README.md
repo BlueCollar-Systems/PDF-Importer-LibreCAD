@@ -2,7 +2,7 @@
 
 **BlueCollar-Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.110](https://img.shields.io/badge/Version-1.0.110-blue.svg)
+![Version: 1.0.111](https://img.shields.io/badge/Version-1.0.111-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
@@ -28,6 +28,16 @@ record is verified in the generated DXF; retention after LibreCAD Save remains
 untested, and the official 2.2.1.5 writer source indicates that custom records
 may be discarded. Keep the original and generated copies for traceability.
 Fresh native package save/reopen and visual checks remain pending.
+
+Version 1.0.111 preserves a saved drawing's valid HEADER frame and expands the
+copy's bounds to include the imported sheet, margins and page offsets after
+drawing-unit conversion. Separate original LAYOUT and view settings stay intact.
+Missing or inverted frames use a bounded conservative control envelope only
+for supported visible planar geometry. Active text, dimensions or unsupported
+payloads or wide polylines without a valid declared frame require a fresh standard DXF save in
+LibreCAD. This bounds fallback does not prove exact font or paint appearance.
+Original files stay intact; compiled-package and native save/reopen acceptance
+remain pending.
 
 It also keeps words from supported symbolic PDF font subsets as editable
 source outlines when their original font and observed space glyph prove that the
