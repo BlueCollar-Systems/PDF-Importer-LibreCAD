@@ -4,6 +4,79 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
+## 1.0.113 - 2026-10-14
+
+- Rehome the exact unreferenced eight-tag native plot record into the standard
+  print-settings dictionary, keeping its identity, order and printing fields.
+  Qualify exact OBJECTS bytes, global unique handles and complete physical/parsed
+  reference closure before changing either copy. Archive original bytes/tags and
+  explicit owner/name/dictionary deltas; both original inputs remain unchanged.
+- Compare complete original/final physical base print callbacks under the pinned
+  LibreCAD 2.2.1.5 parser, including defaults and ordered margins/page tiling.
+  Incoming print objects cannot override the base. Preserve every other
+  entity, font, paint, resource and header guard, and require physical ledger
+  readback plus zero final audit errors/fixes. Native Save retention/equivalence
+  is not implied.
+- Correct the obsolete GUI default regression contract. The shared-core guard
+  is separately updated to pin the already-reviewed report variant exactly.
+
+## 1.0.112 - 2026-10-14
+
+- Make the window's Exact look default request grouped glyph outlines directly.
+  Editable text still requests native TEXT in LibreCAD's font, with substitutions
+  disclosed per item. Preserve all explicit text choices and CLI behavior.
+- Describe actual delivered text representations in the human summary and retain
+  the requested choice separately. Distinguish an attempt-verified structural
+  substitution from raster/degraded fallback without changing readiness or proof.
+- Keep content-count diagnostics as diagnostics. They no longer claim measured
+  overall visual fidelity; rendered source comparison remains a separate check.
+
+## 1.0.111 - 2026-10-14
+
+- Preserve valid physical HEADER extents independently of native LAYOUT caches,
+  and expand the drawing copy's bounds by the complete imported sheet frame in
+  the base drawing's units. Reject arbitrary extent/header changes on readback.
+- Missing/inverted frames use a bounded visible planar control envelope only
+  when the complete active geometry is supported. Visibility-aware cached block
+  closures retain layer-zero inheritance; active text/dimensions, unknown data,
+  wide polyline joins, arrays, cycles, nonfinite coordinates and exceeded proof
+  budgets fail closed when no valid declared frame exists.
+  The result identifies declared-sheet versus conservative-control provenance.
+- Keep all source files, existing layouts, view settings, fonts, paint, resources
+  and unit guards intact. No native Save ledger durability or appearance result
+  is inferred; compiled and native checks remain pending.
+
+## 1.0.110 - 2026-10-14
+
+- A saved drawing copy restores a native zero Z scale only after its complete
+  block closure and occurrence contexts prove exact planar geometry, with
+  bounded records/depth, finite transforms and cancellation checks. Original
+  files stay intact; every other entity, font, paint, resource and header check
+  remains strict. The generated DXF carries a record of the exact permitted
+  scale changes and original input hashes.
+- Embedded multiline attributes and MTEXT columns conservatively remain
+  unqualified: their hidden geometry must be proved before a scale repair.
+- No RGB/ACI color rewrite or native visual equivalence is claimed. LibreCAD
+  can write zero Z scales again during a later native save. The earlier native
+  save failure remains recorded; fresh package/native checks remain pending.
+
+## 1.0.109 - 2026-10-13
+
+- Import into a saved drawing copy accepts LibreCAD's known inactive Normal
+  plotstyle alias only when its sole default resource is intact. Active named
+  styles, arbitrary missing handles, wrong resource types and materials retain
+  their strict checks.
+- Preserve the native drawing's actual header limits without replacing its
+  separate layout settings. Compare explicit/omitted standard entity defaults
+  while retaining bound fonts, nondefault geometry, paint and resource data.
+- Keep incoming default text bound to its original Standard font/style through
+  an independent copied resource, so the base drawing's Standard cannot replace
+  it. The base font and all existing resources remain preserved.
+- Source checks use an actual public LibreCAD 2.2.1.5 saved drawing in both merge
+  roles and adversarial controls. Fresh compiled-package native GUI save/reopen,
+  semantic and visual verification remain pending. The native writer's orphan
+  PLOTSETTINGS diagnostic is retained separately; it is not an audit-clean claim.
+
 ## 1.0.108 - 2026-10-12
 
 - Keep supported symbolic-subset text as source glyph outlines instead of item

@@ -28,6 +28,12 @@ from .drawing_copy import (
     _directory_identity, _check_directory,
     _hash_file, _image_definitions, _ordinary_file, _resolve_image, copy_drawing_with_images,
 )
+from .planar_blocks import qualify_planar_insert_repairs
+from .drawing_bounds import document_bounds, merged_bounds
+from .native_plot_settings import (
+    qualify_native_plot_settings, apply_native_plot_settings, native_plot_callback_sequence,
+    check_native_plot_rehome,
+)
 
 BASE_FLAG = "--librecad-saved-drawing"
 MAX_DEPTH = 32
@@ -49,6 +55,9 @@ class DrawingInsertResult:
     block_name: str
     imported_entities: int
     dxf_version: str
+    planar_insert_repair_ledger: dict | None = None
+    drawing_bounds_provenance: dict | None = None
+    native_plot_settings_rehome: dict | None = None
 
 
 class PinnedConversionWorkspace:
@@ -125,8 +134,10 @@ def _plain(value):
     return [_plain(v) for v in value]
 
 
-def _tags(entity):
-    return [(t.code, _plain(t.value)) for t in TagCollector.dxftags(entity)]
+def _tags(entity, *, optional=True):
+    collector = TagCollector(optional=optional)
+    entity.export_dxf(collector)
+    return [(t.code, _plain(t.value)) for t in collector.tags]
 
 
 def _base_state(document):
@@ -179,6 +190,74 @@ def _check_base_state(document, expected):
                                    "The original was kept; open the converted PDF separately.")
 
 
+def _state_hash(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True,
+        separators=(",", ":"), allow_nan=False).encode("ascii")).hexdigest()
+
+
+def _planar_repair_expectations(original, plans, role, input_sha, staged_sha):
+    """Derive sole permitted group43 deltas from the retained parsed snapshot."""
+    expected = dict(original)
+    records = []
+    for plan in plans:
+        handle = plan["handle"]
+        before = original[handle]
+        after = []
+        depth = 0
+        subclass = None
+        changes = 0
+        for code, value in before:
+            if code == 102:
+                if isinstance(value, str) and value.startswith("{"):
+                    depth += 1
+                elif value == "}":
+                    depth = max(0, depth - 1)
+            if code == 100 and depth == 0:
+                subclass = value
+            if code == 43 and depth == 0 and subclass == "AcDbBlockReference":
+                if value != 0:
+                    raise DrawingCopyError("A zero Z-scale repair no longer matches its original tags.")
+                changes += 1
+                # TagCollector(optional=False) omits effective default1.
+                continue
+            after.append((code, value))
+        if changes != 1:
+            raise DrawingCopyError("A zero Z-scale repair has ambiguous original tags.")
+        expected[handle] = after
+        records.append({**plan, "parsed_tags_before_sha256": _state_hash(before),
+            "parsed_tags_after_sha256": _state_hash(after),
+            "only_permitted_delta": {"group_code": 43, "before": 0,
+                "after_effective": 1, "declared_optional_default_may_be_omitted": True}})
+    return expected, {"role": role, "input_file_sha256": input_sha,
+        "owned_staged_file_sha256": staged_sha,
+        "snapshot_scope": "Parsed owned-stage TagCollector(optional=False), with existing table-owner aliases; not a raw physical tag inventory",
+        "original_parsed_entity_state_sha256": _state_hash(original),
+        "expected_parsed_entity_state_sha256": _state_hash(expected), "repairs": records}
+
+
+def _apply_planar_repairs(document, plans):
+    for plan in plans:
+        entity = document.entitydb.get(plan["handle"])
+        if entity is None or entity.dxftype() != "INSERT" or entity.dxf.get("zscale", 1) != 0:
+            raise DrawingCopyError("A flat block changed after its planar qualification.")
+        entity.dxf.zscale = 1.0
+
+
+def _store_planar_ledger(document, name, ledger):
+    payload = json.dumps(ledger, sort_keys=True, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
+    record = document.objects.add_xrecord(owner=document.rootdict.dxf.handle)
+    record.reset([(1, payload[index:index + 200]) for index in range(0, len(payload), 200)])
+    document.rootdict.add(name, record)
+
+
+def _check_planar_ledger(document, name, expected):
+    record = document.rootdict.get(name)
+    if record is None or record.dxftype() != "XRECORD" or any(tag.code != 1 for tag in record.tags):
+        raise DrawingCopyError("The drawing copy did not preserve its flat-block repair record.")
+    if json.loads("".join(tag.value for tag in record.tags)) != expected:
+        raise DrawingCopyError("The drawing copy changed its flat-block repair record.")
+
+
 def _dictionary_state(document):
     return {str(e.dxf.handle): {str(key): str(value.dxf.handle)
             for key, value in e.items()}
@@ -203,21 +282,21 @@ def _header_state(document):
 
 def _check_headers(document, expected):
     actual = _header_state(document)
-    # The writer synchronizes these cached bounds from the modelspace LAYOUT.
-    # Existing LAYOUT and VPORT records remain separately protected, including
-    # their bounds and view settings. Arbitrary header changes still fail.
-    bounds = {"$EXTMIN": _plain(document.modelspace().dxf.extmin),
-              "$EXTMAX": _plain(document.modelspace().dxf.extmax)}
-    if any(actual.get(key) != value and not (
-            key in bounds and actual.get(key) == bounds[key]) for key, value in expected.items()):
+    if any(actual.get(key) != value for key, value in expected.items()):
         raise DrawingCopyError("The merge changed an existing drawing unit, dimension or header setting.")
 
 
 def _write_merged_drawing(document, stream):
-    """Retain LibreCAD's native integer grid flags omitted by ezdxf 1.4.4."""
+    """Retain native grid flags and the drawing's declared header frame."""
     flags = {key: document.header.get(key) for key in ("$GRIDMODE", "$SNAPSTYLE")
              if key in document.header.varnames() and key not in HEADER_VAR_MAP}
-    if not flags:
+    # LibreCAD can retain real drawing limits in HEADER while its modelspace
+    # LAYOUT contains default paper dimensions. ezdxf synchronizes the header
+    # from that LAYOUT immediately before export. Preserve both original
+    # records; changing either one would fail the existing strict readback.
+    limits = {key: document.header.get(key) for key in ("$LIMMIN", "$LIMMAX", "$EXTMIN", "$EXTMAX")
+              if key in document.header.varnames()}
+    if not flags and not limits:
         document.write(stream)
         return
     if any(not isinstance(value, int) for value in flags.values()):
@@ -243,6 +322,8 @@ def _write_merged_drawing(document, stream):
             self.writer.write_str(text)
 
     def native_export(writer):
+        for key, value in limits.items():
+            document.header[key] = value
         export(NativeHeaderWriter(writer))
 
     # Only this owned document is wrapped; restore its class method even if
@@ -397,11 +478,42 @@ def _check_document(document, *, pdf=False, max_records=None, expanded_entity_bu
     return root_count
 
 
+def _native_inactive_normal_plotstyle(document, handle):
+    """Resolve only libdxfrw's known inactive, dangling Normal handle F."""
+    # LibreCAD v2.2.1.5 libdxfrw writeLayer unconditionally writes390="F".
+    # Its native writer can leave F absent while ezdxf adds the valid Normal
+    # dictionary at new handles. Named styles are inactive only in mode1.
+    # Do not reinterpret arbitrary missing handles, active styles, a resource
+    # of the wrong type at F, or a custom/malformed plotstyle dictionary.
+    if (str(handle).upper() != "F" or document.header.get("$PSTYLEMODE") != 1
+            or document.entitydb.get(str(handle)) is not None
+            or document.entitydb.get(str(handle).upper()) is not None):
+        return None
+    dictionary = document.rootdict.get("ACAD_PLOTSTYLENAME")
+    if (dictionary is None or dictionary.dxftype() != "ACDBDICTIONARYWDFLT"
+            or not dictionary.is_alive or list(dictionary.keys()) != ["Normal"]):
+        return None
+    normal = dictionary.get("Normal")
+    if (normal is None or not hasattr(normal, "dxftype") or not normal.is_alive
+            or normal.dxftype() != "ACDBPLACEHOLDER"
+            or document.entitydb.get(normal.dxf.handle) is not normal
+            or normal.dxf.get("owner") != dictionary.dxf.handle
+            or dictionary.dxf.get("default") != normal.dxf.handle
+            or dictionary.dxf.get("owner") != document.rootdict.dxf.handle):
+        return None
+    if [(code, value) for code, value in _tags(normal) if code not in {5, 330}] != [
+            (0, "ACDBPLACEHOLDER")]:
+        return None
+    return normal
+
+
 def _resolved_layer_reference(document, handle, expected_type, cache):
     """Compare referenced paint content, not drawing-local resource handles."""
     key = ("layer-reference", expected_type, str(handle))
     if key not in cache:
         resource = document.entitydb.get(str(handle))
+        if resource is None and expected_type == "ACDBPLACEHOLDER":
+            resource = _native_inactive_normal_plotstyle(document, handle)
         if resource is None or resource.dxftype() != expected_type:
             raise DrawingCopyError(f"The PDF drawing has an unresolved {expected_type} "
                                    "layer resource. Open the PDF separately.")
@@ -436,6 +548,18 @@ def _semantic(entity, document, ancestors, depth, cache=None):
     if depth > MAX_DEPTH:
         raise DrawingCopyError("Block nesting exceeds the saved-copy limit of 32.")
     attrs = dict(entity.dxf.all_existing_dxf_attribs())
+    # The native writer spells optional defaults which ezdxf intentionally
+    # omits on save. Canonicalize only values equal to their declared DXF
+    # defaults, as the existing immutable base-tag guard already does.
+    # Every nondefault coordinate, paint value, scale and flag remains strict.
+    for key, value in list(attrs.items()):
+        if key in {"layer", "style", "linetype"}:
+            continue  # Defaults still bind real paint/font resources below.
+        definition = entity.DXFATTRIBS.get(key)
+        if (definition is not None and definition.optional
+                and definition.default is not None
+                and _plain(value) == _plain(definition.default)):
+            attrs.pop(key)
     if cache is None:
         cache = {}
     for key in ("handle", "owner", "paperspace", "image_def_handle", "image_def_reactor_handle"):
@@ -445,6 +569,9 @@ def _semantic(entity, document, ancestors, depth, cache=None):
     for field, table in (("layer", document.layers), ("style", document.styles),
                          ("linetype", document.linetypes)):
         name = attrs.pop(field, None)
+        if name is None:
+            definition = entity.DXFATTRIBS.get(field)
+            name = definition.default if definition is not None else None
         if name is not None and name in table:
             resource = table.get(name)
             data = dict(resource.dxf.all_existing_dxf_attribs())
@@ -496,7 +623,7 @@ def _semantic(entity, document, ancestors, depth, cache=None):
         # Exported non-attribute payload includes HATCH rings, polyline vertices,
         # SPLINE controls/knots, and MTEXT text. Resource names/handles are compared above.
         excluded = {5, 330, 67, 8, 6, 7, 340, 360, 102}
-        extra = [(code, value) for code, value in _tags(entity) if code not in excluded]
+        extra = [(code, value) for code, value in _tags(entity, optional=False) if code not in excluded]
     return _plain([typ, attrs, resources, extra])
 
 
@@ -531,6 +658,30 @@ def _isolate_special_layers(document, prefix):
         for entity in document.entitydb.values():
             if entity.is_alive and entity.dxf.hasattr("layer") and entity.dxf.layer.casefold() == name.casefold():
                 entity.dxf.layer = new_name
+
+
+def _isolate_default_text_style(document, prefix):
+    # Loader always keeps the target's STANDARD record, even under XREF_PREFIX.
+    # Incoming TEXT/MTEXT/ATTRIB/ATTDEF with an omitted default still references
+    # the source's real Standard font. Copy that resource and make the binding
+    # explicit before loading; the base Standard remains untouched.
+    if "Standard" not in document.styles:
+        return
+    entities = []
+    for entity in document.entitydb.values():
+        if not entity.is_alive or entity.DXFATTRIBS.get("style") is None:
+            continue
+        name = entity.dxf.get_default("style")
+        if isinstance(name, str) and name.casefold() == "standard":
+            entities.append(entity)
+    if not entities:
+        return
+    new_name = prefix + "_STANDARD"
+    if new_name in document.styles:
+        raise DrawingCopyError("The private source text style name is already in use.")
+    document.styles.duplicate_entry("Standard", new_name)
+    for entity in entities:
+        entity.dxf.style = new_name
 
 
 def insert_into_saved_drawing_copy(
@@ -597,14 +748,126 @@ def insert_into_saved_drawing_copy(
             # The writer uses the maintenance revision declared by the new
             # format; this is version metadata, not a unit/dimension setting.
             document.header["$ACADMAINTVER"] = acad_maint_ver[document.dxfversion]
+        # Retain both original parsed states before qualification/mutation.
+        # Every later expected base tag is derived solely from these snapshots.
+        original_base_state, original_source_state = _base_state(document), _base_state(source)
+        base_dictionaries, source_dictionaries = _dictionary_state(document), _dictionary_state(source)
+        base_headers, source_headers = _header_state(document), _header_state(source)
+        base_plot_plans = qualify_native_plot_settings(copied_base.drawing, document,
+            original_base_state, base_dictionaries, base_headers, cancel_check=cancelled)
+        source_plot_plans = qualify_native_plot_settings(copied_pdf.drawing, source,
+            original_source_state, source_dictionaries, source_headers, cancel_check=cancelled)
+        base_print_callbacks = incoming_print_callbacks = None
+        if base_plot_plans or source_plot_plans:
+            base_print_callbacks = native_plot_callback_sequence(base_path, cancel_check=cancelled)
+            incoming_print_callbacks = native_plot_callback_sequence(pdf_path, cancel_check=cancelled)
+            if (native_plot_callback_sequence(copied_base.drawing, cancel_check=cancelled) != base_print_callbacks
+                    or native_plot_callback_sequence(copied_pdf.drawing, cancel_check=cancelled) != incoming_print_callbacks):
+                raise DrawingCopyError("Owned staging changed native print callback fields or order.")
+        base_plans = qualify_planar_insert_repairs(document, cancel_check=cancelled)
+        source_plans = qualify_planar_insert_repairs(source, cancel_check=cancelled, max_depth=MAX_DEPTH - 1)
+        repair_ledger = None
+        base_state = original_base_state
+        source_state = original_source_state
+        if base_plans or source_plans:
+            # Qualify BOTH documents completely before changing either owned copy.
+            _check_base_state(document, original_base_state)
+            _check_base_state(source, original_source_state)
+            _check_dictionaries(document, base_dictionaries)
+            _check_dictionaries(source, source_dictionaries)
+            _check_headers(document, base_headers)
+            _check_headers(source, source_headers)
+            base_state, base_record = _planar_repair_expectations(original_base_state, base_plans,
+                "base", base_sha, _hash_file(copied_base.drawing))
+            source_state, source_record = _planar_repair_expectations(original_source_state, source_plans,
+                "incoming", pdf_sha, _hash_file(copied_pdf.drawing))
+            base_record.update(original_dictionary_state_sha256=_state_hash(base_dictionaries),
+                               original_header_state_sha256=_state_hash(base_headers))
+            source_record.update(original_dictionary_state_sha256=_state_hash(source_dictionaries),
+                                 original_header_state_sha256=_state_hash(source_headers))
+            _apply_planar_repairs(document, base_plans)
+            _apply_planar_repairs(source, source_plans)
+            _check_base_state(document, base_state)
+            _check_base_state(source, source_state)
+            _check_dictionaries(document, base_dictionaries)
+            _check_dictionaries(source, source_dictionaries)
+            _check_headers(document, base_headers)
+            _check_headers(source, source_headers)
+            repair_ledger = {"schema": "bcs.planar_insert_z_scale_repairs/1.0",
+                "documents": [base_record, source_record],
+                "repair_count": len(base_plans) + len(source_plans),
+                "original_inputs_unchanged": True,
+                "transport_scope": "Incoming layer/style isolation and loader handle rebinding follow the existing strict source-semantic checks; ledger handles identify the prior owned staging documents"}
+        plot_archive = None
+        if base_plot_plans or source_plot_plans:
+            cancelled()
+            _check_base_state(document, base_state)
+            _check_base_state(source, source_state)
+            _check_dictionaries(document, base_dictionaries)
+            _check_dictionaries(source, source_dictionaries)
+            _check_headers(document, base_headers)
+            _check_headers(source, source_headers)
+            rows = []
+            for role, doc, plans, expected, original_state, input_sha, staged in (
+                ("base", document, base_plot_plans, base_state, original_base_state, base_sha, copied_base.drawing),
+                ("incoming", source, source_plot_plans, source_state, original_source_state, pdf_sha, copied_pdf.drawing)):
+                retained = dict(expected)
+                for plan in plans:
+                    if retained.get(plan["handle"]) != plan["parsed_before_tags"]:
+                        raise DrawingCopyError("Qualified print settings changed before rehoming.")
+                    retained[plan["handle"]] = plan["parsed_after_tags"]
+                rows.append({"role": role, "original_input_sha256": input_sha,
+                    "owned_staged_input_sha256": _hash_file(staged), "records": plans,
+                    "original_parsed_entity_state_sha256": _state_hash(original_state),
+                    "original_dictionary_state_sha256": _state_hash(base_dictionaries if role == "base" else source_dictionaries),
+                    "original_header_state_sha256": _state_hash(base_headers if role == "base" else source_headers),
+                    "before_rehome_state_sha256": _state_hash(expected),
+                    "expected_after_rehome_state_sha256": _state_hash(retained)})
+                apply_native_plot_settings(doc, plans)
+                _check_base_state(doc, retained)
+                dictionary_state = base_dictionaries if role == "base" else source_dictionaries
+                for plan in plans:
+                    # Derive sole dictionary entry additions from the retained
+                    # original map; never recapture a replacement baseline.
+                    dictionary_state = {key: dict(value) for key, value in dictionary_state.items()}
+                    dictionary_state[plan["dictionary_handle"]][plan["setup_name"]] = plan["handle"]
+                if role == "base":
+                    base_state = retained
+                    base_dictionaries = dictionary_state
+                else:
+                    source_state = retained
+                    source_dictionaries = dictionary_state
+            _check_dictionaries(document, base_dictionaries)
+            _check_dictionaries(source, source_dictionaries)
+            _check_headers(document, base_headers)
+            _check_headers(source, source_headers)
+            plot_archive = {"schema": "bcs.native_plot_settings_rehome/1.0", "documents": rows,
+                "record_count": len(base_plot_plans) + len(source_plot_plans), "original_inputs_unchanged": True,
+                "scope": "Exact physically and parsed unreferenced native eight-tag records rehomed only in owned copies. Only owner330/name1 and standard dictionary entry additions change. All print fields and original record identity/order remain. Raw bytes and original parsed tags archived; incoming unused print objects are not imported.",
+                "print_callback_proof": {"host_source_commit": "7ebab007d9eb4c68609388b835a2487648f0877b",
+                    "scope": "LibreCAD 2.2.1.5 DRW_PlotSettings constructor/parser and RS_FilterDXFRW addPlotSettings; physical code6/40..43 defaults/last-value callbacks in OBJECTS order, not visual or native Save acceptance",
+                    "original_base_ordered_callbacks": base_print_callbacks,
+                    "incoming_callbacks_not_imported": incoming_print_callbacks,
+                    "expected_final_ordered_callbacks": base_print_callbacks},
+                "native_Save_archive_retention": "Not established; retain the original drawing. Native writers may discard custom provenance records."}
+            # Bind the JSON transport representation once; tuple/list changes
+            # must not make an otherwise exact physical XRECORD fail equality.
+            plot_archive = json.loads(json.dumps(plot_archive, ensure_ascii=True, allow_nan=False))
+        base_bounds = document_bounds(document, cancel_check=cancelled, max_records=max_records)
+        incoming_bounds = document_bounds(source, cancel_check=cancelled, max_records=max_records)
+        output_bounds = merged_bounds(base_bounds, incoming_bounds, scale)
+        bounds_provenance = {"schema": "bcs.saved_copy_drawing_bounds/1.0",
+            "base": base_bounds.record() if base_bounds is not None else None,
+            "incoming": incoming_bounds.record() if incoming_bounds is not None else None,
+            "merged": output_bounds.record(), "insertion_scale": float(scale),
+            "base_input_sha256": base_sha, "incoming_input_sha256": pdf_sha}
         prefix = "BCPDF_" + uuid.uuid4().hex[:12].upper()
         _isolate_special_layers(source, prefix)
+        _isolate_default_text_style(source, prefix)
         _preserve_redraw_order(source)
         source_semantic = _semantic_digest(source.modelspace().entities_in_redraw_order(), source)
         source_counts = Counter(e.dxftype() for e in source.modelspace())
-        base_state = _base_state(document)
-        base_dictionaries = _dictionary_state(document)
-        base_headers = _header_state(document)
+        # Do not recapture a fresh base baseline after the permitted repair.
         block_name = prefix + "_PDF"
         block = document.blocks.new(block_name)
         loader = xref.Loader(source, document, conflict_policy=xref.ConflictPolicy.XREF_PREFIX)
@@ -614,14 +877,27 @@ def insert_into_saved_drawing_copy(
         _check_base_state(document, base_state)
         _check_dictionaries(document, base_dictionaries)
         _check_headers(document, base_headers)
+        check_native_plot_rehome(document, base_plot_plans)
         if Counter(e.dxftype() for e in block) != source_counts or _semantic_digest(block.entities_in_redraw_order(), document) != source_semantic:
             raise DrawingCopyError("The resource loader could not preserve every PDF entity, "
                                    "block, layer, text style or fill. Open the converted PDF separately.")
+        # The only declared header changes follow qualification and strict
+        # loader checks against the retained original, never a fresh baseline.
+        output_headers = dict(base_headers)
+        for key, value in (("$EXTMIN", output_bounds.minimum), ("$EXTMAX", output_bounds.maximum)):
+            document.header[key] = value
+            output_headers[key] = _plain(document.header[key])
         # Keep the imported block on a fresh visible layer independent of the base's active layer.
         import_layer = prefix + "_IMPORT"
         document.layers.new(import_layer)
         document.modelspace().add_blockref(block_name, (0, 0),
             dxfattribs={"layer": import_layer, "xscale": scale, "yscale": scale, "zscale": scale})
+        ledger_name = prefix + "_PLANAR_Z_REPAIRS"
+        if repair_ledger is not None:
+            _store_planar_ledger(document, ledger_name, repair_ledger)
+        plot_archive_name = prefix + "_PLOT_REHOME_LEDGER"
+        if plot_archive is not None:
+            _store_planar_ledger(document, plot_archive_name, plot_archive)
         merged = stage / "merged.dxf"
         _check_directory(stage, stage_identity)
         document.filename = str(merged)
@@ -635,7 +911,23 @@ def insert_into_saved_drawing_copy(
         reopened = ezdxf.readfile(merged)
         _check_base_state(reopened, base_state)
         _check_dictionaries(reopened, base_dictionaries)
-        _check_headers(reopened, base_headers)
+        _check_headers(reopened, output_headers)
+        check_native_plot_rehome(reopened, base_plot_plans)
+        if repair_ledger is not None:
+            _check_planar_ledger(reopened, ledger_name, repair_ledger)
+        if plot_archive is not None:
+            record = reopened.rootdict.get(plot_archive_name)
+            if (record is None or record.dxftype() != "XRECORD" or any(tag.code != 1 for tag in record.tags)
+                    or json.loads("".join(tag.value for tag in record.tags)) != plot_archive):
+                raise DrawingCopyError("The drawing copy did not preserve its print-settings rehome ledger.")
+            if native_plot_callback_sequence(merged, cancel_check=cancelled) != base_print_callbacks:
+                raise DrawingCopyError("The drawing copy changed native print callback fields, order or multiplicity.")
+        # Audit a separate parsed copy; never silently repair the retained
+        # physical document or accept arbitrary audit changes as equivalent.
+        audit = ezdxf.readfile(merged).audit()
+        if audit.errors or audit.fixes:
+            raise DrawingCopyError("The generated drawing has unsupported DXF audit changes. "
+                                   "The original was kept; open the converted PDF separately.")
         if reopened.units != base_units or _semantic_digest(reopened.blocks.get(block_name).entities_in_redraw_order(), reopened) != source_semantic:
             raise DrawingCopyError("Merged drawing readback changed its units or PDF geometry.")
         cancelled()
@@ -650,4 +942,4 @@ def insert_into_saved_drawing_copy(
         published = copy_drawing_with_images(merged, target, cancel_requested=cancel_requested)
         return DrawingInsertResult(published.drawing, published.image_folder, published.image_files,
             base_sha, pdf_sha, base_units, pdf_units, float(scale), block_name,
-            sum(source_counts.values()), reopened.dxfversion)
+            sum(source_counts.values()), reopened.dxfversion, repair_ledger, bounds_provenance, plot_archive)

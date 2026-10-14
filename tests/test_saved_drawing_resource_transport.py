@@ -11,6 +11,7 @@ from PIL import Image
 
 from librecad_pdf_importer import drawing_insert as module
 from librecad_pdf_importer.drawing_copy import DrawingCopyError
+from plot_rehome_assertions import bind_print_rehome
 
 
 def _hash(path):
@@ -27,6 +28,12 @@ def _base(path):
         resource = doc.entitydb[old_handle]
         assert resource.dxftype() == kind
         assert doc.entitydb.reset_handle(resource, new_handle)
+        if kind == "ACDBPLACEHOLDER":
+            dictionary = doc.rootdict["ACAD_PLOTSTYLENAME"]
+            assert dictionary.dxf.default == old_handle and dictionary["Normal"] is resource
+            # Resetting the object handle updates object-valued entries, not
+            # the separately stored default pointer. Author a valid profile.
+            dictionary.dxf.default = new_handle
         field = "material_handle" if kind == "MATERIAL" else "plotstyle_handle"
         for layer in doc.layers:
             if layer.dxf.get(field) == old_handle:
@@ -56,9 +63,13 @@ def test_native_writer_resource_handles_and_names_rebind_without_paint_loss(tmp_
     base, pdf, target = [tmp_path / name for name in ("base.dxf", "pdf.dxf", "copy.dxf")]
     _base(base)
     _pdf(pdf, custom=custom)
+    original_audit = ezdxf.readfile(base).audit()
+    assert not original_audit.errors and not original_audit.fixes
     original = _hash(base), _hash(pdf)
     result = module.insert_into_saved_drawing_copy(base, pdf, target)
     merged = ezdxf.readfile(target)
+    merged_audit = ezdxf.readfile(target).audit()
+    assert not merged_audit.errors and not merged_audit.fixes
     assert merged.units == 4
     assert merged.layers.get("0").dxf.material_handle == "20011"
     assert merged.layers.get("0").dxf.plotstyle_handle == "20009"
@@ -74,6 +85,26 @@ def test_native_writer_resource_handles_and_names_rebind_without_paint_loss(tmp_
     else:
         assert material.dxf.handle == "20011"
     assert (_hash(base), _hash(pdf)) == original
+
+
+def test_original_missing_default_pointer_requires_audit_and_cannot_publish(tmp_path):
+    base, pdf, target = [tmp_path / name for name in ("base.dxf", "pdf.dxf", "copy.dxf")]
+    _base(base)
+    _pdf(pdf)
+    document = ezdxf.readfile(base)
+    dictionary = document.rootdict["ACAD_PLOTSTYLENAME"]
+    assert dictionary.dxf.default == "20009" and dictionary["Normal"].dxf.handle == "20009"
+    assert document.entitydb.get("13") is None
+    dictionary.dxf.default = "13"  # Exact original invalid constructor state.
+    document.saveas(base)
+    original = _hash(base), _hash(pdf)
+    separate_audit = ezdxf.readfile(base).audit()
+    assert not separate_audit.errors and [entry.code for entry in separate_audit.fixes] == [112]
+    with pytest.raises(DrawingCopyError, match="unsupported DXF audit changes"):
+        module.insert_into_saved_drawing_copy(base, pdf, target)
+    assert not target.exists() and not list(tmp_path.glob(".pdf-drawing-copy-*"))
+    assert (_hash(base), _hash(pdf)) == original
+    assert ezdxf.readfile(base).entitydb.get("13") is None
 
 
 @pytest.mark.parametrize("changed", ["diffuse_color_value", "opacity", "mapper_matrix"])
@@ -143,6 +174,10 @@ def test_actual_native_saved_base_accepts_repeated_import_with_images_hidden_tex
     originals[pdf] = _hash(pdf)
     result = module.insert_into_saved_drawing_copy(base, pdf, target)
     merged = ezdxf.readfile(target)
+    for row in result.planar_insert_repair_ledger["documents"][0]["repairs"]:
+        assert sum(code == 43 and value == 0 for code, value in before[row["handle"]]) == 1
+        before[row["handle"]] = [(code, value) for code, value in before[row["handle"]] if code != 43]
+    before = bind_print_rehome(result, native, before, merged, base, pdf)
     module._check_base_state(merged, before)
     assert merged.units == native.units == 4
     for flag in ("$GRIDMODE", "$SNAPSTYLE"):

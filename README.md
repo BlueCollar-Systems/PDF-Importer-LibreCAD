@@ -2,7 +2,7 @@
 
 **BlueCollar-Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.108](https://img.shields.io/badge/Version-1.0.108-blue.svg)
+![Version: 1.0.113](https://img.shields.io/badge/Version-1.0.113-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
@@ -11,7 +11,51 @@ See [CHANGELOG.md](CHANGELOG.md) for release history. Version 1.0.82 preserves
 native zero-ink whitespace TEXT while visible source text whose font LibreCAD
 must substitute descends automatically to visually verified glyph outlines.
 
-Version 1.0.108 keeps words from supported symbolic PDF font subsets as editable
+Version 1.0.109 accepts LibreCAD's qualified inactive Normal plotstyle spelling
+when importing into a saved drawing copy, preserves the drawing's original
+limits, and compares omitted standard entity defaults without losing the bound
+font, paint or geometry checks.
+
+Version 1.0.110 restores zero Z scales in a new saved drawing copy only when the
+complete supported block geometry and every placement prove exactly flat. It
+keeps both input files intact and preserves the existing font, paint, resource
+and drawing-setting checks. Embedded multiline attributes and MTEXT columns
+remain unqualified because their hidden geometry requires separate proof.
+The generated DXF records each permitted scale change and the input file hashes.
+
+LibreCAD can write zero Z scales again during a later native save. Desktop
+2.2.1.5 Save As DXF 2007 and fresh reopen succeeded for the public v1.0.111
+candidate fixture, retaining its forward planar geometry. That native writer
+changed black true-color fields to adaptive ACI 7, reduced HEADER extents to
+ink bounds and discarded the repair record. Strict source equality and whole
+page rendered parity are not established. Keep original and generated copies
+for traceability; each new candidate still requires its own native checks.
+
+Version 1.0.111 preserves a saved drawing's valid HEADER frame and expands the
+copy's bounds to include the imported sheet, margins and page offsets after
+drawing-unit conversion. Separate original LAYOUT and view settings stay intact.
+Missing or inverted frames use a bounded conservative control envelope only
+for supported visible planar geometry. Active text, dimensions or unsupported
+payloads or wide polylines without a valid declared frame require a fresh standard DXF save in
+LibreCAD. This bounds fallback does not prove exact font or paint appearance.
+Original files stay intact; compiled-package and native save/reopen acceptance
+remain pending.
+
+Version 1.0.113 preserves the exact eight-tag native print-settings record while
+giving it a valid standard dictionary owner and a readable setup name. Its handle
+must be unique and unreferenced in both physical and retained parsed input.
+LibreCAD uses this record for page tiling and margins even without references:
+the complete ordered base print callbacks are checked from original physical
+tags to final physical output under the pinned LibreCAD 2.2.1.5 parser. Incoming
+print objects cannot replace the base print settings. Original raw bytes,
+parsed tags and the explicit owner/name/dictionary changes are archived; both
+inputs remain byte-identical. Every other entity, font, paint, resource, layout
+and setting stays guarded. The final generated DXF must audit with zero errors
+and zero fixes. Unknown, altered or referenced records are never automatically
+rehomed. Native Save may discard the archive and change paint, Z-scale or framing;
+complete native equivalence and the new compiled/native candidate remain pending.
+
+It also keeps words from supported symbolic PDF font subsets as editable
 source outlines when their original font and observed space glyph prove that the
 spacing has no ink. Source conversion and regression checks passed; the new
 Windows candidate still needs a fresh LibreCAD desktop open/save/reopen check.
@@ -39,6 +83,13 @@ Every conversion writes `<output>_import_report.json` beside the DXF, and it
 carries the drawing scale read from the sheet: `extra.resolved_scale` for a
 single run, top-level `resolved_scale` for a resumable run (the GUI and
 `--resume`). It is `null` when no scale was found.
+
+The human summary names actual delivered text and keeps a different requested
+choice in parentheses. An attempt-verified text-to-outlines substitution is
+described separately from raster or degraded delivery. Diagnostics retain
+content counts and the legacy `quality_level` with an explicit content-count
+basis; these counts do not measure visual fidelity. A rendered comparison and
+native Save/reopen checks remain separate evidence.
 
 - Use `factor` only when `confidence >= 0.70` and `fallback_reason` is not `no_scale_detected`.
 - Otherwise treat scale as unknown in your CAD workflow.
@@ -379,7 +430,7 @@ does not prove visible/editable 3D text in LibreCAD's 2D parent.
 
 **Two text choices in the window: Exact look (default) or Editable text.**
 
-- **Exact look - text as outlines (default)** is the Text request above: every
+- **Exact look - text as outlines (default)** requests grouped Glyphs directly: every
   word is drawn as exact outlines, the same shapes as the PDF, and an editable
   copy of each string is kept on the hidden layer `P###_TEXT_SEARCH` (see below).
 - **Editable text (LibreCAD font)** gives words you can click and edit in
@@ -457,10 +508,10 @@ itself: a text search of the file finds every string. In a CAD host, thaw
 
 | Option | GUI | Verified DXF representation |
 |--------|-----|-----------------------------|
-| **text** | ✅ Exact look (default); Editable text | The native DXF `TEXT` candidate is built and checked (source text or an explicitly reported Unicode compatibility normalization, placement, cap height, rotation, source identity, `unicode` LFF binding, source-width FIT alignment), but LibreCAD's substituted LFF font does not reproduce the source glyphs, so a visible span is never certified as Text: it is delivered as verified Glyphs and reported as that fallback. Only a whitespace-only span ends as native `TEXT`. The exact string is on the frozen `P###_TEXT_SEARCH` layer. With **Editable text** (`--editable-text`) a visible span ends as that native `TEXT` in LibreCAD's font instead, disclosed as substituted. |
+| **text** | ✅ Editable text | The native DXF `TEXT` candidate is built and checked (source text or an explicitly reported Unicode compatibility normalization, placement, cap height, rotation, source identity, `unicode` LFF binding, source-width FIT alignment), but LibreCAD's substituted LFF font does not reproduce the source glyphs, so a visible span is never certified as Text: it is delivered as verified Glyphs and reported as that fallback. Only a whitespace-only span ends as native `TEXT`. The exact string is on the frozen `P###_TEXT_SEARCH` layer. With **Editable text** (`--editable-text`) a visible span ends as that native `TEXT` in LibreCAD's font instead, disclosed as substituted. |
 | **labels** | ✅ Labels | DXF exposes no native Label entity. The item-scoped Labels attempt fails loudly without creating a wrong-type alias, the Text rung then refuses the substituted LFF font as above, and the span is delivered as verified Glyphs and reported. The exact string is on the frozen `P###_TEXT_SEARCH` layer. With `--editable-text` the Text rung accepts LibreCAD's font, as for **text**. |
 | **3d_text** | ✅ 3D Text | Attempts DXF `TEXT` with positive thickness and +Z extrusion first. Success additionally requires the parent to verify it as visible/editable 3D text. LibreCAD is 2D, so the exact failed item advances to the flat Text rung, which refuses the substituted LFF font as above, and is delivered as verified Glyphs with that transition reported. The exact string is on the frozen `P###_TEXT_SEARCH` layer. |
-| **glyphs** | ✅ Glyphs | One grouped DXF `INSERT` per source text span with outline entities in its owned block definition. This remains structurally distinct from raw Geometry. |
+| **glyphs** | ✅ Exact look (default); Glyphs | One grouped DXF `INSERT` per source text span with outline entities in its owned block definition. This remains structurally distinct from raw Geometry. |
 | **geometry** | ✅ Geometry | Raw modelspace `LWPOLYLINE`/`POLYLINE` glyph edges. No `TEXT`, `MTEXT`, or `INSERT` is accepted as Geometry. |
 | **raster** | ✅ Raster | A source-PDF-bound PNG of only the exact text item, delivered as a verified DXF `IMAGE`; it is a direct result when requested, not a fallback. |
 
