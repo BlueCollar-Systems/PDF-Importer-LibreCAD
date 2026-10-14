@@ -125,8 +125,10 @@ def _plain(value):
     return [_plain(v) for v in value]
 
 
-def _tags(entity):
-    return [(t.code, _plain(t.value)) for t in TagCollector.dxftags(entity)]
+def _tags(entity, *, optional=True):
+    collector = TagCollector(optional=optional)
+    entity.export_dxf(collector)
+    return [(t.code, _plain(t.value)) for t in collector.tags]
 
 
 def _base_state(document):
@@ -214,10 +216,16 @@ def _check_headers(document, expected):
 
 
 def _write_merged_drawing(document, stream):
-    """Retain LibreCAD's native integer grid flags omitted by ezdxf 1.4.4."""
+    """Retain native grid flags and the drawing's actual header limits."""
     flags = {key: document.header.get(key) for key in ("$GRIDMODE", "$SNAPSTYLE")
              if key in document.header.varnames() and key not in HEADER_VAR_MAP}
-    if not flags:
+    # LibreCAD can retain real drawing limits in HEADER while its modelspace
+    # LAYOUT contains default paper dimensions. ezdxf synchronizes the header
+    # from that LAYOUT immediately before export. Preserve both original
+    # records; changing either one would fail the existing strict readback.
+    limits = {key: document.header.get(key) for key in ("$LIMMIN", "$LIMMAX")
+              if key in document.header.varnames()}
+    if not flags and not limits:
         document.write(stream)
         return
     if any(not isinstance(value, int) for value in flags.values()):
@@ -243,6 +251,8 @@ def _write_merged_drawing(document, stream):
             self.writer.write_str(text)
 
     def native_export(writer):
+        for key, value in limits.items():
+            document.header[key] = value
         export(NativeHeaderWriter(writer))
 
     # Only this owned document is wrapped; restore its class method even if
@@ -397,11 +407,42 @@ def _check_document(document, *, pdf=False, max_records=None, expanded_entity_bu
     return root_count
 
 
+def _native_inactive_normal_plotstyle(document, handle):
+    """Resolve only libdxfrw's known inactive, dangling Normal handle F."""
+    # LibreCAD v2.2.1.5 libdxfrw writeLayer unconditionally writes390="F".
+    # Its native writer can leave F absent while ezdxf adds the valid Normal
+    # dictionary at new handles. Named styles are inactive only in mode1.
+    # Do not reinterpret arbitrary missing handles, active styles, a resource
+    # of the wrong type at F, or a custom/malformed plotstyle dictionary.
+    if (str(handle).upper() != "F" or document.header.get("$PSTYLEMODE") != 1
+            or document.entitydb.get(str(handle)) is not None
+            or document.entitydb.get(str(handle).upper()) is not None):
+        return None
+    dictionary = document.rootdict.get("ACAD_PLOTSTYLENAME")
+    if (dictionary is None or dictionary.dxftype() != "ACDBDICTIONARYWDFLT"
+            or not dictionary.is_alive or list(dictionary.keys()) != ["Normal"]):
+        return None
+    normal = dictionary.get("Normal")
+    if (normal is None or not hasattr(normal, "dxftype") or not normal.is_alive
+            or normal.dxftype() != "ACDBPLACEHOLDER"
+            or document.entitydb.get(normal.dxf.handle) is not normal
+            or normal.dxf.get("owner") != dictionary.dxf.handle
+            or dictionary.dxf.get("default") != normal.dxf.handle
+            or dictionary.dxf.get("owner") != document.rootdict.dxf.handle):
+        return None
+    if [(code, value) for code, value in _tags(normal) if code not in {5, 330}] != [
+            (0, "ACDBPLACEHOLDER")]:
+        return None
+    return normal
+
+
 def _resolved_layer_reference(document, handle, expected_type, cache):
     """Compare referenced paint content, not drawing-local resource handles."""
     key = ("layer-reference", expected_type, str(handle))
     if key not in cache:
         resource = document.entitydb.get(str(handle))
+        if resource is None and expected_type == "ACDBPLACEHOLDER":
+            resource = _native_inactive_normal_plotstyle(document, handle)
         if resource is None or resource.dxftype() != expected_type:
             raise DrawingCopyError(f"The PDF drawing has an unresolved {expected_type} "
                                    "layer resource. Open the PDF separately.")
@@ -436,6 +477,18 @@ def _semantic(entity, document, ancestors, depth, cache=None):
     if depth > MAX_DEPTH:
         raise DrawingCopyError("Block nesting exceeds the saved-copy limit of 32.")
     attrs = dict(entity.dxf.all_existing_dxf_attribs())
+    # The native writer spells optional defaults which ezdxf intentionally
+    # omits on save. Canonicalize only values equal to their declared DXF
+    # defaults, as the existing immutable base-tag guard already does.
+    # Every nondefault coordinate, paint value, scale and flag remains strict.
+    for key, value in list(attrs.items()):
+        if key in {"layer", "style", "linetype"}:
+            continue  # Defaults still bind real paint/font resources below.
+        definition = entity.DXFATTRIBS.get(key)
+        if (definition is not None and definition.optional
+                and definition.default is not None
+                and _plain(value) == _plain(definition.default)):
+            attrs.pop(key)
     if cache is None:
         cache = {}
     for key in ("handle", "owner", "paperspace", "image_def_handle", "image_def_reactor_handle"):
@@ -445,6 +498,9 @@ def _semantic(entity, document, ancestors, depth, cache=None):
     for field, table in (("layer", document.layers), ("style", document.styles),
                          ("linetype", document.linetypes)):
         name = attrs.pop(field, None)
+        if name is None:
+            definition = entity.DXFATTRIBS.get(field)
+            name = definition.default if definition is not None else None
         if name is not None and name in table:
             resource = table.get(name)
             data = dict(resource.dxf.all_existing_dxf_attribs())
@@ -496,7 +552,7 @@ def _semantic(entity, document, ancestors, depth, cache=None):
         # Exported non-attribute payload includes HATCH rings, polyline vertices,
         # SPLINE controls/knots, and MTEXT text. Resource names/handles are compared above.
         excluded = {5, 330, 67, 8, 6, 7, 340, 360, 102}
-        extra = [(code, value) for code, value in _tags(entity) if code not in excluded]
+        extra = [(code, value) for code, value in _tags(entity, optional=False) if code not in excluded]
     return _plain([typ, attrs, resources, extra])
 
 
@@ -531,6 +587,30 @@ def _isolate_special_layers(document, prefix):
         for entity in document.entitydb.values():
             if entity.is_alive and entity.dxf.hasattr("layer") and entity.dxf.layer.casefold() == name.casefold():
                 entity.dxf.layer = new_name
+
+
+def _isolate_default_text_style(document, prefix):
+    # Loader always keeps the target's STANDARD record, even under XREF_PREFIX.
+    # Incoming TEXT/MTEXT/ATTRIB/ATTDEF with an omitted default still references
+    # the source's real Standard font. Copy that resource and make the binding
+    # explicit before loading; the base Standard remains untouched.
+    if "Standard" not in document.styles:
+        return
+    entities = []
+    for entity in document.entitydb.values():
+        if not entity.is_alive or entity.DXFATTRIBS.get("style") is None:
+            continue
+        name = entity.dxf.get_default("style")
+        if isinstance(name, str) and name.casefold() == "standard":
+            entities.append(entity)
+    if not entities:
+        return
+    new_name = prefix + "_STANDARD"
+    if new_name in document.styles:
+        raise DrawingCopyError("The private source text style name is already in use.")
+    document.styles.duplicate_entry("Standard", new_name)
+    for entity in entities:
+        entity.dxf.style = new_name
 
 
 def insert_into_saved_drawing_copy(
@@ -599,6 +679,7 @@ def insert_into_saved_drawing_copy(
             document.header["$ACADMAINTVER"] = acad_maint_ver[document.dxfversion]
         prefix = "BCPDF_" + uuid.uuid4().hex[:12].upper()
         _isolate_special_layers(source, prefix)
+        _isolate_default_text_style(source, prefix)
         _preserve_redraw_order(source)
         source_semantic = _semantic_digest(source.modelspace().entities_in_redraw_order(), source)
         source_counts = Counter(e.dxftype() for e in source.modelspace())

@@ -4,6 +4,23 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
+## 1.0.109 - 2026-10-13
+
+- Import into a saved drawing copy accepts LibreCAD's known inactive Normal
+  plotstyle alias only when its sole default resource is intact. Active named
+  styles, arbitrary missing handles, wrong resource types and materials retain
+  their strict checks.
+- Preserve the native drawing's actual header limits without replacing its
+  separate layout settings. Compare explicit/omitted standard entity defaults
+  while retaining bound fonts, nondefault geometry, paint and resource data.
+- Keep incoming default text bound to its original Standard font/style through
+  an independent copied resource, so the base drawing's Standard cannot replace
+  it. The base font and all existing resources remain preserved.
+- Source checks use an actual public LibreCAD 2.2.1.5 saved drawing in both merge
+  roles and adversarial controls. Fresh compiled-package native GUI save/reopen,
+  semantic and visual verification remain pending. The native writer's orphan
+  PLOTSETTINGS diagnostic is retained separately; it is not an audit-clean claim.
+
 ## 1.0.108 - 2026-10-12
 
 - Keep supported symbolic-subset text as source glyph outlines instead of item
