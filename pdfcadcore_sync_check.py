@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Verify vendored pdfcadcore and repo_context_builder_core.py stay in sync.
 
-FC/BL/LC embed byte-identical copies of pdfcadcore. FC is canonical. This script
-fails CI when any core file drifts from the canonical hash manifest.
+FC is canonical for the shared core. Reviewed host variants are pinned to exact
+bytes below. This script rejects drift and never replaces a pinned variant.
 """
 from __future__ import annotations
 
@@ -45,7 +45,25 @@ SELF_COPY_PATHS: Tuple[Path, ...] = (
 # Preserve existing host-specific text fidelity. Every exception is pinned to
 # exact reviewed bytes, never a filename-only exemption. --fix must not copy
 # FC over these specialized implementations. Update hashes only after review.
-KNOWN_DIVERGENCES: Dict[str, Dict[str, str]] = {}
+KNOWN_DIVERGENCES: Dict[str, Dict[str, str]] = {
+    # Reviewed Blender clipping, embedded-font identity, delivery reporting and
+    # source extraction at 64c2357; these preserve host-native proof/readiness.
+    "BL": {
+        "drawing_clips.py": "7b13698500ca6d0c9c0e0242a136c61333c6a9c9b26bc198b41e29425af14e6b",
+        "embedded_fonts.py": "19602e604d90969c3399c7992c9df426355d90163d0aedeaf4cee4e883a25b99",
+        "import_report.py": "90c0c0b5d109131befc4e97eb52db9ca6615f834e8d0d0d10fbe733b6d34c9d1",
+        "primitive_extractor.py": "4c6ce01b197cedff5a42b3905a6da01322651e3f1af8538d419df4dbd2bcbed5",
+    },
+    # Reviewed LibreCAD source/legacy-runtime behavior plus the truthful text
+    # delivery summary at be7ba5d; no 3D host report is replaced by these bytes.
+    "LC": {
+        "drawing_clips.py": "85478ab862e03ac1c787812f6d4e228859852e4d2c802597cb50bf633e1d4403",
+        "fitz_loader.py": "78ec5be901a92b7218a77ba5a8ec899f0677f390e572252e419d165eb9d30f08",
+        "import_report.py": "2b573416954fea578535c9a820bc9cc873bed2ce11bf7de926575db1cfa950f0",
+        "primitives.py": "bc11864654b03fcdccb2b794b1db1e07e1a005b7665feb392d959dddd5ef6b51",
+        "primitive_extractor.py": "a6f5a53b255bdbee26c12d2a40adad340ea33ccd145606548d2fa25e4a2fb631",
+    },
+}
 
 
 def sha256_file(path: Path) -> str:
@@ -95,6 +113,40 @@ def iter_core_files(core_dir: Path) -> Iterable[Path]:
         yield path
 
 
+def build_manifest(
+    source_repo: str,
+    core_dir: Path,
+    previous: Dict[str, str],
+) -> Dict[str, str]:
+    """Refresh canonical hashes without silently repinning host variants.
+
+    A single-host checkout cannot derive FC's bytes from a specialized file.
+    Preserve its existing canonical reference, and require the reviewed host
+    bytes to match before any manifest is written. FC itself remains canonical.
+    """
+    overrides = KNOWN_DIVERGENCES.get(source_repo, {})
+    manifest: Dict[str, str] = {}
+    present = set()
+    for path in iter_core_files(core_dir):
+        name = path.name
+        present.add(name)
+        actual = sha256_file(path)
+        if name in overrides:
+            if actual != overrides[name]:
+                raise ValueError(f"{source_repo}/{name}: reviewed variant changed; refusing to repin")
+            canonical = previous.get(name, "")
+            if (len(canonical) != 64
+                    or any(character not in "0123456789abcdef" for character in canonical)):
+                raise ValueError(f"{source_repo}/{name}: canonical hash is missing or invalid")
+            manifest[name] = canonical
+        else:
+            manifest[name] = actual
+    missing = sorted(set(overrides) - present)
+    if missing:
+        raise ValueError(f"{source_repo}: reviewed variant files are missing: {', '.join(missing)}")
+    return manifest
+
+
 def check_repo_core(
     repo: str,
     core_dir: Path,
@@ -107,6 +159,9 @@ def check_repo_core(
 
     if not core_dir.is_dir():
         return [f"{repo}: missing core directory {core_dir}"]
+
+    for name in sorted(set(overrides) - set(manifest)):
+        errors.append(f"{repo}: reviewed variant not listed in canonical manifest: {name}")
 
     for path in iter_core_files(core_dir):
         name = path.name
@@ -238,9 +293,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             local_core_dir("FC") if local_repo == "FC" else REPO_CORE_DIRS["FC"]
         )
     if args.write_manifest:
-        manifest: Dict[str, str] = {}
-        for path in iter_core_files(canonical_dir):
-            manifest[path.name] = sha256_file(path)
+        source_repo = local_repo if args.skip_cross_repo and local_repo else "FC"
+        try:
+            previous = load_manifest() if MANIFEST_PATH.is_file() else {}
+            manifest = build_manifest(source_repo, canonical_dir, previous)
+        except ValueError as error:
+            print(f"MANIFEST NOT WRITTEN: {error}")
+            return 1
         rcb = SCRIPT_DIR / "repo_context_builder_core.py"
         if rcb.is_file():
             manifest["repo_context_builder_core.py"] = sha256_file(rcb)

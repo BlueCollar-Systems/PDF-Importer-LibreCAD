@@ -1,4 +1,4 @@
-"""Cross-host contract gates for the byte-identical shared PDF core."""
+"""Cross-host contracts for the canonical core and exact reviewed variants."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 import pymupdf
+import pdfcadcore_sync_check
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -152,12 +153,15 @@ def test_local_manifest_covers_and_hashes_every_shared_file() -> None:
     expected_names.update({"repo_context_builder_core.py", "pdfcadcore_sync_check.py"})
 
     assert set(manifest) == expected_names
+    overrides = pdfcadcore_sync_check.KNOWN_DIVERGENCES.get(
+        pdfcadcore_sync_check.detect_local_repo(), {})
     for name in sorted(expected_names):
         path = ROOT / name if name in {
             "repo_context_builder_core.py",
             "pdfcadcore_sync_check.py",
         } else core / name
-        assert manifest[name] == _sha256(path), name
+        expected = overrides.get(name, manifest[name])
+        assert expected == _sha256(path), name
 
 
 class _DrawingPage:
