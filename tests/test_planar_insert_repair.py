@@ -13,6 +13,7 @@ import pytest
 from librecad_pdf_importer import drawing_insert as merge
 from librecad_pdf_importer.drawing_copy import DrawingCopyCancelled, DrawingCopyError
 from librecad_pdf_importer.planar_blocks import qualify_planar_insert_repairs
+from plot_rehome_assertions import bind_print_rehome
 
 FIXTURE = Path(__file__).parent / "fixtures/librecad-2.2.1.5/public-glyphs-native-saved.dxf"
 FIXTURE_SHA = "02a19de450536731d0409ea04a05a1fc648a5812641cbfabd4da4ffa83abaf69"
@@ -93,6 +94,7 @@ def test_actual_native_fixture_repairs_15_inserts_with_physical_ledger_and_origi
     for row, path in zip(ledger["documents"], (base, incoming), strict=True):
         assert row["input_file_sha256"] == digest(path)
     base_expected = allowed_state(original_state, ledger["documents"][0]["repairs"])
+    base_expected = bind_print_rehome(result, original_base, base_expected, physical, base, incoming)
     merge._check_base_state(physical, base_expected)
     source_expected = allowed_state(original_source_state, ledger["documents"][1]["repairs"])
     for row in ledger["documents"][1]["repairs"]:

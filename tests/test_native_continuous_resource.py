@@ -8,6 +8,7 @@ import pytest
 
 from librecad_pdf_importer import cli, drawing_insert as module
 from librecad_pdf_importer.drawing_copy import DrawingCopyError
+from plot_rehome_assertions import bind_print_rehome
 
 FIXTURES = Path(__file__).parent / 'fixtures/librecad-2.2.1.5'
 
@@ -62,6 +63,7 @@ def test_fresh_mixed_pdf_glyphs_merge_into_actual_native_saved_drawing(tmp_path,
         assert row['parsed_tags_after_sha256'] == module._state_hash(after)
         assert reopened.entitydb[handle].dxftype() == 'INSERT' and reopened.entitydb[handle].dxf.zscale == 1
         protected[handle] = after
+    protected = bind_print_rehome(result, original, protected, reopened, base, incoming)
     module._check_base_state(reopened, protected)
     assert reopened.linetypes.get('CONTINUOUS').dxf.description == 'Solid line'
     assert reopened.units == 4 and result.insertion_scale == 1
