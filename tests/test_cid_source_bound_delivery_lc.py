@@ -59,6 +59,14 @@ def test_public_cid_label_delivers_editable_source_glyphs_after_serialized_readb
     assert delivered["verified"] is True
     assert delivered["final_representation"] == ("geometry" if requested == "geometry" else "glyphs")
     assert delivered["entity_handles"]
+    evidence = delivered["attempts"][-1]["evidence"]
+    assert evidence["font_exact_match"] is True
+    assert evidence["font_resolution_source"] == "embedded_pdf_font"
+    assert evidence["font_source_sha256"] == digest
+    assert evidence["font_asset_sha256"] == asset.usable_sha256
+    assert evidence["font_source_binding_method"] == "original_textpage_character_program_sha256"
+    assert len(evidence["font_source_character_bindings"]) == 15
+    assert all(char["program_sha256"] == digest for char in evidence["font_source_character_bindings"])
     drawing = ezdxf.readfile(output)
     for handle in delivered["entity_handles"]:
         owner = drawing.entitydb[handle]
