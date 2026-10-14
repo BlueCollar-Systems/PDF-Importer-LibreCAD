@@ -39,12 +39,12 @@ IMPORT_MODE_AUTO = "auto"
 # tries that type first; only item-specific, reported impossibility can advance
 # it to the nearest verified visual representation.
 #
-# "Exact look" (the default) draws every word as exact outlines. "Editable
-# text" asks for the same text rung but accepts LibreCAD's own font, so words
-# arrive as TEXT you can edit; it is told apart by its label, not its mode.
+# "Exact look" requests grouped outlines directly. "Editable text" requests
+# TEXT and accepts LibreCAD's own font; each item's actual delivery is reported.
+DEFAULT_TEXT_LABEL = "Exact look - text as outlines (default)"
 EDITABLE_TEXT_LABEL = "Editable text (LibreCAD font)"
 TEXT_MODES = {
-    "Exact look - text as outlines (default)": "text",
+    DEFAULT_TEXT_LABEL: "glyphs",
     EDITABLE_TEXT_LABEL: "text",
     "Labels (fallback reported)": "labels",
     "3D Text (LibreCAD is 2D)": "3d_text",
@@ -62,7 +62,6 @@ LIBRECAD_START_FAILED_TIP = (
     "LibreCAD could not be started. Use Locate LibreCAD... to pick the right "
     "LibreCAD.exe; it is remembered."
 )
-DEFAULT_TEXT_LABEL = next(label for label, mode in TEXT_MODES.items() if mode == "text")
 
 
 @dataclass(frozen=True)

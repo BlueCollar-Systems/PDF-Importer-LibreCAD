@@ -9,7 +9,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .preflight_copy import SCALE_CROSSCHECK_BANNER
 
@@ -186,6 +186,8 @@ def build_fidelity_diagnostics(
 
     return {
         "quality_level": quality_level,
+        "quality_basis": "extracted_vector_content_count",
+        "visual_fidelity_measured": False,
         "signals": _unique_strings(signals),
         "recommended_actions": _unique_strings(actions),
     }
@@ -637,6 +639,46 @@ def _format_text_mode(mode: str) -> str:
     return labels.get(key, key.replace("_", " ") if key else "")
 
 
+def _reported_text_delivery(extra: Dict[str, Any]) -> Tuple[str, bool]:
+    """Describe actual item outcomes; certify substitutions only from attempts.
+
+    This affects wording only. It never changes readiness, attempt evidence,
+    fallback records or the requested representation retained in the report.
+    """
+    delivery = extra.get("text_representation_delivery") or {}
+    if not isinstance(delivery, dict):
+        return "", False
+    items = delivery.get("items") or []
+    if not items or not all(isinstance(item, dict) for item in items):
+        return "", False
+    modes = sorted({str(item.get("final_representation") or "none") for item in items})
+    labels = ["undelivered text" if mode == "none" else _format_text_mode(mode) for mode in modes]
+    description = ", ".join(labels)
+    if len(labels) > 1:
+        description = "mixed text delivery (" + description + ")"
+    requested = str(delivery.get("requested_representation") or extra.get("text_mode") or "")
+    if any(mode != requested for mode in modes) and requested:
+        description += " (requested " + _format_text_mode(requested) + ")"
+    structural = delivery.get("verified") is True and any(item.get("fallback_used") for item in items)
+    structural = structural and not extra.get("text_items_degraded_total") and not extra.get("text_items_degraded")
+    for item in items:
+        attempts = item.get("attempts") or []
+        final = attempts[-1] if attempts and isinstance(attempts[-1], dict) else {}
+        structural = structural and (
+            item.get("verified") is True
+            and item.get("final_representation") in {"glyphs", "geometry", "text", "labels", "3d_text", "outlines"}
+            and not item.get("fallback_reason_code")
+            and final.get("outcome") == "verified"
+            and final.get("attempted_representation") == item.get("final_representation")
+            and final.get("type_verified") is True
+            and final.get("delivery_verified") is True
+            and final.get("visual_verified") is True
+            and final.get("cleanup_verified") is True
+            and not final.get("superseded")
+        )
+    return description, bool(structural)
+
+
 def build_human_summary(report: ImportReport | Dict[str, Any]) -> str:
     """One plain-English paragraph describing what happened during import."""
 
@@ -661,7 +703,9 @@ def build_human_summary(report: ImportReport | Dict[str, Any]) -> str:
     elapsed_s = elapsed_ms / 1000.0 if elapsed_ms > 0 else 0.0
 
     mode = str(data.get("mode") or "auto")
-    text_mode = _format_text_mode(str(extra.get("text_mode") or ""))
+    text_mode, verified_substitution = _reported_text_delivery(extra)
+    if not text_mode and extra.get("text_mode"):
+        text_mode = "requested " + _format_text_mode(str(extra["text_mode"]))
     pdf_name = _basename(str(input_block.get("file") or ""))
 
     parts: List[str] = []
@@ -724,13 +768,26 @@ def build_human_summary(report: ImportReport | Dict[str, Any]) -> str:
 
     if fallback.get("used"):
         reason = str(fallback.get("reason") or "fallback").replace("_", " ")
-        parts.append(f"Raster or degraded fallback was used ({reason})")
+        delivery = extra.get("text_representation_delivery") or {}
+        text_raster = isinstance(delivery, dict) and any(
+            isinstance(item, dict) and item.get("final_representation") == "raster"
+            for item in delivery.get("items") or []
+        )
+        # An original PDF image placement is not evidence of text fallback.
+        if (verified_substitution and fallback.get("text")
+                and str(fallback.get("reason") or "").startswith("text_mode_fallback:")
+                and ";" not in str(fallback.get("reason") or "")):
+            parts.append(f"Verified text representation substitution was used ({reason})")
+        elif text_raster or extra.get("text_items_degraded_total") or fallback.get("text_items_degraded"):
+            parts.append(f"Raster or degraded fallback was used ({reason})")
+        else:
+            parts.append(f"Fallback was used ({reason})")
     elif primitives > 0:
         parts.append("Vector extraction completed without raster fallback")
 
     quality = str(diagnostics.get("quality_level") or "").strip()
     if quality:
-        parts.append(f"Overall fidelity: {quality}")
+        parts.append("Visual fidelity has not been measured by a rendered comparison")
 
     if warnings:
         parts.append(

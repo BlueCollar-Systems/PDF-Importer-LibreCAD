@@ -2,7 +2,7 @@
 
 **BlueCollar-Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.111](https://img.shields.io/badge/Version-1.0.111-blue.svg)
+![Version: 1.0.112](https://img.shields.io/badge/Version-1.0.112-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
@@ -67,6 +67,13 @@ Every conversion writes `<output>_import_report.json` beside the DXF, and it
 carries the drawing scale read from the sheet: `extra.resolved_scale` for a
 single run, top-level `resolved_scale` for a resumable run (the GUI and
 `--resume`). It is `null` when no scale was found.
+
+The human summary names actual delivered text and keeps a different requested
+choice in parentheses. An attempt-verified text-to-outlines substitution is
+described separately from raster or degraded delivery. Diagnostics retain
+content counts and the legacy `quality_level` with an explicit content-count
+basis; these counts do not measure visual fidelity. A rendered comparison and
+native Save/reopen checks remain separate evidence.
 
 - Use `factor` only when `confidence >= 0.70` and `fallback_reason` is not `no_scale_detected`.
 - Otherwise treat scale as unknown in your CAD workflow.
@@ -407,7 +414,7 @@ does not prove visible/editable 3D text in LibreCAD's 2D parent.
 
 **Two text choices in the window: Exact look (default) or Editable text.**
 
-- **Exact look - text as outlines (default)** is the Text request above: every
+- **Exact look - text as outlines (default)** requests grouped Glyphs directly: every
   word is drawn as exact outlines, the same shapes as the PDF, and an editable
   copy of each string is kept on the hidden layer `P###_TEXT_SEARCH` (see below).
 - **Editable text (LibreCAD font)** gives words you can click and edit in
@@ -485,10 +492,10 @@ itself: a text search of the file finds every string. In a CAD host, thaw
 
 | Option | GUI | Verified DXF representation |
 |--------|-----|-----------------------------|
-| **text** | ✅ Exact look (default); Editable text | The native DXF `TEXT` candidate is built and checked (source text or an explicitly reported Unicode compatibility normalization, placement, cap height, rotation, source identity, `unicode` LFF binding, source-width FIT alignment), but LibreCAD's substituted LFF font does not reproduce the source glyphs, so a visible span is never certified as Text: it is delivered as verified Glyphs and reported as that fallback. Only a whitespace-only span ends as native `TEXT`. The exact string is on the frozen `P###_TEXT_SEARCH` layer. With **Editable text** (`--editable-text`) a visible span ends as that native `TEXT` in LibreCAD's font instead, disclosed as substituted. |
+| **text** | ✅ Editable text | The native DXF `TEXT` candidate is built and checked (source text or an explicitly reported Unicode compatibility normalization, placement, cap height, rotation, source identity, `unicode` LFF binding, source-width FIT alignment), but LibreCAD's substituted LFF font does not reproduce the source glyphs, so a visible span is never certified as Text: it is delivered as verified Glyphs and reported as that fallback. Only a whitespace-only span ends as native `TEXT`. The exact string is on the frozen `P###_TEXT_SEARCH` layer. With **Editable text** (`--editable-text`) a visible span ends as that native `TEXT` in LibreCAD's font instead, disclosed as substituted. |
 | **labels** | ✅ Labels | DXF exposes no native Label entity. The item-scoped Labels attempt fails loudly without creating a wrong-type alias, the Text rung then refuses the substituted LFF font as above, and the span is delivered as verified Glyphs and reported. The exact string is on the frozen `P###_TEXT_SEARCH` layer. With `--editable-text` the Text rung accepts LibreCAD's font, as for **text**. |
 | **3d_text** | ✅ 3D Text | Attempts DXF `TEXT` with positive thickness and +Z extrusion first. Success additionally requires the parent to verify it as visible/editable 3D text. LibreCAD is 2D, so the exact failed item advances to the flat Text rung, which refuses the substituted LFF font as above, and is delivered as verified Glyphs with that transition reported. The exact string is on the frozen `P###_TEXT_SEARCH` layer. |
-| **glyphs** | ✅ Glyphs | One grouped DXF `INSERT` per source text span with outline entities in its owned block definition. This remains structurally distinct from raw Geometry. |
+| **glyphs** | ✅ Exact look (default); Glyphs | One grouped DXF `INSERT` per source text span with outline entities in its owned block definition. This remains structurally distinct from raw Geometry. |
 | **geometry** | ✅ Geometry | Raw modelspace `LWPOLYLINE`/`POLYLINE` glyph edges. No `TEXT`, `MTEXT`, or `INSERT` is accepted as Geometry. |
 | **raster** | ✅ Raster | A source-PDF-bound PNG of only the exact text item, delivered as a verified DXF `IMAGE`; it is a direct result when requested, not a fallback. |
 

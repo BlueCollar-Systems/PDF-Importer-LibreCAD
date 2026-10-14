@@ -52,8 +52,8 @@ class TestLcGuiProfessionalImport(unittest.TestCase):
         self.assertEqual(gui.TEXT_MODES[gui.EDITABLE_TEXT_LABEL], "text")
         self.assertNotIn("Text (may become outlines)", self.source)
 
-    def test_default_request_remains_text(self) -> None:
-        self.assertEqual(gui.TEXT_MODES[gui.DEFAULT_TEXT_LABEL], "text")
+    def test_default_requests_the_outlines_its_label_promises(self) -> None:
+        self.assertEqual(gui.TEXT_MODES[gui.DEFAULT_TEXT_LABEL], "glyphs")
         self.assertEqual(
             gui.DEFAULT_TEXT_LABEL, "Exact look - text as outlines (default)"
         )
@@ -188,10 +188,11 @@ def test_worker_passes_the_editable_text_choice_and_logs_the_count(
     app = _app_without_window(tmp_path)
     app._var_text_mode.get.return_value = label
     options = app._capture_options()
-    assert options.text_mode == "text" and options.editable_text is editable
+    expected_mode = "text" if editable else "glyphs"
+    assert options.text_mode == expected_mode and options.editable_text is editable
     stats = {
         "text_delivery": {
-            "requested": "text", "delivered": "mixed", "item_count": 3,
+            "requested": expected_mode, "delivered": "mixed", "item_count": 3,
             "editable_text_item_count": editable_count,
         }
     }
@@ -208,7 +209,7 @@ def test_worker_passes_the_editable_text_choice_and_logs_the_count(
         )
     error.assert_not_called()
     assert convert.call_args.kwargs["editable_text"] is editable
-    assert convert.call_args.kwargs["config"].text_mode == "text"
+    assert convert.call_args.kwargs["config"].text_mode == expected_mode
     logged = [call.args[0] for call in app._log.call_args_list]
     editable_lines = [line for line in logged if "Editable text:" in line]
     if editable and editable_count == 2:
@@ -226,7 +227,7 @@ def test_worker_passes_the_editable_text_choice_and_logs_the_count(
         assert any("text=editable (LibreCAD font)" in line for line in logged)
     else:
         assert editable_lines == []
-        assert any("text=text;" in line for line in logged)
+        assert any("text=glyphs;" in line for line in logged)
 
 
 @pytest.mark.parametrize("written", [0, 4], ids=["no-copies", "copies-written"])

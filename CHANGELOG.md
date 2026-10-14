@@ -4,6 +4,17 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
+## 1.0.112 - 2026-10-14
+
+- Make the window's Exact look default request grouped glyph outlines directly.
+  Editable text still requests native TEXT in LibreCAD's font, with substitutions
+  disclosed per item. Preserve all explicit text choices and CLI behavior.
+- Describe actual delivered text representations in the human summary and retain
+  the requested choice separately. Distinguish an attempt-verified structural
+  substitution from raster/degraded fallback without changing readiness or proof.
+- Keep content-count diagnostics as diagnostics. They no longer claim measured
+  overall visual fidelity; rendered source comparison remains a separate check.
+
 ## 1.0.111 - 2026-10-14
 
 - Preserve valid physical HEADER extents independently of native LAYOUT caches,
