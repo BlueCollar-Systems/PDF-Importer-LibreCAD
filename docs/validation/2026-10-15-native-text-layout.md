@@ -145,3 +145,42 @@ with 11 Romans and nine Unicode font bindings. The eight connected rules stayed
 as Glyph outlines with their full hidden strings, no items degraded, and the
 original PDF stayed byte-identical. This checks the production conversion and
 serialized pen gate; it does not establish native desktop or plot acceptance.
+
+## Actual v1.0.117 and the narrow v1.0.118 pipe-rule candidate
+
+The default and Editable converter/open/Save As/fresh-reopen stages all completed
+with normal owned exits. Default outlines passed bounded readable-layout and
+Preview observations. Editable black-modelspace words were readable, but its
+appearance check remained false: white-paper Preview looked faint and native
+vertical pipes were gapped. Four strict native save/reopen comparisons still
+failed on linetype patterns; those raw failures remain unchanged.
+
+The actual native PDF contains 3,072 solid black, opaque font strokes at about
+0.54 pt, replacing the old approximately 0.006 pt filled pen outlines. The
+positive-pen plotting repair is therefore separate from Preview and substituted
+glyph-shape limitations. It does not establish a whole-page pixel match.
+
+In the affected span, native pipe centerlines are 2.587937 mm high while adjacent
+baselines are about 3.471343 mm apart. Version 1.0.118 admits a new fallback only
+for pipe/space-only content whose fresh original font program/GID and actual
+character frames prove closed straight rectangular vertical ink. It compares
+each placed source interval with the selected native LFF's actual vertical range
+at the existing insertion, rotation and cap-height setting. A shortened interval
+uses the existing exact Glyph rung plus its full frozen literal string.
+
+This proves per-span filled intervals, not connectivity between different text
+items. Mixed words, blank text, unproved contours and unknown bindings gain no
+rule certificate. Adequate native ranges retain editable text and the positive
+source-derived pen. The serialized native gate independently replays the rule
+against original source authority, fresh LFF bytes and physical height. No pen
+inflation, source-coordinate change or host setting is used. Updated-package
+Editable native display, plotting, Save As and fresh reopening remain pending.
+
+The v1.0.118 source-only conversion of that sheet completed in 6.547 seconds:
+11 native Romans word spans kept lineweight 18, and 17 spans used exact Glyphs
+(the eight existing underline fallbacks plus nine proved vertical pipe spans).
+No items degraded. All 28 physical TEXT strings, including frozen companions,
+matched the original full literal strings with their whitespace. The original
+PDF remained unchanged. Focused vertical-rule controls passed 27 tests, and the
+existing pen/linear-font/advance/render group passed 94 tests. These checks do
+not substitute for the new package's native Editable display/export/reopen run.

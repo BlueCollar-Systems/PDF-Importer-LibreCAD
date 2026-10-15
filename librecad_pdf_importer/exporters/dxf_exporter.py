@@ -75,6 +75,7 @@ from dxf_text_builder import (
     _positioned_geometry_fingerprint,
     _librecad_native_layout,
     _source_native_text_lineweight,
+    _source_vertical_pipe_rule_loss,
     _resolve_item_font,
     _resolve_librecad_unicode_lff,
     _resolve_librecad_lff,
@@ -2203,6 +2204,9 @@ def _verify_serialized_text_deliveries(
                 reopened_lff_evidence = reopened_lff_resolution.evidence(
                     actual_content
                 )
+                if (not whitespace_contract
+                        and _source_vertical_pipe_rule_loss(*source, reopened_lff_resolution, actual_height) is not None):
+                    raise RuntimeError(f"serialized text delivery {source_id}: native TEXT shortens the original source vertical rule")
                 try:
                     native_layout = _librecad_native_layout(native, reopened_lff_resolution)
                     target_advance = float(evidence.get("expected_advance_width") or 0.0)

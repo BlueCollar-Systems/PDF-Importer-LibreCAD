@@ -948,6 +948,103 @@ def _source_continuous_underline(text_item: NormalizedText, resolution: _ExactFo
         return None
 
 
+def _source_vertical_pipe_rule_loss(
+    text_item: NormalizedText, resolution: _ExactFontResolution,
+    native_font: _LibreCadLffResolution, height: float,
+) -> Optional[Dict[str, Any]]:
+    """Prove a per-span rectangular source rule exceeds native vertical ink.
+
+    Pipe/space content is only an eligibility filter. The actual source program,
+    GID, closed contour and character frames supply the filled-interval proof.
+    This does not assert that different source spans join one another.
+    """
+    content = str(text_item.text)
+    layout = tuple(text_item.source_char_layout)
+    if (len(content) > 10000 or "|" not in content or set(content) - {" ", "|"}
+            or not resolution.exact or len(layout) != len(content)
+            or "".join(char.text for char in layout) != content
+            or not native_font.verified or native_font.layout_metrics is None):
+        return None
+    try:
+        from fontTools.pens.recordingPen import DecomposingRecordingPen
+        from fontTools.ttLib import TTFont, TTLibError
+        payload = Path(resolution.filename).read_bytes()
+        digest = hashlib.sha256(payload).hexdigest()
+        native_digest = hashlib.sha256(Path(native_font.path).read_bytes()).hexdigest()
+        if digest != resolution.asset_sha256 or native_digest != native_font.sha256:
+            return None
+        names = _positioned_source_glyph_names(layout, resolution)
+        with TTFont(BytesIO(payload), lazy=False) as program:
+            units = float(program["head"].unitsPerEm)
+            if not math.isfinite(units) or units <= 0:
+                return None
+            name = names[content.index("|")]
+            if any(names[index] != name for index, char in enumerate(content) if char == "|"):
+                return None
+            glyphs = program.getGlyphSet()
+            pen = DecomposingRecordingPen(glyphs)
+            glyphs[name].draw(pen)
+            admitted = _source_underline_midline(pen.value)
+            if admitted is None or admitted[0] != "rectangle":
+                return None
+            vertices = admitted[1]
+            xs, ys = [p[0] for p in vertices], [p[1] for p in vertices]
+            if not 0 < max(xs) - min(xs) < max(ys) - min(ys):
+                return None
+            glyph_id = program.getGlyphID(name)
+        sy = float(height) / 9.0
+        origin = tuple(float(value) for value in text_item.insertion[:2])
+        angle = math.radians(float(text_item.rotation or 0.0))
+        base, up = (math.cos(angle), math.sin(angle)), (-math.sin(angle), math.cos(angle))
+        if len(origin) != 2 or not all(math.isfinite(v) for v in (*origin, sy)) or sy <= 1e-6:
+            return None
+        metrics = native_font.layout_metrics
+        bounds = metrics.glyph_bounds(ord("|"))
+        if metrics.arc_radii[ord("|")] != 0:
+            return None
+        native_interval = [bounds[1] * sy, bounds[3] * sy]
+        intervals = []
+        tolerance = 1e-7
+        for index, char in enumerate(layout):
+            if char.text != "|":
+                continue
+            x_axis, y_axis = _source_character_affine_axes(char)
+            nx, ny = math.hypot(*x_axis), math.hypot(*y_axis)
+            if (not all(math.isfinite(v) and v > 0 for v in (nx, ny))
+                    or abs(x_axis[0] * up[0] + x_axis[1] * up[1]) > 1e-8 * nx
+                    or abs(y_axis[0] * base[0] + y_axis[1] * base[1]) > 1e-8 * ny
+                    or x_axis[0] * base[0] + x_axis[1] * base[1] <= 0
+                    or y_axis[0] * up[0] + y_axis[1] * up[1] <= 0):
+                return None
+            placed = [(char.target_origin[0] - origin[0] + (x * x_axis[0] + y * y_axis[0]) / units,
+                       char.target_origin[1] - origin[1] + (x * x_axis[1] + y * y_axis[1]) / units)
+                      for x, y in vertices]
+            projected = [p[0] * up[0] + p[1] * up[1] for p in placed]
+            if not all(math.isfinite(v) for v in (*projected, *native_interval)):
+                return None
+            source_interval = [min(projected), max(projected)]
+            magnitude = max(abs(v) for point in char.source_quad_pdf for v in point)
+            tolerance = max(tolerance, 4 * math.ldexp(1.0, math.frexp(magnitude)[1] - 24)
+                            * max(nx, ny) / float(char.source_font_size_pdf))
+            intervals.append({"source_index": index, "source_interval": source_interval,
+                              "native_interval": list(native_interval),
+                              "loss_below": max(native_interval[0] - source_interval[0], 0.0),
+                              "loss_above": max(source_interval[1] - native_interval[1], 0.0)})
+        shortened = sum(max(row["loss_below"], row["loss_above"]) > tolerance for row in intervals)
+        if not shortened:
+            return None
+        return {"rule": "exact_source_rectangular_vertical_pipe_interval_v1",
+                "font_sha256": digest, "source_glyph_name": name, "source_glyph_id": glyph_id,
+                "native_font_sha256": native_digest, "pipe_glyph_count": len(intervals),
+                "shortened_pipe_count": shortened, "frame_tolerance": tolerance,
+                "max_interval_loss": max(max(row["loss_below"], row["loss_above"]) for row in intervals),
+                "interval_frame": "relative to original insertion along native positive-up axis",
+                "native_up_axis": list(up), "intervals": intervals,
+                "cross_item_connectivity_verified": False}
+    except (KeyError, OSError, TypeError, ValueError, TTLibError, _RepresentationImpossible):
+        return None
+
+
 def _librecad_lff_evidence(
     content: str,
     executable: Optional[str] = None,
@@ -3158,6 +3255,11 @@ def _attempt_labels(
                 if gap > continuity["frame_tolerance"]:
                     attempt.evidence["source_continuous_rule"] = dict(continuity, native_join_gap=gap)
                     raise _RepresentationImpossible("native LFF spacing breaks the proven connected source underline; exact glyph outlines required")
+            if accept_librecad_font_substitution:
+                vertical_loss = _source_vertical_pipe_rule_loss(text_item, font_resolution, native_lff, height)
+                if vertical_loss is not None:
+                    attempt.evidence["source_vertical_rule"] = vertical_loss
+                    raise _RepresentationImpossible("native LFF vertical range shortens the proven source pipe interval; exact glyph outlines required")
             if accept_librecad_font_substitution and not source_content_whitespace_only:
                 if is_r12:
                     raise _RepresentationImpossible("R12 cannot serialize a source-bound positive native TEXT lineweight")

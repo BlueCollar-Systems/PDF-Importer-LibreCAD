@@ -2,7 +2,7 @@
 
 **BlueCollar-Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.117](https://img.shields.io/badge/Version-1.0.117-blue.svg)
+![Version: 1.0.118](https://img.shields.io/badge/Version-1.0.118-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
@@ -11,13 +11,15 @@ See [CHANGELOG.md](CHANGELOG.md) for release history. Version 1.0.82 preserves
 native zero-ink whitespace TEXT while visible source text whose font LibreCAD
 must substitute descends automatically to visually verified glyph outlines.
 
-Version 1.0.117 gives supported native Editable text a source-derived positive
-pen weight instead of LibreCAD's almost invisible default pen. Unsupported
-weight metrics follow the reported exact-outline fallback, keeping full hidden
-search strings. Native letter shapes and weight remain disclosed approximations.
-The earlier native font, baseline and continuous-underline fixes are retained.
-Actual v1.0.116 desktop checks exposed the pen issue; the v1.0.117 package's
-native display, export, save and fresh-reopen acceptance remains pending. See
+Version 1.0.118 preserves proved vertical pipe-rule ink as exact outlines when
+the native font would shorten it. The decision requires the original bound
+glyph contour and actual character frames; a pipe-looking string is not proof.
+Ordinary editable words keep their native font and source-derived positive pen,
+while complete literal search strings remain with outline fallbacks.
+The earlier font, baseline and continuous-underline fixes are retained.
+Actual v1.0.117 checks confirmed the positive native PDF pen and normal save/fresh
+reopening, but native pipe gaps and faint Preview remained appearance failures.
+The v1.0.118 package's native acceptance is pending. See
 [native text validation](docs/validation/2026-10-15-native-text-layout.md).
 
 Version 1.0.114 keeps LibreCAD's intended native font when joining converted

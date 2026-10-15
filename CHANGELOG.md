@@ -4,6 +4,20 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
+## 1.0.118 - 2026-10-15
+
+- Keep a pipe/space-only span as exact Glyph outlines when its fresh original
+  font program, glyph ID, closed rectangular ink and character frames prove a
+  vertical interval that the selected native LFF would shorten. Preserve the
+  complete frozen literal; leave mixed words and unproved shapes on their
+  existing paths. This is a per-span proof, not a cross-item join certificate.
+- Independently replay the source interval check against serialized native
+  height and the fresh selected font. Keep ordinary native words and their
+  source-derived positive pen unchanged, without inflating weight to hide gaps.
+- Record the actual v1.0.117 positive PDF pen and normal desktop lifecycles
+  separately from its failed Editable appearance and strict raw comparisons.
+  Updated-package Editable display, export and fresh reopening remain pending.
+
 ## 1.0.117 - 2026-10-15
 
 - Give explicitly selected visible native Editable text a positive pen weight
