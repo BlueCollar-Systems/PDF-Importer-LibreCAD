@@ -231,6 +231,14 @@ def test_real_pdf_window_pipeline_retains_full_string_with_independent_physical_
     from pdfcadcore.import_config import ImportConfig
 
     resolution, font, executable = bound_lff
+    unicode_digest = resolution.sha256
+    # The legacy FIT regression includes an arc-bearing P. The corrected
+    # native route must use a bound linear face when horizontal fitting is
+    # anisotropic, retaining these exact extrema and full advance.
+    font.with_name("romans.lff").write_text(
+        LFF.replace("0,0;0,9;2.5,9;2.5,4,A-1;0,4", "0,0;0,9;5,9;5,4;0,4")
+        + "[0048]\n0,0;0,9;5,9;5,0\n\n", encoding="utf-8",
+    )
     content = " " * 70 + "Page    1  "
     source = tmp_path / "fictional-spacing.pdf"
     with pymupdf.open() as pdf:
@@ -262,7 +270,9 @@ def test_real_pdf_window_pipeline_retains_full_string_with_independent_physical_
     assert native.dxf.text == content
     assert native.dxf.halign == native.dxf.valign == 0
     assert doc.layers.get(native.dxf.layer).is_frozen() is (not editable)
-    assert native.dxf.style.startswith("unicode#")
+    assert native.dxf.style.startswith("romans#" if editable else "unicode#")
+    if editable:
+        resolution = builder._resolve_librecad_lff(str(executable), font_name="romans", fresh=True)
     proof = builder._librecad_native_layout(native, resolution)
     assert proof["native_lff_actual_advance"] == pytest.approx(source_advance, abs=1e-9)
     report = json.loads(Path(stats["import_report_path"]).read_text(encoding="utf-8"))
@@ -288,4 +298,4 @@ def test_real_pdf_window_pipeline_retains_full_string_with_independent_physical_
         assert text.dxf.text == content
         assert builder._librecad_native_layout(text, resolution)["native_lff_actual_advance"] == pytest.approx(source_advance, abs=1e-9)
     assert source.read_bytes() == original_pdf
-    assert hashlib.sha256(font.read_bytes()).hexdigest() == resolution.sha256
+    assert hashlib.sha256(font.read_bytes()).hexdigest() == unicode_digest

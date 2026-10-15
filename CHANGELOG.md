@@ -4,6 +4,23 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
+## 1.0.116 - 2026-10-15
+
+- Keep native Unicode where its actual glyphs and scales are safe. For unsafe
+  stretched curves, use only the selected installation's qualified linear
+  Romans font, retaining full strings, source cap height, insertion, rotation
+  and independently measured full advance. Font substitution remains disclosed.
+- Preserve continuous underlines as exact glyph outlines only when the bound
+  source program and character placements prove connected filled ink that native
+  letter spacing would break. Keep complete frozen search strings and report the
+  item fallback; unsupported shapes do not acquire a continuity certificate.
+- Preserve qualified Unicode and Romans aliases through page assembly and saved
+  drawing copies. Retain conflicting-font/resource guards, fresh serialized
+  font/stroke checks, and optional Romans bytes or absence in resume identity.
+- Record the completed v1.0.115 desktop lifecycles separately from its editable
+  stroke failure and six strict native retention failures. Source checks for this
+  repair pass; the exact new package's desktop acceptance remains pending.
+
 ## 1.0.115 - 2026-10-15
 
 - Keep leading and trailing spaces in editable text without LibreCAD's FIT

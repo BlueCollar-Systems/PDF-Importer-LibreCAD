@@ -75,6 +75,7 @@ from dxf_text_builder import (
     _positioned_geometry_fingerprint,
     _librecad_native_layout,
     _resolve_librecad_unicode_lff,
+    _resolve_librecad_lff,
     _nested_outline_tolerance,
     _solid_fill_verified,
     _source_id,
@@ -90,6 +91,7 @@ from conversion_control import (
     ensure_output_is_not_source,
     report_progress,
 )
+from ..native_text_styles import native_font_family
 from librecad_runtime import local_path_for_io, resolve_librecad_installation
 
 
@@ -2097,6 +2099,7 @@ def _verify_serialized_text_deliveries(
                     "cap_height_invariant_verified",
                     "rotation_verified",
                     "native_lff_layout_verified",
+                    "native_lff_stroke_geometry_safe",
                     "librecad_lff_asset_verified",
                     "librecad_lff_coverage_verified",
                     "librecad_parent_installation_verified",
@@ -2174,8 +2177,9 @@ def _verify_serialized_text_deliveries(
                     lff_binding_key
                 )
                 if reopened_lff_resolution is None:
-                    reopened_lff_resolution = _resolve_librecad_unicode_lff(
+                    reopened_lff_resolution = _resolve_librecad_lff(
                         bound_executable,
+                        font_name=str(evidence.get("librecad_lff_font_family") or "unicode"),
                         fresh=True,
                     )
                     reopened_lff_resolutions[lff_binding_key] = (
@@ -2189,6 +2193,7 @@ def _verify_serialized_text_deliveries(
                     target_advance = float(evidence.get("expected_advance_width") or 0.0)
                     native_layout_ok = bool(
                         target_advance > 0.0
+                        and native_layout["native_lff_stroke_geometry_safe"] is True
                         and math.isclose(
                             native_layout["native_lff_actual_advance"], target_advance,
                             rel_tol=1e-6, abs_tol=max(1e-9, target_advance * 1e-8),
@@ -2203,6 +2208,7 @@ def _verify_serialized_text_deliveries(
                     evidence.get(key) == reopened_lff_evidence.get(key)
                     for key in (
                         "librecad_lff_path",
+                        "librecad_lff_font_family",
                         "librecad_lff_size_bytes",
                         "librecad_lff_sha256",
                         "librecad_lff_glyph_count",
@@ -2235,12 +2241,11 @@ def _verify_serialized_text_deliveries(
                 )
                 lff_reopen_ok = bool(
                     native.dxftype() == "TEXT"
-                    and str(native.dxf.style or "").strip().lower() == "unicode"
-                    and str(parent_font).strip().lower() == "unicode"
-                    and str(
-                        doc.styles.get(str(native.dxf.style or "")).dxf.font or ""
-                    ).strip().lower()
-                    == "unicode"
+                    and native_font_family(str(native.dxf.style or "")) == str(parent_font).lower()
+                    and str(parent_font).lower() in {"unicode", "romans"}
+                    and native_font_family(str(doc.styles.get(str(native.dxf.style or "")).dxf.font or ""))
+                    == str(parent_font).lower()
+                    and str(parent_font).lower() == reopened_lff_evidence["librecad_lff_font_family"]
                     and evidence.get("parent_native_font_candidate_format") == "lff"
                     and evidence.get("parent_native_font_required_format") == "lff"
                 )

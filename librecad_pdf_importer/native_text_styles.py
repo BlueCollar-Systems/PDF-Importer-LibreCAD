@@ -7,32 +7,38 @@ from typing import Any, Iterator
 from ezdxf.xref import get_unique_table_name, get_xref_name
 
 
-def _native_unicode_name(name: str) -> bool:
+def native_font_family(name: str) -> str:
+    """Resolve only the two admitted native LFF families' legacy aliases."""
     name = name.lower()
     if "#" in name:
         name = name.split("_" if "_" in name else "#", 1)[0]
-    return name == "unicode"
+    return name if name in {"unicode", "romans"} else ""
+
+
+def _native_unicode_name(name: str) -> bool:
+    return native_font_family(name) == "unicode"
 
 
 def _native_unicode_style(style: Any) -> bool:
-    """Recognize the source's native LFF binding, not a substituted font.
+    """Recognize an admitted native LFF binding (legacy helper name retained).
 
     LibreCAD 2.2 ignores STYLE.font and looks up TEXT.style itself. Its QCAD 1
     aliases strip at the first '_' when both '#' and '_' occur, otherwise at
     the first '#'; '$' prefixes are never stripped. Keep the qualification
-    narrow: a Unicode name with a conflicting font/bigfont/TTF declaration is
-    not evidence of the native Unicode resource.
+    narrow: Unicode/Romans names with a conflicting font/bigfont/TTF declaration
+    are not evidence of either native resource.
     """
     font = str(style.dxf.font).lower()
     # Native Save writes its STYLE name back as STYLE.font. Admit only an
-    # unpathed, extension-free legacy alias of the same Unicode LFF resource;
+    # unpathed, extension-free legacy alias of the same admitted LFF resource;
     # a font filename/path or conflicting declaration is not that proof.
-    font_ok = font in {"unicode", "unicode.lff"} or (
+    family = native_font_family(str(style.dxf.name))
+    font_ok = font in {family, f"{family}.lff"} or (
         not any(character in font for character in "/\\:.")
-        and _native_unicode_name(font)
+        and native_font_family(font) == family
     )
     return (
-        _native_unicode_name(str(style.dxf.name))
+        bool(family)
         and font_ok
         and not style.dxf.get("bigfont", "")
         and not (style.dxf.get("flags", 0) & 1)
@@ -54,17 +60,18 @@ def preserve_native_text_styles(
     """
     prefix = str(xref_prefix) if xref_prefix else get_xref_name(source)
     qualified = {
-        get_unique_table_name(style.dxf.name, prefix, target.styles): {
-            key: value for key, value in style.dxf.all_existing_dxf_attribs().items()
-            if key not in {"name", "handle", "owner"}
-        }
+        get_unique_table_name(style.dxf.name, prefix, target.styles): (
+            native_font_family(str(style.dxf.name)),
+            {key: value for key, value in style.dxf.all_existing_dxf_attribs().items()
+             if key not in {"name", "handle", "owner"}},
+        )
         for style in source.styles if _native_unicode_style(style)
     }
     before = set(target.entitydb) if qualified else set()
     yield
     renamed: dict[str, str] = {}
     alias_number = 1
-    for loaded_name, source_properties in qualified.items():
+    for loaded_name, (family, source_properties) in qualified.items():
         if loaded_name not in target.styles:
             continue  # Unreferenced source styles are not loaded by ezdxf.
         style = target.styles.get(loaded_name)
@@ -76,7 +83,7 @@ def preserve_native_text_styles(
             raise RuntimeError("Cannot establish the loaded native text-style binding.")
         while True:
             # No '_' anywhere: LibreCAD's alternate legacy branch would consume it.
-            alias = f"unicode#bcs-{alias_number}"
+            alias = f"{family}#bcs-{alias_number}"
             alias_number += 1
             if alias not in target.styles:
                 break

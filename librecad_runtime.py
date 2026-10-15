@@ -10,7 +10,7 @@ import shutil
 from typing import Any, Optional, Tuple
 
 
-LIBRECAD_RUNTIME_BINDING_CONTRACT_VERSION = "bcs.librecad-runtime-binding/1"
+LIBRECAD_RUNTIME_BINDING_CONTRACT_VERSION = "bcs.librecad-runtime-binding/2"
 _MAX_FINGERPRINTED_LFF_BYTES = 16 * 1024 * 1024
 
 
@@ -36,6 +36,7 @@ class LibreCadRuntimeBinding:
     unicode_lff_path: str = ""
     unicode_lff_size_bytes: int = 0
     unicode_lff_sha256: str = ""
+    romans_lff_candidates: Tuple[Tuple[str, int, str, str], ...] = ()
     binding_verified: bool = False
     reason: str = ""
 
@@ -61,6 +62,13 @@ class LibreCadRuntimeBinding:
                 "size_bytes": int(self.unicode_lff_size_bytes),
                 "sha256": self.unicode_lff_sha256 or None,
             },
+            # Absence also participates: installing/changing the optional
+            # linear native font must invalidate earlier resumable pages.
+            "romans_lff_candidates": [
+                {"path": redacted_local_path(path), "size_bytes": size,
+                 "sha256": digest or None, "reason": reason}
+                for path, size, digest, reason in self.romans_lff_candidates
+            ],
             "local_only_diagnostics": {
                 "classification": "local_sensitive_paths",
                 "shareable": False,
@@ -351,6 +359,11 @@ def resolve_librecad_runtime_binding(
         unicode_lff_path=str(selected_lff) if selected_lff is not None else "",
         unicode_lff_size_bytes=lff_size,
         unicode_lff_sha256=lff_sha256,
+        romans_lff_candidates=tuple(
+            (str(path.with_name("romans.lff")), *_stable_file_fingerprint(
+                path.with_name("romans.lff"), max_bytes=_MAX_FINGERPRINTED_LFF_BYTES,
+            )) for path, _source in candidates
+        ),
         binding_verified=verified,
         reason=(
             "verified executable-bound LibreCAD runtime assets"

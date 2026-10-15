@@ -1,71 +1,100 @@
-# LibreCAD native text placement
+# LibreCAD native text placement and strokes
 
-The r14 candidate at `7ec26ba0336889bae26e9ab8da547adde007033c`, built by
-run `38726279355`, was checked in the actual LibreCAD 2.2.1.5 desktop. The small
-summary PDF was converted through the ordinary packaged GUI in default outlines
-and explicit Editable text modes. Both completed conversion, normal DXF2007
-Save As, normal Close, fresh-process reopen, another Save As and normal Close.
-The foundation sheet completed the same lifecycle with its whole layout, cyan
-marks and source logo visible in model view and white-paper preview.
+## Completed desktop checks
 
-These lifecycle successes do not establish appearance or strict retention.
-Editable mode visibly failed: Auto Zoom fitted enormous horizontal bounds,
-leaving a tiny table and distant text rectangle. The failure persisted after
-reopening. Default outlines remained visible, but their hidden native search
-text still enlarged declared bounds on reopening. All original files and
-failed checks are preserved. No native file was repaired or normalized.
+The exact v1.0.115 r15 package at commit
+`051860962dc74ac3ffe76f9176bfd36876bc052e`, built by run `38734747651`,
+completed nine actual LibreCAD 2.2.1.5 desktop stages. Three ordinary packaged
+GUI cases covered a small sheet in default outlines and explicit Editable text
+modes, and a dense sheet in default outlines. Each completed conversion, normal
+DXF2007 Save As and Close, fresh-process reopen, another Save As and normal Close.
+The dense layout, cyan marks and source image remained visible.
 
-## Proven cause and repair
+The LEFT/baseline repair fixed the earlier oversized editable-text bounds.
+However, explicit Editable mode still visibly failed: letters had fragmented
+strokes and continuous table rules appeared dashed, including after redraw,
+closer zoom and fresh reopen. Default outlines remained the visually usable
+reference; these observations do not establish complete rendered parity.
 
-All 28 native TEXT references retained `unicode#bcs-1` across generated and both
-native saved files. Under the pinned host font lookup and installed font
-inventory, that alias resolves Unicode. The alias repair therefore does not
-explain away the separate placement defect.
+All six native saved-file strict comparisons remain failed: four small-sheet
+comparisons failed linetype retention, and two dense-sheet comparisons failed
+IMAGEDEF-owner retention. Original/generated/native files and failed evidence
+remain intact. No normalization, image-byte parity or native equivalence is
+claimed. Earlier r14 appearance/bounds failures remain historical failures.
 
-The actual native save also writes that alias into `STYLE.font`. The earlier
-literal-font qualification rejected it when copying the saved drawing; XREF
-prefixing then broke native lookup again. Physical file-only replay reproduced
-that fallback. The repair admits only an unpathed, extension-free font alias
-that resolves to the same native Unicode name, retaining all style properties
-and existing conflicting-font, bigfont, shape-font and extended-font guards.
+## Source-supported causes
 
-One source string has 70 leading spaces followed by `Page    1`. The installed
-Unicode LFF and native spacing rules give full cursor advance 533.5, while its
-ink occupies X from 472.5 to 530.5. LibreCAD FIT scales the ink width without
-rebasing that leading offset. For the authored advance 163.86463720533578 mm,
+LibreCAD resolves TEXT style names as native font names and ignores the font
+filename in the imported STYLE table. XREF prefixes therefore require qualified
+native-resolvable aliases. Native Save can also write that alias into STYLE.font;
+the same family qualification must survive a later saved drawing copy.
 
-`24.97665697733561 + 530.5 * 163.86463720533578 / 58`
+The earlier FIT route scaled by ink width without rebasing leading spaces.
+Writing a matching FIT endpoint was circular width evidence. Version 1.0.115
+replaced it with LEFT/baseline TEXT whose full cursor advance is measured from
+the selected installation's bound LFF asset, preserving leading/trailing spaces,
+source insertion, cap height and rotation.
 
-equals the observed erroneous maximum X, 1523.773036933036 mm. Independent
-read-only replay of the pinned native source and actual font reproduces it.
-The previous importer checked its own written FIT endpoint as width evidence;
-that did not measure native layout.
+The v1.0.115 desktop check exposed a separate host limitation. Native LFF arcs
+inside polylines scale their centers in X/Y but their radius in X only. Unequal
+horizontal and vertical scaling can separate arc endpoints from adjoining
+strokes. The measured native scales reproduce this defect independently.
+Native letter spacing also leaves gaps between adjacent underscore glyphs,
+even where the original source font's filled rules join continuously.
 
-Version 1.0.115 instead writes LEFT/baseline TEXT and derives its width factor
-from the complete native cursor advance, including literal spaces. Full content,
-insertion, height and rotation remain intact. Serialization replays actual
-physical fields against freshly bound executable/LFF assets. Ink envelopes are
-separate and conservative for native arc scaling; they do not certify source
-font shapes or pixel parity. Unsupported visible layout uses the existing
-reported fallback. Search copies preserve exact strings but cannot certify
-visible output or an unproved layout.
+## Version 1.0.116 repair
 
-## Scope and remaining checks
+Keep Unicode when its admitted glyph geometry and actual scales are safe.
+Otherwise, try only the selected installation's Romans LFF, requiring drawable
+coverage, baseline zero, cap height nine and an arc-free used-glyph/reference
+closure. Missing or unsupported Romans follows the existing reported item
+fallback. No font is installed and no host preference is changed.
 
-The exact 1.0.115 package's desktop import, Auto Zoom, Save As and fresh reopen
-checks remain required after the source repair. R14 native saves still failed
-the unchanged strict comparisons: linetype/resource/header changes and missing
-IMAGEDEF owner records remain recorded. Other hosts, cross-folder image
-transport and whole-page rendered parity are separate checks. Guided UI stages
-retain 1,800 seconds; separate native diagnostics retain their hard 60-second
-deadlines.
+Retain complete strings and source insertion, cap height, rotation and full
+advance. Independently replay physical serialized fields against fresh selected
+font bytes, native family and stroke-safety checks. Unicode/Romans aliases keep
+all existing style properties, collision and conflicting-font guards through
+page assembly and saved drawing copies. Resume identity records optional Romans
+bytes and absence so earlier pages cannot silently reuse a changed font choice.
+Font substitution remains explicit and never certifies the PDF's glyph shapes.
 
-Private receipts under the local host-review directory contain source/file
-bindings; private PDFs and their contents are not committed.
+A continuous-rule fallback requires the exact bound source program/GID and actual
+character placements. Only a single closed rectangle or a narrowly admitted
+capsule with four monotone cubic quadrants and two horizontal sides qualifies.
+The capsule proves its filled shared-midline interval, not its bounding box.
+Transformed adjacent intervals must join in the same band under the source-frame
+uncertainty. If native spacing breaks that proven connection, use existing exact
+glyph outlines and retain the full frozen search string. Unproved punctuation,
+other contours and unsupported placement do not acquire a continuity certificate.
 
-| Receipt | SHA-256 |
+## Validation and remaining acceptance
+
+The relevant broader local run passed 427 tests with seven existing skips and
+nine subtests, and exposed four precise fallback-evidence regressions. Restoring
+the original Unicode asset/coverage gate before selection fixed those failures
+without weakening their assertions or guards. The affected representation and
+Editable suites plus selection/continuity checks then passed 197 tests with
+seven skips. Ruff and diff checks pass; independent native-math and serialized
+source reviews are clear. Earlier failed logs remain preserved.
+
+A source-only diagnostic on the actual small sheet produced 20 visible native
+TEXT spans (11 Romans, nine safe Unicode), eight exact glyph rule spans and
+eight complete frozen search strings, with zero degraded items and unchanged
+original input. Each rule had exact source capsule-midline continuity evidence.
+That diagnostic used the predecessor before the final evidence-order/diagnostic
+wording correction; its geometry and capsule proof are unchanged. It is not a
+compiled-package or native-render acceptance result.
+
+The exact v1.0.116 package still requires actual desktop import, display, Save As
+and fresh reopen. Other hosts, cross-folder image transport and whole-page pixel
+parity remain separate checks. Guided UI stages retain 1,800 seconds; separate
+native diagnostics keep their hard 60-second deadlines. Private PDFs, their
+contents and local paths are not committed.
+
+| Local evidence identifier | SHA-256 |
 | --- | --- |
-| `lc114-native-font-qualification-20261015-r1/FIELD-BOLT-DEFAULT-LIFECYCLE-AND-FONT-REVIEW.json` | `9cc413e1fc6d58023221f4711f56b2e4ee6f1b0e475a09ebf34dea56f6ce2833` |
-| `lc114-native-font-qualification-20261015-r1/FIELD-BOLT-EDITABLE-DISPLAY-FAILURE-REVIEW.json` | `8262bd94f51798d18c46d4025504452e46fb1b4bf4f503b6f26224bd55117747` |
-| `lc-native-fit-numeric-diagnosis-20261015-r3/INDEPENDENT-NATIVE-FIT-NUMERIC-DIAGNOSIS.json` | `53afae634ac68a83f81437fbdb39b380ce477de92202139a990c0acb03c02809` |
-| `lc-native-saved-font-alias-diagnosis-20261015-r1/ACTUAL-NATIVE-SAVED-STYLE-COPY-DIAGNOSIS.json` | `9edf371b7fdc59fbd3639822948949191c8b4c5a117fc8cc68ed0ecb94cf6e7e` |
+| Native stroke source diagnosis | `cda8be7ba6ae6ec18c84612761e8ab1bce7925db7203275665eb65907ffd0580` |
+| Final source/check bindings | `4cb8e6b44e114ece2da19bc32fde904d4992593bf9f3f540a334a08bd7b882fb` |
+| Independent capsule/source review | `4714ac34f39cf1dc3398c66e1b1d883f21a5349ce42be18db71e6d5e3b49aa91` |
+| Final independent serialized review | `e571643c917cc6e9b535e6061a0c394d8b21c45eb62b222e1056d095b98bac6a` |
+| Source-only actual-sheet result | `592f39b313bf13572ac5931f09766add73a166ebd3193ff7457f63f4a0a26261` |
