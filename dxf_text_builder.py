@@ -41,7 +41,7 @@ from ezdxf import path as ezdxf_path
 from ezdxf.addons import text2path
 from ezdxf.fonts import fonts as ezdxf_fonts
 from ezdxf.lldxf.encoding import has_dxf_unicode
-from ezdxf.math import Matrix44
+from ezdxf.math import Matrix44, bulge_to_arc
 from ezdxf.tools.text import plain_text
 from ezdxf.tools.text_size import text_size
 
@@ -329,6 +329,116 @@ class _ExactFontResolution:
         }
 
 
+class _LibreCadLffMetrics:
+    """The admitted LFF subset of LibreCAD RS_Font/RS_Text, not TTF metrics.
+
+    Native TEXT advances by each glyph's max X plus letter spacing, retaining
+    its bearings; only U+0020 uses word spacing. FIT instead divides by the ink
+    box width without rebasing a leading-space offset. Keep those quantities
+    separate. Parse the already bound asset bytes, and reject uncertain glyphs
+    rather than treating an encoded FIT endpoint as a measurement.
+    """
+
+    def __init__(self, content: str):
+        self.letter_spacing = 3.0
+        self.word_spacing = 6.75
+        self.bodies: Dict[int, Tuple[str, ...]] = {}
+        self.bounds: Dict[int, Tuple[float, float, float, float]] = {}
+        self.arc_radii: Dict[int, float] = {}
+        lines = iter(content.splitlines())
+        for line in lines:
+            if line.startswith("#"):
+                parts = [part.strip() for part in line[1:].split(":") if part]
+                if len(parts) < 2:
+                    continue
+                key, value = parts[0].lower(), parts[1]
+                if key in {"letterspacing", "wordspacing"}:
+                    number = float(value)
+                    if not math.isfinite(number) or number < 0.0:
+                        raise ValueError("unsupported native LFF spacing")
+                    setattr(self, "letter_spacing" if key == "letterspacing" else "word_spacing", number)
+                elif key == "encoding" and value.lower().replace("-", "") != "utf8":
+                    raise ValueError("native LFF layout requires UTF-8 encoding")
+            elif line.startswith("["):
+                header = re.fullmatch(r"\[([0-9A-Fa-f]{1,4})\](?:\s.*)?", line)
+                body = []
+                for raw in lines:
+                    if not raw:  # Native readLFF ends a glyph at an empty line.
+                        break
+                    body.append(raw)
+                if header and body:
+                    self.bodies.setdefault(int(header.group(1), 16), tuple(body))
+
+    def glyph_bounds(self, codepoint: int, active: Tuple[int, ...] = ()) -> Tuple[float, float, float, float]:
+        if codepoint in self.bounds:
+            return self.bounds[codepoint]
+        if codepoint in active or len(active) >= 64 or codepoint not in self.bodies:
+            raise ValueError(f"unsupported native LFF glyph U+{codepoint:04X}")
+        points: List[Tuple[float, float]] = []
+        max_arc_radius = 0.0
+        for line in self.bodies[codepoint]:
+            reference = re.fullmatch(r"C([0-9A-Fa-f]{1,4})", line)
+            if reference:
+                x0, y0, x1, y1 = self.glyph_bounds(int(reference.group(1), 16), (*active, codepoint))
+                points.extend(((x0, y0), (x1, y1)))
+                max_arc_radius = max(max_arc_radius, self.arc_radii[int(reference.group(1), 16)])
+                continue
+            vertices = []
+            for token in line.split(";"):
+                coords = token.split(",")
+                if len(coords) not in {2, 3} or (len(coords) == 3 and not coords[2].startswith("A")):
+                    raise ValueError("unsupported native LFF polyline")
+                vertex = (float(coords[0]), float(coords[1]), float(coords[2][1:]) if len(coords) == 3 else 0.0)
+                if not all(math.isfinite(value) for value in vertex):
+                    raise ValueError("nonfinite native LFF vertex")
+                vertices.append(vertex)
+            if len(vertices) < 2 or len(vertices) > 10000:
+                raise ValueError("unsupported native LFF polyline size")
+            points.extend((x, y) for x, y, _bulge in vertices)
+            for start, end in zip(vertices, vertices[1:], strict=False):
+                # LFF supplies the preceding segment's bulge at its end vertex.
+                if abs(end[2]) < 1e-10 or abs(end[2]) >= 1e10:
+                    continue
+                if start[:2] == end[:2]:
+                    raise ValueError("degenerate native LFF arc")
+                center, a0, a1, radius = bulge_to_arc(start[:2], end[:2], end[2])
+                if not all(math.isfinite(value) for value in (*center, a0, a1, radius)):
+                    raise ValueError("invalid native LFF arc")
+                max_arc_radius = max(max_arc_radius, radius)
+                sweep = (a1 - a0) % math.tau
+                for angle in (0.0, math.pi / 2, math.pi, 3 * math.pi / 2):
+                    if (angle - a0) % math.tau <= sweep + 1e-12:
+                        points.append((center.x + radius * math.cos(angle), center.y + radius * math.sin(angle)))
+            if len(points) > 100000:
+                raise ValueError("native LFF glyph exceeds layout budget")
+        if not points:
+            raise ValueError("native LFF glyph has no measurable ink")
+        result = (min(p[0] for p in points), min(p[1] for p in points), max(p[0] for p in points), max(p[1] for p in points))
+        self.bounds[codepoint] = result
+        self.arc_radii[codepoint] = max_arc_radius
+        return result
+
+    def run(self, content: str) -> Tuple[float, Optional[Tuple[float, float, float, float]]]:
+        if len(content) > 100000:
+            raise ValueError("native LFF text exceeds layout budget")
+        cursor = 0.0
+        ink = []
+        for character in content:
+            if character == " ":
+                cursor += self.word_spacing
+                continue
+            codepoint = ord(character)
+            if codepoint > 0xFFFF:
+                raise ValueError("native LFF layout requires a BMP character")
+            x0, y0, x1, y1 = self.glyph_bounds(codepoint)
+            ink.extend(((cursor + x0, y0), (cursor + x1, y1)))
+            cursor += x1 + self.letter_spacing if x1 >= 0.0 else 0.0
+        if not math.isfinite(cursor) or not all(math.isfinite(value) for point in ink for value in point):
+            raise ValueError("nonfinite native LFF run")
+        bounds = (min(p[0] for p in ink), min(p[1] for p in ink), max(p[0] for p in ink), max(p[1] for p in ink)) if ink else None
+        return cursor, bounds
+
+
 @dataclass(frozen=True)
 class _LibreCadLffResolution:
     path: str = ""
@@ -344,6 +454,7 @@ class _LibreCadLffResolution:
     parent_installation_verified: bool = False
     verified: bool = False
     reason: str = ""
+    layout_metrics: Optional["_LibreCadLffMetrics"] = field(default=None, compare=False, repr=False)
 
     def evidence(self, content: str) -> Dict[str, Any]:
         required = sorted(
@@ -570,12 +681,17 @@ def _parse_librecad_lff(
         if glyph_is_drawable(codepoint, frozenset())
     )
     verified = bool(format_ok and codepoints and drawable_codepoints and payload)
+    try:
+        layout_metrics = _LibreCadLffMetrics(content)
+    except ValueError:
+        layout_metrics = None  # Coverage is separate from native layout proof.
     result = _LibreCadLffResolution(
         **base,
         size_bytes=len(payload),
         sha256=payload_sha256,
         glyph_codepoints=codepoints,
         drawable_codepoints=drawable_codepoints,
+        layout_metrics=layout_metrics,
         verified=verified,
         reason=(
             "verified LibreCAD Font 1 unicode.lff asset"
@@ -2278,20 +2394,34 @@ def _fit_text_advance(
     target_width: Optional[float],
     *,
     parent_fit_alignment: bool = False,
+    native_lff: Optional[_LibreCadLffResolution] = None,
 ) -> Optional[float]:
     if target_width is None or entity.dxftype() != "TEXT":
         return None
     if parent_fit_alignment:
-        from ezdxf.enums import TextEntityAlignment
-
-        insert = tuple(float(value) for value in entity.dxf.insert)[:2]
-        angle = math.radians(float(entity.dxf.rotation or 0.0))
-        endpoint = (
-            insert[0] + target_width * math.cos(angle),
-            insert[1] + target_width * math.sin(angle),
-        )
-        entity.set_placement(insert, endpoint, align=TextEntityAlignment.FIT)
-        return target_width
+        # LibreCAD FIT scales by ink width but keeps leading-space bearings.
+        # LEFT scales the complete native advance and retains the source anchor.
+        resolution = native_lff or _resolve_librecad_unicode_lff(fresh=True)
+        if not resolution.verified or resolution.layout_metrics is None:
+            raise _RepresentationImpossible("native LFF advance metrics are unavailable")
+        try:
+            advance, _ink = resolution.layout_metrics.run(str(entity.dxf.text))
+        except ValueError as exc:
+            raise _RepresentationImpossible(str(exc)) from exc
+        if advance <= 0.0 or not math.isfinite(target_width) or target_width <= 0.0:
+            raise _RepresentationImpossible("native LFF full advance is invalid")
+        factor = 9.0 * target_width / (float(entity.dxf.height) * advance)
+        # Match RS_EntityContainer::scale's guard; smaller positive factors do
+        # not scale native glyphs and cannot be certified as a tiny advance.
+        if not math.isfinite(factor) or min(float(entity.dxf.height) / 9.0, factor * float(entity.dxf.height) / 9.0) <= 1e-6:
+            raise _RepresentationImpossible("native LFF scale is below LibreCAD tolerance")
+        entity.dxf.halign = 0
+        entity.dxf.valign = 0
+        entity.dxf.width = factor
+        try:
+            return float(_librecad_native_layout(entity, resolution)["native_lff_actual_advance"])
+        except ValueError as exc:
+            raise _RepresentationImpossible(str(exc)) from exc
     measured = float(text_size(entity).width)
     if not math.isfinite(measured) or measured <= 0.0:
         if str(getattr(entity.dxf, "text", "") or "") and not str(
@@ -2304,6 +2434,60 @@ def _fit_text_advance(
         raise ValueError("DXF text width factor is invalid")
     entity.dxf.width = width_factor
     return float(text_size(entity).width)
+
+
+def _librecad_native_layout(entity: Any, resolution: _LibreCadLffResolution) -> Dict[str, Any]:
+    """Replay native LEFT layout from entity fields and executable-bound LFF.
+
+    The rotated ink envelope is conservative, not a source-font appearance or
+    native paint certificate. Advance is independently measured from the full
+    string, including leading/trailing U+0020, and actual serialized scales.
+    """
+    if not resolution.verified or resolution.layout_metrics is None:
+        raise ValueError("native LFF layout metrics are unavailable")
+    if (entity.dxftype() != "TEXT" or int(entity.dxf.halign) != 0
+            or int(entity.dxf.valign) != 0 or int(entity.dxf.text_generation_flag) != 0
+            or float(entity.dxf.oblique) != 0.0
+            or tuple(entity.dxf.extrusion) != (0.0, 0.0, 1.0)):
+        raise ValueError("unsupported native LFF text transform")
+    content = str(entity.dxf.text)
+    advance, ink = resolution.layout_metrics.run(content)
+    height, width, rotation = float(entity.dxf.height), float(entity.dxf.width), float(entity.dxf.rotation)
+    insert = tuple(float(value) for value in entity.dxf.insert)
+    sx, sy = height * width / 9.0, height / 9.0
+    if (not all(math.isfinite(value) for value in (height, width, rotation, *insert, sx, sy))
+            or min(sx, sy) <= 1e-6 or advance <= 0.0):
+        raise ValueError("unsupported native LFF text scale or advance")
+    envelope = None
+    if ink is not None:
+        # Native LFF arcs are inside polylines: RS_Arc::scale scales their
+        # center by (sx,sy), but their radius by sx alone. Pad the affine Y
+        # interval by the maximum possible radius difference, then rotate the
+        # enclosing rectangle. This contains native ink without pretending
+        # those arcs use ideal affine/TrueType geometry.
+        radius = max((resolution.layout_metrics.arc_radii[ord(ch)] for ch in content if ch != " "), default=0.0)
+        pad = radius * abs(sx - sy)
+        c, s = math.cos(math.radians(rotation)), math.sin(math.radians(rotation))
+        corners = [(insert[0] + x * c - y * s, insert[1] + x * s + y * c)
+                   for x in (ink[0] * sx, ink[2] * sx) for y in (ink[1] * sy - pad, ink[3] * sy + pad)]
+        envelope = [min(p[0] for p in corners), min(p[1] for p in corners), max(p[0] for p in corners), max(p[1] for p in corners)]
+        if not all(math.isfinite(value) for value in envelope):
+            raise ValueError("nonfinite native LFF ink envelope")
+    actual = advance * sx
+    if not math.isfinite(actual):
+        raise ValueError("nonfinite native LFF advance")
+    return {
+        "native_lff_layout_verified": True,
+        "native_lff_layout_rule": "librecad_left_baseline_full_advance_v1",
+        "native_lff_layout_sha256": resolution.sha256,
+        "native_lff_raw_advance": advance,
+        "native_lff_actual_advance": actual,
+        "native_lff_width_factor": width,
+        "native_lff_raw_ink_bounds": list(ink) if ink is not None else None,
+        "native_lff_rotated_ink_envelope": envelope,
+        "native_lff_ink_envelope_rule": "native_polyline_arc_x_radius_conservative",
+        "native_lff_empty_ink": ink is None,
+    }
 
 
 def _verify_label(
@@ -2345,30 +2529,7 @@ def _verify_label(
     whitespace_zero_ink = bool(
         actual_text and not actual_text.strip() and measured_width == 0.0
     )
-    fit_alignment_verified = False
-    if entity_type == "TEXT" and int(entity.dxf.halign or 0) == 5 and target_width:
-        align_point = tuple(float(value) for value in entity.dxf.align_point)[:2]
-        fit_width = math.hypot(
-            align_point[0] - float(insert[0]),
-            align_point[1] - float(insert[1]),
-        )
-        expected_angle = math.radians(expected_rotation)
-        expected_endpoint = (
-            float(insert[0]) + target_width * math.cos(expected_angle),
-            float(insert[1]) + target_width * math.sin(expected_angle),
-        )
-        fit_alignment_verified = bool(
-            math.isclose(fit_width, target_width, rel_tol=1e-9, abs_tol=1e-12)
-            and all(
-                math.isclose(left, right, rel_tol=0.0, abs_tol=1e-9)
-                for left, right in zip(
-                    align_point,
-                    expected_endpoint,
-                    strict=True,
-                )
-            )
-        )
-    width_ok = whitespace_zero_ink or fit_alignment_verified or bool(
+    width_ok = whitespace_zero_ink or bool(
         target_width is not None
         and measured_width is not None
         and math.isclose(
@@ -2389,7 +2550,7 @@ def _verify_label(
         "height_verified": height_ok,
         "rotation_verified": rotation_ok,
         "width_verified": width_ok,
-        "fit_alignment_verified": fit_alignment_verified,
+        "fit_alignment_verified": False,
         "whitespace_zero_ink_verified": whitespace_zero_ink,
         "width_source": width_source,
         "expected_insert": list(expected_insert),
@@ -2662,11 +2823,10 @@ def _attempt_labels(
                 )
             )
         )
+        native_lff = None
         if parent == "librecad":
-            lff_evidence = _librecad_lff_evidence(
-                delivered_text,
-                librecad_executable,
-            )
+            native_lff = _resolve_librecad_unicode_lff(librecad_executable, fresh=True)
+            lff_evidence = native_lff.evidence(delivered_text)
             attempt.evidence.update(lff_evidence)
             if lff_evidence["librecad_lff_asset_verified"] is not True:
                 raise _RepresentationImpossible(
@@ -2777,6 +2937,7 @@ def _attempt_labels(
             entity,
             target_width,
             parent_fit_alignment=parent == "librecad",
+            native_lff=native_lff,
         )
         type_ok, visual_ok, evidence = _verify_label(
             entity,
@@ -2790,6 +2951,8 @@ def _attempt_labels(
         attempt.type_verified = type_ok
         attempt.visual_verified = visual_ok
         attempt.evidence.update(evidence)
+        if parent == "librecad":
+            attempt.evidence.update(_librecad_native_layout(entity, native_lff))
         attempt.evidence["semantic_representation"] = attempted_representation
         if semantic_representation == "text" and entity.dxftype() != "TEXT":
             type_ok = False
@@ -3069,6 +3232,7 @@ def _write_search_text_companion(
     *,
     is_r12: bool,
     cap_height_ratio: Optional[float] = None,
+    librecad_executable: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Hidden, non-certifying companion: the exact source string as native TEXT.
 
@@ -3136,13 +3300,22 @@ def _write_search_text_companion(
             ),
         )
         target_width, _width_source = _target_advance_width(text_item)
-        _fit_text_advance(entity, target_width, parent_fit_alignment=True)
-        if target_width is not None and tuple(entity.dxf.align_point)[:2] == insert:
-            # An advance below float resolution at this insertion: FIT between
-            # coincident points is degenerate, so the companion stays LEFT.
-            from ezdxf.enums import TextEntityAlignment
-
-            entity.set_placement(insert, align=TextEntityAlignment.LEFT)
+        record.update(expected_insert=list(insert), expected_height=height,
+                      expected_rotation=rotation, expected_advance_width=target_width)
+        native_lff = _resolve_librecad_unicode_lff(librecad_executable, fresh=True)
+        try:
+            _fit_text_advance(entity, target_width, parent_fit_alignment=True, native_lff=native_lff)
+            try:
+                record.update(_librecad_native_layout(entity, native_lff))
+            except ValueError as exc:
+                raise _RepresentationImpossible(str(exc)) from exc
+        except _RepresentationImpossible as exc:
+            # Search text certifies no visible representation. Keep the exact
+            # string and source anchor as an unmeasured LEFT carrier when its
+            # font metrics/advance cannot be proved; never emit hazardous FIT.
+            entity.dxf.halign = entity.dxf.valign = 0
+            entity.dxf.width = 1.0
+            record.update(native_lff_layout_verified=False, native_layout_reason=str(exc))
         if entity.dxftype() != "TEXT" or str(entity.dxf.text) != content:
             raise ValueError("companion TEXT did not keep the exact source string")
         record["handle"] = _handle(entity)

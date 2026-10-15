@@ -7,6 +7,13 @@ from typing import Any, Iterator
 from ezdxf.xref import get_unique_table_name, get_xref_name
 
 
+def _native_unicode_name(name: str) -> bool:
+    name = name.lower()
+    if "#" in name:
+        name = name.split("_" if "_" in name else "#", 1)[0]
+    return name == "unicode"
+
+
 def _native_unicode_style(style: Any) -> bool:
     """Recognize the source's native LFF binding, not a substituted font.
 
@@ -16,12 +23,17 @@ def _native_unicode_style(style: Any) -> bool:
     narrow: a Unicode name with a conflicting font/bigfont/TTF declaration is
     not evidence of the native Unicode resource.
     """
-    name = str(style.dxf.name).lower()
-    if "#" in name:
-        name = name.split("_" if "_" in name else "#", 1)[0]
+    font = str(style.dxf.font).lower()
+    # Native Save writes its STYLE name back as STYLE.font. Admit only an
+    # unpathed, extension-free legacy alias of the same Unicode LFF resource;
+    # a font filename/path or conflicting declaration is not that proof.
+    font_ok = font in {"unicode", "unicode.lff"} or (
+        not any(character in font for character in "/\\:.")
+        and _native_unicode_name(font)
+    )
     return (
-        name == "unicode"
-        and str(style.dxf.font).lower() in {"unicode", "unicode.lff"}
+        _native_unicode_name(str(style.dxf.name))
+        and font_ok
         and not style.dxf.get("bigfont", "")
         and not (style.dxf.get("flags", 0) & 1)
         and not style.has_extended_font_data

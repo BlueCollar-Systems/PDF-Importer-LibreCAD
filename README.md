@@ -2,7 +2,7 @@
 
 **BlueCollar-Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.114](https://img.shields.io/badge/Version-1.0.114-blue.svg)
+![Version: 1.0.115](https://img.shields.io/badge/Version-1.0.115-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
@@ -428,8 +428,8 @@ serialization. LibreCAD draws native text with its own LFF stroke fonts, which
 do not reproduce the source font. Since 1.0.81 a visibly substituted LFF font is
 therefore **never certified as delivered Text: glyph outlines are the visual
 truth.** A Text, Labels, or 3D Text request still builds the item-specific native
-`TEXT` candidate first (source content, anchor, cap height, rotation, FIT
-advance, `unicode` LFF binding), refuses to certify it for a visible span, removes
+`TEXT` candidate first (source content, anchor, cap height, rotation, independently
+measured native full advance, `unicode` LFF binding), refuses to certify it for a visible span, removes
 it, and descends to exact Glyphs; only a whitespace-only span, which paints no
 ink, ends on native `TEXT`. DXF has no native Label entity, so a Labels request
 records that item-scoped impossibility first. Likewise, `TEXT` thickness alone
@@ -444,11 +444,13 @@ does not prove visible/editable 3D text in LibreCAD's 2D parent.
   LibreCAD. Each visible word is delivered as native `TEXT` on the visible,
   plotting layer `P###_TEXT`, drawn in LibreCAD's own `unicode` LFF font, so the
   letter shapes differ from the PDF while the string, anchor, cap height,
-  rotation and width match. Each word keeps the PDF word's width (Fit
-  alignment): if you edit a word to make it longer, LibreCAD squeezes the
-  letters into the original width (a shorter word is stretched). To let an
-  edited word take its natural width, change its alignment from Fit to another
-  one in the text's properties. No outline block, picture or hidden copy is written
+  rotation and full baseline advance match. LEFT/baseline alignment uses a width
+  factor measured from the selected installation's LFF font, including all leading
+  and trailing spaces. It avoids LibreCAD's FIT ink-box scaling, which can move
+  space-prefixed text far outside the drawing. Editing a string changes its
+  length at that width factor; no fixed Fit endpoint squeezes it back. Native ink
+  bounds are separate from cursor advance and do not prove matching PDF glyphs.
+  No outline block, picture or hidden copy is written
   for those words, so the file is also much smaller. The substitution is
   disclosed per item (`parent_native_font_substitution_accepted: true`,
   `visual_verified: false`) and never certified as the PDF's look; the report
@@ -465,7 +467,10 @@ does not prove visible/editable 3D text in LibreCAD's 2D parent.
 every dropped item, also gets ONE hidden native `TEXT` entity carrying the exact
 source string (not Unicode-normalized) at the item's insertion and rotation,
 with the source font's cap height when it is known (otherwise about 0.72 em),
-style `unicode`, FIT-aligned to the source advance. These companions live on the
+style `unicode`, using the same independently measured LEFT/baseline full advance.
+If those native metrics cannot be proved, the exact search string and source
+anchor remain in a non-certifying LEFT carrier and the report says its layout is
+unverified. These companions live on the
 dedicated layer `P###_TEXT_SEARCH`, which is created **frozen** (a frozen layer
 is hidden and is not printed) and, from R2000 on, also flagged non-plotting, so
 the outlines stay what you see. They make the drawing searchable in the DXF file
@@ -515,7 +520,7 @@ itself: a text search of the file finds every string. In a CAD host, thaw
 
 | Option | GUI | Verified DXF representation |
 |--------|-----|-----------------------------|
-| **text** | ✅ Editable text | The native DXF `TEXT` candidate is built and checked (source text or an explicitly reported Unicode compatibility normalization, placement, cap height, rotation, source identity, `unicode` LFF binding, source-width FIT alignment), but LibreCAD's substituted LFF font does not reproduce the source glyphs, so a visible span is never certified as Text: it is delivered as verified Glyphs and reported as that fallback. Only a whitespace-only span ends as native `TEXT`. The exact string is on the frozen `P###_TEXT_SEARCH` layer. With **Editable text** (`--editable-text`) a visible span ends as that native `TEXT` in LibreCAD's font instead, disclosed as substituted. |
+| **text** | ✅ Editable text | The native DXF `TEXT` candidate is built and checked (source text or an explicitly reported Unicode compatibility normalization, placement, cap height, rotation, source identity, `unicode` LFF binding, independently measured native full-advance layout), but LibreCAD's substituted LFF font does not reproduce the source glyphs, so a visible span is never certified as Text: it is delivered as verified Glyphs and reported as that fallback. Only a whitespace-only span ends as native `TEXT`. The exact string is on the frozen `P###_TEXT_SEARCH` layer. With **Editable text** (`--editable-text`) a visible span ends as that native `TEXT` in LibreCAD's font instead, disclosed as substituted. |
 | **labels** | ✅ Labels | DXF exposes no native Label entity. The item-scoped Labels attempt fails loudly without creating a wrong-type alias, the Text rung then refuses the substituted LFF font as above, and the span is delivered as verified Glyphs and reported. The exact string is on the frozen `P###_TEXT_SEARCH` layer. With `--editable-text` the Text rung accepts LibreCAD's font, as for **text**. |
 | **3d_text** | ✅ 3D Text | Attempts DXF `TEXT` with positive thickness and +Z extrusion first. Success additionally requires the parent to verify it as visible/editable 3D text. LibreCAD is 2D, so the exact failed item advances to the flat Text rung, which refuses the substituted LFF font as above, and is delivered as verified Glyphs with that transition reported. The exact string is on the frozen `P###_TEXT_SEARCH` layer. |
 | **glyphs** | ✅ Exact look (default); Glyphs | One grouped DXF `INSERT` per source text span with outline entities in its owned block definition. This remains structurally distinct from raw Geometry. |
@@ -533,7 +538,7 @@ type fail verification and clean their exact owned DXF handles.
 
 | Requested | Ordered, representation-distinct ladder | Transition proof and verification |
 |-----------|------------------------------------------|-----------------------------------|
-| **text** | Text → Glyphs → Geometry → item Raster | Native `TEXT` must read back source content or its disclosed compatibility normalization, anchor, cap height, rotation, source advance, parent-native LFF binding, FIT endpoint, and a live unique handle, **and** prove source-equivalent appearance. A substituted LFF font cannot prove the last one, so only a whitespace-only span terminates here; a visible span removes its candidate and descends to Glyphs. Labels is not inserted as a peer alias rung. |
+| **text** | Text → Glyphs → Geometry → item Raster | Native `TEXT` must read back source content or its disclosed compatibility normalization, anchor, cap height, rotation, source advance, parent-native LFF binding, independently measured LEFT full advance, and a live unique handle, **and** prove source-equivalent appearance. A substituted LFF font cannot prove the last one, so only a whitespace-only span terminates here; a visible span removes its candidate and descends to Glyphs. Labels is not inserted as a peer alias rung. |
 | **labels** | Labels → Text → Glyphs → Geometry → item Raster | The requested Label capability is evaluated for the exact source item. DXF's missing Label entity is recorded before the Text rung is attempted (and, for a visible span, refused as above); a report-only TEXT/MTEXT relabel is rejected. |
 | **glyphs** | Glyphs → Geometry → Text → item Raster | Glyphs try entity-based and independent string-based outline generation before impossibility. Success requires an `INSERT`, nonempty owned outline block, matching bounds, and exact parent/child handles. |
 | **geometry** | Geometry → Glyphs → Text → item Raster | Geometry uses the same two outline-generation strategies but success requires raw modelspace edges and matching bounds; an `INSERT` is not Geometry. |

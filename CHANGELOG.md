@@ -4,6 +4,24 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
+## 1.0.115 - 2026-10-15
+
+- Keep leading and trailing spaces in editable text without LibreCAD's FIT
+  alignment magnifying their offset. Use LEFT/baseline text and measure its
+  full advance from the selected installation's bound LFF font. Recheck the
+  serialized text's actual fields independently; written FIT endpoints no
+  longer qualify as width proof. Hidden search copies use the same placement.
+- Preserve source strings, anchors, cap heights and rotations. Unsupported
+  native layout follows the existing reported fallback; an unmeasured search
+  carrier remains non-certifying. Native font substitution stays disclosed and
+  is not certified as the PDF's glyph appearance.
+- Keep the Unicode binding when copying a native-saved drawing whose font
+  field contains LibreCAD's own style alias. Preserve every style property
+  and the existing conflicting-font, path, bigfont and extended-font guards.
+- Record the actual r14 editable-mode display failure and its numerical cause.
+  New package/native checks remain separate from source tests and the earlier
+  native linetype, IMAGEDEF-owner and metadata retention failures.
+
 ## 1.0.114 - 2026-10-15
 
 - Preserve the intended native Unicode font when assembling pages and creating

@@ -225,6 +225,16 @@ def test_embedded_multiline_attribute_style_follows_alias_without_other_field_ch
     ("unicode", "unicode", lambda style: setattr(style.dxf, "flags", 1)),
     ("unicode", "unicode", lambda style: setattr(style.dxf, "bigfont", "other.shx")),
     ("unicode", "unicode", lambda style: style.set_extended_font_data("Arial")),
+    ("unicode#alias.ttf", "unicode#bcs-1", None),
+    ("unicode#alias.lff", "unicode#bcs-1", None),
+    ("C:/unicode#bcs-1", "unicode#bcs-1", None),
+    ("../unicode#bcs-1", "unicode#bcs-1", None),
+    ("C:\\unicode#bcs-1", "unicode#bcs-1", None),
+    ("unicode#alias_suffix", "unicode#bcs-1", None),
+    ("BCPDF_unicode#bcs-1", "unicode#bcs-1", None),
+    ("unicode#bcs-1", "unicode#bcs-1", lambda style: setattr(style.dxf, "flags", 1)),
+    ("unicode#bcs-1", "unicode#bcs-1", lambda style: setattr(style.dxf, "bigfont", "other.shx")),
+    ("unicode#bcs-1", "unicode#bcs-1", lambda style: style.set_extended_font_data("Arial")),
 ])
 def test_uncertain_or_conflicting_style_resources_are_left_unchanged(
     tmp_path, font, style_name, extra,
@@ -246,6 +256,9 @@ def test_uncertain_or_conflicting_style_resources_are_left_unchanged(
 @pytest.mark.parametrize("style_name,font", [
     ("UNICODE", "unicode"), ("unicode#legacy", "unicode.lff"),
     ("unicode_0#legacy", "Unicode.LFF"),
+    ("unicode#bcs-1", "unicode#bcs-1"),
+    ("unicode#bcs-7", "UNICODE#legacy"),
+    ("unicode#bcs-1", "unicode_test#x"),
 ])
 def test_only_native_resolvable_source_names_qualify(tmp_path, style_name, font):
     source = _checkpoint(tmp_path / "with_underscores.dxf", style_name=style_name, font=font)
@@ -380,6 +393,57 @@ def test_saved_copy_keeps_native_nested_text_images_and_base_style_collision(tmp
     assert linked.read_bytes() == pixels.read_bytes()
     assert tuple(image.dxf.insert) == (30, 40, 0)
     assert [path.read_bytes() for path in (base_path, incoming, pixels)] == input_bytes
+
+
+@pytest.mark.parametrize("route", ["page-xref", "saved-copy"])
+def test_native_saved_alias_font_field_survives_physical_copy_routes(tmp_path, route):
+    incoming = _checkpoint(tmp_path / "page_0001.dxf", marker="D042",
+                           style_name="unicode#bcs-1", font="unicode#bcs-1")
+    source = ezdxf.readfile(incoming)
+    source.units = 4
+    if route == "saved-copy":
+        # The PDF-only copy route deliberately refuses DIMENSION. The general
+        # checkpoint fixture has one; remove it from this fictional input rather
+        # than relaxing that unrelated product guard.
+        for dimension in list(source.modelspace().query("DIMENSION")):
+            source.modelspace().delete_entity(dimension)
+    style = source.styles.get("unicode#bcs-1")
+    # Exact normal native-save STYLE fields observed in LibreCAD 2.2.1.5,
+    # with fictional text/geometry and an unrelated retained XDATA record.
+    style.update_dxf_attribs({"flags": 0, "height": 0, "width": 1,
+                             "oblique": 0, "generation_flags": 0,
+                             "last_height": 1, "bigfont": ""})
+    # Like a normal native-saved input, this copy fixture declares its frame;
+    # the saved-copy route refuses to invent bounds for unmeasured native text.
+    engine.frame_modelspace(source, (0, 0, 140, 140))
+    source.saveas(incoming)
+    before = incoming.read_bytes()
+    source = ezdxf.readfile(incoming)
+    style = source.styles.get("unicode#bcs-1")
+    if route == "page-xref":
+        output = tmp_path / "assembled.dxf"
+        engine._assemble_checkpoints([incoming], str(output))
+    else:
+        base = _base_for_copy(tmp_path / "base.dxf")
+        base_bytes = base.read_bytes()
+        output = drawing_insert.insert_into_saved_drawing_copy(base, incoming,
+                    tmp_path / "copy.dxf").drawing
+        assert base.read_bytes() == base_bytes
+    physical = ezdxf.readfile(output)
+    imported = [entity for entity in _styled_entities(physical)
+                if "D042" in str(entity.dxf.get("text", ""))]
+    assert {entity.dxftype() for entity in imported} == {"TEXT", "MTEXT", "ATTRIB", "ATTDEF"}
+    assert len(imported) == 6
+    for entity in imported:
+        alias = physical.styles.get(entity.dxf.style)
+        assert _native_lookup(entity.dxf.style) == "unicode"
+        assert _properties(alias) == _properties(style)
+        assert alias.get_xdata("FONT_ALIAS_CONTROL") == style.get_xdata("FONT_ALIAS_CONTROL")
+    if route == "saved-copy":
+        assert physical.styles.get("unicode#bcs-1").dxf.font == "base-font.ttf"
+        base_text, = [e for e in physical.modelspace().query("TEXT") if e.dxf.text == "BASE UNCHANGED"]
+        assert base_text.dxf.style == "unicode#bcs-1"
+    assert incoming.read_bytes() == before
 
 
 def test_saved_copy_existing_geometry_guard_still_rejects_incoming_drift(tmp_path, monkeypatch):
