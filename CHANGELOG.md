@@ -4,6 +4,17 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
+## 1.0.114 - 2026-10-15
+
+- Preserve the intended native Unicode font when assembling pages and creating
+  a saved drawing copy. Use distinct aliases that LibreCAD 2.2 can resolve,
+  retaining style properties, nested text references, geometry, images and
+  existing drawing resources. Editable text and hidden search copies keep the
+  requested mode.
+- Record actual r13 desktop import, Save As and fresh-reopen checks separately
+  from strict persistence failures. This font-binding repair does not establish
+  a fix for native bounds growth, IMAGEDEF owner omissions or rendered parity.
+
 ## 1.0.113 - 2026-10-14
 
 - Rehome the exact unreferenced eight-tag native plot record into the standard

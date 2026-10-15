@@ -2,7 +2,7 @@
 
 **BlueCollar-Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.113](https://img.shields.io/badge/Version-1.0.113-blue.svg)
+![Version: 1.0.114](https://img.shields.io/badge/Version-1.0.114-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
@@ -10,6 +10,13 @@ DraftSight, QCAD, and any DXF-compatible CAD software.
 See [CHANGELOG.md](CHANGELOG.md) for release history. Version 1.0.82 preserves
 native zero-ink whitespace TEXT while visible source text whose font LibreCAD
 must substitute descends automatically to visually verified glyph outlines.
+
+Version 1.0.114 keeps LibreCAD's intended native font when joining converted
+pages or adding a PDF to a saved drawing copy. Editable text and hidden search
+copies retain their font binding without changing the selected text mode.
+Actual r13 desktop results and remaining native save limitations are recorded
+in [the round-trip report](docs/validation/2026-10-15-native-roundtrip.md).
+Those checks do not certify the new candidate or a complete rendered match.
 
 Version 1.0.109 accepts LibreCAD's qualified inactive Normal plotstyle spelling
 when importing into a saved drawing copy, preserves the drawing's original

@@ -43,6 +43,7 @@ from librecad_pdf_importer.dxf_framing import (
     union_bounds,
 )
 from librecad_pdf_importer.ink_color import rule_identity as ink_rule_identity
+from librecad_pdf_importer.native_text_styles import preserve_native_text_styles
 
 
 class ResumeMismatchError(RuntimeError):
@@ -175,6 +176,12 @@ def _selected_page_indices(input_path: str, config: ImportConfig) -> list[int]:
     return validate_page_indices(configured, page_count)
 
 
+def _load_checkpoint_modelspace(source: Any, target: Any) -> None:
+    """Load isolated page resources and retain the qualified native font name."""
+    with preserve_native_text_styles(source, target):
+        load_modelspace(source, target, conflict_policy=ConflictPolicy.XREF_PREFIX)
+
+
 def _assemble_checkpoints(checkpoints: list[Path], output_path: str) -> None:
     if not checkpoints:
         return
@@ -248,11 +255,7 @@ def _assemble_checkpoints(checkpoints: list[Path], output_path: str) -> None:
             page_bounds = (0.0, 0.0, 1.0, 1.0)
         framed_bounds = sheet_bounds(saved_extents, page_bounds)
         offset_y = 0.0 if next_top is None else next_top - page_bounds[3]
-        load_modelspace(
-            source,
-            target,
-            conflict_policy=ConflictPolicy.XREF_PREFIX,
-        )
+        _load_checkpoint_modelspace(source, target)
         added = [entity for entity in target_msp if entity.dxf.handle not in before]
         if offset_y:
             transform = Matrix44.translate(0.0, offset_y, 0.0)
