@@ -19,7 +19,14 @@ while complete literal search strings remain with outline fallbacks.
 The earlier font, baseline and continuous-underline fixes are retained.
 Actual v1.0.117 checks confirmed the positive native PDF pen and normal save/fresh
 reopening, but native pipe gaps and faint Preview remained appearance failures.
-The v1.0.118 package's native acceptance is pending. See
+Exact r18 Editable conversion, native DXF2007 Save As and fresh reopening all
+completed with normal owned exits. Eleven native Romans word spans retained
+LW18; 17 spans used Glyph outlines, and all 28 full literals persisted. Both
+black-modelspace checks showed readable words and continuous rules. White-paper
+Preview letters still looked faint/fragmented, so appearance remains failed.
+The native PDF crop showed readable words and continuous rules with 0.54 pt
+strokes; both strict native comparisons still failed on added linetype patterns.
+No whole-page/source-pixel match is claimed. See
 [native text validation](docs/validation/2026-10-15-native-text-layout.md).
 
 Version 1.0.114 keeps LibreCAD's intended native font when joining converted
@@ -27,7 +34,8 @@ pages or adding a PDF to a saved drawing copy. Editable text and hidden search
 copies retain their font binding without changing the selected text mode.
 Actual r13 desktop results and remaining native save limitations are recorded
 in [the round-trip report](docs/validation/2026-10-15-native-roundtrip.md).
-Those checks do not certify the new candidate or a complete rendered match.
+Those r13 checks remain historical; later candidate results and their limits
+are recorded in the native text validation report.
 
 Version 1.0.109 accepts LibreCAD's qualified inactive Normal plotstyle spelling
 when importing into a saved drawing copy, preserves the drawing's original
@@ -56,8 +64,8 @@ Missing or inverted frames use a bounded conservative control envelope only
 for supported visible planar geometry. Active text, dimensions or unsupported
 payloads or wide polylines without a valid declared frame require a fresh standard DXF save in
 LibreCAD. This bounds fallback does not prove exact font or paint appearance.
-Original files stay intact; compiled-package and native save/reopen acceptance
-remain pending.
+Original files stay intact. Package/native acceptance was pending at that
+source review; later desktop results and limits are recorded in the reports above.
 
 Version 1.0.113 preserves the exact eight-tag native print-settings record while
 giving it a valid standard dictionary owner and a readable setup name. Its handle

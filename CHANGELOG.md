@@ -14,9 +14,11 @@ All notable release changes are recorded here.
 - Independently replay the source interval check against serialized native
   height and the fresh selected font. Keep ordinary native words and their
   source-derived positive pen unchanged, without inflating weight to hide gaps.
-- Record the actual v1.0.117 positive PDF pen and normal desktop lifecycles
-  separately from its failed Editable appearance and strict raw comparisons.
-  Updated-package Editable display, export and fresh reopening remain pending.
+- Complete the exact r18 Editable converter/native Save As/fresh-reopen checks
+  with normal owned exits. Preserve all 28 full literals, 11 native Romans words
+  at LW18 and 17 Glyph spans. Model words/rules and a bounded native PDF crop are
+  readable; white-paper Preview appearance remains failed. Retain both strict
+  native failures on added linetype patterns and all earlier failed evidence.
 
 ## 1.0.117 - 2026-10-15
 
@@ -30,8 +32,9 @@ All notable release changes are recorded here.
 - Preserve default outlines, zero-ink text, hidden carriers and unrelated pens.
   Explain the editable font and weight limits in the GUI and README.
 - Record the actual v1.0.116 native pen failure and its independent PDF/line
-  controls. Updated-package native acceptance remains separate and pending;
-  earlier strict native linetype and IMAGEDEF-owner failures remain recorded.
+  controls. At that source review, updated-package native acceptance was
+  pending; the later desktop results are recorded in native text validation.
+  Earlier strict native linetype and IMAGEDEF-owner failures remain recorded.
 
 ## 1.0.116 - 2026-10-15
 
@@ -48,7 +51,8 @@ All notable release changes are recorded here.
   font/stroke checks, and optional Romans bytes or absence in resume identity.
 - Record the completed v1.0.115 desktop lifecycles separately from its editable
   stroke failure and six strict native retention failures. Source checks for this
-  repair pass; the exact new package's desktop acceptance remains pending.
+  repair passed before its desktop follow-up; completed results and remaining
+  limits are recorded in native text validation.
 
 ## 1.0.115 - 2026-10-15
 

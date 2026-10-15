@@ -42,8 +42,11 @@ Resumable assembly prefixes native TEXT style names. The host resolves fonts
 from that name and does not strip `$` prefixes; it ignores imported STYLE font
 table records. This proves a font-binding compatibility gap. The table's later
 font-field rewrite alone does **not** explain the observed bounds growth.
-The font-alias repair and its next package/native checks remain pending; these
-r13 results do not validate a new candidate or prove a bounds fix.
+At that r13 review, the font-alias repair and its next package/native checks
+were pending. Later font, layout, pen and rule follow-ups are recorded in
+[native text validation](2026-10-15-native-text-layout.md), including the completed
+v1.0.118 checks and remaining Preview/strict-save failures. These historical r13
+results do not validate those later candidates or establish a bounds fix.
 
 Guided owners allow 1,800 seconds for operator/UI round trips. Separate native
 diagnostics retain their hard 60-second deadlines. Historical failures are

@@ -136,8 +136,10 @@ Historical centerline envelopes remain distinct from a new estimated envelope
 expanded by half the nominal pen weight. Native plotting treats this as a
 physical paper weight rather than multiplying it by text print scale. Neither
 the estimate nor font substitution proves source outer-ink/cap bounds or pixel
-parity. Exact updated-package desktop display, export, Save As and fresh reopen
-remain pending; this source candidate has not been released.
+parity. At that source review, updated-package desktop display, export, Save
+As and fresh reopening were pending. The completed v1.0.117 and exact r18
+follow-ups below retain their separate successes and failures. No release was
+published.
 
 A source-only conversion of the affected sheet completed in 4.094 seconds:
 all 20 visible native text items physically retained lineweight 18 (0.18 mm),
@@ -173,8 +175,9 @@ items. Mixed words, blank text, unproved contours and unknown bindings gain no
 rule certificate. Adequate native ranges retain editable text and the positive
 source-derived pen. The serialized native gate independently replays the rule
 against original source authority, fresh LFF bytes and physical height. No pen
-inflation, source-coordinate change or host setting is used. Updated-package
-Editable native display, plotting, Save As and fresh reopening remain pending.
+inflation, source-coordinate change or host setting is used. At the initial
+source check, native acceptance remained pending; exact r18 follow-up results
+are recorded below separately.
 
 The v1.0.118 source-only conversion of that sheet completed in 6.547 seconds:
 11 native Romans word spans kept lineweight 18, and 17 spans used exact Glyphs
@@ -184,3 +187,50 @@ matched the original full literal strings with their whitespace. The original
 PDF remained unchanged. Focused vertical-rule controls passed 27 tests, and the
 existing pen/linear-font/advance/render group passed 94 tests. These checks do
 not substitute for the new package's native Editable display/export/reopen run.
+
+## Exact r18 / v1.0.118 native follow-up
+
+Exact source `fca029e4f071000624c14a01935d0d07ba390769`, tree
+`c21942a841dd5b2a1b724ecdad20d53dc02148fa`, was built without publishing
+by run `38767339728`. Source CI passed all three jobs; the hosted source suite
+passed 2,636 tests with 19 skips in 337.98 seconds. Exact source and all four
+packaged executable/code rosters passed verification.
+
+Actual ordinary Editable converter GUI completed with normal owned exits and
+physical validation. Eleven Romans native word spans retained explicit LW18;
+17 spans used exact Glyphs (eight horizontal rules/nine qualified vertical pipes).
+All 28 full literals remained as 11 visible TEXT values plus 17 frozen/nonplot
+companions. Nine vertical-rule spans contain 63 source pipe glyphs; the other
+eight outline spans retain the earlier horizontal-rule fallback. These counts
+come from the actual report; they are not general content assumptions.
+
+| Targeted check | Actual result |
+| --- | --- |
+| Native DXF2007 Save As, normal Close, fresh reopen and another Save/Close | Completed both DXF2007 Save As operations, normal closes and fresh reopening with normal owned exits; all three converter/native stages passed execution. |
+| Full strings, native families/pens and outline rules after native saves | All 28 complete literals persisted as 11 visible Romans TEXT values with LW18 and 17 hidden strings accompanying Glyph spans. Native font families and positive pens matched the authentic conversion report in all three files. First-save and fresh-save EXTMIN/EXTMAX were identical. |
+| AutoZoom, words, both rule directions and inherited Preview | Both black-modelspace AutoZoom sessions showed readable complete words and continuous horizontal/vertical rules. White-paper Preview letters remained faint/fragmented, so both appearance results stay false. Inherited 2.57746:1 was left unchanged; no fit, scale or origin edits. |
+| Native exported PDF pen/readability measurement | Actual fresh native export contained 2,946 solid black opaque strokes at 0.539999961853 pt and 10,108 filled paths. A bounded crop showed readable words and continuous body rules; this is not a whole-page or source-pixel match. |
+| Unchanged strict native comparison and raw differences | Both strict native comparisons remain false: LibreCAD added 24 linetype patterns (3 to 27). First-save and fresh-save patterns were identical. No raw data was normalized or failure reclassified. |
+
+Version 1.0.117 Default and Copy drawing with images remain separate completed
+evidence, not repeated v1.0.118 default/dense controls. Copy preserved the
+v1.0.116 input's raw audit-code-202 failures. Earlier v1.0.117 pen-export success
+did not erase its Editable appearance or strict linetype failures. The new fallback proves each filled source interval,
+not joins across independent spans. Native word font/weight remain approximate.
+No complete source/page pixel, paper-fit/clipping, every-PDF/font or other-host
+claim follows. The original PDFs/drawings and all earlier failures remain. Guided
+UI retains 1,800 seconds; separate native diagnostics retain their independent
+60-second limit. No release was published.
+
+The per-user plugin was updated to v1.0.118 with a backup of v1.0.117; four
+protected Program Files duplicates remain unchanged. This does not establish a
+new native-menu invocation or removal of all older plugin copies.
+
+Local evidence receipts (private PDFs are not committed):
+
+| Receipt | SHA-256 |
+| --- | --- |
+| `lc118-native-readonly-20261015-r1/ACTUAL-118-NATIVE-PDF-QUALIFICATION.json` | `b0766eb90465e75f3c681a2bc7b00a0c3578713bc0e0d8c388bcf4beeddfe9bb` |
+| Exact r18 candidate verification | `a74b351515af1ef02310d63130c084ddb6505932d669de5004dfe3b21589358e` |
+| Exact r18 compiled-source binding | `ccf0fe25b3fbac298c345465df701d79b835936b73a3f278438235e2eface093` |
+| v1.0.118 per-user plugin install | `2da36ee40a9a557322816274544a1a37f80973ddf96c6eac0bdd0212c1733381` |
