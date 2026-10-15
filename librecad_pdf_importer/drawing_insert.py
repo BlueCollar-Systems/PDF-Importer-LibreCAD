@@ -30,6 +30,7 @@ from .drawing_copy import (
 )
 from .planar_blocks import qualify_planar_insert_repairs
 from .drawing_bounds import document_bounds, merged_bounds
+from .native_text_styles import preserve_native_text_styles
 from .native_plot_settings import (
     qualify_native_plot_settings, apply_native_plot_settings, native_plot_callback_sequence,
     check_native_plot_rehome,
@@ -873,7 +874,8 @@ def insert_into_saved_drawing_copy(
         loader = xref.Loader(source, document, conflict_policy=xref.ConflictPolicy.XREF_PREFIX)
         loader.load_modelspace(target_layout=block)
         cancelled()
-        loader.execute(xref_prefix=prefix)
+        with preserve_native_text_styles(source, document, xref_prefix=prefix):
+            loader.execute(xref_prefix=prefix)
         _check_base_state(document, base_state)
         _check_dictionaries(document, base_dictionaries)
         _check_headers(document, base_headers)

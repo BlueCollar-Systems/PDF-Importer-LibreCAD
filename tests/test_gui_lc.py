@@ -63,8 +63,8 @@ class TestLcGuiProfessionalImport(unittest.TestCase):
     def test_librecad_2d_disclaimer_present(self) -> None:
         self.assertIn("LibreCAD is 2D", self.source)
         self.assertIn("Exact look draws every word as exact outlines", self.source)
-        self.assertIn("letter shapes differ", self.source)
-        self.assertIn("Characters LibreCAD's font lacks still come in as", self.source)
+        self.assertIn("stroke weight can differ from the PDF", self.source)
+        self.assertIn("rendered reliably stays as outlines and is listed", self.source)
         self.assertIn("Any fallback or unverified item is listed", self.source)
 
     def test_explicit_geometry_selection_has_no_confirmation_roadblock(self) -> None:

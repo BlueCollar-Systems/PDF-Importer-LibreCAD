@@ -209,7 +209,7 @@ def test_each_outlined_or_rastered_span_gets_one_hidden_text_and_certifies_nothi
         item = on.items[entity.dxf.text]
         delivery = on.by_text[entity.dxf.text]
         assert delivery["final_representation"] == text_mode and delivery["verified"] is True
-        assert delivery["search_text"] == {
+        assert {key: delivery["search_text"][key] for key in ("status", "handle", "layer", "content")} == {
             "status": "written", "handle": entity.dxf.handle, "layer": _LAYER,
             "content": item.text,
         }
@@ -224,15 +224,12 @@ def test_each_outlined_or_rastered_span_gets_one_hidden_text_and_certifies_nothi
         known = next((ratio for ratio in ratios if ratio), None)
         assert (known is None) == (text_mode == "raster")
         assert float(entity.dxf.height) == pytest.approx(item.font_size * (known or 0.72))
-        # FIT-aligned to the source advance, along the item's own rotation.
+        # Native LEFT uses the full LFF advance, including spaces, independently
+        # of an encoded second alignment point or an unrelated TTF width.
         advance, _source = _target_advance_width(item)
-        angle = math.radians(float(item.rotation))
-        assert int(entity.dxf.halign) == 5
-        assert tuple(entity.dxf.align_point)[:2] == pytest.approx(
-            (item.insertion[0] + advance * math.cos(angle),
-             item.insertion[1] + advance * math.sin(angle)),
-            abs=1e-9,
-        )
+        assert int(entity.dxf.halign) == 0
+        assert delivery["search_text"]["native_lff_layout_verified"] is True
+        assert delivery["search_text"]["native_lff_actual_advance"] == pytest.approx(advance)
     assert on.items["JOB 1000-01"].rotation == pytest.approx(90.0)
 
     # Hidden: frozen and non-plotting, and it stays so through a save / reload.

@@ -41,7 +41,8 @@ from ezdxf import path as ezdxf_path
 from ezdxf.addons import text2path
 from ezdxf.fonts import fonts as ezdxf_fonts
 from ezdxf.lldxf.encoding import has_dxf_unicode
-from ezdxf.math import Matrix44
+from ezdxf.lldxf.const import VALID_DXF_LINEWEIGHTS
+from ezdxf.math import Matrix44, bulge_to_arc
 from ezdxf.tools.text import plain_text
 from ezdxf.tools.text_size import text_size
 
@@ -53,6 +54,7 @@ from librecad_pdf_importer.core.text_paint import bound_fill_receipt, bound_fill
 from librecad_pdf_importer.ink_color import (
     INK_RULE_NEAR_BLACK, delivered_rgb8, text_ink_rgb8,
 )
+from librecad_pdf_importer.native_text_styles import native_font_family
 
 
 _MTEXT_THRESHOLD = 120
@@ -92,6 +94,7 @@ _INSTALLED_ADVANCE_TOLERANCE_PER_MILLE = 1.0
 _INSTALLED_FONT_RULE = "installed_face_bound_by_original_source_program_and_character_frames"
 _created_styles: Dict[str, str] = {}
 _embedded_cap_height_cache: Dict[str, float] = {}
+_source_cff_stem_cache: Dict[str, Tuple[float, float, float]] = {}
 # ezdxf retains loaded fonts across documents. Keep their original file binding
 # for the same lifetime so a later import cannot pair stale glyphs with new bytes.
 _installed_font_metric_cache: weakref.WeakKeyDictionary[
@@ -329,6 +332,116 @@ class _ExactFontResolution:
         }
 
 
+class _LibreCadLffMetrics:
+    """The admitted LFF subset of LibreCAD RS_Font/RS_Text, not TTF metrics.
+
+    Native TEXT advances by each glyph's max X plus letter spacing, retaining
+    its bearings; only U+0020 uses word spacing. FIT instead divides by the ink
+    box width without rebasing a leading-space offset. Keep those quantities
+    separate. Parse the already bound asset bytes, and reject uncertain glyphs
+    rather than treating an encoded FIT endpoint as a measurement.
+    """
+
+    def __init__(self, content: str):
+        self.letter_spacing = 3.0
+        self.word_spacing = 6.75
+        self.bodies: Dict[int, Tuple[str, ...]] = {}
+        self.bounds: Dict[int, Tuple[float, float, float, float]] = {}
+        self.arc_radii: Dict[int, float] = {}
+        lines = iter(content.splitlines())
+        for line in lines:
+            if line.startswith("#"):
+                parts = [part.strip() for part in line[1:].split(":") if part]
+                if len(parts) < 2:
+                    continue
+                key, value = parts[0].lower(), parts[1]
+                if key in {"letterspacing", "wordspacing"}:
+                    number = float(value)
+                    if not math.isfinite(number) or number < 0.0:
+                        raise ValueError("unsupported native LFF spacing")
+                    setattr(self, "letter_spacing" if key == "letterspacing" else "word_spacing", number)
+                elif key == "encoding" and value.lower().replace("-", "") != "utf8":
+                    raise ValueError("native LFF layout requires UTF-8 encoding")
+            elif line.startswith("["):
+                header = re.fullmatch(r"\[([0-9A-Fa-f]{1,4})\](?:\s.*)?", line)
+                body = []
+                for raw in lines:
+                    if not raw:  # Native readLFF ends a glyph at an empty line.
+                        break
+                    body.append(raw)
+                if header and body:
+                    self.bodies.setdefault(int(header.group(1), 16), tuple(body))
+
+    def glyph_bounds(self, codepoint: int, active: Tuple[int, ...] = ()) -> Tuple[float, float, float, float]:
+        if codepoint in self.bounds:
+            return self.bounds[codepoint]
+        if codepoint in active or len(active) >= 64 or codepoint not in self.bodies:
+            raise ValueError(f"unsupported native LFF glyph U+{codepoint:04X}")
+        points: List[Tuple[float, float]] = []
+        max_arc_radius = 0.0
+        for line in self.bodies[codepoint]:
+            reference = re.fullmatch(r"C([0-9A-Fa-f]{1,4})", line)
+            if reference:
+                x0, y0, x1, y1 = self.glyph_bounds(int(reference.group(1), 16), (*active, codepoint))
+                points.extend(((x0, y0), (x1, y1)))
+                max_arc_radius = max(max_arc_radius, self.arc_radii[int(reference.group(1), 16)])
+                continue
+            vertices = []
+            for token in line.split(";"):
+                coords = token.split(",")
+                if len(coords) not in {2, 3} or (len(coords) == 3 and not coords[2].startswith("A")):
+                    raise ValueError("unsupported native LFF polyline")
+                vertex = (float(coords[0]), float(coords[1]), float(coords[2][1:]) if len(coords) == 3 else 0.0)
+                if not all(math.isfinite(value) for value in vertex):
+                    raise ValueError("nonfinite native LFF vertex")
+                vertices.append(vertex)
+            if len(vertices) < 2 or len(vertices) > 10000:
+                raise ValueError("unsupported native LFF polyline size")
+            points.extend((x, y) for x, y, _bulge in vertices)
+            for start, end in zip(vertices, vertices[1:], strict=False):
+                # LFF supplies the preceding segment's bulge at its end vertex.
+                if abs(end[2]) < 1e-10 or abs(end[2]) >= 1e10:
+                    continue
+                if start[:2] == end[:2]:
+                    raise ValueError("degenerate native LFF arc")
+                center, a0, a1, radius = bulge_to_arc(start[:2], end[:2], end[2])
+                if not all(math.isfinite(value) for value in (*center, a0, a1, radius)):
+                    raise ValueError("invalid native LFF arc")
+                max_arc_radius = max(max_arc_radius, radius)
+                sweep = (a1 - a0) % math.tau
+                for angle in (0.0, math.pi / 2, math.pi, 3 * math.pi / 2):
+                    if (angle - a0) % math.tau <= sweep + 1e-12:
+                        points.append((center.x + radius * math.cos(angle), center.y + radius * math.sin(angle)))
+            if len(points) > 100000:
+                raise ValueError("native LFF glyph exceeds layout budget")
+        if not points:
+            raise ValueError("native LFF glyph has no measurable ink")
+        result = (min(p[0] for p in points), min(p[1] for p in points), max(p[0] for p in points), max(p[1] for p in points))
+        self.bounds[codepoint] = result
+        self.arc_radii[codepoint] = max_arc_radius
+        return result
+
+    def run(self, content: str) -> Tuple[float, Optional[Tuple[float, float, float, float]]]:
+        if len(content) > 100000:
+            raise ValueError("native LFF text exceeds layout budget")
+        cursor = 0.0
+        ink = []
+        for character in content:
+            if character == " ":
+                cursor += self.word_spacing
+                continue
+            codepoint = ord(character)
+            if codepoint > 0xFFFF:
+                raise ValueError("native LFF layout requires a BMP character")
+            x0, y0, x1, y1 = self.glyph_bounds(codepoint)
+            ink.extend(((cursor + x0, y0), (cursor + x1, y1)))
+            cursor += x1 + self.letter_spacing if x1 >= 0.0 else 0.0
+        if not math.isfinite(cursor) or not all(math.isfinite(value) for point in ink for value in point):
+            raise ValueError("nonfinite native LFF run")
+        bounds = (min(p[0] for p in ink), min(p[1] for p in ink), max(p[0] for p in ink), max(p[1] for p in ink)) if ink else None
+        return cursor, bounds
+
+
 @dataclass(frozen=True)
 class _LibreCadLffResolution:
     path: str = ""
@@ -344,6 +457,7 @@ class _LibreCadLffResolution:
     parent_installation_verified: bool = False
     verified: bool = False
     reason: str = ""
+    layout_metrics: Optional["_LibreCadLffMetrics"] = field(default=None, compare=False, repr=False)
 
     def evidence(self, content: str) -> Dict[str, Any]:
         required = sorted(
@@ -365,6 +479,7 @@ class _LibreCadLffResolution:
             "librecad_lff_path": self.path or None,
         }
         return {
+            "librecad_lff_font_family": Path(self.path).stem.lower(),
             "librecad_evidence_sensitivity": (
                 "shareable_with_classified_local_diagnostics"
             ),
@@ -426,7 +541,7 @@ def _parse_librecad_lff(
     if not resolved.is_file():
         return _LibreCadLffResolution(
             **base,
-            reason="LibreCAD unicode.lff asset is absent",
+            reason=f"LibreCAD {resolved.name} asset is absent",
         )
     try:
         with resolved.open("rb") as stream:
@@ -436,7 +551,7 @@ def _parse_librecad_lff(
                     **base,
                     size_bytes=int(stat_before.st_size),
                     reason=(
-                        "LibreCAD unicode.lff exceeds the "
+                        f"LibreCAD {resolved.name} exceeds the "
                         f"{_MAX_LIBRECAD_LFF_BYTES}-byte safety limit"
                     ),
                 )
@@ -478,7 +593,7 @@ def _parse_librecad_lff(
         ):
             return _LibreCadLffResolution(
                 **base,
-                reason="LibreCAD unicode.lff changed while it was being read",
+                reason=f"LibreCAD {resolved.name} changed while it was being read",
             )
         cache_key = (
             str(resolved),
@@ -497,7 +612,7 @@ def _parse_librecad_lff(
         return _LibreCadLffResolution(
             **base,
             reason=(
-                "LibreCAD unicode.lff asset is unreadable "
+                f"LibreCAD {resolved.name} asset is unreadable "
                 f"({type(exc).__name__})"
             ),
         )
@@ -570,15 +685,20 @@ def _parse_librecad_lff(
         if glyph_is_drawable(codepoint, frozenset())
     )
     verified = bool(format_ok and codepoints and drawable_codepoints and payload)
+    try:
+        layout_metrics = _LibreCadLffMetrics(content)
+    except ValueError:
+        layout_metrics = None  # Coverage is separate from native layout proof.
     result = _LibreCadLffResolution(
         **base,
         size_bytes=len(payload),
         sha256=payload_sha256,
         glyph_codepoints=codepoints,
         drawable_codepoints=drawable_codepoints,
+        layout_metrics=layout_metrics,
         verified=verified,
         reason=(
-            "verified LibreCAD Font 1 unicode.lff asset"
+            f"verified LibreCAD Font 1 {resolved.name} asset"
             if verified
             else "file is not a parseable LibreCAD Font 1 asset"
         ),
@@ -587,11 +707,14 @@ def _parse_librecad_lff(
     return result
 
 
-def _resolve_librecad_unicode_lff(
+def _resolve_librecad_lff(
     executable: Optional[str] = None,
     *,
+    font_name: str = "unicode",
     fresh: bool = False,
 ) -> _LibreCadLffResolution:
+    if font_name not in {"unicode", "romans"}:
+        raise ValueError("unsupported native LFF family")
     installation = resolve_librecad_installation(executable)
     if installation is None:
         return _LibreCadLffResolution(
@@ -601,9 +724,11 @@ def _resolve_librecad_unicode_lff(
             )
         )
     candidates = [
-        (Path(path), source) for path, source in installation.unicode_lff_candidates
+        (Path(path).with_name(f"{font_name}.lff"), source)
+        for path, source in installation.unicode_lff_candidates
     ]
-    configured = str(os.environ.get("BCS_LIBRECAD_UNICODE_LFF", "") or "").strip()
+    configured = (str(os.environ.get("BCS_LIBRECAD_UNICODE_LFF", "") or "").strip()
+                  if font_name == "unicode" else "")
     if configured:
         configured_path = Path(configured).expanduser().resolve()
         bound_sources = {
@@ -652,6 +777,272 @@ def _resolve_librecad_unicode_lff(
         parent_installation_verified=True,
         reason="; ".join(failures),
     )
+
+
+def _resolve_librecad_unicode_lff(executable: Optional[str] = None, *, fresh: bool = False) -> _LibreCadLffResolution:
+    return _resolve_librecad_lff(executable, fresh=fresh)
+
+
+def _native_lff_stroke_safety(resolution: _LibreCadLffResolution, content: str, sx: float, sy: float) -> bool:
+    metrics = resolution.layout_metrics
+    if (not resolution.verified or metrics is None
+            or not all(math.isfinite(value) and value > 1e-6 for value in (sx, sy))):
+        return False
+    metrics.run(content)  # Populates the admitted glyph/reference closure.
+    radius = max((metrics.arc_radii[ord(ch)] for ch in content if ch != " "), default=0.0)
+    return bool(math.isfinite(radius) and radius * abs(sx - sy) <= 1e-9)
+
+
+def _select_librecad_native_lff(content: str, height: float, target_width: Optional[float],
+                                executable: Optional[str] = None, *,
+                                unicode_font: Optional[_LibreCadLffResolution] = None) -> _LibreCadLffResolution:
+    """Keep Unicode unless its native arc scaling would break glyph joins."""
+    unicode_font = unicode_font or _resolve_librecad_unicode_lff(executable, fresh=True)
+    if not unicode_font.verified or unicode_font.layout_metrics is None:
+        return unicode_font
+    try:
+        advance, _ink = unicode_font.layout_metrics.run(content)
+    except ValueError as exc:
+        raise _RepresentationImpossible(f"native unicode.lff has no admitted layout: {exc}") from exc
+    if target_width is None or advance <= 0.0:
+        return unicode_font
+    sx, sy = target_width / advance, height / 9.0
+    if _native_lff_stroke_safety(unicode_font, content, sx, sy):
+        return unicode_font
+    linear_font = _resolve_librecad_lff(executable, font_name="romans", fresh=True)
+    metrics = linear_font.layout_metrics
+    if not linear_font.verified or metrics is None:
+        raise _RepresentationImpossible("native Unicode arcs cannot be stretched safely; executable-bound Romans is unavailable")
+    try:
+        if linear_font.evidence(content)["librecad_lff_coverage_verified"] is not True:
+            raise ValueError("required glyph coverage is unavailable")
+        if metrics.glyph_bounds(ord("H"))[1::2] != (0.0, 9.0):
+            raise ValueError("unsupported cap height or baseline")
+        metrics.run(content)
+        if any(metrics.arc_radii[ord(ch)] for ch in content if ch != " "):
+            raise ValueError("glyph closure contains native arcs")
+    except ValueError as exc:
+        raise _RepresentationImpossible(f"native Romans has no safe linear layout: {exc}") from exc
+    return linear_font
+
+
+def _source_underline_midline(operations: Sequence[Any]) -> Optional[Tuple[str, List[Tuple[float, float]], List[Tuple[float, float]]]]:
+    """Admit one rectangle or a simple monotone six-segment capsule only.
+
+    For the capsule, four disjoint monotone cubic quadrants join two horizontal
+    sides. Its boundary meets the shared midline only at the two outer cap
+    endpoints; therefore the segment between them is filled interior ink.
+    """
+    if not operations or operations[0][0] != "moveTo" or operations[-1] != ("closePath", ()):
+        return None
+    points = [tuple(float(v) for v in point) for _op, pts in operations for point in pts]
+    if any(len(p) != 2 or not all(math.isfinite(v) for v in p) for p in points):
+        return None
+    if len(operations) in {5, 6} and all(op == "lineTo" for op, _pts in operations[1:-1]):
+        vertices = [tuple(float(v) for v in pts[0]) for _op, pts in operations[:-1]]
+        if len(vertices) == 5 and vertices[-1] == vertices[0]:
+            vertices.pop()
+        xs, ys = sorted({p[0] for p in vertices}), sorted({p[1] for p in vertices})
+        if (len(vertices) != 4 or len(xs) != 2 or len(ys) != 2
+                or set(vertices) != {(x, y) for x in xs for y in ys}
+                or any(a[0] != b[0] and a[1] != b[1]
+                       for a, b in zip(vertices, vertices[1:] + vertices[:1], strict=True))):
+            return None
+        mid = (ys[0] + ys[1]) / 2
+        return "rectangle", vertices, [(xs[0], mid), (xs[1], mid)]
+    if ([op for op, _pts in operations] != ["moveTo", "curveTo", "curveTo", "lineTo", "curveTo", "curveTo", "closePath"]
+            or [len(pts) for _op, pts in operations] != [1, 3, 3, 1, 3, 3, 0]):
+        return None
+    a = tuple(operations[0][1][0])
+    b, c, d, e, f = (tuple(operations[index][1][-1]) for index in range(1, 6))
+    xr, yb = a
+    xmax, ym = b
+    xl, yt = d
+    xmin = e[0]
+    if (c != (xr, yt) or e != (xmin, ym) or f != (xl, yb)
+            or not xmin < xl < xr < xmax or not yb < ym < yt):
+        return None
+    for index, start in ((1, a), (2, b), (4, d), (5, e)):
+        chain = [start, *operations[index][1]]
+        for coordinate in (0, 1):
+            values = [p[coordinate] for p in chain]
+            if not (values == sorted(values) or values == sorted(values, reverse=True)):
+                return None
+    return "capsule", [(xmin, yb), (xmax, yb), (xmax, yt), (xmin, yt)], [(xmin, ym), (xmax, ym)]
+
+
+def _source_continuous_underline(text_item: NormalizedText, resolution: _ExactFontResolution) -> Optional[Dict[str, Any]]:
+    """Prove joined source ink, not merely an underscore-looking string/bbox."""
+    content = str(text_item.text)
+    layout = tuple(text_item.source_char_layout)
+    if (len(content) > 10000 or content.count("_") < 2 or set(content) - {" ", "_"}
+            or not resolution.exact or len(layout) != len(content)
+            or "".join(char.text for char in layout) != content):
+        return None
+    try:
+        from fontTools.pens.recordingPen import DecomposingRecordingPen
+        from fontTools.ttLib import TTFont, TTLibError
+        names = _positioned_source_glyph_names(layout, resolution)
+        payload = Path(resolution.filename).read_bytes()
+        digest = hashlib.sha256(payload).hexdigest()
+        if not digest or digest != resolution.asset_sha256:
+            return None
+        with TTFont(BytesIO(payload), lazy=False) as program:
+            units = float(program["head"].unitsPerEm)
+            if not math.isfinite(units) or units <= 0:
+                return None
+            glyphs = program.getGlyphSet()
+            name = names[content.index("_")]
+            if any(names[index] != name for index, char in enumerate(content) if char == "_"):
+                return None
+            pen = DecomposingRecordingPen(glyphs)
+            glyphs[name].draw(pen)
+            admitted = _source_underline_midline(pen.value)
+            if admitted is None:
+                return None
+            kind, vertices, midline = admitted
+        rectangles = []
+        axis = None
+        tolerance = 1e-7
+        for index, char in enumerate(layout):
+            if char.text != "_":
+                continue
+            x_axis, y_axis = _source_character_affine_axes(char)
+            length = math.hypot(*x_axis)
+            if not math.isfinite(length) or length <= 0.0:
+                return None
+            unit = (x_axis[0] / length, x_axis[1] / length)
+            if axis is None:
+                axis = unit
+            if (abs(unit[0] - axis[0]) > 1e-8 or abs(unit[1] - axis[1]) > 1e-8
+                    or abs(x_axis[0] * y_axis[0] + x_axis[1] * y_axis[1]) > 1e-8 * length * math.hypot(*y_axis)):
+                return None
+            normal = (-axis[1], axis[0])
+            points = [(char.target_origin[0] + (x * x_axis[0] + y * y_axis[0]) / units,
+                       char.target_origin[1] + (x * x_axis[1] + y * y_axis[1]) / units) for x, y in [*vertices, *midline]]
+            projected = [(x * axis[0] + y * axis[1], x * normal[0] + y * normal[1]) for x, y in points]
+            band, line = projected[:-2], projected[-2:]
+            rectangle = (min(p[0] for p in line), min(p[1] for p in band),
+                         max(p[0] for p in line), max(p[1] for p in band), line[0][1])
+            if not all(math.isfinite(v) for v in rectangle) or rectangle[3] <= rectangle[1]:
+                return None
+            magnitude = max(abs(v) for point in char.source_quad_pdf for v in point)
+            tolerance = max(tolerance, 4 * math.ldexp(1.0, math.frexp(magnitude)[1] - 24)
+                            * length / float(char.source_font_size_pdf))
+            rectangles.append((index, rectangle))
+        pairs = 0
+        for (old_index, left), (index, right) in zip(rectangles, rectangles[1:], strict=False):
+            if index != old_index + 1:
+                continue
+            if (abs(left[1] - right[1]) > tolerance or abs(left[3] - right[3]) > tolerance
+                    or abs(left[4] - right[4]) > tolerance
+                    or right[0] > left[2] + tolerance or right[0] < left[0]):
+                return None
+            pairs += 1
+        if not pairs:
+            return None
+        return {"rule": ("exact_source_rectangular_underline_join_v1" if kind == "rectangle"
+                         else "exact_source_capsule_underline_midline_join_v1"), "font_sha256": digest,
+                "connected_pairs": pairs, "frame_tolerance": tolerance}
+    except (KeyError, OSError, TypeError, ValueError, TTLibError, _RepresentationImpossible):
+        return None
+
+
+def _source_vertical_pipe_rule_loss(
+    text_item: NormalizedText, resolution: _ExactFontResolution,
+    native_font: _LibreCadLffResolution, height: float,
+) -> Optional[Dict[str, Any]]:
+    """Prove a per-span rectangular source rule exceeds native vertical ink.
+
+    Pipe/space content is only an eligibility filter. The actual source program,
+    GID, closed contour and character frames supply the filled-interval proof.
+    This does not assert that different source spans join one another.
+    """
+    content = str(text_item.text)
+    layout = tuple(text_item.source_char_layout)
+    if (len(content) > 10000 or "|" not in content or set(content) - {" ", "|"}
+            or not resolution.exact or len(layout) != len(content)
+            or "".join(char.text for char in layout) != content
+            or not native_font.verified or native_font.layout_metrics is None):
+        return None
+    try:
+        from fontTools.pens.recordingPen import DecomposingRecordingPen
+        from fontTools.ttLib import TTFont, TTLibError
+        payload = Path(resolution.filename).read_bytes()
+        digest = hashlib.sha256(payload).hexdigest()
+        native_digest = hashlib.sha256(Path(native_font.path).read_bytes()).hexdigest()
+        if digest != resolution.asset_sha256 or native_digest != native_font.sha256:
+            return None
+        names = _positioned_source_glyph_names(layout, resolution)
+        with TTFont(BytesIO(payload), lazy=False) as program:
+            units = float(program["head"].unitsPerEm)
+            if not math.isfinite(units) or units <= 0:
+                return None
+            name = names[content.index("|")]
+            if any(names[index] != name for index, char in enumerate(content) if char == "|"):
+                return None
+            glyphs = program.getGlyphSet()
+            pen = DecomposingRecordingPen(glyphs)
+            glyphs[name].draw(pen)
+            admitted = _source_underline_midline(pen.value)
+            if admitted is None or admitted[0] != "rectangle":
+                return None
+            vertices = admitted[1]
+            xs, ys = [p[0] for p in vertices], [p[1] for p in vertices]
+            if not 0 < max(xs) - min(xs) < max(ys) - min(ys):
+                return None
+            glyph_id = program.getGlyphID(name)
+        sy = float(height) / 9.0
+        origin = tuple(float(value) for value in text_item.insertion[:2])
+        angle = math.radians(float(text_item.rotation or 0.0))
+        base, up = (math.cos(angle), math.sin(angle)), (-math.sin(angle), math.cos(angle))
+        if len(origin) != 2 or not all(math.isfinite(v) for v in (*origin, sy)) or sy <= 1e-6:
+            return None
+        metrics = native_font.layout_metrics
+        bounds = metrics.glyph_bounds(ord("|"))
+        if metrics.arc_radii[ord("|")] != 0:
+            return None
+        native_interval = [bounds[1] * sy, bounds[3] * sy]
+        intervals = []
+        tolerance = 1e-7
+        for index, char in enumerate(layout):
+            if char.text != "|":
+                continue
+            x_axis, y_axis = _source_character_affine_axes(char)
+            nx, ny = math.hypot(*x_axis), math.hypot(*y_axis)
+            if (not all(math.isfinite(v) and v > 0 for v in (nx, ny))
+                    or abs(x_axis[0] * up[0] + x_axis[1] * up[1]) > 1e-8 * nx
+                    or abs(y_axis[0] * base[0] + y_axis[1] * base[1]) > 1e-8 * ny
+                    or x_axis[0] * base[0] + x_axis[1] * base[1] <= 0
+                    or y_axis[0] * up[0] + y_axis[1] * up[1] <= 0):
+                return None
+            placed = [(char.target_origin[0] - origin[0] + (x * x_axis[0] + y * y_axis[0]) / units,
+                       char.target_origin[1] - origin[1] + (x * x_axis[1] + y * y_axis[1]) / units)
+                      for x, y in vertices]
+            projected = [p[0] * up[0] + p[1] * up[1] for p in placed]
+            if not all(math.isfinite(v) for v in (*projected, *native_interval)):
+                return None
+            source_interval = [min(projected), max(projected)]
+            magnitude = max(abs(v) for point in char.source_quad_pdf for v in point)
+            tolerance = max(tolerance, 4 * math.ldexp(1.0, math.frexp(magnitude)[1] - 24)
+                            * max(nx, ny) / float(char.source_font_size_pdf))
+            intervals.append({"source_index": index, "source_interval": source_interval,
+                              "native_interval": list(native_interval),
+                              "loss_below": max(native_interval[0] - source_interval[0], 0.0),
+                              "loss_above": max(source_interval[1] - native_interval[1], 0.0)})
+        shortened = sum(max(row["loss_below"], row["loss_above"]) > tolerance for row in intervals)
+        if not shortened:
+            return None
+        return {"rule": "exact_source_rectangular_vertical_pipe_interval_v1",
+                "font_sha256": digest, "source_glyph_name": name, "source_glyph_id": glyph_id,
+                "native_font_sha256": native_digest, "pipe_glyph_count": len(intervals),
+                "shortened_pipe_count": shortened, "frame_tolerance": tolerance,
+                "max_interval_loss": max(max(row["loss_below"], row["loss_above"]) for row in intervals),
+                "interval_frame": "relative to original insertion along native positive-up axis",
+                "native_up_axis": list(up), "intervals": intervals,
+                "cross_item_connectivity_verified": False}
+    except (KeyError, OSError, TypeError, ValueError, TTLibError, _RepresentationImpossible):
+        return None
 
 
 def _librecad_lff_evidence(
@@ -1329,6 +1720,108 @@ def _delivery_cap_height(
     if not math.isfinite(height) or height <= 0.0:
         raise ValueError("resolved DXF cap height is invalid")
     return height, ratio
+
+
+def _source_native_text_lineweight(
+    text_item: NormalizedText,
+    resolution: _ExactFontResolution,
+) -> Dict[str, Any]:
+    """Approximate one native pen from source CFF dominant-stem design hints.
+
+    StdVW/StdHW describe representative stems, not every glyph's ink. The
+    chosen uniform DXF pen and its quantization error remain disclosed; this
+    proves neither source-font equivalence nor matching outer ink/cap bounds.
+    """
+    from fontTools.ttLib import TTFont, TTLibError
+
+    try:
+        content = str(text_item.text)
+        layout = tuple(text_item.source_char_layout)
+        if (not content.strip() or not resolution.exact or not resolution.asset_sha256
+                or len(layout) != len(content) or "".join(c.text for c in layout) != content):
+            raise ValueError("source font or original character binding is unavailable")
+        payload = Path(resolution.filename).read_bytes()
+        digest = hashlib.sha256(payload).hexdigest()
+        if digest != resolution.asset_sha256:
+            raise ValueError("source font bytes changed")
+        _positioned_source_glyph_names(layout, resolution)
+        metrics = _source_cff_stem_cache.get(digest)
+        if metrics is None:
+            with TTFont(BytesIO(payload), lazy=False, recalcTimestamp=False) as program:
+                units = float(program["head"].unitsPerEm)
+                if not math.isfinite(units) or units <= 0 or "CFF " not in program:
+                    raise ValueError("source has no usable CFF dominant-stem metric")
+                tops = program["CFF "].cff.topDictIndex
+                if len(tops) != 1:
+                    raise ValueError("ambiguous CFF font dictionary")
+                top = tops[0]
+                if hasattr(top, "FDArray"):
+                    raise ValueError("CID per-glyph stem dictionaries are not supported")
+                matrix = tuple(float(v) for v in top.FontMatrix)
+                if len(matrix) != 6 or not all(math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12)
+                        for a, b in zip(matrix, (1 / units, 0, 0, 1 / units, 0, 0), strict=True)):
+                    raise ValueError("CFF FontMatrix does not match source font units")
+                private = top.Private
+                raw = (private.StdVW, private.StdHW)
+                if any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0 for v in raw):
+                    raise ValueError("CFF dominant stems must be finite and positive")
+                metrics = units, float(raw[0]), float(raw[1])
+            # Only parsed scalars are cached, keyed by freshly checked bytes.
+            if len(_source_cff_stem_cache) >= 128:
+                _source_cff_stem_cache.clear()
+            _source_cff_stem_cache[digest] = metrics
+        units, vertical, horizontal = metrics
+        choices = tuple(value for value in VALID_DXF_LINEWEIGHTS if value > 0)
+        stems, selected, first_axes = [], [], None
+        nominal = _positive_finite(text_item.font_size)
+        if nominal is None:
+            raise ValueError("source model em size is invalid")
+        for character in layout:
+            if character.text == " ":
+                continue
+            x_axis, y_axis = _source_character_affine_axes(character)
+            nx, ny = math.hypot(*x_axis), math.hypot(*y_axis)
+            cross = x_axis[0] * y_axis[1] - x_axis[1] * y_axis[0]
+            if (not all(math.isfinite(v) and v > 0 for v in (nx, ny, abs(cross)))
+                    or abs(x_axis[0] * y_axis[0] + x_axis[1] * y_axis[1]) > _POSITIONED_SHEAR_NOISE * nx * ny
+                    or not math.isclose(math.sqrt(abs(cross)), nominal, rel_tol=2e-5, abs_tol=1e-7)):
+                raise ValueError("source stem has no compatible orthogonal model frame")
+            if first_axes is None:
+                first_axes = (x_axis, y_axis)
+            elif not all(math.isclose(a, b, rel_tol=2e-5, abs_tol=1e-7)
+                    for old, new in zip(first_axes, (x_axis, y_axis), strict=True)
+                    for a, b in zip(old, new, strict=True)):
+                raise ValueError("source characters do not share a native pen frame")
+            values = vertical * nx / units, horizontal * ny / units
+            representative = max(values)
+            if not min(choices) / 100 <= representative <= max(choices) / 100:
+                raise ValueError("source stem is outside positive DXF pen widths")
+            selected.append(min(choices, key=lambda value: (abs(value / 100 - representative), -value)))
+            stems.append(values)
+        if not stems or len(set(selected)) != 1:
+            raise ValueError("source characters do not agree on one supported native pen")
+        measured = max(max(pair) for pair in stems)
+        code = selected[0]
+        return {
+            "native_text_source_stem_rule": "cff_private_dominant_stem_max_observed_frame_v1",
+            "native_text_source_stem_font_sha256": digest,
+            "native_text_source_stem_units_per_em": units,
+            "native_text_source_stem_StdVW": vertical,
+            "native_text_source_stem_StdHW": horizontal,
+            "native_text_source_stem_widths_mm": {
+                "vertical": max(v[0] for v in stems), "horizontal": max(v[1] for v in stems)},
+            "native_text_source_stem_width_mm": measured,
+            "native_text_source_stem_frames_checked": len(stems),
+            "native_text_source_stem_approximation": True,
+            "native_text_lineweight": code,
+            "native_text_lineweight_mm": code / 100,
+            "native_text_lineweight_quantization_error_mm": code / 100 - measured,
+            "native_text_lineweight_source_verified": True,
+            "native_text_weight_source_ink_parity_verified": False,
+            "native_text_lineweight_plot_semantics": "nominal DXF millimetres; physical paper weight is not multiplied by text print scale",
+        }
+    except (AttributeError, KeyError, OSError, TypeError, ValueError, TTLibError) as exc:
+        raise _RepresentationImpossible(f"native text has no source-bound positive CFF pen: {exc}") from exc
 
 
 _OUTLINE_ENGINE_FONT_DIRS: set = set()
@@ -2278,20 +2771,34 @@ def _fit_text_advance(
     target_width: Optional[float],
     *,
     parent_fit_alignment: bool = False,
+    native_lff: Optional[_LibreCadLffResolution] = None,
 ) -> Optional[float]:
     if target_width is None or entity.dxftype() != "TEXT":
         return None
     if parent_fit_alignment:
-        from ezdxf.enums import TextEntityAlignment
-
-        insert = tuple(float(value) for value in entity.dxf.insert)[:2]
-        angle = math.radians(float(entity.dxf.rotation or 0.0))
-        endpoint = (
-            insert[0] + target_width * math.cos(angle),
-            insert[1] + target_width * math.sin(angle),
-        )
-        entity.set_placement(insert, endpoint, align=TextEntityAlignment.FIT)
-        return target_width
+        # LibreCAD FIT scales by ink width but keeps leading-space bearings.
+        # LEFT scales the complete native advance and retains the source anchor.
+        resolution = native_lff or _resolve_librecad_unicode_lff(fresh=True)
+        if not resolution.verified or resolution.layout_metrics is None:
+            raise _RepresentationImpossible("native LFF advance metrics are unavailable")
+        try:
+            advance, _ink = resolution.layout_metrics.run(str(entity.dxf.text))
+        except ValueError as exc:
+            raise _RepresentationImpossible(str(exc)) from exc
+        if advance <= 0.0 or not math.isfinite(target_width) or target_width <= 0.0:
+            raise _RepresentationImpossible("native LFF full advance is invalid")
+        factor = 9.0 * target_width / (float(entity.dxf.height) * advance)
+        # Match RS_EntityContainer::scale's guard; smaller positive factors do
+        # not scale native glyphs and cannot be certified as a tiny advance.
+        if not math.isfinite(factor) or min(float(entity.dxf.height) / 9.0, factor * float(entity.dxf.height) / 9.0) <= 1e-6:
+            raise _RepresentationImpossible("native LFF scale is below LibreCAD tolerance")
+        entity.dxf.halign = 0
+        entity.dxf.valign = 0
+        entity.dxf.width = factor
+        try:
+            return float(_librecad_native_layout(entity, resolution)["native_lff_actual_advance"])
+        except ValueError as exc:
+            raise _RepresentationImpossible(str(exc)) from exc
     measured = float(text_size(entity).width)
     if not math.isfinite(measured) or measured <= 0.0:
         if str(getattr(entity.dxf, "text", "") or "") and not str(
@@ -2304,6 +2811,73 @@ def _fit_text_advance(
         raise ValueError("DXF text width factor is invalid")
     entity.dxf.width = width_factor
     return float(text_size(entity).width)
+
+
+def _librecad_native_layout(entity: Any, resolution: _LibreCadLffResolution) -> Dict[str, Any]:
+    """Replay native LEFT layout from entity fields and executable-bound LFF.
+
+    The rotated ink envelope is conservative, not a source-font appearance or
+    native paint certificate. Advance is independently measured from the full
+    string, including leading/trailing U+0020, and actual serialized scales.
+    """
+    if not resolution.verified or resolution.layout_metrics is None:
+        raise ValueError("native LFF layout metrics are unavailable")
+    if (entity.dxftype() != "TEXT" or int(entity.dxf.halign) != 0
+            or int(entity.dxf.valign) != 0 or int(entity.dxf.text_generation_flag) != 0
+            or float(entity.dxf.oblique) != 0.0
+            or tuple(entity.dxf.extrusion) != (0.0, 0.0, 1.0)):
+        raise ValueError("unsupported native LFF text transform")
+    content = str(entity.dxf.text)
+    advance, ink = resolution.layout_metrics.run(content)
+    height, width, rotation = float(entity.dxf.height), float(entity.dxf.width), float(entity.dxf.rotation)
+    insert = tuple(float(value) for value in entity.dxf.insert)
+    sx, sy = height * width / 9.0, height / 9.0
+    if (not all(math.isfinite(value) for value in (height, width, rotation, *insert, sx, sy))
+            or min(sx, sy) <= 1e-6 or advance <= 0.0):
+        raise ValueError("unsupported native LFF text scale or advance")
+    envelope = None
+    pen_envelope = None
+    lineweight = int(entity.dxf.get("lineweight", -1))
+    if lineweight > 0 and lineweight not in VALID_DXF_LINEWEIGHTS:
+        raise ValueError("unsupported native TEXT lineweight")
+    pen_radius = max(lineweight, 0) / 200.0
+    if ink is not None:
+        # Native LFF arcs are inside polylines: RS_Arc::scale scales their
+        # center by (sx,sy), but their radius by sx alone. Pad the affine Y
+        # interval by the maximum possible radius difference, then rotate the
+        # enclosing rectangle. This contains native ink without pretending
+        # those arcs use ideal affine/TrueType geometry.
+        radius = max((resolution.layout_metrics.arc_radii[ord(ch)] for ch in content if ch != " "), default=0.0)
+        pad = radius * abs(sx - sy)
+        c, s = math.cos(math.radians(rotation)), math.sin(math.radians(rotation))
+        corners = [(insert[0] + x * c - y * s, insert[1] + x * s + y * c)
+                   for x in (ink[0] * sx, ink[2] * sx) for y in (ink[1] * sy - pad, ink[3] * sy + pad)]
+        envelope = [min(p[0] for p in corners), min(p[1] for p in corners), max(p[0] for p in corners), max(p[1] for p in corners)]
+        pen_envelope = [envelope[0] - pen_radius, envelope[1] - pen_radius,
+                        envelope[2] + pen_radius, envelope[3] + pen_radius]
+        if not all(math.isfinite(value) for value in envelope):
+            raise ValueError("nonfinite native LFF ink envelope")
+    actual = advance * sx
+    if not math.isfinite(actual):
+        raise ValueError("nonfinite native LFF advance")
+    return {
+        "native_lff_font_family": Path(resolution.path).stem.lower(),
+        "native_lff_stroke_geometry_safe": _native_lff_stroke_safety(resolution, content, sx, sy),
+        "native_lff_layout_verified": True,
+        "native_lff_layout_rule": "librecad_left_baseline_full_advance_v1",
+        "native_lff_layout_sha256": resolution.sha256,
+        "native_lff_raw_advance": advance,
+        "native_lff_actual_advance": actual,
+        "native_lff_width_factor": width,
+        "native_lff_raw_ink_bounds": list(ink) if ink is not None else None,
+        "native_lff_rotated_ink_envelope": envelope,
+        "native_lff_ink_envelope_rule": "native_polyline_arc_x_radius_conservative",
+        "native_lff_estimated_pen_envelope": pen_envelope,
+        "native_lff_estimated_pen_envelope_rule": "world XY expansion by half nominal DXF millimetre weight; not a paper-scale or source-ink certificate",
+        "native_lff_lineweight": lineweight,
+        "native_lff_pen_width_mm": pen_radius * 2,
+        "native_lff_empty_ink": ink is None,
+    }
 
 
 def _verify_label(
@@ -2345,30 +2919,7 @@ def _verify_label(
     whitespace_zero_ink = bool(
         actual_text and not actual_text.strip() and measured_width == 0.0
     )
-    fit_alignment_verified = False
-    if entity_type == "TEXT" and int(entity.dxf.halign or 0) == 5 and target_width:
-        align_point = tuple(float(value) for value in entity.dxf.align_point)[:2]
-        fit_width = math.hypot(
-            align_point[0] - float(insert[0]),
-            align_point[1] - float(insert[1]),
-        )
-        expected_angle = math.radians(expected_rotation)
-        expected_endpoint = (
-            float(insert[0]) + target_width * math.cos(expected_angle),
-            float(insert[1]) + target_width * math.sin(expected_angle),
-        )
-        fit_alignment_verified = bool(
-            math.isclose(fit_width, target_width, rel_tol=1e-9, abs_tol=1e-12)
-            and all(
-                math.isclose(left, right, rel_tol=0.0, abs_tol=1e-9)
-                for left, right in zip(
-                    align_point,
-                    expected_endpoint,
-                    strict=True,
-                )
-            )
-        )
-    width_ok = whitespace_zero_ink or fit_alignment_verified or bool(
+    width_ok = whitespace_zero_ink or bool(
         target_width is not None
         and measured_width is not None
         and math.isclose(
@@ -2389,7 +2940,7 @@ def _verify_label(
         "height_verified": height_ok,
         "rotation_verified": rotation_ok,
         "width_verified": width_ok,
-        "fit_alignment_verified": fit_alignment_verified,
+        "fit_alignment_verified": False,
         "whitespace_zero_ink_verified": whitespace_zero_ink,
         "width_source": width_source,
         "expected_insert": list(expected_insert),
@@ -2471,8 +3022,8 @@ def _verify_parent_native_text_delivery(
     )
     builtin_unicode_lff_ok = bool(
         candidate_format == "lff"
-        and str(style_font or "").strip().lower() == "unicode"
-        and style_name.strip().lower() == "unicode"
+        and str(style_font or "").strip().lower() in {"unicode", "romans"}
+        and native_font_family(style_name) == str(style_font).lower()
         and style_binding_ok
         and librecad_lff_asset_verified
         and librecad_lff_coverage_verified
@@ -2639,6 +3190,8 @@ def _attempt_labels(
         )
         font_resolution = _resolve_item_font(text_item, config)
         attempt.evidence.update(font_resolution.evidence())
+        height, cap_height_ratio = _delivery_cap_height(source_em_height, font_resolution)
+        target_width, width_source = _target_advance_width(text_item)
         source_content_whitespace_only = not bool(
             str(getattr(text_item, "text", "") or "").strip()
         )
@@ -2662,11 +3215,11 @@ def _attempt_labels(
                 )
             )
         )
+        native_lff = None
+        native_weight = None
         if parent == "librecad":
-            lff_evidence = _librecad_lff_evidence(
-                delivered_text,
-                librecad_executable,
-            )
+            native_lff = _resolve_librecad_unicode_lff(librecad_executable, fresh=True)
+            lff_evidence = native_lff.evidence(delivered_text)
             attempt.evidence.update(lff_evidence)
             if lff_evidence["librecad_lff_asset_verified"] is not True:
                 raise _RepresentationImpossible(
@@ -2683,12 +3236,35 @@ def _attempt_labels(
                     "LibreCAD unicode.lff does not provide a drawable glyph "
                     f"body for {unavailable}"
                 )
-            # LibreCAD's editable native text renderer consumes its bundled LFF
-            # fonts. Build this item-scoped candidate with the broad Unicode LFF
-            # face, then require source-equivalent visual proof below. Visible
-            # substituted glyphs descend to exact outlines; only zero-ink
-            # whitespace may terminate on this native rung.
-            style_font = "unicode"
+            native_lff = _select_librecad_native_lff(
+                delivered_text, height, target_width, librecad_executable, unicode_font=native_lff,
+            )
+            lff_evidence = native_lff.evidence(delivered_text)
+            attempt.evidence.update(lff_evidence)
+            # Keep the broad Unicode face where native scaling is safe. A
+            # proved anisotropic arc limitation may select the installation's
+            # admitted linear Romans face. Both remain disclosed substitutions;
+            # only the explicit Editable choice accepts their visible words.
+            style_font = Path(native_lff.path).stem.lower()
+            continuity = _source_continuous_underline(text_item, font_resolution)
+            if continuity and native_lff.layout_metrics is not None and target_width is not None:
+                metrics = native_lff.layout_metrics
+                raw_advance, _ink = metrics.run(delivered_text)
+                bounds = metrics.glyph_bounds(ord("_"))
+                gap = (bounds[0] + metrics.letter_spacing) * target_width / raw_advance
+                if gap > continuity["frame_tolerance"]:
+                    attempt.evidence["source_continuous_rule"] = dict(continuity, native_join_gap=gap)
+                    raise _RepresentationImpossible("native LFF spacing breaks the proven connected source underline; exact glyph outlines required")
+            if accept_librecad_font_substitution:
+                vertical_loss = _source_vertical_pipe_rule_loss(text_item, font_resolution, native_lff, height)
+                if vertical_loss is not None:
+                    attempt.evidence["source_vertical_rule"] = vertical_loss
+                    raise _RepresentationImpossible("native LFF vertical range shortens the proven source pipe interval; exact glyph outlines required")
+            if accept_librecad_font_substitution and not source_content_whitespace_only:
+                if is_r12:
+                    raise _RepresentationImpossible("R12 cannot serialize a source-bound positive native TEXT lineweight")
+                native_weight = _source_native_text_lineweight(text_item, font_resolution)
+                attempt.evidence.update(native_weight)
             parent_font_format = (
                 Path(str(lff_evidence["librecad_lff_path"] or ""))
                 .suffix.lower()
@@ -2696,7 +3272,7 @@ def _attempt_labels(
                 or "unknown"
             )
             parent_font_substituted = True
-            preferred_style_name = "unicode"
+            preferred_style_name = style_font
         else:
             if not font_resolution.exact:
                 if font_resolution.item_impossibility_proven:
@@ -2713,9 +3289,6 @@ def _attempt_labels(
             ).strip().lower()
             parent_font_substituted = source_origin != "embedded_pdf_font"
             preferred_style_name = None
-        height, cap_height_ratio = _delivery_cap_height(
-            source_em_height, font_resolution
-        )
         height_basis = "source_font_cap_height"
         style_name, style_handle, style_created = _ensure_text_style(
             doc,
@@ -2736,6 +3309,8 @@ def _attempt_labels(
             is_r12=is_r12,
             style_name=style_name,
         )
+        if native_weight is not None:
+            attribs["lineweight"] = native_weight["native_text_lineweight"]
         force_text = (
             is_3d_text
             or semantic_representation == "text"
@@ -2777,6 +3352,7 @@ def _attempt_labels(
             entity,
             target_width,
             parent_fit_alignment=parent == "librecad",
+            native_lff=native_lff,
         )
         type_ok, visual_ok, evidence = _verify_label(
             entity,
@@ -2790,6 +3366,10 @@ def _attempt_labels(
         attempt.type_verified = type_ok
         attempt.visual_verified = visual_ok
         attempt.evidence.update(evidence)
+        if parent == "librecad":
+            attempt.evidence.update(_librecad_native_layout(entity, native_lff))
+            if attempt.evidence["native_lff_stroke_geometry_safe"] is not True:
+                raise _RepresentationImpossible("native LFF arcs cannot preserve joined strokes under this text scale")
         attempt.evidence["semantic_representation"] = attempted_representation
         if semantic_representation == "text" and entity.dxftype() != "TEXT":
             type_ok = False
@@ -3069,6 +3649,7 @@ def _write_search_text_companion(
     *,
     is_r12: bool,
     cap_height_ratio: Optional[float] = None,
+    librecad_executable: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Hidden, non-certifying companion: the exact source string as native TEXT.
 
@@ -3136,13 +3717,22 @@ def _write_search_text_companion(
             ),
         )
         target_width, _width_source = _target_advance_width(text_item)
-        _fit_text_advance(entity, target_width, parent_fit_alignment=True)
-        if target_width is not None and tuple(entity.dxf.align_point)[:2] == insert:
-            # An advance below float resolution at this insertion: FIT between
-            # coincident points is degenerate, so the companion stays LEFT.
-            from ezdxf.enums import TextEntityAlignment
-
-            entity.set_placement(insert, align=TextEntityAlignment.LEFT)
+        record.update(expected_insert=list(insert), expected_height=height,
+                      expected_rotation=rotation, expected_advance_width=target_width)
+        native_lff = _resolve_librecad_unicode_lff(librecad_executable, fresh=True)
+        try:
+            _fit_text_advance(entity, target_width, parent_fit_alignment=True, native_lff=native_lff)
+            try:
+                record.update(_librecad_native_layout(entity, native_lff))
+            except ValueError as exc:
+                raise _RepresentationImpossible(str(exc)) from exc
+        except _RepresentationImpossible as exc:
+            # Search text certifies no visible representation. Keep the exact
+            # string and source anchor as an unmeasured LEFT carrier when its
+            # font metrics/advance cannot be proved; never emit hazardous FIT.
+            entity.dxf.halign = entity.dxf.valign = 0
+            entity.dxf.width = 1.0
+            record.update(native_lff_layout_verified=False, native_layout_reason=str(exc))
         if entity.dxftype() != "TEXT" or str(entity.dxf.text) != content:
             raise ValueError("companion TEXT did not keep the exact source string")
         record["handle"] = _handle(entity)
@@ -5865,6 +6455,7 @@ def reset_text_styles() -> None:
     global _style_counter  # noqa: PLW0603
     _created_styles.clear()
     _embedded_cap_height_cache.clear()
+    _source_cff_stem_cache.clear()
     _staged_font_verification_cache.clear()
     _glyph_block_cache.clear()
     _canonical_glyph_path_cache.clear()

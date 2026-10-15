@@ -68,7 +68,7 @@ def test_resume_identity_uses_one_immutable_resolved_librecad_binding(
     binding = payload["librecad_runtime_binding"]
     assert len(identity) == 64
     assert "librecad_executable" not in payload
-    assert binding["contract_version"] == "bcs.librecad-runtime-binding/1"
+    assert binding["contract_version"] == "bcs.librecad-runtime-binding/2"
     assert binding["executable_resolution_source"] == "environment_executable"
     assert binding["binding_verified"] is True
     assert binding["executable"]["size_bytes"] == executable.stat().st_size

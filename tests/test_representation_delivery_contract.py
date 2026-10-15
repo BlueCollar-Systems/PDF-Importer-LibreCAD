@@ -611,7 +611,8 @@ def test_librecad_visible_text_descends_to_glyphs_and_survives_parent_reopen(
     assert evidence["anchor_verified"] is True
     assert evidence["cap_height_invariant_verified"] is True
     assert evidence["rotation_verified"] is True
-    assert evidence["fit_alignment_verified"] is True
+    assert evidence["fit_alignment_verified"] is False
+    assert evidence["native_lff_layout_verified"] is True
     assert evidence["parent_native_font_renderability_verified"] is False
     assert evidence["parent_native_font_asset_coverage_verified"] is True
     assert evidence["parent_render_verification_required"] is True

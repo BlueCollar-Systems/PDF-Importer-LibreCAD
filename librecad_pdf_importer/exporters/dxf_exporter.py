@@ -73,7 +73,12 @@ from dxf_text_builder import (
     _glyph_instance_transform_fingerprint,
     _glyph_outer_block_structure_fingerprint,
     _positioned_geometry_fingerprint,
+    _librecad_native_layout,
+    _source_native_text_lineweight,
+    _source_vertical_pipe_rule_loss,
+    _resolve_item_font,
     _resolve_librecad_unicode_lff,
+    _resolve_librecad_lff,
     _nested_outline_tolerance,
     _solid_fill_verified,
     _source_id,
@@ -89,6 +94,7 @@ from conversion_control import (
     ensure_output_is_not_source,
     report_progress,
 )
+from ..native_text_styles import native_font_family
 from librecad_runtime import local_path_for_io, resolve_librecad_installation
 
 
@@ -1530,7 +1536,8 @@ def _write_search_text_companions(
                 written_per_layer[layer] = 0
             search = dict(
                 _write_search_text_companion(
-                    text_item, msp, layer, is_r12=is_r12, cap_height_ratio=cap_height_ratio
+                    text_item, msp, layer, is_r12=is_r12, cap_height_ratio=cap_height_ratio,
+                    librecad_executable=opts.librecad_executable,
                 )
             )
             if search.get("status") == "written":
@@ -1552,7 +1559,9 @@ def _write_search_text_companions(
                 pass
 
 
-def _verify_serialized_search_text(doc: Any, deliveries: List[Dict[str, Any]]) -> None:
+def _verify_serialized_search_text(
+    doc: Any, deliveries: List[Dict[str, Any]], *, librecad_executable: Optional[str] = None,
+) -> None:
     """Soft post-write check of the hidden companions: never raises, never retries.
 
     A companion certifies nothing, so one that did not reach the file as written
@@ -1560,6 +1569,7 @@ def _verify_serialized_search_text(doc: Any, deliveries: List[Dict[str, Any]]) -
     """
 
     pre_r2007 = str(getattr(doc, "dxfversion", "") or "") < "AC1021"
+    native_lff = None
     for delivery in deliveries:
         search = delivery.get("search_text")
         if not isinstance(search, dict) or search.get("status") != "written":
@@ -1580,6 +1590,22 @@ def _verify_serialized_search_text(doc: Any, deliveries: List[Dict[str, Any]]) -
                 or not layer.is_frozen()
             ):
                 raise ValueError("companion TEXT content, layer or type changed")
+            if "expected_insert" in search:
+                actual_transform = (*tuple(native.dxf.insert)[:2], float(native.dxf.height), float(native.dxf.rotation))
+                expected_transform = (*search["expected_insert"], search["expected_height"], search["expected_rotation"])
+                if not all(math.isclose(float(left), float(right), rel_tol=1e-9, abs_tol=1e-9)
+                           for left, right in zip(actual_transform, expected_transform, strict=True)):
+                    raise ValueError("companion TEXT source transform changed")
+            if search.get("native_lff_layout_verified") is True:
+                if native_lff is None:
+                    native_lff = _resolve_librecad_unicode_lff(librecad_executable, fresh=True)
+                layout = _librecad_native_layout(native, native_lff)
+                expected_advance = search.get("expected_advance_width")
+                if (layout["native_lff_layout_sha256"] != search.get("native_lff_layout_sha256")
+                        or layout["native_lff_raw_advance"] != search.get("native_lff_raw_advance")
+                        or (expected_advance is not None and not math.isclose(
+                            layout["native_lff_actual_advance"], float(expected_advance), rel_tol=1e-6, abs_tol=1e-9))):
+                    raise ValueError("companion TEXT native advance changed")
         except Exception as exc:  # noqa: BLE001 - a companion never costs the sheet
             search["status"] = "mismatch"
             search["reason"] = f"{type(exc).__name__}: {exc}"
@@ -1598,6 +1624,7 @@ def _verify_serialized_text_deliveries(
     *,
     trusted_positioned_session: _PositionedVerificationSession,
     trusted_control_zero_ink: Optional[Mapping[str, str]] = None,
+    trusted_native_text_sources: Optional[Mapping[str, Tuple[Any, Any]]] = None,
 ) -> None:
     """Reconcile accepted evidence against the candidate and opaque authority.
 
@@ -2075,7 +2102,8 @@ def _verify_serialized_text_deliveries(
                     "anchor_verified",
                     "cap_height_invariant_verified",
                     "rotation_verified",
-                    "fit_alignment_verified",
+                    "native_lff_layout_verified",
+                    "native_lff_stroke_geometry_safe",
                     "librecad_lff_asset_verified",
                     "librecad_lff_coverage_verified",
                     "librecad_parent_installation_verified",
@@ -2102,6 +2130,18 @@ def _verify_serialized_text_deliveries(
                     )
                     is False
                 )
+                if not whitespace_contract:
+                    source = (trusted_native_text_sources or {}).get(source_id)
+                    if source is None:
+                        raise RuntimeError(f"serialized text delivery {source_id}: source-bound native pen authority is missing")
+                    try:
+                        weight = _source_native_text_lineweight(*source)
+                    except _RepresentationImpossible as exc:
+                        raise RuntimeError(f"serialized text delivery {source_id}: source native pen changed: {exc}") from exc
+                    if (not native.dxf.hasattr("lineweight")
+                            or int(native.dxf.lineweight) != weight["native_text_lineweight"]
+                            or any(evidence.get(key) != value for key, value in weight.items())):
+                        raise RuntimeError(f"serialized text delivery {source_id}: source-bound native TEXT lineweight changed")
                 disclosure_ok = bool(
                     evidence.get("parent_native_font_substituted") is True
                     and evidence.get("parent_source_font_equivalence_verified") is False
@@ -2153,8 +2193,9 @@ def _verify_serialized_text_deliveries(
                     lff_binding_key
                 )
                 if reopened_lff_resolution is None:
-                    reopened_lff_resolution = _resolve_librecad_unicode_lff(
+                    reopened_lff_resolution = _resolve_librecad_lff(
                         bound_executable,
+                        font_name=str(evidence.get("librecad_lff_font_family") or "unicode"),
                         fresh=True,
                     )
                     reopened_lff_resolutions[lff_binding_key] = (
@@ -2163,10 +2204,30 @@ def _verify_serialized_text_deliveries(
                 reopened_lff_evidence = reopened_lff_resolution.evidence(
                     actual_content
                 )
+                if (not whitespace_contract
+                        and _source_vertical_pipe_rule_loss(*source, reopened_lff_resolution, actual_height) is not None):
+                    raise RuntimeError(f"serialized text delivery {source_id}: native TEXT shortens the original source vertical rule")
+                try:
+                    native_layout = _librecad_native_layout(native, reopened_lff_resolution)
+                    target_advance = float(evidence.get("expected_advance_width") or 0.0)
+                    native_layout_ok = bool(
+                        target_advance > 0.0
+                        and native_layout["native_lff_stroke_geometry_safe"] is True
+                        and math.isclose(
+                            native_layout["native_lff_actual_advance"], target_advance,
+                            rel_tol=1e-6, abs_tol=max(1e-9, target_advance * 1e-8),
+                        )
+                        and native_layout["native_lff_layout_sha256"] == evidence.get("librecad_lff_sha256")
+                        and native_layout["native_lff_layout_rule"] == evidence.get("native_lff_layout_rule")
+                        and native_layout["native_lff_raw_advance"] == evidence.get("native_lff_raw_advance")
+                    )
+                except (TypeError, ValueError):
+                    native_layout_ok = False
                 lff_asset_evidence_ok = all(
                     evidence.get(key) == reopened_lff_evidence.get(key)
                     for key in (
                         "librecad_lff_path",
+                        "librecad_lff_font_family",
                         "librecad_lff_size_bytes",
                         "librecad_lff_sha256",
                         "librecad_lff_glyph_count",
@@ -2199,12 +2260,11 @@ def _verify_serialized_text_deliveries(
                 )
                 lff_reopen_ok = bool(
                     native.dxftype() == "TEXT"
-                    and str(native.dxf.style or "").strip().lower() == "unicode"
-                    and str(parent_font).strip().lower() == "unicode"
-                    and str(
-                        doc.styles.get(str(native.dxf.style or "")).dxf.font or ""
-                    ).strip().lower()
-                    == "unicode"
+                    and native_font_family(str(native.dxf.style or "")) == str(parent_font).lower()
+                    and str(parent_font).lower() in {"unicode", "romans"}
+                    and native_font_family(str(doc.styles.get(str(native.dxf.style or "")).dxf.font or ""))
+                    == str(parent_font).lower()
+                    and str(parent_font).lower() == reopened_lff_evidence["librecad_lff_font_family"]
                     and evidence.get("parent_native_font_candidate_format") == "lff"
                     and evidence.get("parent_native_font_required_format") == "lff"
                 )
@@ -2216,6 +2276,7 @@ def _verify_serialized_text_deliveries(
                     or not local_path_binding_ok
                     or not attempt_flags_ok
                     or not lff_reopen_ok
+                    or not native_layout_ok
                 ):
                     raise RuntimeError(
                         f"serialized text delivery {source_id}: LibreCAD native "
@@ -2227,6 +2288,7 @@ def _verify_serialized_text_deliveries(
                         "parent_native_text_reopen_renderability_verified": False,
                         "parent_native_text_reopen_asset_coverage_verified": True,
                         "serialized_cap_height_invariant_verified": True,
+                        "serialized_native_lff_layout_verified": True,
                         "delivery_evidence_verified": True,
                     }
                 )
@@ -4848,6 +4910,7 @@ def _export_to_dxf_impl(
     text_fallbacks: List[Dict[str, Any]] = []
     delivered_text_entity_counts: Dict[str, int] = {}
     text_deliveries: List[Dict[str, Any]] = []
+    native_text_sources: Dict[str, Tuple[Any, Any]] = {}
     positioned_translation_anchors: Dict[str, _PositionedTranslationAnchor] = {}
     original_control_anchors: Dict[str, str] = {}
     seen_text_source_ids: set[str] = set()
@@ -5545,6 +5608,9 @@ def _export_to_dxf_impl(
                         )
                     positioned_translation_anchors[delivery.source_id] = positioned_anchor
                 text_deliveries.append(delivery.to_dict())
+                if (opts.librecad_editable_text and delivery.final_representation == "text"
+                        and str(ti.text).strip()):
+                    native_text_sources[delivery.source_id] = (ti, _resolve_item_font(ti, text_cfg))
                 if delivery.final_representation not in (None, "raster"):
                     # The text builder applies the same ink rule to every
                     # native or outline representation it writes.
@@ -6089,6 +6155,7 @@ def _export_to_dxf_impl(
                 text_deliveries,
                 trusted_positioned_session=trusted_positioned_session,
                 trusted_control_zero_ink=MappingProxyType(original_control_anchors),
+                trusted_native_text_sources=MappingProxyType(native_text_sources),
             )
         except RuntimeError as exc:
             mismatch_rungs = _serialized_mismatch_rungs(exc, text_deliveries)
@@ -6096,7 +6163,7 @@ def _export_to_dxf_impl(
                 # Structural: no single item can take the blame, so the sheet stops.
                 raise ImportStopped(str(exc)) from exc
             raise _SerializedTextItemMismatch(str(exc), mismatch_rungs) from exc
-        _verify_serialized_search_text(candidate, text_deliveries)
+        _verify_serialized_search_text(candidate, text_deliveries, librecad_executable=opts.librecad_executable)
         _verify_serialized_image_assets(candidate, serialized_image_expectations)
         _verify_serialized_source_dash_blocks(candidate, source_dash_expectations)
         from .final_rect_paint import verify_metadata_and_strokes

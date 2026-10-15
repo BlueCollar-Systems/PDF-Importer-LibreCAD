@@ -302,9 +302,9 @@ class Pdf2DxfApp(tk.Tk):
             text=(
                 "Exact look draws every word as exact outlines; an editable copy is "
                 "kept on the hidden layer ...TEXT_SEARCH. Editable text gives words "
-                "you can edit, drawn in LibreCAD's own font (letter shapes differ "
-                "from the PDF). Characters LibreCAD's font lacks still come in as "
-                "outlines and are listed. "
+                "you can edit, drawn in LibreCAD's own font (letter shapes and "
+                "stroke weight can differ from the PDF). Text that cannot be "
+                "rendered reliably stays as outlines and is listed. "
                 "Any fallback or unverified item is listed in the log and report."
             ),
             wraplength=620,

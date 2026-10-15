@@ -4,6 +4,85 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
+## 1.0.118 - 2026-10-15
+
+- Keep a pipe/space-only span as exact Glyph outlines when its fresh original
+  font program, glyph ID, closed rectangular ink and character frames prove a
+  vertical interval that the selected native LFF would shorten. Preserve the
+  complete frozen literal; leave mixed words and unproved shapes on their
+  existing paths. This is a per-span proof, not a cross-item join certificate.
+- Independently replay the source interval check against serialized native
+  height and the fresh selected font. Keep ordinary native words and their
+  source-derived positive pen unchanged, without inflating weight to hide gaps.
+- Complete the exact r18 Editable converter/native Save As/fresh-reopen checks
+  with normal owned exits. Preserve all 28 full literals, 11 native Romans words
+  at LW18 and 17 Glyph spans. Model words/rules and a bounded native PDF crop are
+  readable; white-paper Preview appearance remains failed. Retain both strict
+  native failures on added linetype patterns and all earlier failed evidence.
+
+## 1.0.117 - 2026-10-15
+
+- Give explicitly selected visible native Editable text a positive pen weight
+  from the bound source CFF font's dominant stems and observed character frames.
+  Choose a supported DXF weight and report the approximation and quantization;
+  missing or unsupported metrics use exact outlines with full search strings.
+- Recheck the serialized native pen against fresh source font bytes and original
+  character frames. Keep centerline layout separate from the estimated pen
+  envelope, without claiming source glyph, outer-ink or print-scale equivalence.
+- Preserve default outlines, zero-ink text, hidden carriers and unrelated pens.
+  Explain the editable font and weight limits in the GUI and README.
+- Record the actual v1.0.116 native pen failure and its independent PDF/line
+  controls. At that source review, updated-package native acceptance was
+  pending; the later desktop results are recorded in native text validation.
+  Earlier strict native linetype and IMAGEDEF-owner failures remain recorded.
+
+## 1.0.116 - 2026-10-15
+
+- Keep native Unicode where its actual glyphs and scales are safe. For unsafe
+  stretched curves, use only the selected installation's qualified linear
+  Romans font, retaining full strings, source cap height, insertion, rotation
+  and independently measured full advance. Font substitution remains disclosed.
+- Preserve continuous underlines as exact glyph outlines only when the bound
+  source program and character placements prove connected filled ink that native
+  letter spacing would break. Keep complete frozen search strings and report the
+  item fallback; unsupported shapes do not acquire a continuity certificate.
+- Preserve qualified Unicode and Romans aliases through page assembly and saved
+  drawing copies. Retain conflicting-font/resource guards, fresh serialized
+  font/stroke checks, and optional Romans bytes or absence in resume identity.
+- Record the completed v1.0.115 desktop lifecycles separately from its editable
+  stroke failure and six strict native retention failures. Source checks for this
+  repair passed before its desktop follow-up; completed results and remaining
+  limits are recorded in native text validation.
+
+## 1.0.115 - 2026-10-15
+
+- Keep leading and trailing spaces in editable text without LibreCAD's FIT
+  alignment magnifying their offset. Use LEFT/baseline text and measure its
+  full advance from the selected installation's bound LFF font. Recheck the
+  serialized text's actual fields independently; written FIT endpoints no
+  longer qualify as width proof. Hidden search copies use the same placement.
+- Preserve source strings, anchors, cap heights and rotations. Unsupported
+  native layout follows the existing reported fallback; an unmeasured search
+  carrier remains non-certifying. Native font substitution stays disclosed and
+  is not certified as the PDF's glyph appearance.
+- Keep the Unicode binding when copying a native-saved drawing whose font
+  field contains LibreCAD's own style alias. Preserve every style property
+  and the existing conflicting-font, path, bigfont and extended-font guards.
+- Record the actual r14 editable-mode display failure and its numerical cause.
+  New package/native checks remain separate from source tests and the earlier
+  native linetype, IMAGEDEF-owner and metadata retention failures.
+
+## 1.0.114 - 2026-10-15
+
+- Preserve the intended native Unicode font when assembling pages and creating
+  a saved drawing copy. Use distinct aliases that LibreCAD 2.2 can resolve,
+  retaining style properties, nested text references, geometry, images and
+  existing drawing resources. Editable text and hidden search copies keep the
+  requested mode.
+- Record actual r13 desktop import, Save As and fresh-reopen checks separately
+  from strict persistence failures. This font-binding repair does not establish
+  a fix for native bounds growth, IMAGEDEF owner omissions or rendered parity.
+
 ## 1.0.113 - 2026-10-14
 
 - Rehome the exact unreferenced eight-tag native plot record into the standard
