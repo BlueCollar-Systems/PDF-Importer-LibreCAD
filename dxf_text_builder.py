@@ -41,6 +41,7 @@ from ezdxf import path as ezdxf_path
 from ezdxf.addons import text2path
 from ezdxf.fonts import fonts as ezdxf_fonts
 from ezdxf.lldxf.encoding import has_dxf_unicode
+from ezdxf.lldxf.const import VALID_DXF_LINEWEIGHTS
 from ezdxf.math import Matrix44, bulge_to_arc
 from ezdxf.tools.text import plain_text
 from ezdxf.tools.text_size import text_size
@@ -93,6 +94,7 @@ _INSTALLED_ADVANCE_TOLERANCE_PER_MILLE = 1.0
 _INSTALLED_FONT_RULE = "installed_face_bound_by_original_source_program_and_character_frames"
 _created_styles: Dict[str, str] = {}
 _embedded_cap_height_cache: Dict[str, float] = {}
+_source_cff_stem_cache: Dict[str, Tuple[float, float, float]] = {}
 # ezdxf retains loaded fonts across documents. Keep their original file binding
 # for the same lifetime so a later import cannot pair stale glyphs with new bytes.
 _installed_font_metric_cache: weakref.WeakKeyDictionary[
@@ -1623,6 +1625,108 @@ def _delivery_cap_height(
     return height, ratio
 
 
+def _source_native_text_lineweight(
+    text_item: NormalizedText,
+    resolution: _ExactFontResolution,
+) -> Dict[str, Any]:
+    """Approximate one native pen from source CFF dominant-stem design hints.
+
+    StdVW/StdHW describe representative stems, not every glyph's ink. The
+    chosen uniform DXF pen and its quantization error remain disclosed; this
+    proves neither source-font equivalence nor matching outer ink/cap bounds.
+    """
+    from fontTools.ttLib import TTFont, TTLibError
+
+    try:
+        content = str(text_item.text)
+        layout = tuple(text_item.source_char_layout)
+        if (not content.strip() or not resolution.exact or not resolution.asset_sha256
+                or len(layout) != len(content) or "".join(c.text for c in layout) != content):
+            raise ValueError("source font or original character binding is unavailable")
+        payload = Path(resolution.filename).read_bytes()
+        digest = hashlib.sha256(payload).hexdigest()
+        if digest != resolution.asset_sha256:
+            raise ValueError("source font bytes changed")
+        _positioned_source_glyph_names(layout, resolution)
+        metrics = _source_cff_stem_cache.get(digest)
+        if metrics is None:
+            with TTFont(BytesIO(payload), lazy=False, recalcTimestamp=False) as program:
+                units = float(program["head"].unitsPerEm)
+                if not math.isfinite(units) or units <= 0 or "CFF " not in program:
+                    raise ValueError("source has no usable CFF dominant-stem metric")
+                tops = program["CFF "].cff.topDictIndex
+                if len(tops) != 1:
+                    raise ValueError("ambiguous CFF font dictionary")
+                top = tops[0]
+                if hasattr(top, "FDArray"):
+                    raise ValueError("CID per-glyph stem dictionaries are not supported")
+                matrix = tuple(float(v) for v in top.FontMatrix)
+                if len(matrix) != 6 or not all(math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12)
+                        for a, b in zip(matrix, (1 / units, 0, 0, 1 / units, 0, 0), strict=True)):
+                    raise ValueError("CFF FontMatrix does not match source font units")
+                private = top.Private
+                raw = (private.StdVW, private.StdHW)
+                if any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0 for v in raw):
+                    raise ValueError("CFF dominant stems must be finite and positive")
+                metrics = units, float(raw[0]), float(raw[1])
+            # Only parsed scalars are cached, keyed by freshly checked bytes.
+            if len(_source_cff_stem_cache) >= 128:
+                _source_cff_stem_cache.clear()
+            _source_cff_stem_cache[digest] = metrics
+        units, vertical, horizontal = metrics
+        choices = tuple(value for value in VALID_DXF_LINEWEIGHTS if value > 0)
+        stems, selected, first_axes = [], [], None
+        nominal = _positive_finite(text_item.font_size)
+        if nominal is None:
+            raise ValueError("source model em size is invalid")
+        for character in layout:
+            if character.text == " ":
+                continue
+            x_axis, y_axis = _source_character_affine_axes(character)
+            nx, ny = math.hypot(*x_axis), math.hypot(*y_axis)
+            cross = x_axis[0] * y_axis[1] - x_axis[1] * y_axis[0]
+            if (not all(math.isfinite(v) and v > 0 for v in (nx, ny, abs(cross)))
+                    or abs(x_axis[0] * y_axis[0] + x_axis[1] * y_axis[1]) > _POSITIONED_SHEAR_NOISE * nx * ny
+                    or not math.isclose(math.sqrt(abs(cross)), nominal, rel_tol=2e-5, abs_tol=1e-7)):
+                raise ValueError("source stem has no compatible orthogonal model frame")
+            if first_axes is None:
+                first_axes = (x_axis, y_axis)
+            elif not all(math.isclose(a, b, rel_tol=2e-5, abs_tol=1e-7)
+                    for old, new in zip(first_axes, (x_axis, y_axis), strict=True)
+                    for a, b in zip(old, new, strict=True)):
+                raise ValueError("source characters do not share a native pen frame")
+            values = vertical * nx / units, horizontal * ny / units
+            representative = max(values)
+            if not min(choices) / 100 <= representative <= max(choices) / 100:
+                raise ValueError("source stem is outside positive DXF pen widths")
+            selected.append(min(choices, key=lambda value: (abs(value / 100 - representative), -value)))
+            stems.append(values)
+        if not stems or len(set(selected)) != 1:
+            raise ValueError("source characters do not agree on one supported native pen")
+        measured = max(max(pair) for pair in stems)
+        code = selected[0]
+        return {
+            "native_text_source_stem_rule": "cff_private_dominant_stem_max_observed_frame_v1",
+            "native_text_source_stem_font_sha256": digest,
+            "native_text_source_stem_units_per_em": units,
+            "native_text_source_stem_StdVW": vertical,
+            "native_text_source_stem_StdHW": horizontal,
+            "native_text_source_stem_widths_mm": {
+                "vertical": max(v[0] for v in stems), "horizontal": max(v[1] for v in stems)},
+            "native_text_source_stem_width_mm": measured,
+            "native_text_source_stem_frames_checked": len(stems),
+            "native_text_source_stem_approximation": True,
+            "native_text_lineweight": code,
+            "native_text_lineweight_mm": code / 100,
+            "native_text_lineweight_quantization_error_mm": code / 100 - measured,
+            "native_text_lineweight_source_verified": True,
+            "native_text_weight_source_ink_parity_verified": False,
+            "native_text_lineweight_plot_semantics": "nominal DXF millimetres; physical paper weight is not multiplied by text print scale",
+        }
+    except (AttributeError, KeyError, OSError, TypeError, ValueError, TTLibError) as exc:
+        raise _RepresentationImpossible(f"native text has no source-bound positive CFF pen: {exc}") from exc
+
+
 _OUTLINE_ENGINE_FONT_DIRS: set = set()
 _OUTLINE_ENGINE_FONT_SUFFIXES = frozenset({".ttf", ".otf", ".ttc"})
 
@@ -2635,6 +2739,11 @@ def _librecad_native_layout(entity: Any, resolution: _LibreCadLffResolution) -> 
             or min(sx, sy) <= 1e-6 or advance <= 0.0):
         raise ValueError("unsupported native LFF text scale or advance")
     envelope = None
+    pen_envelope = None
+    lineweight = int(entity.dxf.get("lineweight", -1))
+    if lineweight > 0 and lineweight not in VALID_DXF_LINEWEIGHTS:
+        raise ValueError("unsupported native TEXT lineweight")
+    pen_radius = max(lineweight, 0) / 200.0
     if ink is not None:
         # Native LFF arcs are inside polylines: RS_Arc::scale scales their
         # center by (sx,sy), but their radius by sx alone. Pad the affine Y
@@ -2647,6 +2756,8 @@ def _librecad_native_layout(entity: Any, resolution: _LibreCadLffResolution) -> 
         corners = [(insert[0] + x * c - y * s, insert[1] + x * s + y * c)
                    for x in (ink[0] * sx, ink[2] * sx) for y in (ink[1] * sy - pad, ink[3] * sy + pad)]
         envelope = [min(p[0] for p in corners), min(p[1] for p in corners), max(p[0] for p in corners), max(p[1] for p in corners)]
+        pen_envelope = [envelope[0] - pen_radius, envelope[1] - pen_radius,
+                        envelope[2] + pen_radius, envelope[3] + pen_radius]
         if not all(math.isfinite(value) for value in envelope):
             raise ValueError("nonfinite native LFF ink envelope")
     actual = advance * sx
@@ -2664,6 +2775,10 @@ def _librecad_native_layout(entity: Any, resolution: _LibreCadLffResolution) -> 
         "native_lff_raw_ink_bounds": list(ink) if ink is not None else None,
         "native_lff_rotated_ink_envelope": envelope,
         "native_lff_ink_envelope_rule": "native_polyline_arc_x_radius_conservative",
+        "native_lff_estimated_pen_envelope": pen_envelope,
+        "native_lff_estimated_pen_envelope_rule": "world XY expansion by half nominal DXF millimetre weight; not a paper-scale or source-ink certificate",
+        "native_lff_lineweight": lineweight,
+        "native_lff_pen_width_mm": pen_radius * 2,
         "native_lff_empty_ink": ink is None,
     }
 
@@ -3004,6 +3119,7 @@ def _attempt_labels(
             )
         )
         native_lff = None
+        native_weight = None
         if parent == "librecad":
             native_lff = _resolve_librecad_unicode_lff(librecad_executable, fresh=True)
             lff_evidence = native_lff.evidence(delivered_text)
@@ -3042,6 +3158,11 @@ def _attempt_labels(
                 if gap > continuity["frame_tolerance"]:
                     attempt.evidence["source_continuous_rule"] = dict(continuity, native_join_gap=gap)
                     raise _RepresentationImpossible("native LFF spacing breaks the proven connected source underline; exact glyph outlines required")
+            if accept_librecad_font_substitution and not source_content_whitespace_only:
+                if is_r12:
+                    raise _RepresentationImpossible("R12 cannot serialize a source-bound positive native TEXT lineweight")
+                native_weight = _source_native_text_lineweight(text_item, font_resolution)
+                attempt.evidence.update(native_weight)
             parent_font_format = (
                 Path(str(lff_evidence["librecad_lff_path"] or ""))
                 .suffix.lower()
@@ -3086,6 +3207,8 @@ def _attempt_labels(
             is_r12=is_r12,
             style_name=style_name,
         )
+        if native_weight is not None:
+            attribs["lineweight"] = native_weight["native_text_lineweight"]
         force_text = (
             is_3d_text
             or semantic_representation == "text"
@@ -6230,6 +6353,7 @@ def reset_text_styles() -> None:
     global _style_counter  # noqa: PLW0603
     _created_styles.clear()
     _embedded_cap_height_cache.clear()
+    _source_cff_stem_cache.clear()
     _staged_font_verification_cache.clear()
     _glyph_block_cache.clear()
     _canonical_glyph_path_cache.clear()

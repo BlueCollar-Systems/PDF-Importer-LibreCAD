@@ -4,6 +4,21 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
+## 1.0.117 - 2026-10-15
+
+- Give explicitly selected visible native Editable text a positive pen weight
+  from the bound source CFF font's dominant stems and observed character frames.
+  Choose a supported DXF weight and report the approximation and quantization;
+  missing or unsupported metrics use exact outlines with full search strings.
+- Recheck the serialized native pen against fresh source font bytes and original
+  character frames. Keep centerline layout separate from the estimated pen
+  envelope, without claiming source glyph, outer-ink or print-scale equivalence.
+- Preserve default outlines, zero-ink text, hidden carriers and unrelated pens.
+  Explain the editable font and weight limits in the GUI and README.
+- Record the actual v1.0.116 native pen failure and its independent PDF/line
+  controls. Updated-package native acceptance remains separate and pending;
+  earlier strict native linetype and IMAGEDEF-owner failures remain recorded.
+
 ## 1.0.116 - 2026-10-15
 
 - Keep native Unicode where its actual glyphs and scales are safe. For unsafe

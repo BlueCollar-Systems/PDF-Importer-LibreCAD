@@ -2,7 +2,7 @@
 
 **BlueCollar-Systems -- BUILT. NOT BOUGHT.**
 
-![Version: 1.0.116](https://img.shields.io/badge/Version-1.0.116-blue.svg)
+![Version: 1.0.117](https://img.shields.io/badge/Version-1.0.117-blue.svg)
 
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
@@ -11,13 +11,13 @@ See [CHANGELOG.md](CHANGELOG.md) for release history. Version 1.0.82 preserves
 native zero-ink whitespace TEXT while visible source text whose font LibreCAD
 must substitute descends automatically to visually verified glyph outlines.
 
-Version 1.0.116 keeps safe native Unicode text and uses the selected LibreCAD
-installation's verified linear Romans font when stretching curved LFF glyphs
-would break their strokes. Proven continuous source underlines use exact
-glyph outlines when native letter spacing would turn them into dashes, keeping
-the full hidden search strings. Font substitution stays explicit. The v1.0.115
-desktop checks fixed the oversized bounds but exposed this separate appearance
-failure; the new package's desktop acceptance is still pending. See
+Version 1.0.117 gives supported native Editable text a source-derived positive
+pen weight instead of LibreCAD's almost invisible default pen. Unsupported
+weight metrics follow the reported exact-outline fallback, keeping full hidden
+search strings. Native letter shapes and weight remain disclosed approximations.
+The earlier native font, baseline and continuous-underline fixes are retained.
+Actual v1.0.116 desktop checks exposed the pen issue; the v1.0.117 package's
+native display, export, save and fresh-reopen acceptance remains pending. See
 [native text validation](docs/validation/2026-10-15-native-text-layout.md).
 
 Version 1.0.114 keeps LibreCAD's intended native font when joining converted
@@ -450,9 +450,9 @@ does not prove visible/editable 3D text in LibreCAD's 2D parent.
   word is drawn as exact outlines, the same shapes as the PDF, and an editable
   copy of each string is kept on the hidden layer `P###_TEXT_SEARCH` (see below).
 - **Editable text (LibreCAD font)** gives words you can click and edit in
-  LibreCAD. Each visible word is delivered as native `TEXT` on the visible,
-  plotting layer `P###_TEXT`, drawn in LibreCAD's own `unicode` LFF font, so the
-  letter shapes differ from the PDF while the string, anchor, cap height,
+  LibreCAD. Supported words are delivered as native `TEXT` on the visible,
+  plotting layer `P###_TEXT`, drawn in a supported LibreCAD LFF font. Letter
+  shapes and stroke weight can differ from the PDF while the string, anchor, cap-height setting,
   rotation and full baseline advance match. LEFT/baseline alignment uses a width
   factor measured from the selected installation's LFF font, including all leading
   and trailing spaces. It avoids LibreCAD's FIT ink-box scaling, which can move
@@ -463,9 +463,9 @@ does not prove visible/editable 3D text in LibreCAD's 2D parent.
   for those words, so the file is also much smaller. The substitution is
   disclosed per item (`parent_native_font_substitution_accepted: true`,
   `visual_verified: false`) and never certified as the PDF's look; the report
-  adds `extra.editable_text` (`chosen`, `item_count`). A word with a character
-  LibreCAD's font lacks steps down to exact outlines for that item only and is
-  listed. The font comes from your LibreCAD installation; when no LibreCAD is
+  adds `extra.editable_text` (`chosen`, `item_count`). Text that cannot be rendered
+  reliably stays as exact outlines for that item only and is listed in the report.
+  The font comes from your LibreCAD installation; when no LibreCAD is
   found, every word comes in as outlines and the report says why. The command
   line offers the same choice as `pdf2dxf.py --editable-text` (with
   `--text-mode text`, the default, or `labels`). Pages made under one choice

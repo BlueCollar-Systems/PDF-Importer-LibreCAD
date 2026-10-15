@@ -85,8 +85,9 @@ That diagnostic used the predecessor before the final evidence-order/diagnostic
 wording correction; its geometry and capsule proof are unchanged. It is not a
 compiled-package or native-render acceptance result.
 
-The exact v1.0.116 package still requires actual desktop import, display, Save As
-and fresh reopen. Other hosts, cross-folder image transport and whole-page pixel
+At the initial source review, the exact v1.0.116 package still required desktop
+import, display, Save As and fresh reopen. The subsequent observations and pen
+failure are recorded below. Other hosts, cross-folder image transport and whole-page pixel
 parity remain separate checks. Guided UI stages retain 1,800 seconds; separate
 native diagnostics keep their hard 60-second deadlines. Private PDFs, their
 contents and local paths are not committed.
@@ -98,3 +99,49 @@ contents and local paths are not committed.
 | Independent capsule/source review | `4714ac34f39cf1dc3398c66e1b1d883f21a5349ce42be18db71e6d5e3b49aa91` |
 | Final independent serialized review | `e571643c917cc6e9b535e6061a0c394d8b21c45eb62b222e1056d095b98bac6a` |
 | Source-only actual-sheet result | `592f39b313bf13572ac5931f09766add73a166ebd3193ff7457f63f4a0a26261` |
+
+The actual default-mode small drawing and foundation drawing subsequently
+completed ordinary GUI conversion, native Save As, normal close, fresh native
+reopening and another Save As. Bounded layout observations passed, including
+foundation markups and its title-block image. Strict saved-data checks still
+failed on native linetype additions or IMAGEDEF owner omissions; those failures
+are retained. One Editable fresh-owner result also failed because the original
+root observation omitted two path fields. The original failed record and a
+separate path correction remain preserved; it was not reclassified as a pass.
+
+## Follow-up candidate: source-bound native pen weight
+
+The actual v1.0.116 small-sheet check retained continuous outline rules and
+bounded native text placement, but native letters and vertical rules remained
+faint. Its native PDF export contains filled pen outlines only about 0.006 pt
+wide. An independent synthetic control reproduced this with native TEXT,
+ordinary LINEs and polylines, with either literal or aliased font names. Explicit
+0.13/0.25 mm lineweights instead exported solid 0.36/0.72 pt strokes. This
+separates the pen-weight failure from both the earlier arc limitation and screen
+capture scaling. Inherited print origin and scale are separate limitations.
+
+The follow-up assigns a positive weight only to explicitly requested visible
+native Editable text. It uses the exact source CFF font's positive StdVW/StdHW
+dominant-stem hints, actual character affine axes and font units, then selects
+the nearest supported positive DXF lineweight. It records both directional
+estimates, the representative maximum and quantization error. These design hints
+approximate weight; they do not certify every source glyph's stem or appearance.
+Missing, ambiguous or unsupported source metrics follow the existing truthful
+glyph fallback with the complete frozen search string. Whitespace, hidden search
+carriers, default outlines and unrelated entity pens keep their existing paths.
+
+The physical serialized TEXT must retain its explicit weight, independently
+recomputed from fresh source bytes and exporter-owned original source frames.
+Historical centerline envelopes remain distinct from a new estimated envelope
+expanded by half the nominal pen weight. Native plotting treats this as a
+physical paper weight rather than multiplying it by text print scale. Neither
+the estimate nor font substitution proves source outer-ink/cap bounds or pixel
+parity. Exact updated-package desktop display, export, Save As and fresh reopen
+remain pending; this source candidate has not been released.
+
+A source-only conversion of the affected sheet completed in 4.094 seconds:
+all 20 visible native text items physically retained lineweight 18 (0.18 mm),
+with 11 Romans and nine Unicode font bindings. The eight connected rules stayed
+as Glyph outlines with their full hidden strings, no items degraded, and the
+original PDF stayed byte-identical. This checks the production conversion and
+serialized pen gate; it does not establish native desktop or plot acceptance.

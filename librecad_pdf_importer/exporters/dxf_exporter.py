@@ -74,6 +74,8 @@ from dxf_text_builder import (
     _glyph_outer_block_structure_fingerprint,
     _positioned_geometry_fingerprint,
     _librecad_native_layout,
+    _source_native_text_lineweight,
+    _resolve_item_font,
     _resolve_librecad_unicode_lff,
     _resolve_librecad_lff,
     _nested_outline_tolerance,
@@ -1621,6 +1623,7 @@ def _verify_serialized_text_deliveries(
     *,
     trusted_positioned_session: _PositionedVerificationSession,
     trusted_control_zero_ink: Optional[Mapping[str, str]] = None,
+    trusted_native_text_sources: Optional[Mapping[str, Tuple[Any, Any]]] = None,
 ) -> None:
     """Reconcile accepted evidence against the candidate and opaque authority.
 
@@ -2126,6 +2129,18 @@ def _verify_serialized_text_deliveries(
                     )
                     is False
                 )
+                if not whitespace_contract:
+                    source = (trusted_native_text_sources or {}).get(source_id)
+                    if source is None:
+                        raise RuntimeError(f"serialized text delivery {source_id}: source-bound native pen authority is missing")
+                    try:
+                        weight = _source_native_text_lineweight(*source)
+                    except _RepresentationImpossible as exc:
+                        raise RuntimeError(f"serialized text delivery {source_id}: source native pen changed: {exc}") from exc
+                    if (not native.dxf.hasattr("lineweight")
+                            or int(native.dxf.lineweight) != weight["native_text_lineweight"]
+                            or any(evidence.get(key) != value for key, value in weight.items())):
+                        raise RuntimeError(f"serialized text delivery {source_id}: source-bound native TEXT lineweight changed")
                 disclosure_ok = bool(
                     evidence.get("parent_native_font_substituted") is True
                     and evidence.get("parent_source_font_equivalence_verified") is False
@@ -4891,6 +4906,7 @@ def _export_to_dxf_impl(
     text_fallbacks: List[Dict[str, Any]] = []
     delivered_text_entity_counts: Dict[str, int] = {}
     text_deliveries: List[Dict[str, Any]] = []
+    native_text_sources: Dict[str, Tuple[Any, Any]] = {}
     positioned_translation_anchors: Dict[str, _PositionedTranslationAnchor] = {}
     original_control_anchors: Dict[str, str] = {}
     seen_text_source_ids: set[str] = set()
@@ -5588,6 +5604,9 @@ def _export_to_dxf_impl(
                         )
                     positioned_translation_anchors[delivery.source_id] = positioned_anchor
                 text_deliveries.append(delivery.to_dict())
+                if (opts.librecad_editable_text and delivery.final_representation == "text"
+                        and str(ti.text).strip()):
+                    native_text_sources[delivery.source_id] = (ti, _resolve_item_font(ti, text_cfg))
                 if delivery.final_representation not in (None, "raster"):
                     # The text builder applies the same ink rule to every
                     # native or outline representation it writes.
@@ -6132,6 +6151,7 @@ def _export_to_dxf_impl(
                 text_deliveries,
                 trusted_positioned_session=trusted_positioned_session,
                 trusted_control_zero_ink=MappingProxyType(original_control_anchors),
+                trusted_native_text_sources=MappingProxyType(native_text_sources),
             )
         except RuntimeError as exc:
             mismatch_rungs = _serialized_mismatch_rungs(exc, text_deliveries)

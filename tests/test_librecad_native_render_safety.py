@@ -85,13 +85,18 @@ def test_exact_embedded_continuous_rules_use_outlines_and_keep_full_search_text(
     stats = engine.convert(str(source), str(output), config=config, resumable=True,
                            editable_text=editable, librecad_executable=str(executable))
     report = json.loads(Path(stats["import_report_path"]).read_text())
-    outlined = not editable or source_kind in {"connected", "courier-capsule"}
+    # Connected source ink rejects native spacing; the remaining fictional
+    # TTF inputs have no admitted positive-pen metric. Neither may silently
+    # remain near-zero-weight visible native TEXT.
+    outlined = True
     assert stats["text_delivery"]["delivered"] == ("glyphs" if outlined else "text")
     assert report["text_items_degraded_total"] == 0
     page_report = json.loads(next((tmp_path / "rule_resume").glob("*import_report.json")).read_text())
     serialized = json.dumps(page_report)
     assert ("exact_source_rectangular_underline_join_v1" in serialized) is (source_kind == "connected")
     assert ("exact_source_capsule_underline_midline_join_v1" in serialized) is (source_kind == "courier-capsule")
+    if editable and source_kind in {"gapped", "nonrectangular"}:
+        assert "source-bound positive CFF pen" in serialized
     physical = ezdxf.readfile(output)
     search, = physical.modelspace().query("TEXT")
     assert search.dxf.text == content
