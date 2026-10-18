@@ -5,6 +5,9 @@ on:
     types:
       - published
   workflow_dispatch:
+  push:
+    branches:
+      - cursor/ubuntu-2604-probe-7aa6
 
 permissions:
   contents: read

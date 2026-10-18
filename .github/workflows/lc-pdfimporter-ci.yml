@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - master
+      - cursor/ubuntu-2604-probe-7aa6
   pull_request:
   workflow_dispatch:
 
