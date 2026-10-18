@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   trigger-website:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: Check dispatch token secret
         id: token_check
