@@ -68,7 +68,6 @@ from dxf_text_builder import (
     TextDeliveryResult,
     _RepresentationImpossible,
     _attempt_degraded_text,
-    _bbox_tuple,
     _glyph_definition_geometry_fingerprint,
     _glyph_instance_transform_fingerprint,
     _glyph_outer_block_structure_fingerprint,
@@ -84,7 +83,7 @@ from dxf_text_builder import (
     _source_id,
     _write_search_text_companion,
     build_text,
-    iter_glyph_outline_entities,
+    glyph_outline_bbox,
     reset_text_styles,
 )
 from conversion_control import (
@@ -2589,12 +2588,9 @@ def _verify_serialized_text_deliveries(
                         f"serialized text delivery {source_id}: "
                         "glyph bbox tolerance evidence changed"
                     )
-                # Outline-only decomposition: bit-identical to filtering
-                # recursive_decompose to LWPOLYLINE/POLYLINE, minus the SOLID fills.
-                serialized_outlines = list(iter_glyph_outline_entities(insert))
-                # _bbox_tuple == ezdxf bbox.extents (exact vertex bbox on plain
-                # LWPOLYLINE outlines, ezdxf otherwise).
-                serialized_box = _bbox_tuple(serialized_outlines)
+                # Same bbox as the exploded outlines. Shared SOLID fills are not
+                # copied once per character; unusual definitions still explode.
+                serialized_box = glyph_outline_bbox(insert)
                 if serialized_box is None:
                     raise RuntimeError(
                         f"serialized text delivery {source_id}: "

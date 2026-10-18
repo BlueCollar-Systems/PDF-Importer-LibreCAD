@@ -42,7 +42,7 @@ from ezdxf.addons import text2path
 from ezdxf.fonts import fonts as ezdxf_fonts
 from ezdxf.lldxf.encoding import has_dxf_unicode
 from ezdxf.lldxf.const import VALID_DXF_LINEWEIGHTS
-from ezdxf.math import Matrix44, bulge_to_arc
+from ezdxf.math import Matrix44, Vec3, bulge_to_arc
 from ezdxf.tools.text import plain_text
 from ezdxf.tools.text_size import text_size
 
@@ -2659,6 +2659,211 @@ def _bbox_tuple(entities: Sequence[Any]) -> Optional[Tuple[float, float, float, 
         float(box.extmax.x),
         float(box.extmax.y),
     )
+
+
+# Sentinel: this INSERT is not the nested-glyph shape the fast bbox understands.
+# Callers then use iter_glyph_outline_entities, which stays the bit-identical path.
+_GLYPH_BBOX_FALLBACK = object()
+_definition_local_cache: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _solid_local_vertices(entity: Any) -> Optional[List[Vec3]]:
+    """OCS vertices in the same order as ``Solid.vertices``, or None if not a flat WCS solid."""
+    try:
+        extrusion = tuple(entity.dxf.get("extrusion", (0.0, 0.0, 1.0)))
+        if tuple(float(value) for value in extrusion) != (0.0, 0.0, 1.0):
+            return None
+        if float(entity.dxf.get("thickness", 0.0) or 0.0) != 0.0:
+            return None
+        if int(entity.dxf.get("invisible", 0) or 0) != 0:
+            return None
+        dxf = entity.dxf
+        vertices = [Vec3(dxf.vtx0), Vec3(dxf.vtx1), Vec3(dxf.vtx2)]
+        if dxf.vtx3 != dxf.vtx2:
+            vertices.append(Vec3(dxf.vtx3))
+            vertices[2], vertices[3] = vertices[3], vertices[2]
+    except Exception:
+        return None
+    return vertices
+
+
+def _plain_lwpolyline_local_points(entity: Any) -> Optional[List[Vec3]]:
+    """Straight WCS LWPOLYLINE vertices, or None when ezdxf's generic bbox would differ."""
+    try:
+        if entity.dxftype() != "LWPOLYLINE" or entity.has_width:
+            return None
+        if float(entity.dxf.get("elevation", 0.0) or 0.0) != 0.0:
+            return None
+        extrusion = tuple(entity.dxf.get("extrusion", (0.0, 0.0, 1.0)))
+        if tuple(float(value) for value in extrusion) != (0.0, 0.0, 1.0):
+            return None
+        points = entity.get_points(format="xyb")
+    except Exception:
+        return None
+    if len(points) < 2:
+        return None
+    local: List[Vec3] = []
+    for x, y, bulge in points:
+        if bulge:
+            return None
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return None
+        local.append(Vec3(x, y, 0.0))
+    return local
+
+
+def _definition_local_geometry(definition: Any) -> Any:
+    """Cached local vertices for one glyph definition.
+
+    ``"empty"`` contributes nothing. ``"fallback"`` is a shape this walker does
+    not reproduce. Otherwise ``("solid"|"lw", (vertex-groups,))``.
+    """
+    cached = _definition_local_cache.get(definition)
+    if cached is not None:
+        return cached
+    entities = list(definition)
+    if not entities:
+        result: Any = "empty"
+    elif any(entity.dxftype() not in ("LWPOLYLINE", "POLYLINE", "SOLID") for entity in entities):
+        result = "fallback"
+    elif any(entity.dxftype() == "POLYLINE" for entity in entities):
+        result = "fallback"
+    elif any(entity.dxftype() in ("LWPOLYLINE", "POLYLINE") for entity in entities):
+        groups = []
+        for entity in entities:
+            if entity.dxftype() != "LWPOLYLINE":
+                continue
+            points = _plain_lwpolyline_local_points(entity)
+            if points is None:
+                result = "fallback"
+                break
+            groups.append(tuple(points))
+        else:
+            result = ("lw", tuple(groups)) if groups else "fallback"
+    else:
+        groups = []
+        for entity in entities:
+            if entity.dxftype() != "SOLID":
+                result = "fallback"
+                break
+            vertices = _solid_local_vertices(entity)
+            if vertices is None:
+                result = "fallback"
+                break
+            groups.append(tuple(vertices))
+        else:
+            result = ("solid", tuple(groups))
+    _definition_local_cache[definition] = result
+    return result
+
+
+def _accumulate_transformed_points(points: Sequence[Vec3], matrix: Matrix44, bounds: List[float]) -> bool:
+    """Grow ``bounds`` by transformed vertices. Solids drop a vertex isclose to the previous one."""
+    if not points:
+        return True
+    transformed = [matrix.transform(point) for point in points]
+    if len(transformed) >= 2 and bounds[4] == 1.0:
+        kept = [transformed[0]]
+        for vertex in transformed[1:]:
+            if not kept[-1].isclose(vertex):
+                kept.append(vertex)
+        transformed = kept
+    min_x, min_y, max_x, max_y, _solid_rule = bounds
+    for vertex in transformed:
+        x, y, z = float(vertex.x), float(vertex.y), float(vertex.z)
+        if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+            return False
+        if x < min_x:
+            min_x = x
+        if x > max_x:
+            max_x = x
+        if y < min_y:
+            min_y = y
+        if y > max_y:
+            max_y = y
+    bounds[0] = min_x
+    bounds[1] = min_y
+    bounds[2] = max_x
+    bounds[3] = max_y
+    return True
+
+
+def _fast_nested_glyph_bbox(block_ref: Any) -> Any:
+    """Bbox of a nested glyph INSERT without copying its definition entities.
+
+    Identical to ``_bbox_tuple(list(iter_glyph_outline_entities(block_ref)))``
+    for the shape this builder writes: an outer INSERT of per-character INSERTs,
+    each pointing at a flat WCS SOLID definition or a straight LWPOLYLINE
+    definition. The placement matrix is ``child.matrix44() @ outer.matrix44()``,
+    which is the matrix of the virtually exploded child. Anything else
+    (mirrors, bulges, heavy POLYLINEs, multi-insert arrays) returns
+    ``_GLYPH_BBOX_FALLBACK`` so the caller keeps ezdxf's copy-and-transform path.
+    """
+    if getattr(block_ref, "dxftype", lambda: "")() != "INSERT" or int(getattr(block_ref, "mcount", 1) or 1) > 1:
+        return _GLYPH_BBOX_FALLBACK
+    try:
+        scale = (
+            float(block_ref.dxf.xscale),
+            float(block_ref.dxf.yscale),
+            float(block_ref.dxf.zscale),
+        )
+    except Exception:
+        return _GLYPH_BBOX_FALLBACK
+    if any(value <= 0.0 for value in scale) or any(
+        not math.isclose(value, scale[0], rel_tol=0.0, abs_tol=1e-12) for value in scale[1:]
+    ):
+        return _GLYPH_BBOX_FALLBACK
+    layout = block_ref.block()
+    if layout is None:
+        return _GLYPH_BBOX_FALLBACK
+    outer = block_ref.matrix44()
+    # min_x, min_y, max_x, max_y, solid_isclose_rule (1) or polyline exact vertices (0)
+    bounds = [math.inf, math.inf, -math.inf, -math.inf, 0.0]
+    saw = False
+    for child in layout:
+        if child.dxftype() != "INSERT" or int(getattr(child, "mcount", 1) or 1) > 1:
+            return _GLYPH_BBOX_FALLBACK
+        try:
+            child_scale = (
+                float(child.dxf.xscale),
+                float(child.dxf.yscale),
+                float(child.dxf.zscale),
+            )
+        except Exception:
+            return _GLYPH_BBOX_FALLBACK
+        if any(value <= 0.0 for value in child_scale):
+            return _GLYPH_BBOX_FALLBACK
+        definition = child.block()
+        if definition is None:
+            return _GLYPH_BBOX_FALLBACK
+        geometry = _definition_local_geometry(definition)
+        if geometry == "empty":
+            continue
+        if geometry == "fallback" or not isinstance(geometry, tuple):
+            return _GLYPH_BBOX_FALLBACK
+        kind, groups = geometry
+        matrix = child.matrix44() @ outer
+        bounds[4] = 1.0 if kind == "solid" else 0.0
+        for group in groups:
+            if not _accumulate_transformed_points(group, matrix, bounds):
+                return _GLYPH_BBOX_FALLBACK
+            saw = True
+    if not saw or bounds[0] > bounds[2] or bounds[1] > bounds[3]:
+        return None
+    return (float(bounds[0]), float(bounds[1]), float(bounds[2]), float(bounds[3]))
+
+
+def glyph_outline_bbox(block_ref: Any) -> Optional[Tuple[float, float, float, float]]:
+    """Bbox used to certify a glyph INSERT, without copying shared fill triangles.
+
+    Same floats as walking ``iter_glyph_outline_entities`` into ``_bbox_tuple``.
+    The fast path only covers nested glyph blocks; every other entity still goes
+    through that walker.
+    """
+    fast = _fast_nested_glyph_bbox(block_ref)
+    if fast is _GLYPH_BBOX_FALLBACK:
+        return _bbox_tuple(list(iter_glyph_outline_entities(block_ref)))
+    return fast
 
 
 def _bbox_matches(
@@ -5424,10 +5629,9 @@ def _commit_outlines(
             _handle(entity) for entity in outlines + fills
         )
     if glyph_geometries:
-        # Outline-only decomposition: bit-identical to filtering recursive_decompose
-        # to LWPOLYLINE/POLYLINE, without transforming the SOLID fills first.
-        resolved_outlines = list(iter_glyph_outline_entities(block_ref))
-        resolved_bbox = _bbox_tuple(resolved_outlines)
+        # Same bbox as filtering the exploded outlines, without copying every
+        # shared SOLID. Unusual definitions still explode through ezdxf.
+        resolved_bbox = glyph_outline_bbox(block_ref)
     else:
         resolved_bbox = None
     actual_bbox = (
