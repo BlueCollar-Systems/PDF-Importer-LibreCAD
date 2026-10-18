@@ -64,6 +64,7 @@ from pdfcadcore.primitive_extractor import (
 from pdfcadcore.primitives import TextCharLayout
 
 from dxf_text_builder import (
+    NATIVE_PEN_SOURCE_LABELS,
     TextDeliveryAttempt,
     TextDeliveryResult,
     _RepresentationImpossible,
@@ -1190,6 +1191,25 @@ def editable_text_item_count(deliveries: Sequence[Any]) -> int:
         ):
             count += 1
     return count
+
+
+def editable_text_pen_sources(deliveries: Sequence[Any]) -> Dict[str, int]:
+    """How many editable words took their approximate pen from which source rule.
+
+    Every visible native Editable TEXT carries one source-bound pen proof; this
+    tallies them by its plain label (for example "pen from TrueType outline
+    stem"), so the report says where each weight came from.
+    """
+
+    tally: Dict[str, int] = {}
+    for item in deliveries or []:
+        if editable_text_item_count([item]) != 1:
+            continue
+        evidence = item["attempts"][-1]["evidence"]
+        rule = str(evidence.get("native_text_source_stem_rule") or "")
+        label = NATIVE_PEN_SOURCE_LABELS.get(rule, f"unrecognized pen rule {rule or '<none>'}")
+        tally[label] = tally.get(label, 0) + 1
+    return dict(sorted(tally.items()))
 
 
 def degraded_text_items(

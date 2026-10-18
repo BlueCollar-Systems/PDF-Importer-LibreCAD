@@ -4,6 +4,19 @@ All notable release changes are recorded here.
 
 ## Unreleased
 
+- Make embedded TrueType notes, such as Arial subsets, editable native text
+  again (a fictional six-note page: 0 of 6 since 1.0.117, 6 of 6 now). Measure
+  the TrueType program's dominant vertical stem from its own glyph outlines:
+  straight stems of reference letters, explicit em bounds, and at least two
+  agreeing glyphs. Report it as "pen from TrueType outline stem", the same
+  disclosed approximation as the CFF hint pen. No default pen is used.
+- Take CID-keyed CFF pens from the font dicts the span's glyphs use; dicts
+  without stem hints or with mismatched units still give no pen. Keep the CFF
+  hint pen and its output unchanged. Italic TrueType, fonts without agreeing
+  stems and fonts the PDF does not embed keep their reported fallback; the
+  report now says when the PDF embeds no font. Count pen sources in
+  `extra.editable_text` and bind the pen rule into resume identity.
+
 ## 1.0.118 - 2026-10-15
 
 - Keep a pipe/space-only span as exact Glyph outlines when its fresh original

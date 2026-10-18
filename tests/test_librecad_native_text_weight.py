@@ -127,9 +127,11 @@ def test_missing_invalid_or_unrepresentable_cff_stems_cannot_create_a_default_pe
         builder._source_native_text_lineweight(item, resolution)
 
 
-def test_exact_truetype_without_cff_stem_hints_remains_unproved(deterministic_exact_font):
+def test_exact_truetype_without_measurable_outline_stems_remains_unproved(deterministic_exact_font):
+    # The fixture's glyphs are solid boxes: no CFF hints and no stem to measure.
     item, resolution = _source(Path(deterministic_exact_font))
-    with pytest.raises(builder._RepresentationImpossible, match="CFF"):
+    with pytest.raises(builder._RepresentationImpossible,
+                       match="source-bound positive TrueType outline pen: .*measurable vertical stem"):
         builder._source_native_text_lineweight(item, resolution)
 
 
@@ -293,9 +295,16 @@ def test_default_glyph_delivery_does_not_restyle_search_carriers(native_fonts, t
     assert any(entity.dxftype() == "SOLID" for block in doc.blocks for entity in block)
 
 
-def test_unproved_truetype_stems_descend_to_exact_glyphs_without_inventing_a_pen(
+def test_truetype_without_measurable_stems_descends_to_exact_glyphs_without_inventing_a_pen(
     native_fonts, deterministic_exact_font, tmp_path,
 ):
+    """A TrueType program whose outlines show no stem keeps exact glyphs.
+
+    The embedded fixture's glyphs are solid boxes, wider than any admitted
+    stem, so no pen is measured and none is invented: the item descends to
+    exact outlines with its full search string, and the report says why.
+    """
+    import json
     import pymupdf
     import dxf_import_engine as engine
     from pdfcadcore.import_config import ImportConfig
@@ -312,11 +321,22 @@ def test_unproved_truetype_stems_descend_to_exact_glyphs_without_inventing_a_pen
     stats = engine.convert(str(source), str(output), config=config, resumable=True,
                            editable_text=True, librecad_executable=str(native_fonts))
     assert stats["text_delivery"]["delivered"] == "glyphs"
+    assert stats["text_delivery"]["editable_text_item_count"] == 0
     doc = ezdxf.readfile(output)
     assert any(entity.dxftype() == "SOLID" for block in doc.blocks for entity in block)
+    assert not doc.modelspace().query("IMAGE")
     for text in doc.modelspace().query("TEXT"):
         assert doc.layers.get(text.dxf.layer).is_frozen()
         assert text.dxf.text == "PAPA"
+        assert not text.dxf.hasattr("lineweight") or text.dxf.lineweight <= 0
+    session = json.loads(Path(stats["import_report_path"]).read_text(encoding="utf-8"))
+    page_report = json.loads(Path(session["page_reports"][0]).read_text(encoding="utf-8"))
+    reasons = [transition["reason_code"] for transition in page_report["extra"]["fallback_transitions"]]
+    assert reasons and all(
+        "source-bound positive TrueType outline pen" in reason
+        and "measurable vertical stem" in reason for reason in reasons)
+    assert page_report["extra"]["editable_text"]["item_count"] == 0
+    assert page_report["extra"]["editable_text"]["pen_sources"] == {}
 
 
 def test_r12_editable_courier_uses_exact_glyphs_and_full_search_without_invalid_pen(

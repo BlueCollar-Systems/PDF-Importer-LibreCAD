@@ -24,6 +24,7 @@
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 import hashlib
 from io import BytesIO
@@ -31,6 +32,7 @@ import math
 import os
 from pathlib import Path
 import re
+import statistics
 import unicodedata
 import weakref
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
@@ -95,6 +97,35 @@ _INSTALLED_FONT_RULE = "installed_face_bound_by_original_source_program_and_char
 _created_styles: Dict[str, str] = {}
 _embedded_cap_height_cache: Dict[str, float] = {}
 _source_cff_stem_cache: Dict[str, Tuple[float, float, float]] = {}
+# Per font-program digest: a CID-keyed CFF's per-font-dict stems and glyph map,
+# or a TrueType program's measured outline stem. A refusal is cached as text.
+_source_cid_stem_cache: Dict[str, Union[Tuple[float, Tuple[Any, ...], Dict[str, int]], str]] = {}
+_source_truetype_stem_cache: Dict[str, Union[Tuple[float, float, Dict[str, Any]], str]] = {}
+# Native Editable TEXT gets a positive pen only from one of these source-bound
+# rules; a font none of them can measure keeps its exact-outline fallback.
+_NATIVE_PEN_RULE_CFF = "cff_private_dominant_stem_max_observed_frame_v1"
+_NATIVE_PEN_RULE_CID = "cff_cid_fdarray_private_dominant_stem_max_observed_frame_v1"
+_NATIVE_PEN_RULE_TRUETYPE = "truetype_outline_dominant_vertical_stem_max_observed_frame_v1"
+NATIVE_PEN_SOURCE_LABELS = {
+    _NATIVE_PEN_RULE_CFF: "pen from CFF dominant-stem hints",
+    _NATIVE_PEN_RULE_CID: "pen from CID CFF font-dict stem hints",
+    _NATIVE_PEN_RULE_TRUETYPE: "pen from TrueType outline stem",
+}
+# A TrueType program carries no stem hints, so its dominant vertical stem is
+# measured from its own glyph outlines. Reference glyphs are Latin designs with
+# a straight vertical stem. "|", "N" and "M" are left out: in a survey of
+# common installed faces their verticals measured down to half the letter stem
+# (Times New Roman "N" and "|"). Bounds and agreement are explicit; anything
+# outside them refuses the pen instead of guessing one.
+_TRUETYPE_STEM_REFERENCE_GLYPHS = "lI1HLTEFPBDRKihmnubdpq"
+_TRUETYPE_STEM_SCANLINE_FRACTIONS = tuple((2 + index) / 20 for index in range(17))
+_TRUETYPE_STEM_MIN_RUN_SCANLINES = 4
+_TRUETYPE_STEM_EDGE_TOLERANCE_EM = 0.002
+_TRUETYPE_STEM_EM_BOUNDS = (0.015, 0.30)
+_TRUETYPE_STEM_AGREEMENT = 0.25
+_TRUETYPE_STEM_MIN_GLYPHS = 2
+_TRUETYPE_STEM_MIN_AGREEING_SHARE = 2 / 3
+_TRUETYPE_CURVE_STEPS = 16
 # ezdxf retains loaded fonts across documents. Keep their original file binding
 # for the same lifetime so a later import cannot pair stale glyphs with new bytes.
 _installed_font_metric_cache: weakref.WeakKeyDictionary[
@@ -1068,6 +1099,26 @@ def installed_font_rule_identity() -> Dict[str, Any]:
     }
 
 
+def native_text_pen_rule_identity() -> Dict[str, Any]:
+    """Which source-bound rules may give Editable native TEXT a positive pen;
+    part of a resume session's identity, so pages made under one pen rule are
+    never assembled with pages made under another."""
+
+    return {
+        "rules": [_NATIVE_PEN_RULE_CFF, _NATIVE_PEN_RULE_CID, _NATIVE_PEN_RULE_TRUETYPE],
+        "default_pen_allowed": False,
+        "truetype_reference_glyphs": _TRUETYPE_STEM_REFERENCE_GLYPHS,
+        "truetype_scanline_fractions": list(_TRUETYPE_STEM_SCANLINE_FRACTIONS),
+        "truetype_min_run_scanlines": _TRUETYPE_STEM_MIN_RUN_SCANLINES,
+        "truetype_edge_tolerance_em": _TRUETYPE_STEM_EDGE_TOLERANCE_EM,
+        "truetype_stem_em_bounds": list(_TRUETYPE_STEM_EM_BOUNDS),
+        "truetype_agreement": _TRUETYPE_STEM_AGREEMENT,
+        "truetype_min_glyphs": _TRUETYPE_STEM_MIN_GLYPHS,
+        "truetype_min_agreeing_share": _TRUETYPE_STEM_MIN_AGREEING_SHARE,
+        "truetype_curve_steps": _TRUETYPE_CURVE_STEPS,
+    }
+
+
 def _font_token(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
 
@@ -1722,17 +1773,321 @@ def _delivery_cap_height(
     return height, ratio
 
 
+def _source_pen_program_label(resolution: _ExactFontResolution) -> str:
+    """Name the font-program kind a pen refusal is about, for the report."""
+    try:
+        with open(resolution.filename, "rb") as handle:
+            tag = handle.read(4)
+    except (OSError, TypeError, ValueError):
+        return "CFF or TrueType outline"
+    if tag == b"OTTO":
+        return "CFF"
+    if tag in (b"\x00\x01\x00\x00", b"true"):
+        return "TrueType outline"
+    return "CFF or TrueType outline"
+
+
+def _cff_dominant_stems(private: Any, label: str) -> Tuple[float, float]:
+    raw = (private.StdVW, private.StdHW)
+    if any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0 for v in raw):
+        raise ValueError(f"{label} dominant stems must be finite and positive")
+    return float(raw[0]), float(raw[1])
+
+
+def _cff_matrix_matches_units(matrix: Sequence[float], units: float) -> bool:
+    return len(matrix) == 6 and all(
+        math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12)
+        for a, b in zip(matrix, (1 / units, 0, 0, 1 / units, 0, 0), strict=True))
+
+
+def _cid_cff_stem_model(top: Any, glyph_order: Sequence[str], units: float):
+    """Per-font-dict StdVW/StdHW of a CID-keyed CFF and its glyph -> dict map.
+
+    A font dict without usable stems, or whose effective FontMatrix is not the
+    font's own units, records why instead of a value; only a span whose glyphs
+    all use usable dicts is refused or admitted on that basis. As in FreeType,
+    a font dict's own FontMatrix is concatenated with the top dict's when the
+    top dict states one, and otherwise replaces the default.
+    """
+    top_matrix = tuple(float(v) for v in top.FontMatrix)
+    top_explicit = "FontMatrix" in getattr(top, "rawDict", {})
+    entries: List[Any] = []
+    for index, font_dict in enumerate(top.FDArray):
+        matrix = top_matrix
+        own = getattr(font_dict, "FontMatrix", None)
+        if own is not None and not top_explicit:
+            matrix = tuple(float(v) for v in own)
+        elif own is not None:
+            a1, b1, c1, d1, e1, f1 = (float(v) for v in own)
+            a2, b2, c2, d2, e2, f2 = top_matrix
+            matrix = (a1 * a2 + b1 * c2, a1 * b2 + b1 * d2, c1 * a2 + d1 * c2,
+                      c1 * b2 + d1 * d2, e1 * a2 + f1 * c2 + e2, e1 * b2 + f1 * d2 + f2)
+        if not _cff_matrix_matches_units(matrix, units):
+            entries.append(f"CID font dict {index} FontMatrix does not match source font units")
+            continue
+        try:
+            entries.append(_cff_dominant_stems(font_dict.Private, f"CID font dict {index}"))
+        except (AttributeError, KeyError, TypeError, ValueError):
+            entries.append(f"CID font dict {index} has no finite positive StdVW/StdHW")
+    select = top.FDSelect
+    return tuple(entries), {name: int(select[gid]) for gid, name in enumerate(glyph_order)}
+
+
+def _flattened_glyph_contours(glyph_set: Any, glyph_name: str) -> List[List[Tuple[float, float]]]:
+    """Closed polylines of one glyph; components decomposed, curves flattened."""
+    from fontTools.pens.basePen import BasePen
+
+    class _FlatteningPen(BasePen):
+        def __init__(self, glyphs):
+            super().__init__(glyphs)
+            self.contours: List[List[Tuple[float, float]]] = []
+            self.current: List[Tuple[float, float]] = []
+
+        def _moveTo(self, point):
+            self.current = [(float(point[0]), float(point[1]))]
+
+        def _lineTo(self, point):
+            self.current.append((float(point[0]), float(point[1])))
+
+        def _curveToOne(self, p1, p2, p3):
+            x0, y0 = self.current[-1]
+            for step in range(1, _TRUETYPE_CURVE_STEPS + 1):
+                t = step / _TRUETYPE_CURVE_STEPS
+                u = 1.0 - t
+                self.current.append((
+                    u ** 3 * x0 + 3 * u * u * t * p1[0] + 3 * u * t * t * p2[0] + t ** 3 * p3[0],
+                    u ** 3 * y0 + 3 * u * u * t * p1[1] + 3 * u * t * t * p2[1] + t ** 3 * p3[1],
+                ))
+
+        def _qCurveToOne(self, p1, p2):
+            x0, y0 = self.current[-1]
+            for step in range(1, _TRUETYPE_CURVE_STEPS + 1):
+                t = step / _TRUETYPE_CURVE_STEPS
+                u = 1.0 - t
+                self.current.append((u * u * x0 + 2 * u * t * p1[0] + t * t * p2[0],
+                                     u * u * y0 + 2 * u * t * p1[1] + t * t * p2[1]))
+
+        def _closePath(self):
+            if len(self.current) > 2:
+                self.contours.append(self.current)
+            self.current = []
+
+        _endPath = _closePath
+
+    pen = _FlatteningPen(glyph_set)
+    glyph_set[glyph_name].draw(pen)
+    return pen.contours
+
+
+def _scanline_ink_intervals(
+    contours: Sequence[Sequence[Tuple[float, float]]], y: float,
+) -> List[Tuple[float, float]]:
+    """Filled x intervals of a horizontal line under TrueType's nonzero rule."""
+    crossings = []
+    for contour in contours:
+        for (x0, y0), (x1, y1) in zip(contour, [*contour[1:], contour[0]], strict=True):
+            if y0 != y1 and min(y0, y1) <= y < max(y0, y1):
+                crossings.append((x0 + (y - y0) * (x1 - x0) / (y1 - y0), 1 if y1 > y0 else -1))
+    crossings.sort()
+    intervals: List[Tuple[float, float]] = []
+    winding, start = 0, 0.0
+    for x, direction in crossings:
+        before, winding = winding, winding + direction
+        if before == 0 and winding != 0:
+            start = x
+        elif before != 0 and winding == 0:
+            if intervals and intervals[-1][1] == start:
+                intervals[-1] = (intervals[-1][0], x)
+            else:
+                intervals.append((start, x))
+    return intervals
+
+
+def _truetype_glyph_vertical_stem(
+    contours: Sequence[Sequence[Tuple[float, float]]], units: float,
+) -> Optional[float]:
+    """Narrowest straight vertical stem of one glyph, in font units, or None.
+
+    Seventeen scanlines cross the glyph's ink from 10% to 90% of its height.
+    A stem is an ink interval whose two edges stay put (within the edge
+    tolerance) on at least four consecutive scanlines, whose straight run is
+    at least as tall as the stem is wide, and whose width lies inside the
+    admitted em bounds. Bars, bowls and slanted strokes do not qualify.
+    """
+    ys = [point[1] for contour in contours for point in contour]
+    if not ys:
+        return None
+    low, height = min(ys), max(ys) - min(ys)
+    if not math.isfinite(height) or height <= 0.0:
+        return None
+    tolerance = max(1.0, _TRUETYPE_STEM_EDGE_TOLERANCE_EM * units)
+    step = height / 20.0
+    rows = [_scanline_ink_intervals(contours, low + fraction * height)
+            for fraction in _TRUETYPE_STEM_SCANLINE_FRACTIONS]
+
+    def matching(row, x0, x1):
+        return next(((a, b) for a, b in row if abs(a - x0) <= tolerance and abs(b - x1) <= tolerance), None)
+
+    narrowest = None
+    for index, row in enumerate(rows):
+        for x0, x1 in row:
+            if index and matching(rows[index - 1], x0, x1) is not None:
+                continue  # inside a run that started on an earlier scanline
+            widths = [x1 - x0]
+            for later in rows[index + 1:]:
+                match = matching(later, x0, x1)
+                if match is None:
+                    break
+                widths.append(match[1] - match[0])
+            if len(widths) < _TRUETYPE_STEM_MIN_RUN_SCANLINES:
+                continue
+            width = math.fsum(widths) / len(widths)
+            low_bound, high_bound = (bound * units for bound in _TRUETYPE_STEM_EM_BOUNDS)
+            if not low_bound <= width <= high_bound or width > (len(widths) - 1) * step:
+                continue
+            narrowest = width if narrowest is None else min(narrowest, width)
+    return narrowest
+
+
+def _truetype_dominant_vertical_stem(program: Any) -> Tuple[float, float, Dict[str, Any]]:
+    """Measure a TrueType program's dominant vertical stem from its outlines.
+
+    Reference glyphs present in the program are measured one by one; at least
+    two must have a stem, and at least two thirds of those (never fewer than
+    two) must agree within 25% of their median. The dominant stem is the
+    median of the agreeing glyphs: like CFF StdVW it represents the font's
+    stems, not every glyph's ink.
+    """
+    units = float(program["head"].unitsPerEm)
+    if not math.isfinite(units) or units <= 0:
+        raise ValueError("source TrueType unitsPerEm is invalid")
+    cmap = program.getBestCmap() or {}
+    glyph_set = program.getGlyphSet()
+    measured: Dict[str, float] = {}
+    no_stem: List[str] = []
+    for character in _TRUETYPE_STEM_REFERENCE_GLYPHS:
+        glyph_name = cmap.get(ord(character))
+        if not glyph_name or glyph_name not in glyph_set:
+            continue
+        width = _truetype_glyph_vertical_stem(_flattened_glyph_contours(glyph_set, glyph_name), units)
+        if width is None:
+            no_stem.append(character)
+        else:
+            measured[character] = width
+    if len(measured) < _TRUETYPE_STEM_MIN_GLYPHS:
+        raise ValueError(
+            f"source TrueType outlines have fewer than {_TRUETYPE_STEM_MIN_GLYPHS} reference "
+            f"glyphs with a measurable vertical stem (measured {sorted(measured)}, "
+            f"no stem {no_stem}, reference {_TRUETYPE_STEM_REFERENCE_GLYPHS!r})")
+    median = statistics.median(measured.values())
+    agreeing = sorted(character for character, width in measured.items()
+                      if abs(width - median) <= _TRUETYPE_STEM_AGREEMENT * median)
+    if (len(agreeing) < _TRUETYPE_STEM_MIN_GLYPHS
+            or len(agreeing) < _TRUETYPE_STEM_MIN_AGREEING_SHARE * len(measured)):
+        raise ValueError(
+            "source TrueType reference glyph stems disagree: " + ", ".join(
+                f"{character}={width / units:.4f} em" for character, width in measured.items()))
+    dominant = statistics.median(measured[character] for character in agreeing)
+    detail = {
+        "method": "nonzero_scanline_straight_vertical_stem_v1",
+        "reference_glyphs": _TRUETYPE_STEM_REFERENCE_GLYPHS,
+        "measured_units": dict(measured),
+        "no_stem_glyphs": no_stem,
+        "agreeing_glyphs": agreeing,
+        "median_units": median,
+        "agreement_tolerance": _TRUETYPE_STEM_AGREEMENT,
+        "scanline_fractions": [_TRUETYPE_STEM_SCANLINE_FRACTIONS[0], _TRUETYPE_STEM_SCANLINE_FRACTIONS[-1],
+                               len(_TRUETYPE_STEM_SCANLINE_FRACTIONS)],
+        "min_run_scanlines": _TRUETYPE_STEM_MIN_RUN_SCANLINES,
+        "edge_tolerance_units": max(1.0, _TRUETYPE_STEM_EDGE_TOLERANCE_EM * units),
+        "stem_em_bounds": list(_TRUETYPE_STEM_EM_BOUNDS),
+        "horizontal_stem_measured": False,
+    }
+    return units, dominant, detail
+
+
+def _source_stem_metrics(
+    payload: bytes, digest: str, glyph_names: Sequence[str], layout: Sequence[TextCharLayout],
+) -> Tuple[str, float, float, Optional[float], Dict[str, Any]]:
+    """Dominant stems of the bound font program, by the rule its kind admits.
+
+    Returns ``(rule, units, vertical, horizontal, extra)``. Name-keyed CFF
+    reads Private StdVW/StdHW exactly as before; CID-keyed CFF reads them from
+    the font dicts this span's glyphs select; TrueType measures its outlines.
+    """
+    from fontTools.ttLib import TTFont
+
+    metrics = _source_cff_stem_cache.get(digest)
+    if metrics is not None:
+        return (_NATIVE_PEN_RULE_CFF, *metrics, {})
+    cid = _source_cid_stem_cache.get(digest)
+    truetype = _source_truetype_stem_cache.get(digest)
+    if cid is None and truetype is None:
+        with TTFont(BytesIO(payload), lazy=False, recalcTimestamp=False) as program:
+            units = float(program["head"].unitsPerEm)
+            if "CFF " in program:
+                if not math.isfinite(units) or units <= 0:
+                    raise ValueError("source has no usable CFF dominant-stem metric")
+                tops = program["CFF "].cff.topDictIndex
+                if len(tops) != 1:
+                    raise ValueError("ambiguous CFF font dictionary")
+                top = tops[0]
+                if hasattr(top, "FDArray"):
+                    cid = _cid_cff_stem_model(top, program.getGlyphOrder(), units)
+                    cid = (units, *cid)
+                else:
+                    matrix = tuple(float(v) for v in top.FontMatrix)
+                    if not _cff_matrix_matches_units(matrix, units):
+                        raise ValueError("CFF FontMatrix does not match source font units")
+                    metrics = (units, *_cff_dominant_stems(top.Private, "CFF"))
+            elif "glyf" in program:
+                try:
+                    truetype = _truetype_dominant_vertical_stem(program)
+                except ValueError as exc:
+                    truetype = str(exc)
+            else:
+                raise ValueError("source has no usable CFF dominant-stem metric or TrueType outlines")
+        # Only parsed scalars and measurements are cached, keyed by freshly checked bytes.
+        for cache, value in ((_source_cff_stem_cache, metrics), (_source_cid_stem_cache, cid),
+                             (_source_truetype_stem_cache, truetype)):
+            if value is not None:
+                if len(cache) >= 128:
+                    cache.clear()
+                cache[digest] = value
+        if metrics is not None:
+            return (_NATIVE_PEN_RULE_CFF, *metrics, {})
+    if truetype is not None:
+        if isinstance(truetype, str):
+            raise ValueError(truetype)
+        units, vertical, detail = truetype
+        return _NATIVE_PEN_RULE_TRUETYPE, units, vertical, None, {"detail": deepcopy(detail)}
+    units, entries, font_dict_of = cid
+    used = sorted({font_dict_of[name] for name, character in zip(glyph_names, layout, strict=True)
+                   if character.text != " "})
+    stems = []
+    for index in used:
+        if isinstance(entries[index], str):
+            raise ValueError(entries[index])
+        stems.append(entries[index])
+    if not stems or len(set(stems)) != 1:
+        raise ValueError(f"CID font dicts {used} used by this span disagree on dominant stems")
+    return (_NATIVE_PEN_RULE_CID, units, stems[0][0], stems[0][1], {"font_dicts": used})
+
+
 def _source_native_text_lineweight(
     text_item: NormalizedText,
     resolution: _ExactFontResolution,
 ) -> Dict[str, Any]:
-    """Approximate one native pen from source CFF dominant-stem design hints.
+    """Approximate one native pen from the bound source font's dominant stems.
 
-    StdVW/StdHW describe representative stems, not every glyph's ink. The
-    chosen uniform DXF pen and its quantization error remain disclosed; this
-    proves neither source-font equivalence nor matching outer ink/cap bounds.
+    CFF StdVW/StdHW (name-keyed, or from the CID font dicts this span uses)
+    and a TrueType program's outline-measured vertical stem describe
+    representative stems, not every glyph's ink. The chosen uniform DXF pen
+    and its quantization error remain disclosed; this proves neither
+    source-font equivalence nor matching outer ink/cap bounds. A font program
+    none of these rules can measure gets no pen, never a default one.
     """
-    from fontTools.ttLib import TTFont, TTLibError
+    from fontTools.ttLib import TTLibError
 
     try:
         content = str(text_item.text)
@@ -1744,33 +2099,8 @@ def _source_native_text_lineweight(
         digest = hashlib.sha256(payload).hexdigest()
         if digest != resolution.asset_sha256:
             raise ValueError("source font bytes changed")
-        _positioned_source_glyph_names(layout, resolution)
-        metrics = _source_cff_stem_cache.get(digest)
-        if metrics is None:
-            with TTFont(BytesIO(payload), lazy=False, recalcTimestamp=False) as program:
-                units = float(program["head"].unitsPerEm)
-                if not math.isfinite(units) or units <= 0 or "CFF " not in program:
-                    raise ValueError("source has no usable CFF dominant-stem metric")
-                tops = program["CFF "].cff.topDictIndex
-                if len(tops) != 1:
-                    raise ValueError("ambiguous CFF font dictionary")
-                top = tops[0]
-                if hasattr(top, "FDArray"):
-                    raise ValueError("CID per-glyph stem dictionaries are not supported")
-                matrix = tuple(float(v) for v in top.FontMatrix)
-                if len(matrix) != 6 or not all(math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12)
-                        for a, b in zip(matrix, (1 / units, 0, 0, 1 / units, 0, 0), strict=True)):
-                    raise ValueError("CFF FontMatrix does not match source font units")
-                private = top.Private
-                raw = (private.StdVW, private.StdHW)
-                if any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0 for v in raw):
-                    raise ValueError("CFF dominant stems must be finite and positive")
-                metrics = units, float(raw[0]), float(raw[1])
-            # Only parsed scalars are cached, keyed by freshly checked bytes.
-            if len(_source_cff_stem_cache) >= 128:
-                _source_cff_stem_cache.clear()
-            _source_cff_stem_cache[digest] = metrics
-        units, vertical, horizontal = metrics
+        glyph_names = _positioned_source_glyph_names(layout, resolution)
+        rule, units, vertical, horizontal, extra = _source_stem_metrics(payload, digest, glyph_names, layout)
         choices = tuple(value for value in VALID_DXF_LINEWEIGHTS if value > 0)
         stems, selected, first_axes = [], [], None
         nominal = _positive_finite(text_item.font_size)
@@ -1792,7 +2122,11 @@ def _source_native_text_lineweight(
                     for old, new in zip(first_axes, (x_axis, y_axis), strict=True)
                     for a, b in zip(old, new, strict=True)):
                 raise ValueError("source characters do not share a native pen frame")
-            values = vertical * nx / units, horizontal * ny / units
+            if horizontal is None:
+                # A vertical stem's width runs along the character's x axis.
+                values = (vertical * nx / units,)
+            else:
+                values = vertical * nx / units, horizontal * ny / units
             representative = max(values)
             if not min(choices) / 100 <= representative <= max(choices) / 100:
                 raise ValueError("source stem is outside positive DXF pen widths")
@@ -1802,14 +2136,25 @@ def _source_native_text_lineweight(
             raise ValueError("source characters do not agree on one supported native pen")
         measured = max(max(pair) for pair in stems)
         code = selected[0]
-        return {
-            "native_text_source_stem_rule": "cff_private_dominant_stem_max_observed_frame_v1",
+        proof: Dict[str, Any] = {"native_text_source_stem_rule": rule}
+        if rule != _NATIVE_PEN_RULE_CFF:
+            proof["native_text_source_stem_pen_source"] = NATIVE_PEN_SOURCE_LABELS[rule]
+        proof.update({
             "native_text_source_stem_font_sha256": digest,
             "native_text_source_stem_units_per_em": units,
-            "native_text_source_stem_StdVW": vertical,
-            "native_text_source_stem_StdHW": horizontal,
+        })
+        if rule == _NATIVE_PEN_RULE_TRUETYPE:
+            proof["native_text_source_stem_outline_vertical"] = vertical
+            proof["native_text_source_stem_outline"] = extra["detail"]
+        else:
+            proof["native_text_source_stem_StdVW"] = vertical
+            proof["native_text_source_stem_StdHW"] = horizontal
+            if rule == _NATIVE_PEN_RULE_CID:
+                proof["native_text_source_stem_cid_font_dicts"] = extra["font_dicts"]
+        proof.update({
             "native_text_source_stem_widths_mm": {
-                "vertical": max(v[0] for v in stems), "horizontal": max(v[1] for v in stems)},
+                "vertical": max(v[0] for v in stems),
+                "horizontal": None if horizontal is None else max(v[1] for v in stems)},
             "native_text_source_stem_width_mm": measured,
             "native_text_source_stem_frames_checked": len(stems),
             "native_text_source_stem_approximation": True,
@@ -1819,9 +2164,14 @@ def _source_native_text_lineweight(
             "native_text_lineweight_source_verified": True,
             "native_text_weight_source_ink_parity_verified": False,
             "native_text_lineweight_plot_semantics": "nominal DXF millimetres; physical paper weight is not multiplied by text print scale",
-        }
+        })
+        return proof
     except (AttributeError, KeyError, OSError, TypeError, ValueError, TTLibError) as exc:
-        raise _RepresentationImpossible(f"native text has no source-bound positive CFF pen: {exc}") from exc
+        reason = f"native text has no source-bound positive {_source_pen_program_label(resolution)} pen: {exc}"
+        if resolution.resolution_source == "installed_exact_font" and resolution.pdf_font_failure_reason:
+            reason += ("; the PDF does not embed this font, so an installed copy "
+                       "cannot bind a source pen")
+        raise _RepresentationImpossible(reason) from exc
 
 
 _OUTLINE_ENGINE_FONT_DIRS: set = set()
@@ -6456,6 +6806,8 @@ def reset_text_styles() -> None:
     _created_styles.clear()
     _embedded_cap_height_cache.clear()
     _source_cff_stem_cache.clear()
+    _source_cid_stem_cache.clear()
+    _source_truetype_stem_cache.clear()
     _staged_font_verification_cache.clear()
     _glyph_block_cache.clear()
     _canonical_glyph_path_cache.clear()

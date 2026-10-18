@@ -265,8 +265,9 @@ python pdf2dxf.py drawing.pdf output.dxf --resume --verbose
 ```
 
 Resume identity includes the exact PDF bytes, every import option, importer
-version, conversion-engine bytes, and the resolved LibreCAD executable and LFF
-font binding (canonical path, size, and fresh SHA-256). A mismatch is rejected
+version, conversion-engine bytes, the Editable native text pen rule, and the
+resolved LibreCAD executable and LFF font binding (canonical path, size, and
+fresh SHA-256). A mismatch is rejected
 rather than mixed with prior work. The GUI enables the same page-safe behavior automatically and
 provides a responsive **Cancel** button; the active partial page is discarded,
 while every already-certified page remains available to **Convert / Resume**.
@@ -473,14 +474,23 @@ does not prove visible/editable 3D text in LibreCAD's 2D parent.
   for those words, so the file is also much smaller. The substitution is
   disclosed per item (`parent_native_font_substitution_accepted: true`,
   `visual_verified: false`) and never certified as the PDF's look; the report
-  adds `extra.editable_text` (`chosen`, `item_count`). Text that cannot be rendered
+  adds `extra.editable_text` (`chosen`, `item_count`, and `pen_sources`, which
+  counts where each word's pen came from). Text that cannot be rendered
   reliably stays as exact outlines for that item only and is listed in the report.
-  Visible native text currently also requires source-bound positive CFF
-  `StdVW`/`StdHW` stem metrics; ordinary TrueType outlines and unsupported
-  CID-keyed CFF metrics do not meet that check and follow the reported fallback
-  ladder, normally to exact outlines and then to an item image if necessary.
-  This is a current source-pen qualification limit, not proof that LibreCAD
-  cannot draw those fonts. Missing proof never supplies an arbitrary default pen.
+  Visible native text also needs a positive pen bound to the PDF's own font
+  program. A CFF font gives it through its `StdVW`/`StdHW` stem hints; a
+  CID-keyed CFF font uses the hints of the font dicts that span's glyphs use.
+  An embedded TrueType font, such as an Arial subset, has no hints, so its
+  dominant vertical stem is measured from its own glyph outlines ("pen from
+  TrueType outline stem"). Only straight stems of reference letters such as
+  `l I 1 H E T P` count. Each must lie between 0.015 and 0.30 em, and at least
+  two glyphs must agree. Every such pen approximates the font's stems; it is
+  not a glyph or pixel match. A font with no measurable stem (italic TrueType,
+  for example), CID dicts without stem hints, and a font the PDF does not embed
+  follow the reported fallback ladder. That normally means exact outlines, or an
+  item image when the PDF embeds no font program. Missing proof never supplies
+  an arbitrary default pen. See
+  [TrueType and CID native pens](docs/validation/2026-10-18-truetype-native-pen.md).
   R12 cannot retain the required positive native TEXT lineweight and also uses
   the fallback. Fallback items retain their representable source strings on
   `P###_TEXT_SEARCH`; any missing or unrepresentable carrier is reported.
