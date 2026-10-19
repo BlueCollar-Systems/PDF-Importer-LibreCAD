@@ -716,16 +716,28 @@ def write_import_report(
     if getattr(run.config, "_librecad_editable_text", False):
         # The operator chose "Editable text (LibreCAD font)": say how many
         # words came in editable and that their letter shapes are LibreCAD's.
-        from .exporters.dxf_exporter import editable_text_item_count
+        from .exporters.dxf_exporter import (
+            editable_text_item_count,
+            editable_text_pen_sources,
+        )
 
         extra["editable_text"] = {
             "chosen": True,
             "item_count": editable_text_item_count(text_representation_deliveries),
-            "font": "LibreCAD unicode",
+            "font": "LibreCAD native LFF",
+            # Where each editable word's approximate pen weight came from.
+            "pen_sources": editable_text_pen_sources(text_representation_deliveries),
             "note": (
-                "Words were delivered as editable text in LibreCAD's own font, so "
-                "letter shapes differ from the PDF. Characters that font lacks came "
-                "in as outlines and are listed per item."
+                "Words delivered as editable text use LibreCAD's own font, so "
+                "letter shapes differ from the PDF; their pen weight approximates the "
+                "stems of the font program the PDF text uses (see pen_sources). Any other word "
+                "came in as outlines or a picture, for example when the font lacks "
+                "a character, is a symbol font recognized by its name or by its own "
+                "OS/2 table (GD&T, Symbol, Wingdings, pi fonts), or has no stem the "
+                "importer can measure, and is listed per item with the reason. A "
+                "symbol font that neither has a known name nor marks itself in "
+                "OS/2 (some PDF printers strip that table) is not recognized: check "
+                "symbol callouts that came in as editable text."
             ),
         }
     if glyph_code_delivery["spans_examined"]:

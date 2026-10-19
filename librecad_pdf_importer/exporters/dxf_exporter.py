@@ -64,11 +64,11 @@ from pdfcadcore.primitive_extractor import (
 from pdfcadcore.primitives import TextCharLayout
 
 from dxf_text_builder import (
+    NATIVE_PEN_SOURCE_LABELS,
     TextDeliveryAttempt,
     TextDeliveryResult,
     _RepresentationImpossible,
     _attempt_degraded_text,
-    _bbox_tuple,
     _glyph_definition_geometry_fingerprint,
     _glyph_instance_transform_fingerprint,
     _glyph_outer_block_structure_fingerprint,
@@ -84,7 +84,7 @@ from dxf_text_builder import (
     _source_id,
     _write_search_text_companion,
     build_text,
-    iter_glyph_outline_entities,
+    glyph_outline_bbox,
     reset_text_styles,
 )
 from conversion_control import (
@@ -1190,6 +1190,25 @@ def editable_text_item_count(deliveries: Sequence[Any]) -> int:
         ):
             count += 1
     return count
+
+
+def editable_text_pen_sources(deliveries: Sequence[Any]) -> Dict[str, int]:
+    """How many editable words took their approximate pen from which source rule.
+
+    Every visible native Editable TEXT carries one source-bound pen proof; this
+    tallies them by its plain label (for example "pen from TrueType outline
+    stem"), so the report says where each weight came from.
+    """
+
+    tally: Dict[str, int] = {}
+    for item in deliveries or []:
+        if editable_text_item_count([item]) != 1:
+            continue
+        evidence = item["attempts"][-1]["evidence"]
+        rule = str(evidence.get("native_text_source_stem_rule") or "")
+        label = NATIVE_PEN_SOURCE_LABELS.get(rule, f"unrecognized pen rule {rule or '<none>'}")
+        tally[label] = tally.get(label, 0) + 1
+    return dict(sorted(tally.items()))
 
 
 def degraded_text_items(
@@ -2589,12 +2608,9 @@ def _verify_serialized_text_deliveries(
                         f"serialized text delivery {source_id}: "
                         "glyph bbox tolerance evidence changed"
                     )
-                # Outline-only decomposition: bit-identical to filtering
-                # recursive_decompose to LWPOLYLINE/POLYLINE, minus the SOLID fills.
-                serialized_outlines = list(iter_glyph_outline_entities(insert))
-                # _bbox_tuple == ezdxf bbox.extents (exact vertex bbox on plain
-                # LWPOLYLINE outlines, ezdxf otherwise).
-                serialized_box = _bbox_tuple(serialized_outlines)
+                # Same bbox as the exploded outlines. Shared SOLID fills are not
+                # copied once per character; unusual definitions still explode.
+                serialized_box = glyph_outline_bbox(insert)
                 if serialized_box is None:
                     raise RuntimeError(
                         f"serialized text delivery {source_id}: "
