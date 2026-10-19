@@ -79,16 +79,26 @@ def _glyph(char, stem, slant):
 
 
 def _truetype(path: Path, *, glyphs=ARIAL_LIKE_GLYPHS, stem=ARIAL_LIKE_STEM, stems=None,
-              italic_angle=0.0, units=1000):
-    """Build a fictional Arial-like TrueType program with real glyf outlines."""
+              italic_angle=0.0, units=1000, family="Fictional Stem Sans", extra_glyphs=0):
+    """Build a fictional Arial-like TrueType program with real glyf outlines.
+
+    ``extra_glyphs`` adds unmapped box glyphs, standing in for the bulk of a
+    large fully embedded program that the stem rule must never decompile.
+    """
+    ps_name = family.replace(" ", "")
     slant = math.tan(math.radians(-italic_angle))
-    order = [".notdef", "space", *(f"g{ord(char):04X}" for char in glyphs)]
+    extra = [f"extra{index:05d}" for index in range(extra_glyphs)]
+    order = [".notdef", "space", *(f"g{ord(char):04X}" for char in glyphs), *extra]
     cmap = {32: "space", **{ord(char): f"g{ord(char):04X}" for char in glyphs}}
     notdef = TTGlyphPen(None)
     _rect(notdef, 50, 0, 450, 700)
     outlines = {".notdef": notdef.glyph(), "space": TTGlyphPen(None).glyph()}
     for char in glyphs:
         outlines[f"g{ord(char):04X}"] = _glyph(char, (stems or {}).get(char, stem), slant)
+    for name in extra:
+        box = TTGlyphPen(None)
+        _rect(box, 100, 0, 500, 600)
+        outlines[name] = box.glyph()
     font = FontBuilder(units, isTTF=True)
     font.setupGlyphOrder(order)
     font.setupCharacterMap(cmap)
@@ -97,9 +107,9 @@ def _truetype(path: Path, *, glyphs=ARIAL_LIKE_GLYPHS, stem=ARIAL_LIKE_STEM, ste
     font.setupHorizontalHeader(ascent=800, descent=-200)
     font.setupOS2(sTypoAscender=800, sTypoDescender=-200, usWinAscent=800,
                   usWinDescent=200, sxHeight=500, sCapHeight=700)
-    font.setupNameTable({"familyName": "Fictional Stem Sans", "styleName": "Regular",
-                         "uniqueFontIdentifier": "FictionalStemSans-" + path.stem,
-                         "fullName": "Fictional Stem Sans", "psName": "FictionalStemSans"})
+    font.setupNameTable({"familyName": family, "styleName": "Regular",
+                         "uniqueFontIdentifier": f"{ps_name}-{path.stem}",
+                         "fullName": family, "psName": ps_name})
     font.setupPost(italicAngle=italic_angle)
     font.setupMaxp()
     font.font.recalcTimestamp = False
@@ -492,3 +502,140 @@ def test_editable_words_report_their_cff_pen_source(native_fonts, tmp_path):
     assert stats["text_delivery"]["delivered"] == "text"
     assert _page_report(stats)["extra"]["editable_text"]["pen_sources"] == {
         "pen from CFF dominant-stem hints": 1}
+
+
+@pytest.mark.parametrize("name,marker", [
+    ("TTFZQP+AMGDT Regular", "gdt"),
+    ("AIGDT", "gdt"),
+    ("GDT", "gdt"),
+    ("SWGDT", "gdt"),
+    ("Amgdt_IV25", "gdt"),
+    ("gdt_IV50", "gdt"),
+    ("Symath", "symath"),
+    ("symath_IV25", "symath"),
+    ("SWMath", "swmath"),
+    ("MT Extra", "mtextra"),
+    ("UniversalMath1 BT", "universalmath"),
+    ("Marlett", "marlett"),
+    ("SymbolMT", "symbol"),
+    ("Wingdings-Regular", "wingding"),
+])
+def test_cad_symbol_font_names_are_symbolic(name, marker):
+    # GD&T and math fonts draw symbols at letter codes ("n" is a diameter
+    # sign) and keep ordinary capitals, so their stems alone prove nothing.
+    item = builder.NormalizedText(id=1, text="n0.50 THRU", normalized="N0.50 THRU", font_name=name)
+    evidence = builder._source_font_symbol_evidence(item)
+    assert evidence == {
+        "source_font_symbolic": True,
+        "source_font_symbol_marker": marker,
+        "source_font_symbol_name": name,
+        "source_font_symbol_name_origin": "pdf_font_name",
+    }
+
+
+@pytest.mark.parametrize("name", [
+    "Arial", "ArialMT", "PECJEM+Arial Regular", "Times New Roman", "Courier New", "Cambria Math",
+    "ISOCPEUR", "Segoe UI", "Fictional Stem Sans", "Calibri Light", "",
+])
+def test_letter_font_names_are_not_symbolic(name):
+    item = builder.NormalizedText(id=1, text="NOTE", normalized="NOTE", font_name=name)
+    assert builder._source_font_symbol_evidence(item) is None
+
+
+def test_bound_program_name_marks_a_renamed_cad_symbol_font(tmp_path):
+    # The PDF calls the font "F1", but the embedded program names itself a
+    # GD&T font. Its capitals agree on a stem, so the stem rule alone would
+    # admit a pen: only the symbol-font check keeps the span out of TEXT.
+    path = _truetype(tmp_path / "renamed-gdt.ttf", family="Fictional GDT")
+    item, resolution = _source(path, text="HEP")
+    item = replace(item, font_name="F1")
+    resolution = replace(resolution, source_name="F1", family="F1")
+    assert builder._source_native_text_lineweight(item, resolution)["native_text_lineweight"] == 30
+    evidence = builder._source_font_symbol_evidence(item, resolution)
+    assert evidence["source_font_symbol_marker"] == "gdt"
+    assert evidence["source_font_symbol_name_origin"] == "font_program_name_table"
+    assert evidence["source_font_symbol_name"] in {"Fictional GDT", "FictionalGDT"}
+    # A program whose bytes changed proves nothing; the PDF's name decides.
+    path.write_bytes(path.read_bytes() + b"changed")
+    builder.reset_text_styles()
+    assert builder._source_font_symbol_evidence(item, resolution) is None
+
+
+def test_letter_program_names_do_not_mark_a_font_symbolic(tmp_path):
+    path = _truetype(tmp_path / "letters.ttf")
+    item, resolution = _source(path, text="HEP")
+    assert builder._source_font_symbol_evidence(item, resolution) is None
+
+
+def test_truetype_measurement_decompiles_only_reference_glyphs(tmp_path, monkeypatch):
+    # A large fully embedded program must not be expanded glyph by glyph:
+    # the stem rule draws only the reference letters it finds.
+    from fontTools.ttLib.tables import _g_l_y_f
+
+    path = _truetype(tmp_path / "large.ttf", extra_glyphs=3000)
+    item, resolution = _source(path, text="HEP")
+    expanded = []
+    original_expand = _g_l_y_f.Glyph.expand
+
+    def counting_expand(self, glyf_table):
+        if hasattr(self, "data"):
+            expanded.append(self)
+        return original_expand(self, glyf_table)
+
+    monkeypatch.setattr(_g_l_y_f.Glyph, "expand", counting_expand)
+    proof = builder._source_native_text_lineweight(item, resolution)
+    assert proof["native_text_lineweight"] == 30
+    assert sorted(proof["native_text_source_stem_outline"]["measured_units"]) == sorted("lI1HETP")
+    # Reference glyphs, plus the few the exact binding and cmap checks touch;
+    # never the 3000 unmapped ones.
+    assert len(expanded) < 40
+
+
+def test_cad_symbol_truetype_words_keep_exact_glyphs_in_editable_text(native_fonts, tmp_path):
+    """A GD&T font's words never become LibreCAD-font TEXT, whatever their stems.
+
+    The letter font on the same page still becomes editable native TEXT, so
+    the refusal is per span, reported, and keeps the searchable source string.
+    """
+    import ezdxf
+    import pymupdf
+    import dxf_import_engine as engine
+    from pdfcadcore.import_config import ImportConfig
+
+    symbol_font = _truetype(tmp_path / "fictional-gdt.ttf", family="Fictional GDT")
+    letter_font = _truetype(tmp_path / "fictional-letters.ttf")
+    source = tmp_path / "fictional-gdt-callout.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=500, height=300)
+        page.insert_font(fontname="SymTT", fontfile=str(symbol_font))
+        page.insert_font(fontname="StemTT", fontfile=str(letter_font))
+        page.insert_text((72, 90), "HAP PA", fontname="SymTT", fontsize=12)
+        page.insert_text((72, 190), "PA HAP", fontname="StemTT", fontsize=12)
+        pdf.subset_fonts()
+        pdf.save(source)
+    config = ImportConfig.auto()
+    config.text_mode = "text"
+    output = tmp_path / "gdt.dxf"
+    stats = engine.convert(str(source), str(output), config=config, resumable=True,
+                           editable_text=True, librecad_executable=str(native_fonts))
+    assert stats["text_delivery"]["editable_text_item_count"] == 1
+    doc = ezdxf.readfile(output)
+    texts = list(doc.modelspace().query("TEXT"))
+    visible = [t for t in texts if not doc.layers.get(t.dxf.layer).is_frozen()]
+    assert [t.dxf.text for t in visible] == ["PA HAP"]
+    assert "HAP PA" in [t.dxf.text for t in texts if t not in visible]
+    assert doc.modelspace().query("INSERT")
+    report = _page_report(stats)
+    assert report["extra"]["editable_text"]["pen_sources"] == {"pen from TrueType outline stem": 1}
+    items = report["extra"]["text_representation_delivery"]["items"]
+    symbol_item, = [i for i in items if any(
+        a.get("evidence", {}).get("source_font_symbolic") for a in i.get("attempts", []))]
+    assert symbol_item["final_representation"] == "glyphs"
+    text_attempt, = [a for a in symbol_item["attempts"] if a.get("attempted_representation") == "text"]
+    evidence = text_attempt["evidence"]
+    assert evidence["source_font_symbol_marker"] == "gdt"
+    assert evidence["source_font_symbol_name_origin"] == "pdf_font_name"
+    assert text_attempt["outcome"] != "delivered"
+    # No pen is measured for a span that cannot be LibreCAD-font TEXT.
+    assert "native_text_source_stem_rule" not in evidence
+    assert evidence.get("parent_native_font_substitution_accepted") is not True

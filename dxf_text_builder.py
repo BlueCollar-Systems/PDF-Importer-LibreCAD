@@ -73,11 +73,106 @@ _SYMBOL_FONT_MARKERS = (
     "esri",
     "glyphicon",
 )
+# CAD symbol fonts draw ordinary capitals at some codes and GD&T, math, Greek,
+# astronomy, map, weather or music symbols at others ("n" is a diameter sign
+# in the GD&T fonts). Their capitals have measurable stems, so only the font's
+# name keeps those words out of LibreCAD's font. These markers are matched on
+# the name with spaces and punctuation removed.
+_CAD_SYMBOL_FONT_MARKERS = (
+    "gdt",  # AMGDT, AIGDT, GDT, SWGDT and the Inventor *_IV25/*_IV50 variants
+    "symath",
+    "swmath",
+    "syastro",
+    "swastro",
+    "symap",
+    "swmap",
+    "symeteo",
+    "swmeteo",
+    "symusic",
+    "swmusic",
+    "swgrek",
+    "greekc",
+    "greeks",
+    "mtextra",
+    "universalmath",
+    "marlett",
+)
+# Family, full and PostScript names of a bound program, per program digest.
+_source_program_name_cache: Dict[str, Tuple[str, ...]] = {}
 
 
-def _source_font_is_symbolic(text_item: NormalizedText) -> bool:
-    name = str(getattr(text_item, "font_name", "") or "").casefold()
-    return any(marker in name for marker in _SYMBOL_FONT_MARKERS)
+def _symbol_font_marker(name: Any) -> Optional[str]:
+    folded = str(name or "").casefold()
+    marker = next((m for m in _SYMBOL_FONT_MARKERS if m in folded), None)
+    if marker is None:
+        compact = re.sub(r"[^a-z0-9]+", "", folded)
+        marker = next((m for m in _CAD_SYMBOL_FONT_MARKERS if m in compact), None)
+    return marker
+
+
+def _bound_program_names(resolution: Any) -> Tuple[str, ...]:
+    """Names the bound font program gives itself (name IDs 1, 4, 6 and 16).
+
+    A producer may rename a font in the PDF; the embedded program usually
+    keeps its own name. Unreadable or changed bytes give no names, so the
+    PDF's font name alone decides, as before.
+    """
+    digest = str(getattr(resolution, "asset_sha256", "") or "")
+    filename = str(getattr(resolution, "filename", "") or "")
+    if not getattr(resolution, "exact", False) or not digest or not filename:
+        return ()
+    cached = _source_program_name_cache.get(digest)
+    if cached is not None:
+        return cached
+    try:
+        from fontTools.ttLib import TTFont
+
+        payload = Path(filename).read_bytes()
+        if hashlib.sha256(payload).hexdigest() != digest:
+            return ()
+        with TTFont(BytesIO(payload), lazy=True, recalcTimestamp=False) as program:
+            records = program["name"].names if "name" in program else ()
+            names = tuple(sorted({
+                str(record.toUnicode()) for record in records if record.nameID in (1, 4, 6, 16)
+            }))
+    except Exception:  # an unreadable name table proves nothing either way
+        return ()
+    if len(_source_program_name_cache) >= 128:
+        _source_program_name_cache.clear()
+    _source_program_name_cache[digest] = names
+    return names
+
+
+def _source_font_symbol_evidence(
+    text_item: NormalizedText, resolution: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """Why this span's font draws symbols rather than letters, or None.
+
+    The PDF's font names are checked first, then the bound program's own
+    name table. A match keeps the span out of LibreCAD's font: unicode.lff
+    would draw the character code, not the symbol the source shows.
+    """
+    def candidates():
+        yield "pdf_font_name", getattr(text_item, "font_name", "")
+        if resolution is not None:
+            yield "pdf_base_font_name", getattr(resolution, "family", "")
+            yield "pdf_span_font_name", getattr(resolution, "asset_span_font_name", "")
+            # Read only when no PDF name already decides.
+            for program_name in _bound_program_names(resolution):
+                yield "font_program_name_table", program_name
+
+    for origin, name in candidates():
+        marker = _symbol_font_marker(name)
+        if marker is not None:
+            return {
+                "source_font_symbolic": True,
+                "source_font_symbol_marker": marker,
+                "source_font_symbol_name": str(name),
+                "source_font_symbol_name_origin": origin,
+            }
+    return None
+
+
 _POSITIONED_FRACTION_RE = re.compile(r"^[0-9]+/[0-9]+$")
 # E2's recovered float32 quads reach 1.45e-5 angular noise. Bound that
 # dimensionless error independently of drawing units; retain original quads.
@@ -2023,9 +2118,24 @@ def _source_stem_metrics(
     cid = _source_cid_stem_cache.get(digest)
     truetype = _source_truetype_stem_cache.get(digest)
     if cid is None and truetype is None:
-        with TTFont(BytesIO(payload), lazy=False, recalcTimestamp=False) as program:
-            units = float(program["head"].unitsPerEm)
-            if "CFF " in program:
+        # The table directory decides the rule. A TrueType program is measured
+        # from a lazily loaded glyf table: only the reference glyphs are ever
+        # decompiled, however large the embedded program is.
+        with TTFont(BytesIO(payload), lazy=None, recalcTimestamp=False) as program:
+            is_cff = "CFF " in program
+            if not is_cff:
+                if "glyf" not in program:
+                    raise ValueError("source has no usable CFF dominant-stem metric or TrueType outlines")
+                try:
+                    truetype = _truetype_dominant_vertical_stem(program)
+                except ValueError as exc:
+                    truetype = str(exc)
+                except Exception as exc:  # a malformed reference glyph refuses the pen
+                    truetype = f"source TrueType outlines cannot be measured: {type(exc).__name__}: {exc}"
+        if is_cff:
+            # CFF is read exactly as before: fully loaded, stem hints only.
+            with TTFont(BytesIO(payload), lazy=False, recalcTimestamp=False) as program:
+                units = float(program["head"].unitsPerEm)
                 if not math.isfinite(units) or units <= 0:
                     raise ValueError("source has no usable CFF dominant-stem metric")
                 tops = program["CFF "].cff.topDictIndex
@@ -2040,13 +2150,6 @@ def _source_stem_metrics(
                     if not _cff_matrix_matches_units(matrix, units):
                         raise ValueError("CFF FontMatrix does not match source font units")
                     metrics = (units, *_cff_dominant_stems(top.Private, "CFF"))
-            elif "glyf" in program:
-                try:
-                    truetype = _truetype_dominant_vertical_stem(program)
-                except ValueError as exc:
-                    truetype = str(exc)
-            else:
-                raise ValueError("source has no usable CFF dominant-stem metric or TrueType outlines")
         # Only parsed scalars and measurements are cached, keyed by freshly checked bytes.
         for cache, value in ((_source_cff_stem_cache, metrics), (_source_cid_stem_cache, cid),
                              (_source_truetype_stem_cache, truetype)):
@@ -3553,16 +3656,24 @@ def _attempt_labels(
         # explicit choice to accept LibreCAD's font for visible words: the
         # substitution stays disclosed per item, never certified as the look.
         # A symbol font stays outlines: unicode.lff would draw a different character.
+        editable_requested = bool(
+            parent == "librecad"
+            and requested in {"text", "labels"}
+            and not is_3d_text
+            and bool(getattr(config, "_librecad_editable_text", False))
+        )
+        symbol_font = None
+        if editable_requested and not source_content_whitespace_only:
+            symbol_font = _source_font_symbol_evidence(text_item, font_resolution)
+            if symbol_font is not None:
+                attempt.evidence.update(symbol_font)
         accept_librecad_font_substitution = bool(
             parent == "librecad"
             and requested in {"text", "labels"}
             and not is_3d_text
             and (
                 source_content_whitespace_only
-                or (
-                    bool(getattr(config, "_librecad_editable_text", False))
-                    and not _source_font_is_symbolic(text_item)
-                )
+                or (editable_requested and symbol_font is None)
             )
         )
         native_lff = None
@@ -6808,6 +6919,7 @@ def reset_text_styles() -> None:
     _source_cff_stem_cache.clear()
     _source_cid_stem_cache.clear()
     _source_truetype_stem_cache.clear()
+    _source_program_name_cache.clear()
     _staged_font_verification_cache.clear()
     _glyph_block_cache.clear()
     _canonical_glyph_path_cache.clear()

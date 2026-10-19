@@ -9,13 +9,23 @@ All notable release changes are recorded here.
   the TrueType program's dominant vertical stem from its own glyph outlines:
   straight stems of reference letters, explicit em bounds, and at least two
   agreeing glyphs. Report it as "pen from TrueType outline stem", the same
-  disclosed approximation as the CFF hint pen. No default pen is used.
-- Take CID-keyed CFF pens from the font dicts the span's glyphs use; dicts
-  without stem hints or with mismatched units still give no pen. Keep the CFF
-  hint pen and its output unchanged. Italic TrueType, fonts without agreeing
-  stems and fonts the PDF does not embed keep their reported fallback; the
-  report now says when the PDF embeds no font. Count pen sources in
-  `extra.editable_text` and bind the pen rule into resume identity.
+  disclosed approximation as the CFF hint pen. No default pen is used. Only
+  the reference letters are decompiled, so a large fully embedded font is
+  measured in about a second.
+- Keep CAD symbol fonts out of Editable text: GD&T fonts such as AMGDT, AIGDT,
+  GDT and SWGDT, and math fonts such as Symath and SWMath. They draw symbols
+  at letter codes (`n` is a diameter sign) but keep ordinary capitals, so a
+  measured stem proves nothing about them. Their words stay exact Glyph
+  outlines, and the report names the matched font name. The bound program's
+  own name is checked as well as the PDF's.
+- Add a rule that takes CID-keyed CFF pens from the font dicts the span's
+  glyphs use. The shared font catalog still rejects CID-keyed CFF programs
+  before it runs, so such text keeps its current fallback; only unit tests
+  reach the rule today. Keep the CFF hint pen and its output unchanged.
+  Italic TrueType, fonts without agreeing stems and fonts the PDF does not
+  embed keep their reported fallback; the report now says when the PDF embeds
+  no font. Count pen sources in `extra.editable_text` and bind the pen rule
+  into resume identity.
 
 ## 1.0.118 - 2026-10-15
 

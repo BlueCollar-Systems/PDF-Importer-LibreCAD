@@ -478,18 +478,25 @@ does not prove visible/editable 3D text in LibreCAD's 2D parent.
   counts where each word's pen came from). Text that cannot be rendered
   reliably stays as exact outlines for that item only and is listed in the report.
   Visible native text also needs a positive pen bound to the PDF's own font
-  program. A CFF font gives it through its `StdVW`/`StdHW` stem hints; a
-  CID-keyed CFF font uses the hints of the font dicts that span's glyphs use.
+  program. A CFF font gives it through its `StdVW`/`StdHW` stem hints.
   An embedded TrueType font, such as an Arial subset, has no hints, so its
   dominant vertical stem is measured from its own glyph outlines ("pen from
   TrueType outline stem"). Only straight stems of reference letters such as
   `l I 1 H E T P` count. Each must lie between 0.015 and 0.30 em, and at least
-  two glyphs must agree. Every such pen approximates the font's stems; it is
-  not a glyph or pixel match. A font with no measurable stem (italic TrueType,
-  for example), CID dicts without stem hints, and a font the PDF does not embed
-  follow the reported fallback ladder. That normally means exact outlines, or an
-  item image when the PDF embeds no font program. Missing proof never supplies
-  an arbitrary default pen. See
+  two glyphs must agree. The pen therefore depends on which of those letters
+  the PDF's font subset carries: 10 pt Arial gives 0.35 mm from capitals alone
+  and 0.30 mm when lowercase letters are present. Every such pen approximates
+  the font's stems; it is not a glyph or pixel match. A CAD symbol font, such
+  as the GD&T fonts AMGDT, AIGDT, GDT and SWGDT or the math fonts Symath and
+  SWMath, never becomes editable text: it draws symbols at letter codes (`n` is
+  a diameter sign), so LibreCAD's font would show the wrong character. A rule
+  for CID-keyed CFF font-dict hints exists, but the shared font catalog
+  rejects CID-keyed CFF programs before it runs, so such text keeps its
+  fallback. A font with no measurable stem (italic TrueType, for example), a
+  CAD symbol font, CID-keyed CFF and a font the PDF does not embed follow the
+  reported fallback ladder. That normally means exact outlines, or an item
+  image when the PDF embeds no font program. Missing proof never supplies an
+  arbitrary default pen. See
   [TrueType and CID native pens](docs/validation/2026-10-18-truetype-native-pen.md).
   R12 cannot retain the required positive native TEXT lineweight and also uses
   the fallback. Fallback items retain their representable source strings on
