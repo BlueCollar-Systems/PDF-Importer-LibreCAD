@@ -1,7 +1,7 @@
 # LibreCAD TrueType and CID-keyed CFF native pens (October 18, 2026)
 
 Status: source candidate on branch `claude/librecad-1018-truetype-editable-text`,
-second round after review. Converter probes and the unit suite ran on
+third round after review. Converter probes and the unit suite ran on
 Windows. No LibreCAD desktop display, Preview, Save As or reopen check was
 run for this change, and no package was built or released.
 
@@ -9,6 +9,12 @@ The review of the first round found CAD symbol fonts (GD&T and math fonts)
 becoming visible native `TEXT` with the wrong characters, slow measurement of
 large fully embedded fonts, and an overstated CID-keyed CFF claim. All three
 are corrected below; see [Second round](#second-round-review-fixes).
+
+The review of the second round found two more symbol-font cases becoming
+visible native `TEXT`: AutoCAD's AcadEref, and pi fonts such as MS Reference
+Specialty and CommercialPi whose names were on no list. Both are corrected,
+and the symbol-font claim is narrowed to what the check can see; see
+[Third round](#third-round-review-fixes).
 
 ## Defect
 
@@ -68,13 +74,17 @@ reported. Ink parity is never claimed. The serialized pen is rechecked against
 fresh font bytes as before. Fonts outside these rules keep their reported
 fallback, and no pen is invented.
 
-### CAD symbol fonts
+### Symbol fonts
 
-A symbol font never becomes Editable `TEXT`, because LibreCAD's font would
+A symbol font must not become Editable `TEXT`, because LibreCAD's font would
 draw the character code instead of the symbol. Before any pen is measured,
-the span's font is checked by name. Symbol, Wingdings, Webdings, Zapf
-Dingbats and the other existing markers are unchanged. CAD symbol fonts are
-now checked as well:
+the span's font is checked three ways, in this order: the PDF's font names,
+the bound program's own names, and a TrueType program's own OS/2 table. A
+match keeps the span's exact Glyph outlines. What the check cannot see is
+listed under [Limit](#limit-what-is-not-recognized).
+
+By name: Symbol, Wingdings, Webdings, Zapf Dingbats and the other existing
+markers are unchanged. CAD symbol fonts are checked as well:
 
 - GD&T fonts: `gdt` (AMGDT, AIGDT, GDT, SWGDT and Inventor's `_IV25`/`_IV50`
   variants);
@@ -82,21 +92,63 @@ now checked as well:
   `syastro`, `swastro`, `symap`, `swmap`, `symeteo`, `swmeteo`, `symusic`,
   `swmusic`;
 - Greek and other symbol fonts: `swgrek`, `greekc`, `greeks`, `mtextra`,
-  `universalmath`, `marlett`.
+  `universalmath`, `marlett`;
+- AutoCAD's electrical reference font: `acaderef` (third round);
+- pi and icon fonts that also mark themselves in OS/2, for subsets whose OS/2
+  table was stripped: `referencespecialty` (MS Reference Specialty),
+  `commercialpi`, `msoutlook`, `mdl2assets` and `fluenticons` (third round).
 
 These markers are matched on the name with spaces and punctuation removed.
-The PDF's font names are checked first. If none matches, the bound program's
-own family, full and PostScript names are checked, so a font the PDF renames
-is still caught. Only a font that is renamed in the PDF and also carries no
-matching name table of its own is not recognized.
+`mtextra` must start the name (after any subset tag), because the Monotype
+text faces Gloucester MT Extra Condensed and Gill Sans MT ExtraCondensed
+contain the same letters. The PDF's font names are checked first. If none
+matches, the bound program's own family, full and PostScript names are
+checked, so a font the PDF renames is still caught.
 
-These fonts need a name check because nothing else reveals them. They draw
-symbols at letter codes (`n` is a diameter sign), yet their capitals are
-ordinary letters with agreeing stems. Their cmaps are ordinary Unicode
-tables with standard glyph names. A matched span keeps exact Glyph outlines,
-no pen is measured for it, and its text attempt records
-`source_font_symbolic`, `source_font_symbol_marker`, `source_font_symbol_name`
-and `source_font_symbol_name_origin`.
+The CAD fonts need a name check because nothing else reveals them. They draw
+symbols at letter codes (`n` is a diameter sign; AcadEref draws contact
+symbols at `N`, `O`, `W`, `m` and `x`), yet their letters have agreeing
+stems. Their cmaps are ordinary Unicode tables, and of them only AIGDT marks
+itself in OS/2.
+
+By the program's OS/2 table (third round, rule
+`truetype_os2_symbol_code_page_or_panose_pictorial_v1`): a TrueType (`glyf`)
+program is a symbol font when bit 31 of `ulCodePageRange1` (the Symbol
+character set) is set, or when its PANOSE family type is 5 (Pictorial). No
+name is involved. A version 0 OS/2 table has no code page ranges, so only its
+PANOSE counts. The check never relies on the cmap: the PDF's cmap repair
+drops a `(3,0)` symbol cmap, and AutoCAD's text fonts (Technic,
+CityBlueprint, EuroRoman and others) use `(3,0)` cmaps too, so a cmap test
+would refuse them wrongly. A CFF program's OS/2 is not read. The one wrapped
+from a PDF's bare CFF program is synthesized and says nothing about the
+source, so CFF delivery is unchanged.
+
+A matched span keeps exact Glyph outlines, no pen is measured for it, and
+its text attempt records `source_font_symbolic`, `source_font_symbol_marker`,
+`source_font_symbol_name` and `source_font_symbol_name_origin`. An OS/2 match
+has the origin `font_program_os2_table` and also records
+`source_font_symbol_rule` and `source_font_symbol_os2` (table version, Symbol
+code page, PANOSE family type). The marker lists and the OS/2 rule are part
+of the resume identity.
+
+#### Limit: what is not recognized
+
+A symbol font is not recognized when all of these hold: none of its names is
+on a list, its program has no OS/2 table or one with neither mark, and the
+letters its PDF subset carries agree on a stem. Such a span still becomes
+native `TEXT` showing the character codes. The stem rule is no defence here,
+because it measures only the glyphs the subset carries: the full
+CommercialPi font is refused (its stems disagree), but a `BDHILT bdhmn`
+subset of it is not.
+
+This gap is real. Some PDF printers strip OS/2 from every TrueType subset.
+In a survey of 400 drawing PDFs, 1279 of 1395 distinct embedded TrueType
+programs carried no OS/2 table, 1192 of them written by one PDF
+printer driver (Arial, Arial Narrow and RomanT notes). Refusing every
+TrueType program without OS/2 would remove Editable text from most of those
+drawings, so that is not done. The report note says instead that such a
+symbol font is not recognized and that symbol callouts which came in as
+editable text should be checked.
 
 ## Installed-font survey (measured with the shipped rule)
 
@@ -195,15 +247,82 @@ machine, with identical stems both ways:
 | Malgun Gothic | 13 MB | 0.38 s | 11.0 s |
 | Arial | 1 MB | 0.11 s | 0.39 s |
 
+## Third round (review fixes)
+
+The review's fixtures were rebuilt the same way: fictional notes at 10 pt in
+installed fonts, PyMuPDF subsets, and a text layer that reads as plain ASCII
+for the pi fonts. Each was converted by main `e4f089b`, the second round
+`d91d7db` and this round, with `PYTHONHASHSEED=0`. The pens differ from the
+review's because the text size differs.
+
+| Fixture, Editable | Main `e4f089b` | Second round `d91d7db` | This round |
+|---|---|---|---|
+| AcadEref Type0 subset, `BD xN bd` and `ABCD NOW` (review a01) | Glyph INSERTs | visible `TEXT` `BD xN bd` and `ABCD NOW`, 0.25 mm | Glyph INSERTs, marker `acaderef` |
+| AcadEref as a simple TrueType font (review b02) | Glyph INSERTs | the same two `TEXT` | Glyph INSERTs, marker `acaderef` |
+| MS Reference Specialty, `BDHILT bdhmn` (review a02) | Glyph INSERT | visible `TEXT`, 0.05 mm | Glyph INSERT, marker `referencespecialty` |
+| CommercialPi BT, Type0 and simple, `BDHILT bdhmn` (review a02) | Glyph INSERT | visible `TEXT`, 0.20 mm | Glyph INSERT, marker `commercialpi` |
+| The same two fonts with OS/2 stripped | Glyph INSERT | visible `TEXT` | Glyph INSERT, by name |
+| The same two fonts renamed "Probe Pi" in the PDF and in the program | Glyph INSERT | visible `TEXT` | Glyph INSERT, `os2_symbol_code_page` / `panose_pictorial` |
+| Renamed "Probe Pi" and OS/2 stripped | Glyph INSERT | visible `TEXT` | visible `TEXT`: the [limit](#limit-what-is-not-recognized) |
+
+Every other span kept the second round's result:
+
+- In each probe the Arial note beside the symbol span stays native `TEXT`
+  at 0.35 mm.
+- MS Outlook, Wingdings, Symbol, MT Extra, Universal Math, Marlett and AIGDT
+  spans (text layer `BDHILT bdhmn`) were already outlines in the second
+  round, by name or for want of a stem, and still are; the report now names
+  the matching font for each.
+- Text fonts (Arial, Times New Roman, ISOCPEUR, RomanS, Calibri, Segoe UI,
+  Technic and CityBlueprint, as Type0 or simple TrueType, with and without
+  OS/2) give DXF identical to the second round.
+- Base14 Helvetica, Courier and Times and embedded CFF (Nimbus Sans and
+  Nimbus Roman) give DXF identical to main in Editable text, and the AMGDT
+  callout page gives DXF identical to the second round.
+- All 43 default Exact-look outputs of these probes are identical DXF to
+  main, and so are the 18 item pictures among them.
+
+Installed-font survey. The final check (names and OS/2) was applied to the
+887 faces installed for Windows and the user. It marks 54: the GD&T, math,
+Greek, astronomy, map, weather and music CAD fonts, AcadEref, AmdtSymbols,
+Symbol, Wingdings 1-3, Webdings, Bookshelf Symbol, MS Reference Specialty,
+MS Outlook, Marlett, MT Extra, CommercialPi, Universal Math, Segoe MDL2
+Assets, Segoe Fluent Icons, Segoe UI Symbol and Revit_HEB_SHX (a Hebrew SHX
+font that declares the Symbol code page). No Latin text face is marked:
+Arial, Times New Roman, Calibri, ISOCPEUR, RomanS and the AutoCAD text fonts
+set neither OS/2 mark. Gloucester MT Extra Condensed and Gill Sans MT
+ExtraCondensed, which the second round's `mtextra` substring marked, are no
+longer marked. Fusion's symbol-palette fonts (AcadEref, AIGDT, AMGDT,
+AMDT_Symbols, GDT, GENISO) are marked by name, except GENISO, whose letters
+have no measurable stem and so keep outlines anyway.
+
+Seen while probing and not changed here: a PDF holding a Type0 subset of a
+font with a `(3,0)` symbol cmap (Technic, CityBlueprint, Wingdings, Symbol
+and others, as PyMuPDF writes them) fails the whole import with `IndexError`
+in the shared `pdfcadcore` cmap repair, on main and on this branch. Those
+fonts were probed as simple TrueType fonts instead.
+
 ## Tests
 
 `tests/test_librecad_truetype_cid_native_pen.py` builds fictional fonts: an
 Arial-like TrueType (also embedded as a cmap-less PDF subset), slanted,
 too-thin, disagreeing and stemless variants, CID-keyed CFF programs with and
 without font-dict stems, a GD&T-named variant (including one the PDF
-renames), and a program with 3000 extra glyphs. Run against main, 54 of its
-55 tests fail. The one that passes pins the name-keyed CFF proof keys to
-main's. All 29 tests added in this round fail against the first round: the
+renames), AcadEref-named and OS/2-marked pi variants, and a program with
+3000 extra glyphs. Run against main, 91 of its 92 tests fail. The one that
+passes pins the name-keyed CFF proof keys to main's.
+
+The 37 tests added in the third round cover the `acaderef` and pi names, the
+anchored `mtextra`, a renamed AcadEref program, the OS/2 Symbol code page
+and PANOSE Pictorial marks (including a version 0 table), text-font OS/2
+values that must not match, the documented no-OS/2 limit, CFF OS/2 being
+ignored, the resume identity, and end-to-end pages where the symbol span
+keeps Glyph outlines and the letter span beside it stays native `TEXT`
+(AcadEref as a Type0 and as a simple TrueType font; OS/2-marked pi fonts,
+whose report note must state the limit). 24 of them fail against the second
+round. The other 13 are negative cases that pass before and after.
+
+All 29 tests added in the second round fail against the first round: the
 symbol-font check did not exist, the GD&T words became native `TEXT`, and
 3009 glyphs were decompiled where this round decompiles fewer than 40. The old
 `test_unproved_truetype_stems_descend_to_exact_glyphs_without_inventing_a_pen`
@@ -217,6 +336,13 @@ code too. `G:` is exFAT: it has no stable file IDs, which the private
 drawing-copy staging check compares (`st_dev`/`st_ino`), and `git` refuses
 the temporary repositories that the release-provenance tests create on it.
 None of those tests touch this change.
+
+Third round, same machine: the pen test file and the 25 other suites that
+touch Editable text, symbol fonts, the import report or resume identity,
+with temporary files on `G:`: 805 passed, 7 skipped, 12 failed. All 12 are
+the exFAT staging check above; their three files pass on an NTFS temporary
+folder (80 passed). The release, provenance, build-metadata and resume
+suites on NTFS: 65 passed.
 
 ## Not changed
 

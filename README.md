@@ -486,14 +486,20 @@ does not prove visible/editable 3D text in LibreCAD's 2D parent.
   two glyphs must agree. The pen therefore depends on which of those letters
   the PDF's font subset carries: 10 pt Arial gives 0.35 mm from capitals alone
   and 0.30 mm when lowercase letters are present. Every such pen approximates
-  the font's stems; it is not a glyph or pixel match. A CAD symbol font, such
-  as the GD&T fonts AMGDT, AIGDT, GDT and SWGDT or the math fonts Symath and
-  SWMath, never becomes editable text: it draws symbols at letter codes (`n` is
-  a diameter sign), so LibreCAD's font would show the wrong character. A rule
+  the font's stems; it is not a glyph or pixel match. A symbol font draws
+  symbols at letter codes (`n` is a diameter sign in the GD&T fonts), so
+  LibreCAD's font would show the wrong character. Such a font stays outlines
+  when its name is on the importer's list (Symbol, Wingdings, the GD&T fonts
+  AMGDT, AIGDT, GDT and SWGDT, the math fonts Symath and SWMath, AcadEref,
+  MS Reference Specialty, CommercialPi and others) or when its TrueType
+  program marks itself as a symbol font in its OS/2 table (Symbol code page
+  or PANOSE Pictorial). A symbol font with an unlisted name whose program has
+  no such mark, for example because a PDF printer stripped the OS/2 table, is
+  not recognized and can still come in as editable text. A rule
   for CID-keyed CFF font-dict hints exists, but the shared font catalog
   rejects CID-keyed CFF programs before it runs, so such text keeps its
   fallback. A font with no measurable stem (italic TrueType, for example), a
-  CAD symbol font, CID-keyed CFF and a font the PDF does not embed follow the
+  recognized symbol font, CID-keyed CFF and a font the PDF does not embed follow the
   reported fallback ladder. That normally means exact outlines, or an item
   image when the PDF embeds no font program. Missing proof never supplies an
   arbitrary default pen. See

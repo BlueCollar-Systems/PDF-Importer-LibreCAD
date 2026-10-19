@@ -732,9 +732,12 @@ def write_import_report(
                 "letter shapes differ from the PDF; their pen weight approximates the "
                 "stems of the font program the PDF text uses (see pen_sources). Any other word "
                 "came in as outlines or a picture, for example when the font lacks "
-                "a character, draws symbols at letter codes (a GD&T or Symbol font), "
-                "or has no stem the importer can measure, and is listed per item "
-                "with the reason."
+                "a character, is a symbol font recognized by its name or by its own "
+                "OS/2 table (GD&T, Symbol, Wingdings, pi fonts), or has no stem the "
+                "importer can measure, and is listed per item with the reason. A "
+                "symbol font that neither has a known name nor marks itself in "
+                "OS/2 (some PDF printers strip that table) is not recognized: check "
+                "symbol callouts that came in as editable text."
             ),
         }
     if glyph_code_delivery["spans_examined"]:

@@ -18,6 +18,16 @@ All notable release changes are recorded here.
   measured stem proves nothing about them. Their words stay exact Glyph
   outlines, and the report names the matched font name. The bound program's
   own name is checked as well as the PDF's.
+- Keep AcadEref (AutoCAD's electrical reference font, contact symbols at `N`,
+  `O`, `W`, `m` and `x`) and pi fonts out of Editable text. A TrueType program
+  whose own OS/2 table declares the Symbol code page or PANOSE Pictorial (MS
+  Reference Specialty, CommercialPi, MS Outlook, Wingdings, Symbol, MT Extra,
+  Universal Math) is now kept out whatever its name, and the pi fonts are
+  named too for subsets whose OS/2 table was stripped. `MT Extra` no longer
+  matches Monotype text faces such as Gloucester MT Extra Condensed. A symbol
+  font with an unlisted name and no OS/2 mark is still not recognized; the
+  validation note and the report now say so instead of claiming every symbol
+  font stays outlines.
 - Add a rule that takes CID-keyed CFF pens from the font dicts the span's
   glyphs use. The shared font catalog still rejects CID-keyed CFF programs
   before it runs, so such text keeps its current fallback; only unit tests

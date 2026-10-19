@@ -79,11 +79,17 @@ def _glyph(char, stem, slant):
 
 
 def _truetype(path: Path, *, glyphs=ARIAL_LIKE_GLYPHS, stem=ARIAL_LIKE_STEM, stems=None,
-              italic_angle=0.0, units=1000, family="Fictional Stem Sans", extra_glyphs=0):
+              italic_angle=0.0, units=1000, family="Fictional Stem Sans", extra_glyphs=0,
+              symbol_code_page=None, panose_family=None, os2_version=3, os2=True):
     """Build a fictional Arial-like TrueType program with real glyf outlines.
 
     ``extra_glyphs`` adds unmapped box glyphs, standing in for the bulk of a
     large fully embedded program that the stem rule must never decompile.
+    ``symbol_code_page`` sets OS/2 ulCodePageRange1 to the Symbol code page
+    (bit 31) or to Latin 1, and ``panose_family`` the PANOSE family type (2 is
+    Latin Text, 5 Pictorial); left out, FontBuilder's zero defaults stay.
+    ``os2_version`` 0 has no code page ranges, and ``os2=False`` drops the
+    table, as some PDF printers do with every subset.
     """
     ps_name = family.replace(" ", "")
     slant = math.tan(math.radians(-italic_angle))
@@ -112,6 +118,18 @@ def _truetype(path: Path, *, glyphs=ARIAL_LIKE_GLYPHS, stem=ARIAL_LIKE_STEM, ste
                          "fullName": family, "psName": ps_name})
     font.setupPost(italicAngle=italic_angle)
     font.setupMaxp()
+    table = font.font["OS/2"]
+    if panose_family is not None:
+        table.panose.bFamilyType = panose_family
+    if symbol_code_page is not None:
+        table.ulCodePageRange1 = (1 << 31) if symbol_code_page else 1  # bit 0: Latin 1
+    if os2_version == 0:
+        table.version = 0
+        for field in ("ulCodePageRange1", "ulCodePageRange2", "sxHeight", "sCapHeight",
+                      "usDefaultChar", "usBreakChar", "usMaxContext"):
+            delattr(table, field)
+    if not os2:
+        del font.font["OS/2"]
     font.font.recalcTimestamp = False
     font.font["head"].created = font.font["head"].modified = 2_082_844_800
     font.save(str(path))
@@ -515,10 +533,26 @@ def test_editable_words_report_their_cff_pen_source(native_fonts, tmp_path):
     ("symath_IV25", "symath"),
     ("SWMath", "swmath"),
     ("MT Extra", "mtextra"),
+    ("CVWMPP+MT Extra Regular", "mtextra"),
+    ("MT-Extra", "mtextra"),
     ("UniversalMath1 BT", "universalmath"),
     ("Marlett", "marlett"),
     ("SymbolMT", "symbol"),
     ("Wingdings-Regular", "wingding"),
+    # AutoCAD's electrical reference font: letters at A-D, contact symbols at
+    # N, O, W, m and x, behind an ordinary Unicode cmap.
+    ("AcadEref", "acaderef"),
+    ("DMXKPY+AcadEref Regular", "acaderef"),
+    ("Acad Eref", "acaderef"),
+    # Pi and icon fonts that mark themselves in OS/2, named for subsets whose
+    # OS/2 table a PDF printer stripped.
+    ("NKRINO+MS Reference Specialty Regular", "referencespecialty"),
+    ("MSReferenceSpecialty", "referencespecialty"),
+    ("CommercialPi BT", "commercialpi"),
+    ("CommercialPiBT-Regular", "commercialpi"),
+    ("MS Outlook", "msoutlook"),
+    ("Segoe MDL2 Assets", "mdl2assets"),
+    ("Segoe Fluent Icons", "fluenticons"),
 ])
 def test_cad_symbol_font_names_are_symbolic(name, marker):
     # GD&T and math fonts draw symbols at letter codes ("n" is a diameter
@@ -536,6 +570,10 @@ def test_cad_symbol_font_names_are_symbolic(name, marker):
 @pytest.mark.parametrize("name", [
     "Arial", "ArialMT", "PECJEM+Arial Regular", "Times New Roman", "Courier New", "Cambria Math",
     "ISOCPEUR", "Segoe UI", "Fictional Stem Sans", "Calibri Light", "",
+    "RomanS", "Technic", "CityBlueprint", "Commercial Script BT", "Microsoft Sans Serif",
+    "Fictional Pi Specialty",
+    # Monotype text faces whose names contain the letters of "MT Extra".
+    "Gloucester MT Extra Condensed", "GillSansMT-ExtraCondensedBold", "ABCDEF+Gill Sans MT Ext Condensed Bold",
 ])
 def test_letter_font_names_are_not_symbolic(name):
     item = builder.NormalizedText(id=1, text="NOTE", normalized="NOTE", font_name=name)
@@ -639,3 +677,198 @@ def test_cad_symbol_truetype_words_keep_exact_glyphs_in_editable_text(native_fon
     # No pen is measured for a span that cannot be LibreCAD-font TEXT.
     assert "native_text_source_stem_rule" not in evidence
     assert evidence.get("parent_native_font_substitution_accepted") is not True
+
+
+def test_bound_program_name_marks_a_renamed_acaderef_font(tmp_path):
+    # AcadEref draws letters at A-D but contact symbols at N, O, W, m and x;
+    # its B, D, b and d agree on a stem, so only its name keeps it out.
+    path = _truetype(tmp_path / "renamed-eref.ttf", family="Fictional AcadEref")
+    item, resolution = _source(path, text="HEP")
+    item = replace(item, font_name="F2")
+    resolution = replace(resolution, source_name="F2", family="F2")
+    assert builder._source_native_text_lineweight(item, resolution)["native_text_lineweight"] == 30
+    evidence = builder._source_font_symbol_evidence(item, resolution)
+    assert evidence["source_font_symbol_marker"] == "acaderef"
+    assert evidence["source_font_symbol_name_origin"] == "font_program_name_table"
+
+
+@pytest.mark.parametrize("symbol_code_page,panose_family,os2_version,marker", [
+    # MS Reference Specialty, MS Outlook, Wingdings and Symbol set both.
+    (True, 5, 3, "os2_symbol_code_page"),
+    # Marlett and AIGDT declare only the Symbol code page.
+    (True, 0, 3, "os2_symbol_code_page"),
+    # CommercialPi, MT Extra and UniversalMath are PANOSE Pictorial only.
+    (False, 5, 3, "panose_pictorial"),
+    # A version 0 OS/2 table has no code page ranges; PANOSE still marks it.
+    (None, 5, 0, "panose_pictorial"),
+])
+def test_truetype_os2_marks_a_symbol_font_whatever_its_name(tmp_path, symbol_code_page, panose_family,
+                                                            os2_version, marker):
+    # A pi font whose name is on no list, typed as plain letters: its letter
+    # codes draw symbols, yet the subset's reference glyphs agree on a stem.
+    path = _truetype(tmp_path / "pi.ttf", family="Fictional Pi Specialty",
+                     symbol_code_page=symbol_code_page, panose_family=panose_family,
+                     os2_version=os2_version)
+    item, resolution = _source(path, text="HEP")
+    item = replace(item, font_name="ABCDEF+Fictional Pi Specialty")
+    assert builder._source_native_text_lineweight(item, resolution)["native_text_lineweight"] == 30
+    evidence = builder._source_font_symbol_evidence(item, resolution)
+    assert evidence["source_font_symbolic"] is True
+    assert evidence["source_font_symbol_marker"] == marker
+    assert evidence["source_font_symbol_name"] == "ABCDEF+Fictional Pi Specialty"
+    assert evidence["source_font_symbol_name_origin"] == "font_program_os2_table"
+    assert evidence["source_font_symbol_rule"] == "truetype_os2_symbol_code_page_or_panose_pictorial_v1"
+    assert evidence["source_font_symbol_os2"] == {
+        "table_version": os2_version,
+        "symbol_code_page": bool(symbol_code_page),
+        "panose_family_type": panose_family,
+    }
+    assert json.loads(json.dumps(evidence)) == evidence
+    # Changed bytes prove nothing: the program is never read unverified.
+    path.write_bytes(path.read_bytes() + b"changed")
+    builder.reset_text_styles()
+    assert builder._source_font_symbol_evidence(item, resolution) is None
+
+
+@pytest.mark.parametrize("symbol_code_page,panose_family", [
+    (False, 2),  # Arial, Times New Roman, ISOCPEUR, RomanS: Latin Text
+    (None, None),  # zeros: no classification at all
+    (False, 3),  # Latin Hand Written
+    (False, 4),  # Latin Decorative
+])
+def test_truetype_os2_of_a_text_font_is_not_symbolic(tmp_path, symbol_code_page, panose_family):
+    path = _truetype(tmp_path / "text.ttf", symbol_code_page=symbol_code_page, panose_family=panose_family)
+    item, resolution = _source(path, text="HEP")
+    assert builder._source_font_symbol_evidence(item, resolution) is None
+    assert builder._source_native_text_lineweight(item, resolution)["native_text_lineweight"] == 30
+
+
+def test_truetype_without_os2_or_a_listed_name_is_not_recognized(tmp_path):
+    """The documented limit: names and OS/2 marks are the only evidence.
+
+    Some PDF printers strip OS/2 from every TrueType subset. A symbol font
+    embedded that way, under a name on no list, is not recognized; the
+    validation note and the report say so instead of claiming otherwise.
+    """
+    path = _truetype(tmp_path / "pi-no-os2.ttf", family="Fictional Pi Specialty",
+                     symbol_code_page=True, panose_family=5, os2=False)
+    with TTFont(str(path)) as program:
+        assert "OS/2" not in program
+    item, resolution = _source(path, text="HEP")
+    assert builder._bound_program_identity(resolution)["os2"] is None
+    assert builder._source_font_symbol_evidence(item, resolution) is None
+
+
+def test_cff_os2_marks_are_not_read(tmp_path):
+    # A CFF program's OS/2 is not evidence: one wrapped from a PDF's bare CFF
+    # program is synthesized. CFF delivery stays exactly as on main.
+    from test_librecad_native_text_weight import _cff
+
+    path = _cff(tmp_path / "pictorial-cff.otf")
+    with TTFont(str(path)) as font:
+        font["OS/2"].panose.bFamilyType = 5
+        font["OS/2"].ulCodePageRange1 = 1 << 31
+        font.save(str(path))
+    item, resolution = _source(path)
+    assert builder._bound_program_identity(resolution)["os2"] is None
+    assert builder._source_font_symbol_evidence(item, resolution) is None
+    assert builder._source_native_text_lineweight(item, resolution)["native_text_lineweight"] == 18
+
+
+def test_native_pen_rule_identity_binds_the_symbol_font_gate():
+    identity = builder.native_text_pen_rule_identity()
+    assert "acaderef" in identity["cad_symbol_font_markers"]
+    assert "commercialpi" in identity["pi_font_markers"]
+    assert "wingding" in identity["symbol_font_markers"]
+    assert identity["truetype_symbol_os2_rule"] == "truetype_os2_symbol_code_page_or_panose_pictorial_v1"
+
+
+def _symbol_page_report(native_fonts, tmp_path, symbol_font, *, simple=False, text="HEP HEP"):
+    """Convert one page: a symbol-font span above a letter-font span."""
+    import ezdxf
+    import pymupdf
+    import dxf_import_engine as engine
+    from pdfcadcore.import_config import ImportConfig
+
+    letter_font = _truetype(tmp_path / "fictional-letters.ttf")
+    source = tmp_path / "fictional-symbol-page.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=500, height=300)
+        page.insert_font(fontname="SymTT", fontfile=str(symbol_font), set_simple=simple)
+        page.insert_font(fontname="StemTT", fontfile=str(letter_font), set_simple=simple)
+        page.insert_text((72, 90), text, fontname="SymTT", fontsize=12)
+        page.insert_text((72, 190), "PA HAP", fontname="StemTT", fontsize=12)
+        pdf.subset_fonts()
+        pdf.save(source)
+    config = ImportConfig.auto()
+    config.text_mode = "text"
+    output = tmp_path / "symbol.dxf"
+    stats = engine.convert(str(source), str(output), config=config, resumable=True,
+                           editable_text=True, librecad_executable=str(native_fonts))
+    doc = ezdxf.readfile(output)
+    texts = list(doc.modelspace().query("TEXT"))
+    visible = [t.dxf.text for t in texts if not doc.layers.get(t.dxf.layer).is_frozen()]
+    hidden = [t.dxf.text for t in texts if doc.layers.get(t.dxf.layer).is_frozen()]
+    report = _page_report(stats)
+    items = report["extra"]["text_representation_delivery"]["items"]
+    symbol_items = [i for i in items if any(
+        a.get("evidence", {}).get("source_font_symbolic") for a in i.get("attempts", []))]
+    return stats, doc, visible, hidden, report, symbol_items
+
+
+@pytest.mark.parametrize("simple", [False, True], ids=["type0", "simple_truetype"])
+def test_acaderef_words_keep_exact_glyphs_in_editable_text(native_fonts, tmp_path, simple):
+    """Review fixtures a01/b02: AcadEref words became TEXT reading 'BD xN bd'.
+
+    Embedded as a Type0 subset or as a simple TrueType font, a font named
+    AcadEref keeps exact Glyph outlines; the letter note beside it is still
+    editable TEXT.
+    """
+    symbol_font = _truetype(tmp_path / "fictional-acaderef.ttf", family="Fictional AcadEref")
+    stats, doc, visible, hidden, report, symbol_items = _symbol_page_report(
+        native_fonts, tmp_path, symbol_font, simple=simple)
+    assert stats["text_delivery"]["editable_text_item_count"] == 1
+    assert visible == ["PA HAP"]
+    assert "HEP HEP" in hidden
+    assert doc.modelspace().query("INSERT")
+    assert report["extra"]["editable_text"]["pen_sources"] == {"pen from TrueType outline stem": 1}
+    symbol_item, = symbol_items
+    assert symbol_item["final_representation"] == "glyphs"
+    text_attempt, = [a for a in symbol_item["attempts"] if a.get("attempted_representation") == "text"]
+    assert text_attempt["evidence"]["source_font_symbol_marker"] == "acaderef"
+    assert "native_text_source_stem_rule" not in text_attempt["evidence"]
+
+
+@pytest.mark.parametrize("symbol_code_page,panose_family,marker", [
+    (True, 5, "os2_symbol_code_page"),  # MS Reference Specialty-like
+    (False, 5, "panose_pictorial"),  # CommercialPi-like
+])
+def test_os2_marked_pi_font_words_keep_exact_glyphs_in_editable_text(
+    native_fonts, tmp_path, symbol_code_page, panose_family, marker,
+):
+    """Review fixture a02: pi fonts typed as plain letters became TEXT.
+
+    The font's name is on no list, and its subset's letters agree on a stem.
+    The embedded program's own OS/2 table still marks it as a symbol font,
+    so its words stay exact Glyph outlines.
+    """
+    symbol_font = _truetype(tmp_path / "fictional-pi.ttf", family="Fictional Pi Specialty",
+                            symbol_code_page=symbol_code_page, panose_family=panose_family)
+    stats, doc, visible, hidden, report, symbol_items = _symbol_page_report(
+        native_fonts, tmp_path, symbol_font)
+    assert stats["text_delivery"]["editable_text_item_count"] == 1
+    assert visible == ["PA HAP"]
+    assert "HEP HEP" in hidden
+    assert report["extra"]["editable_text"]["pen_sources"] == {"pen from TrueType outline stem": 1}
+    symbol_item, = symbol_items
+    assert symbol_item["final_representation"] == "glyphs"
+    text_attempt, = [a for a in symbol_item["attempts"] if a.get("attempted_representation") == "text"]
+    evidence = text_attempt["evidence"]
+    assert evidence["source_font_symbol_marker"] == marker
+    assert evidence["source_font_symbol_name_origin"] == "font_program_os2_table"
+    assert evidence["source_font_symbol_os2"]["panose_family_type"] == panose_family
+    assert "native_text_source_stem_rule" not in evidence
+    assert evidence.get("parent_native_font_substitution_accepted") is not True
+    # The report states the limit instead of claiming every symbol font is caught.
+    note = report["extra"]["editable_text"]["note"]
+    assert "OS/2" in note and "not recognized" in note

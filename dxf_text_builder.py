@@ -96,32 +96,73 @@ _CAD_SYMBOL_FONT_MARKERS = (
     "mtextra",
     "universalmath",
     "marlett",
+    # AutoCAD's electrical reference font: letters at A-D and a-d, contact
+    # symbols at N, O, W, m and x, behind an ordinary (3,1) Unicode cmap.
+    "acaderef",
 )
-# Family, full and PostScript names of a bound program, per program digest.
-_source_program_name_cache: Dict[str, Tuple[str, ...]] = {}
+# Pi and icon fonts that mark themselves as symbol fonts in OS/2 (see below).
+# Some PDF printers strip OS/2 from every subset, so their names are checked
+# too. Matched like the CAD markers.
+_PI_FONT_MARKERS = (
+    "referencespecialty",  # MS Reference Specialty
+    "commercialpi",  # CommercialPi BT
+    "msoutlook",
+    "mdl2assets",  # Segoe MDL2 Assets
+    "fluenticons",  # Segoe Fluent Icons
+)
+# Markers that must start the name (after any subset tag): Monotype text faces
+# such as "Gloucester MT Extra Condensed" and "Gill Sans MT ExtraCondensed"
+# contain the letters of "MT Extra".
+_NAME_START_SYMBOL_FONT_MARKERS = frozenset({"mtextra"})
+# A TrueType program can also declare itself a symbol font, whatever its name:
+# bit 31 of OS/2 ulCodePageRange1 is the Symbol character set, and PANOSE
+# family type 5 is Pictorial. Text fonts (Arial, Times New Roman, ISOCPEUR,
+# RomanS, the AutoCAD text fonts) set neither. The PDF's cmap repair drops a
+# (3,0) symbol cmap, so the cmap cannot carry this.
+_TRUETYPE_SYMBOL_OS2_RULE = "truetype_os2_symbol_code_page_or_panose_pictorial_v1"
+_OS2_SYMBOL_CODE_PAGE_BIT = 31
+_PANOSE_FAMILY_PICTORIAL = 5
+# What a bound program says about itself (its own names and, for TrueType
+# outlines, its OS/2 symbol marks), per program digest.
+_source_program_identity_cache: Dict[str, Dict[str, Any]] = {}
 
 
 def _symbol_font_marker(name: Any) -> Optional[str]:
     folded = str(name or "").casefold()
     marker = next((m for m in _SYMBOL_FONT_MARKERS if m in folded), None)
     if marker is None:
-        compact = re.sub(r"[^a-z0-9]+", "", folded)
-        marker = next((m for m in _CAD_SYMBOL_FONT_MARKERS if m in compact), None)
+        untagged = re.sub(r"^[A-Z]{6}\+", "", str(name or "")).casefold()
+        compact = re.sub(r"[^a-z0-9]+", "", untagged)
+        marker = next((
+            m for m in (*_CAD_SYMBOL_FONT_MARKERS, *_PI_FONT_MARKERS)
+            if (compact.startswith(m) if m in _NAME_START_SYMBOL_FONT_MARKERS else m in compact)
+        ), None)
     return marker
 
 
-def _bound_program_names(resolution: Any) -> Tuple[str, ...]:
-    """Names the bound font program gives itself (name IDs 1, 4, 6 and 16).
+def _bound_program_identity(resolution: Any) -> Dict[str, Any]:
+    """What the bound font program says about itself.
 
-    A producer may rename a font in the PDF; the embedded program usually
-    keeps its own name. Unreadable or changed bytes give no names, so the
-    PDF's font name alone decides, as before.
+    ``names``: its family, full and PostScript names (name IDs 1, 4, 6 and
+    16). A producer may rename a font in the PDF; the embedded program usually
+    keeps its own name.
+
+    ``os2``: for a TrueType (``glyf``) program with an OS/2 table, whether it
+    declares the Symbol code page and its PANOSE family type; otherwise None.
+    Many PDF producers strip OS/2 from TrueType subsets, and an OS/2 table
+    without either mark says nothing either way. A CFF program's OS/2 is not
+    read: one wrapped from a PDF's bare CFF program is synthesized and
+    describes nothing in the source, so CFF delivery is unchanged.
+
+    Unreadable or changed bytes give nothing, so the PDF's font name alone
+    decides, as before.
     """
+    empty: Dict[str, Any] = {"names": (), "os2": None}
     digest = str(getattr(resolution, "asset_sha256", "") or "")
     filename = str(getattr(resolution, "filename", "") or "")
     if not getattr(resolution, "exact", False) or not digest or not filename:
-        return ()
-    cached = _source_program_name_cache.get(digest)
+        return empty
+    cached = _source_program_identity_cache.get(digest)
     if cached is not None:
         return cached
     try:
@@ -129,18 +170,50 @@ def _bound_program_names(resolution: Any) -> Tuple[str, ...]:
 
         payload = Path(filename).read_bytes()
         if hashlib.sha256(payload).hexdigest() != digest:
-            return ()
+            return empty
         with TTFont(BytesIO(payload), lazy=True, recalcTimestamp=False) as program:
-            records = program["name"].names if "name" in program else ()
-            names = tuple(sorted({
-                str(record.toUnicode()) for record in records if record.nameID in (1, 4, 6, 16)
-            }))
-    except Exception:  # an unreadable name table proves nothing either way
-        return ()
-    if len(_source_program_name_cache) >= 128:
-        _source_program_name_cache.clear()
-    _source_program_name_cache[digest] = names
-    return names
+            try:
+                records = program["name"].names if "name" in program else ()
+                names = tuple(sorted({
+                    str(record.toUnicode()) for record in records if record.nameID in (1, 4, 6, 16)
+                }))
+            except Exception:  # an unreadable name table proves nothing either way
+                names = ()
+            os2 = None
+            try:
+                if "glyf" in program and "CFF " not in program and "OS/2" in program:
+                    table = program["OS/2"]
+                    # Version 0 tables carry no code page ranges; PANOSE is in every version.
+                    code_pages = int(getattr(table, "ulCodePageRange1", 0) or 0)
+                    os2 = {
+                        "table_version": int(table.version),
+                        "symbol_code_page": bool(code_pages >> _OS2_SYMBOL_CODE_PAGE_BIT & 1),
+                        "panose_family_type": int(table.panose.bFamilyType),
+                    }
+            except Exception:  # an unreadable OS/2 table proves nothing either way
+                os2 = None
+    except Exception:  # an unreadable program proves nothing either way
+        return empty
+    identity = {"names": names, "os2": os2}
+    if len(_source_program_identity_cache) >= 128:
+        _source_program_identity_cache.clear()
+    _source_program_identity_cache[digest] = identity
+    return identity
+
+
+def _bound_program_names(resolution: Any) -> Tuple[str, ...]:
+    """Names the bound font program gives itself (name IDs 1, 4, 6 and 16)."""
+    return _bound_program_identity(resolution)["names"]
+
+
+def _os2_symbol_marker(os2: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not os2:
+        return None
+    if os2["symbol_code_page"]:
+        return "os2_symbol_code_page"
+    if os2["panose_family_type"] == _PANOSE_FAMILY_PICTORIAL:
+        return "panose_pictorial"
+    return None
 
 
 def _source_font_symbol_evidence(
@@ -149,8 +222,12 @@ def _source_font_symbol_evidence(
     """Why this span's font draws symbols rather than letters, or None.
 
     The PDF's font names are checked first, then the bound program's own
-    name table. A match keeps the span out of LibreCAD's font: unicode.lff
-    would draw the character code, not the symbol the source shows.
+    name table, then a TrueType program's own OS/2 marks (Symbol code page or
+    PANOSE Pictorial), which do not depend on any name. A match keeps the
+    span out of LibreCAD's font: unicode.lff would draw the character code,
+    not the symbol the source shows. A symbol font that neither has a listed
+    name nor marks itself (no OS/2 table, or one with neither mark) is not
+    recognized here.
     """
     def candidates():
         yield "pdf_font_name", getattr(text_item, "font_name", "")
@@ -170,7 +247,21 @@ def _source_font_symbol_evidence(
                 "source_font_symbol_name": str(name),
                 "source_font_symbol_name_origin": origin,
             }
-    return None
+    if resolution is None:
+        return None
+    os2 = _bound_program_identity(resolution)["os2"]
+    marker = _os2_symbol_marker(os2)
+    if marker is None:
+        return None
+    return {
+        "source_font_symbolic": True,
+        "source_font_symbol_marker": marker,
+        "source_font_symbol_name": str(
+            getattr(text_item, "font_name", "") or getattr(resolution, "family", "") or ""),
+        "source_font_symbol_name_origin": "font_program_os2_table",
+        "source_font_symbol_rule": _TRUETYPE_SYMBOL_OS2_RULE,
+        "source_font_symbol_os2": dict(os2),
+    }
 
 
 _POSITIONED_FRACTION_RE = re.compile(r"^[0-9]+/[0-9]+$")
@@ -1211,6 +1302,11 @@ def native_text_pen_rule_identity() -> Dict[str, Any]:
         "truetype_min_glyphs": _TRUETYPE_STEM_MIN_GLYPHS,
         "truetype_min_agreeing_share": _TRUETYPE_STEM_MIN_AGREEING_SHARE,
         "truetype_curve_steps": _TRUETYPE_CURVE_STEPS,
+        # Which fonts are kept out of LibreCAD's font before any pen is measured.
+        "symbol_font_markers": list(_SYMBOL_FONT_MARKERS),
+        "cad_symbol_font_markers": list(_CAD_SYMBOL_FONT_MARKERS),
+        "pi_font_markers": list(_PI_FONT_MARKERS),
+        "truetype_symbol_os2_rule": _TRUETYPE_SYMBOL_OS2_RULE,
     }
 
 
@@ -6919,7 +7015,7 @@ def reset_text_styles() -> None:
     _source_cff_stem_cache.clear()
     _source_cid_stem_cache.clear()
     _source_truetype_stem_cache.clear()
-    _source_program_name_cache.clear()
+    _source_program_identity_cache.clear()
     _staged_font_verification_cache.clear()
     _glyph_block_cache.clear()
     _canonical_glyph_path_cache.clear()
