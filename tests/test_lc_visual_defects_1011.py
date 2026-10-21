@@ -1,4 +1,4 @@
-"""Defects the LibreCAD visual oracle found on `1011 (1 OF 2) - Rev 0.pdf` (2026-08-16).
+"""Defects the LibreCAD visual oracle found on the private benchmark sheet (2026-08-16).
 
 The oracle renders the import with LibreCAD's own dxf2png and compares it side by side
 with the PDF page. Three import defects surfaced that no report field showed:
