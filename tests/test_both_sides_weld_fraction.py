@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Regression: a both-sides weld symbol is TWO stacked fractions, not one.
 
-Geometry is the pdfcadcore extraction of "1011 (1 OF 2) - Rev 0.pdf" page 1,
-weld symbol at PDF pt (953.9, 937.8): '316' [949.5,927.5,966.8,941.5] + '/'
-above the reference line and '316' [949.5,940.5,966.8,954.6] + '/' below it
-(14 such stacked-over-stacked pairs on that sheet, 96 across the local
-corpus).  Before this fix ``_merge_stacked_fractions`` Pattern A let the first
+Geometry is an adapted synthetic weld callout: the shape of a both-sides weld
+symbol on a private benchmark sheet, moved by a made-up offset (the test geometry
+is relative): '316' + '/' above the reference line and '316' + '/' below it.
+Before this fix ``_merge_stacked_fractions`` Pattern A let the first
 slash swallow both '316' spans (nearest_distance + _FRAC_Y_SPREAD_MM window)
 and ``_dedupe_fraction_overlays`` then deleted the second, now bare, slash
 (5.0/5.5 mm centre tolerance), so one '3/16' survived per symbol.
@@ -102,36 +101,37 @@ def _clone_observed_item(item: NormalizedText, *, item_id: int) -> NormalizedTex
 
 
 def _both_sides_1011_items(rotate90: bool = False) -> list[NormalizedText]:
-    # (text, insertion, bbox, font_size, owning slash) -- model mm, 1011 p1.
+    # (text, insertion, bbox, font_size, owning slash) -- model mm. An adapted
+    # synthetic weld callout (made-up offset, same relative geometry).
     # The character layout mirrors what the real rawdict extraction path stores.
     raw = [
         (
             "316",
-            (334.95, 279.05),
-            (334.95, 276.86, 341.06, 281.81),
+            (120.00, 100.00),
+            (120.00, 97.81, 126.11, 102.76),
             3.55,
-            (336.51, 278.16),
+            (121.56, 99.11),
         ),
         (
             "/",
-            (336.51, 278.16),
-            (336.51, 277.22, 337.69, 281.45),
+            (121.56, 99.11),
+            (121.56, 98.17, 122.74, 102.40),
             4.23,
-            (336.51, 278.16),
+            (121.56, 99.11),
         ),
         (
             "316",
-            (334.95, 274.44),
-            (334.95, 272.25, 341.06, 277.20),
+            (120.00, 95.39),
+            (120.00, 93.20, 126.11, 98.15),
             3.55,
-            (336.51, 273.51),
+            (121.56, 94.46),
         ),
         (
             "/",
-            (336.51, 273.51),
-            (336.51, 272.56, 337.69, 276.79),
+            (121.56, 94.46),
+            (121.56, 93.51, 122.74, 97.74),
             4.23,
-            (336.51, 273.51),
+            (121.56, 94.46),
         ),
     ]
     items = []
@@ -309,9 +309,9 @@ def test_both_sides_weld_symbol_keeps_both_stacked_fractions() -> None:
     assert [item.text for item in merged] == ["3/16", "3/16"]
     top, bottom = sorted(merged, key=lambda it: -it.insertion[1])
     # Each fraction sits at its own slash; its bbox does not span the other half.
-    assert top.insertion == (336.51, 278.16)
-    assert bottom.insertion == (336.51, 273.51)
-    assert top.bbox[1] >= 276.8 and bottom.bbox[3] <= 277.3
+    assert top.insertion == (121.56, 99.11)
+    assert bottom.insertion == (121.56, 94.46)
+    assert top.bbox[1] >= 97.75 and bottom.bbox[3] <= 98.25
     # Both retain the same observed slash anchor size.
     assert abs(top.font_size - bottom.font_size) < 1e-6
 
