@@ -2,7 +2,55 @@
 
 All notable release changes are recorded here.
 
-## Unreleased
+## 1.0.119 - 2026-10-23
+
+- Make embedded TrueType notes, such as Arial subsets, editable native text
+  again (a fictional six-note page: 0 of 6 since 1.0.117, 6 of 6 now). Measure
+  the TrueType program's dominant vertical stem from its own glyph outlines:
+  straight stems of reference letters, explicit em bounds, and at least two
+  agreeing glyphs. Report it as "pen from TrueType outline stem", the same
+  disclosed approximation as the CFF hint pen. No default pen is used. Only
+  the reference letters are decompiled, so a large fully embedded font is
+  measured in about a second.
+- Keep CAD symbol fonts out of Editable text: GD&T fonts such as AMGDT, AIGDT,
+  GDT and SWGDT, and math fonts such as Symath and SWMath. They draw symbols
+  at letter codes (`n` is a diameter sign) but keep ordinary capitals, so a
+  measured stem proves nothing about them. Their words stay exact Glyph
+  outlines, and the report names the matched font name. The bound program's
+  own name is checked as well as the PDF's.
+- Keep AcadEref (AutoCAD's electrical reference font, contact symbols at `N`,
+  `O`, `W`, `m` and `x`) and pi fonts out of Editable text. A TrueType program
+  whose own OS/2 table declares the Symbol code page or PANOSE Pictorial (MS
+  Reference Specialty, CommercialPi, MS Outlook, Wingdings, Symbol, MT Extra,
+  Universal Math) is now kept out whatever its name, and the pi fonts are
+  named too for subsets whose OS/2 table was stripped. `MT Extra` no longer
+  matches Monotype text faces such as Gloucester MT Extra Condensed. A symbol
+  font with an unlisted name and no OS/2 mark is still not recognized; the
+  validation note and the report now say so instead of claiming every symbol
+  font stays outlines.
+- Add a rule that takes CID-keyed CFF pens from the font dicts the span's
+  glyphs use. The shared font catalog still rejects CID-keyed CFF programs
+  before it runs, so such text keeps its current fallback; only unit tests
+  reach the rule today. Keep the CFF hint pen and its output unchanged.
+  Italic TrueType, fonts without agreeing stems and fonts the PDF does not
+  embed keep their reported fallback; the report now says when the PDF embeds
+  no font. Count pen sources in `extra.editable_text` and bind the pen rule
+  into resume identity.
+- Speed up Glyph export on multi-page sheets. A glyph outline's bounding box
+  is now measured from the glyph definition's own vertices and that
+  character's placement, instead of copying and transforming every character
+  twice. On an 8-page fictional sheet the export phase went from about 34 s to
+  about 15 s. DXF geometry is unchanged.
+- The import report's `extra.editable_text.font` now says
+  "LibreCAD native LFF" instead of "LibreCAD unicode". Editable words can use
+  LibreCAD's Romans or Unicode font, so the old label was too narrow. Anything
+  that reads this field should accept the new value.
+- Known limit (LibreCAD, not the converter): when you save the DXF in
+  LibreCAD, LibreCAD replaces the three small dash patterns the converter uses
+  (DASHEDTINY, DASHDOTTINY and DOTTINY) with its own shorter built-in
+  versions, and adds its 27 standard line types to the file. Lines keep their
+  line type names; only those three short dash spacings change. This has
+  happened since 1.0.89.
 
 ## 1.0.118 - 2026-10-15
 
