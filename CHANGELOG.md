@@ -2,7 +2,7 @@
 
 All notable release changes are recorded here.
 
-## Unreleased
+## 1.0.119 - 2026-10-23
 
 - Make embedded TrueType notes, such as Arial subsets, editable native text
   again (a fictional six-note page: 0 of 6 since 1.0.117, 6 of 6 now). Measure
@@ -36,6 +36,21 @@ All notable release changes are recorded here.
   embed keep their reported fallback; the report now says when the PDF embeds
   no font. Count pen sources in `extra.editable_text` and bind the pen rule
   into resume identity.
+- Speed up Glyph export on multi-page sheets. A glyph outline's bounding box
+  is now measured from the glyph definition's own vertices and that
+  character's placement, instead of copying and transforming every character
+  twice. On an 8-page fictional sheet the export phase went from about 34 s to
+  about 15 s. DXF geometry is unchanged.
+- The import report's `extra.editable_text.font` now says
+  "LibreCAD native LFF" instead of "LibreCAD unicode". Editable words can use
+  LibreCAD's Romans or Unicode font, so the old label was too narrow. Anything
+  that reads this field should accept the new value.
+- Known limit (LibreCAD, not the converter): when you save the DXF in
+  LibreCAD, LibreCAD replaces the three small dash patterns the converter uses
+  (DASHEDTINY, DASHDOTTINY and DOTTINY) with its own shorter built-in
+  versions, and adds its 27 standard line types to the file. Lines keep their
+  line type names; only those three short dash spacings change. This has
+  happened since 1.0.89.
 
 ## 1.0.118 - 2026-10-15
 
