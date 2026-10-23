@@ -1,7 +1,8 @@
 """The glyph outlines must come from the exact source-font program, not ezdxf's fallback.
 
-Found by the LibreCAD visual oracle on `1011 (1 OF 2) - Rev 0.pdf` (2026-08-16): the
-title "CLASSIC STEEL" is a light serif (embedded RomanT subset) in every PDF viewer and
+Found by the LibreCAD visual oracle on the private two-sheet benchmark drawing
+(sheet 1, 2026-08-16): the sheet title is a light serif (embedded RomanT subset)
+in every PDF viewer and
 a bold sans in LibreCAD's own render of the import. The delivery evidence said
 `font_exact_match=True`, `resolved_font_filename=<extracted asset .ttf>` -- and the
 outlines were Arial Unicode MS. Root cause: ezdxf resolves fonts *by file name* against

@@ -1,6 +1,6 @@
 """Cost cuts in the glyph export path must not change what is verified.
 
-Profiling `1011 (1 OF 2) - Rev 0.pdf` (979 items, 931 delivered as nested glyph
+Profiling the private benchmark sheet (979 items, 931 delivered as nested glyph
 blocks) at v1.0.87 showed ~64% of `export_dxf_ms` was recomputation of already-known
 values: (a) `_verify_serialized_text_deliveries` re-hashed each of 130 immutable glyph
 definitions every time an item referenced one (3,599 hashes), and (b) both
