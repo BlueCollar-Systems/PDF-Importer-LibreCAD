@@ -15,9 +15,9 @@ For each representative shop drawing you import:
 
 | Check | Pass |
 |-------|------|
-| **Text** → visible text is drawn as exact Glyph outlines (a substituted LFF font is never certified as Text) and the report says requested Text, delivered Glyphs; only whitespace spans are native TEXT | ☐ |
-| **Labels** → explicit no-native-DXF-Label evidence, then the same Text path: delivered as Glyph outlines with both transitions reported | ☐ |
-| **3D Text** → parent visibly/structurally verifies native 3D text, or report proves the item-specific failure and the nearest verified fallback is faithful | ☐ |
+| **Text** → inspect each span's actual delivery. Exact-look requests preserve source glyph outlines; with **Editable text**, native `TEXT` is accepted only after its font, placement, full advance and source-pen checks pass, and the report discloses the LibreCAD-font substitution. Other visible spans follow the reported Glyphs fallback; source-bound zero-ink whitespace can remain native `TEXT` | ☐ |
+| **Labels** → the report records DXF's missing native Label capability, then attempts the Text path above; inspect whether each span actually delivered native `TEXT` or Glyph outlines and verify every transition | ☐ |
+| **3D Text** → LibreCAD is a 2D host: thickness alone is not native 3D text proof. The report records that item's failed 3D attempt, then its actual Text/Glyphs/Geometry/item-Raster fallback; verify the delivered representation against the PDF | ☐ |
 | **Glyphs** → grouped outline block per source span | ☐ |
 | **Geometry** → raw outline edges faithful to the PDF | ☐ |
 | **Raster** → exact item pixels in a verified source-bound DXF IMAGE, with no neighboring text borrowed | ☐ |
@@ -27,6 +27,7 @@ For each representative shop drawing you import:
 | Recovered text: `extra.text_glyph_codes` reports `unproven: 0`, and every recovered span is read against the source PDF page and says the same thing - these characters were matched against a reference face installed on this machine, not read from the file | ☐ |
 | Scale plausible vs the source drawing | ☐ |
 | Multi-page import behaves as expected | ☐ |
+| Save and reopen: text strings, placement and positive native pen survive; inspect line patterns too, because LibreCAD's native writer rewrites three fine custom dash patterns to built-in linetypes and adds its standard linetypes. Do not certify a whole-page match when the saved result differs | ☐ |
 
 ## After each import
 
