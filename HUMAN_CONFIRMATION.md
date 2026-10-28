@@ -31,7 +31,7 @@ For each representative shop drawing you import:
 ## After each import
 
 - Save `import_report.json` when the importer writes one
-- If something looks wrong: use [Report Doctor](https://bluecollarsystems.com/report-doctor) or **Send Feedback** with screenshots and your report JSON
+- If something looks wrong: use [Report Doctor](https://bluecollar-systems.com/report-doctor) or **Send Feedback** with screenshots and your report JSON
 
 ## Sign-off
 
