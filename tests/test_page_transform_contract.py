@@ -128,12 +128,12 @@ def test_cropbox_and_rotate_transform_page_geometry_text_and_quad_once(
         tuple(value * user_unit * MM_PER_PT for value in expected_size)
     )
     assert len(page_data.primitives) == 1
-    assert page_data.primitives[0].points == pytest.approx(
-        [
-            _model_point((10.0, 10.0), rotation, user_unit),
-            _model_point((60.0, 30.0), rotation, user_unit),
-        ]
-    )
+    expected_points = [
+        _model_point((10.0, 10.0), rotation, user_unit),
+        _model_point((60.0, 30.0), rotation, user_unit),
+    ]
+    for actual, expected in zip(page_data.primitives[0].points, expected_points, strict=True):
+        assert actual == pytest.approx(expected)
 
     # Leading/trailing spaces and a whitespace-only positioned run are source
     # content. Empty spans, if a PDF engine emits one, must not become "None".
@@ -183,12 +183,12 @@ def test_userunit_scales_crop_space_before_single_page_rotation(tmp_path: Path) 
     assert (page_data.width, page_data.height) == pytest.approx(
         (160.0 * MM_PER_PT, 320.0 * MM_PER_PT)
     )
-    assert page_data.primitives[0].points == pytest.approx(
-        [
-            _model_point((10.0, 10.0), 90, 2.0),
-            _model_point((60.0, 30.0), 90, 2.0),
-        ]
-    )
+    expected_points = [
+        _model_point((10.0, 10.0), 90, 2.0),
+        _model_point((60.0, 30.0), 90, 2.0),
+    ]
+    for actual, expected in zip(page_data.primitives[0].points, expected_points, strict=True):
+        assert actual == pytest.approx(expected)
     text = page_data.text_items[0]
     assert text.insertion == pytest.approx(_model_point((10.0, 40.0), 90, 2.0))
     assert text.font_size == pytest.approx(20.0 * MM_PER_PT)
@@ -229,9 +229,9 @@ def test_uniform_scale_scales_text_advance_and_every_target_quad_point(
     apply_uniform_scale(extraction, factor)
 
     assert text.advance_width == pytest.approx(original_advance * factor)
-    assert text.target_quad_model == pytest.approx(
-        [(x * factor, y * factor) for x, y in original_quad]
-    )
+    expected_scaled_quad = [(x * factor, y * factor) for x, y in original_quad]
+    for actual, expected in zip(text.target_quad_model, expected_scaled_quad, strict=True):
+        assert actual == pytest.approx(expected)
 
 
 def test_empty_or_none_span_content_is_ignored_without_stringification() -> None:
