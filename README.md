@@ -7,6 +7,12 @@
 Converts PDF vector drawings to DXF format for use with LibreCAD, AutoCAD,
 DraftSight, QCAD, and any DXF-compatible CAD software.
 
+## Quick Start (Windows Portable ZIP)
+
+1. Download `LibreCAD-PDF-Importer-Windows-Portable_v1.0.119.zip` from the [Releases page](https://github.com/BlueCollar-Systems/PDF-Importer-LibreCAD/releases) and extract the folder.
+2. Double-click `lcpdf-gui.exe` (no Python install needed). If Windows SmartScreen shows **"Windows protected your PC"**, click **More info**, then **Run anyway**.
+3. Pick your PDF, choose your options, and click **Convert** (or click **Install LibreCAD menu entry** once to add **Plugins → Import PDF (BlueCollar)...** inside LibreCAD 2.2.x).
+
 See [CHANGELOG.md](CHANGELOG.md) for release history. Version 1.0.82 preserves
 native zero-ink whitespace TEXT while visible source text whose font LibreCAD
 must substitute descends automatically to visually verified glyph outlines.
@@ -745,6 +751,7 @@ pdfcadcore/           Shared PDF extraction core
 | Native LibreCAD fonts and Labels | LibreCAD draws native text with its own LFF stroke fonts, so visible text is never certified as native Text: Text, Labels, and 3D Text requests deliver exact Glyph outlines (the visual truth) and report that fallback. The exact strings are hidden native `TEXT` on the frozen `P###_TEXT_SEARCH` layer; thaw it and freeze `P###_TEXT` to work with editable LFF text, whose glyph shapes differ from the PDF font (the layer is also non-plotting: switch its print flag on to print that text). LibreCAD 2.2 itself has no find-text command, so "searchable" means a text search of the DXF file; thaw the layer before using another host's find command. A UTF-8 text search of a pre-R2007 (cp1252) file does not find non-ASCII strings: a character in that code page is one cp1252 byte, any other a `\U+XXXX` escape. |
 | Damaged or unusable source fonts | Exact-font structural representations are never certified without item-specific impossibility evidence. Without that evidence the item is still delivered (item Raster patch, then visible `TEXT` on `P###_TEXT_DEGRADED`, then a reported drop), but it stays `verified: false`, is listed in `extra.text_items_degraded`, and keeps the sheet out of certification |
 | DXF version | R2010 is the recommended default; R12 has no serialized `BLOCK_RECORD`, which is explicitly excluded from durable support identity |
+| LibreCAD native save linetypes | When LibreCAD saves a DXF, its native writer rewrites three fine custom dash patterns to built-in linetypes and adds its 27 standard linetypes. Keep the original generated DXF alongside any host-saved copy |
 | Legacy hosts | LibreCAD/DXF consumer behavior outside the tested matrix is expected-only until verified |
 
 ## License
